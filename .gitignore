@@ -1,0 +1,15 @@
+.DS_Store
+.build/
+.swiftpm/
+DerivedData/
+xcuserdata/
+*.xcuserstate
+.env
+*.mlmodelc
+*.pyc
+__pycache__/
+Models/
+Aitvaras.xcodeproj/
+.build-xcode/
+
+CLAUDE.local.md
