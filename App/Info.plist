@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>$(DEVELOPMENT_LANGUAGE)</string>
+	<key>CFBundleDisplayName</key>
+	<string>Aitvaras</string>
+	<key>CFBundleExecutable</key>
+	<string>$(EXECUTABLE_NAME)</string>
+	<key>CFBundleIdentifier</key>
+	<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>$(PRODUCT_NAME)</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>$(MARKETING_VERSION)</string>
+	<key>CFBundleVersion</key>
+	<string>$(CURRENT_PROJECT_VERSION)</string>
+	<key>LSApplicationCategoryType</key>
+	<string>public.app-category.productivity</string>
+	<key>NSAppleEventsUsageDescription</key>
+	<string>Aitvaras reads new mail from Apple Mail to summarize it and suggest actions. Mail stays unread and no mail is ever sent automatically.</string>
+	<key>NSAudioCaptureUsageDescription</key>
+	<string>During a capture session Aitvaras transcribes system audio on-device. No audio is ever recorded to disk.</string>
+	<key>NSCalendarsFullAccessUsageDescription</key>
+	<string>Aitvaras reads your calendar and creates events for you (she only ever modifies events she created herself).</string>
+	<key>NSHumanReadableCopyright</key>
+	<string>Local-first personal AI. All inference on-device.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Aitvaras listens to you during voice conversations. Audio never leaves this Mac.</string>
+	<key>NSRemindersFullAccessUsageDescription</key>
+	<string>Aitvaras reads and creates reminders/todos for you.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>Aitvaras transcribes your speech on-device for voice conversations.</string>
+</dict>
+</plist>

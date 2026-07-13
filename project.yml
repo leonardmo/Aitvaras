@@ -1,0 +1,85 @@
+name: Aitvaras
+options:
+  bundleIdPrefix: app.aitvaras
+  deploymentTarget:
+    macOS: "26.0"
+  xcodeVersion: "26.0"
+packages:
+  AitvarasKit:
+    path: .
+  GLTFKit2:
+    url: https://github.com/warrenm/GLTFKit2
+    from: 0.5.9
+targets:
+  NotifyReader:
+    type: tool
+    platform: macOS
+    sources:
+      - helper/NotifyReader
+    settings:
+      base:
+        PRODUCT_NAME: notify-reader
+        SWIFT_VERSION: "6.0"
+        CODE_SIGN_IDENTITY: "-"
+
+  Aitvaras:
+    type: application
+    platform: macOS
+    sources:
+      - path: App
+        excludes:
+          - Resources
+      - path: App/Resources
+        buildPhase: resources
+      - path: voice/tts_server.py
+        buildPhase: resources
+      - path: voice/kokoro_patches.py
+        buildPhase: resources
+      - path: scripts/setup-neural-voice.sh
+        buildPhase: resources
+    dependencies:
+      - target: NotifyReader
+        embed: false
+      - package: AitvarasKit
+        products:
+          - AitvarasCore
+          - AitvarasStore
+          - AitvarasEngines
+          - AitvarasRAG
+          - AitvarasConnectors
+          - AitvarasVoice
+          - AitvarasAgent
+      - package: GLTFKit2
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: app.aitvaras.Aitvaras
+        PRODUCT_NAME: Aitvaras
+        MARKETING_VERSION: 0.1.0
+        CURRENT_PROJECT_VERSION: 1
+        SWIFT_VERSION: "6.0"
+        CODE_SIGN_IDENTITY: "-"
+        CODE_SIGN_STYLE: Automatic
+        ENABLE_HARDENED_RUNTIME: NO
+        ENABLE_APP_SANDBOX: NO
+        DEAD_CODE_STRIPPING: YES
+        SWIFT_STRICT_CONCURRENCY: complete
+    postCompileScripts:
+      - script: |
+          cp "$BUILT_PRODUCTS_DIR/notify-reader" "$BUILT_PRODUCTS_DIR/$EXECUTABLE_FOLDER_PATH/notify-reader"
+        name: Embed notify-reader helper
+        outputFiles:
+          - $(BUILT_PRODUCTS_DIR)/$(EXECUTABLE_FOLDER_PATH)/notify-reader
+    info:
+      path: App/Info.plist
+      properties:
+        CFBundleDisplayName: Aitvaras
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        LSApplicationCategoryType: public.app-category.productivity
+        NSHumanReadableCopyright: Local-first personal AI. All inference on-device.
+        NSMicrophoneUsageDescription: Aitvaras listens to you during voice conversations. Audio never leaves this Mac.
+        NSSpeechRecognitionUsageDescription: Aitvaras transcribes your speech on-device for voice conversations.
+        NSCalendarsFullAccessUsageDescription: Aitvaras reads your calendar and creates events for you (she only ever modifies events she created herself).
+        NSRemindersFullAccessUsageDescription: Aitvaras reads and creates reminders/todos for you.
+        NSAppleEventsUsageDescription: Aitvaras reads new mail from Apple Mail to summarize it and suggest actions. Mail stays unread and no mail is ever sent automatically.
+        NSAudioCaptureUsageDescription: During a capture session Aitvaras transcribes system audio on-device. No audio is ever recorded to disk.

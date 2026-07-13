@@ -1,0 +1,524 @@
+<meta charset="utf-8">
+<title>Aitvaras — Character Direction 01</title>
+<style>
+  :root {
+    --void: #0A0E14;
+    --panel: #0E141C;
+    --line: #1B2732;
+    --holo: #66E6D2;
+    --holo-dim: #2E6E64;
+    --deep: #153F3A;
+    --mist: #A9C2BF;
+    --faint: #5F7A78;
+    --amber: #D9A05B;
+    --display: "Avenir Next", "Avenir", system-ui, sans-serif;
+    --body: system-ui, -apple-system, sans-serif;
+    --mono: "SF Mono", "Menlo", monospace;
+  }
+  html { background: var(--void); }
+  body {
+    background: var(--void);
+    color: var(--mist);
+    font-family: var(--body);
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 880px; margin: 0 auto; padding: 56px 24px 96px; }
+
+  .eyebrow {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: 0.22em;
+    color: var(--faint);
+    text-transform: uppercase;
+  }
+  h1 {
+    font-family: var(--display);
+    font-weight: 500;
+    font-size: clamp(30px, 5vw, 44px);
+    letter-spacing: -0.01em;
+    color: #E7F2EF;
+    margin: 10px 0 6px;
+    text-wrap: balance;
+  }
+  .thesis { max-width: 58ch; color: var(--mist); margin: 0 0 40px; }
+  .thesis em { color: var(--holo); font-style: normal; }
+
+  .stage {
+    position: relative;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    background:
+      radial-gradient(ellipse 60% 45% at 50% 42%, rgba(102,230,210,0.05), transparent 70%),
+      var(--panel);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 28px 16px 20px;
+    overflow: hidden;
+  }
+  .stage canvas { display: block; max-width: 100%; }
+  .stage .hud {
+    position: absolute; top: 14px; left: 16px;
+    font-family: var(--mono); font-size: 10px; letter-spacing: 0.18em;
+    color: var(--faint); text-transform: uppercase;
+  }
+  .hud b { color: var(--holo); font-weight: 400; }
+
+  .states {
+    display: flex; gap: 8px; margin-top: 18px; flex-wrap: wrap; justify-content: center;
+  }
+  .states button {
+    font-family: var(--mono); font-size: 11px; letter-spacing: 0.12em;
+    text-transform: uppercase;
+    background: transparent; color: var(--faint);
+    border: 1px solid var(--line); border-radius: 3px;
+    padding: 8px 16px; cursor: pointer;
+    transition: color .2s, border-color .2s, background .2s;
+  }
+  .states button:hover { color: var(--mist); border-color: var(--holo-dim); }
+  .states button:focus-visible { outline: 2px solid var(--holo); outline-offset: 2px; }
+  .states button.on {
+    color: var(--holo); border-color: var(--holo-dim);
+    background: rgba(102,230,210,0.06);
+  }
+
+  section { margin-top: 64px; }
+  h2 {
+    font-family: var(--display); font-weight: 500;
+    font-size: 22px; color: #E7F2EF; margin: 8px 0 16px;
+  }
+  section > p { max-width: 62ch; }
+  .cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 28px; margin-top: 20px; }
+  .cols h3 {
+    font-family: var(--display); font-weight: 600; font-size: 14px;
+    color: var(--holo); margin: 0 0 6px; letter-spacing: 0.02em;
+  }
+  .cols p { margin: 0; font-size: 14.5px; color: var(--mist); }
+
+  .variants { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px; margin-top: 22px; }
+  .variant {
+    border: 1px solid var(--line); border-radius: 6px; background: var(--panel);
+    padding: 14px; cursor: pointer; text-align: left;
+    transition: border-color .2s;
+    font-family: var(--body); color: var(--mist);
+  }
+  .variant:hover { border-color: var(--holo-dim); }
+  .variant:focus-visible { outline: 2px solid var(--holo); outline-offset: 2px; }
+  .variant.on { border-color: var(--holo); }
+  .variant canvas { width: 100%; display: block; border-radius: 3px; background: #0A1016; }
+  .variant .vname {
+    display: flex; align-items: baseline; justify-content: space-between;
+    margin-top: 12px; font-family: var(--display); font-weight: 600; font-size: 14px; color: #DCEAE7;
+  }
+  .variant .tag {
+    font-family: var(--mono); font-size: 9px; letter-spacing: 0.14em;
+    color: var(--amber); text-transform: uppercase;
+  }
+  .variant .vdesc { font-size: 13px; color: var(--faint); margin-top: 4px; line-height: 1.5; }
+
+  .tokens { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 18px; }
+  .token { flex: 1 1 120px; border: 1px solid var(--line); border-radius: 4px; overflow: hidden; }
+  .token .chip { height: 44px; }
+  .token .meta { padding: 8px 10px; font-family: var(--mono); font-size: 10px; color: var(--faint); }
+  .token .meta b { display: block; color: var(--mist); font-weight: 500; margin-bottom: 2px; }
+
+  ul.react { max-width: 62ch; padding-left: 0; list-style: none; display: flex; flex-direction: column; gap: 10px; }
+  ul.react li { padding-left: 22px; position: relative; font-size: 15px; }
+  ul.react li::before {
+    content: ""; position: absolute; left: 0; top: 9px;
+    width: 8px; height: 8px; border: 1px solid var(--holo-dim); transform: rotate(45deg);
+  }
+  footer { margin-top: 72px; font-family: var(--mono); font-size: 11px; color: var(--faint); letter-spacing: 0.1em; }
+</style>
+
+<div class="wrap">
+  <div class="eyebrow">Aitvaras · Character Direction 01 · July 2026</div>
+  <h1>A presence, not a mascot.</h1>
+  <p class="thesis">
+    Aitvaras is rendered as a <em>hologram</em> — a figure made of light, not of skin or cartoon shading.
+    Human enough to feel like someone; abstract enough to never be creepy or cutesy.
+    She is calm by default and communicates through light and motion: how she glows is how she feels.
+  </p>
+
+  <div class="stage">
+    <div class="hud">state <b id="hudState">idle</b> · treatment <b id="hudMode">particle field</b></div>
+    <canvas id="hero" width="480" height="560" aria-label="Animated hologram of Aitvaras"></canvas>
+    <div class="states" role="group" aria-label="Character state demo">
+      <button data-state="idle" class="on">Idle</button>
+      <button data-state="listening">Listening</button>
+      <button data-state="thinking">Thinking</button>
+      <button data-state="speaking">Speaking</button>
+    </div>
+  </div>
+
+  <section>
+    <div class="eyebrow">Rationale</div>
+    <h2>Why a figure of light</h2>
+    <div class="cols">
+      <div>
+        <h3>Serious, not sterile</h3>
+        <p>A monochrome emissive palette and a restrained silhouette read as competence.
+        No big eyes, no bouncing — warmth comes from soft light, breathing motion, and a slow blink.</p>
+      </div>
+      <div>
+        <h3>States are the language</h3>
+        <p>Idle dims her. Listening pulls the halo tight and brightens her eyes. Thinking sends
+        current through the halo. Speaking makes the whole figure resonate with her voice.
+        You can read her status from across the room.</p>
+      </div>
+      <div>
+        <h3>Built for the app</h3>
+        <p>Emissive particles and lines are cheap to render in RealityKit, scale from a tiny
+        floating companion window to full screen, and look native on a dark desktop. No rigging,
+        no uncanny valley, no asset pipeline.</p>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="eyebrow">Treatments</div>
+    <h2>Three renderings of the same body</h2>
+    <p>Same silhouette and behavior — different material. Click to preview above.</p>
+    <div class="variants" role="group" aria-label="Render treatment options">
+      <button class="variant on" data-mode="particles">
+        <canvas width="260" height="200"></canvas>
+        <div class="vname">A · Particle field <span class="tag">recommended</span></div>
+        <div class="vdesc">She condenses out of drifting points of light and dissolves at the base. Softest, most alive.</div>
+      </button>
+      <button class="variant" data-mode="plexus">
+        <canvas width="260" height="200"></canvas>
+        <div class="vname">B · Wireframe plexus</div>
+        <div class="vdesc">Constellation lines between the points. More technical and network-like — fits Cealonet energy.</div>
+      </button>
+      <button class="variant" data-mode="contour">
+        <canvas width="260" height="200"></canvas>
+        <div class="vname">C · Scanline contour</div>
+        <div class="vdesc">Horizontal light sections, like a volumetric scan. Cleanest and most minimal of the three.</div>
+      </button>
+    </div>
+  </section>
+
+  <section>
+    <div class="eyebrow">System</div>
+    <h2>Palette</h2>
+    <div class="tokens">
+      <div class="token"><div class="chip" style="background:#0A0E14"></div><div class="meta"><b>Void</b>#0A0E14 · ground</div></div>
+      <div class="token"><div class="chip" style="background:#66E6D2"></div><div class="meta"><b>Hologram</b>#66E6D2 · Aitvaras</div></div>
+      <div class="token"><div class="chip" style="background:#2E6E64"></div><div class="meta"><b>Deep teal</b>#2E6E64 · structure</div></div>
+      <div class="token"><div class="chip" style="background:#A9C2BF"></div><div class="meta"><b>Mist</b>#A9C2BF · text</div></div>
+      <div class="token"><div class="chip" style="background:#D9A05B"></div><div class="meta"><b>Signal</b>#D9A05B · alerts only</div></div>
+    </div>
+    <p style="margin-top:18px; max-width:62ch;">In the app, the hologram hue can shift subtly with context —
+    amber tint when she surfaces something urgent, dimmed teal when idle in the corner of your screen.
+    In RealityKit this becomes instanced emissive quads plus a bloom pass; every state above is a small
+    parameter curve (brightness, halo radius, particle energy), driven by the same state machine the
+    voice pipeline uses.</p>
+  </section>
+
+  <section>
+    <div class="eyebrow">Feedback</div>
+    <h2>What to react to</h2>
+    <ul class="react">
+      <li>Silhouette — more or less recognizably feminine? Hair shape longer/shorter?</li>
+      <li>Treatment A, B, or C — or A with a hint of B's lines?</li>
+      <li>Color — stay teal, or explore ice-blue / violet territory?</li>
+      <li>Motion pace — is idle calm enough? Is speaking lively enough?</li>
+      <li>Density — more solid (readable) vs. more sparse (ethereal)?</li>
+    </ul>
+  </section>
+
+  <footer>AITVARAS · DIRECTION 01 · RENDERED LIVE — THIS IS THE ACTUAL ANIMATION LANGUAGE, NOT A MOCK</footer>
+</div>
+
+<script>
+(() => {
+  const reduced = matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  // ---- Silhouette ----------------------------------------------------
+  // Aitvaras's body is defined once as a mask (head, bob haircut, neck,
+  // sloped shoulders) and sampled into points. Every treatment renders
+  // the same sampled body.
+  const MW = 320, MH = 420, CX = 160, CY = 190;
+
+  function buildMask(draw) {
+    const c = document.createElement("canvas");
+    c.width = MW; c.height = MH;
+    const g = c.getContext("2d");
+    g.fillStyle = "#fff";
+    g.translate(CX, CY);
+    draw(g);
+    return g.getImageData(0, 0, MW, MH).data;
+  }
+
+  const bodyMask = buildMask(g => {
+    g.beginPath(); g.ellipse(0, -96, 57, 66, 0, 0, 7); g.fill();          // hair volume
+    g.beginPath();                                                        // bob sides
+    g.moveTo(-56, -110); g.quadraticCurveTo(-64, -40, -48, -18);
+    g.lineTo(-30, -30); g.lineTo(-40, -110); g.closePath(); g.fill();
+    g.beginPath();
+    g.moveTo(56, -110); g.quadraticCurveTo(64, -40, 48, -18);
+    g.lineTo(30, -30); g.lineTo(40, -110); g.closePath(); g.fill();
+    g.beginPath(); g.ellipse(0, -84, 42, 55, 0, 0, 7); g.fill();          // head
+    g.fillRect(-17, -45, 34, 64);                                         // neck
+    g.beginPath();                                                        // shoulders / bust
+    g.moveTo(-108, 118); g.bezierCurveTo(-92, 40, -40, 16, 0, 14);
+    g.bezierCurveTo(40, 16, 92, 40, 108, 118); g.closePath(); g.fill();
+  });
+
+  const faceMask = buildMask(g => {
+    g.beginPath(); g.ellipse(0, -78, 32, 44, 0, 0, 7); g.fill();
+  });
+
+  const inMask = (mask, x, y) => {
+    const px = (x + CX) | 0, py = (y + CY) | 0;
+    if (px < 0 || py < 0 || px >= MW || py >= MH) return false;
+    return mask[(py * MW + px) * 4 + 3] > 0;
+  };
+
+  // Deterministic PRNG so every canvas samples the same body.
+  function rng(seed) {
+    return () => (seed = (seed * 1664525 + 1013904223) >>> 0) / 4294967296;
+  }
+
+  function samplePoints(count, seed) {
+    const rand = rng(seed), pts = [];
+    while (pts.length < count) {
+      // bias sampling: extra density on the head (face readability) and
+      // the neck/collar (silhouette continuity)
+      const batch = pts.length % 3;
+      const x = (rand() - 0.5) * 240;
+      const y = batch === 0 ? rand() * 150 - 170       // head + hair
+              : batch === 1 ? rand() * 130 - 50        // neck + shoulders
+              : rand() * 340 - 170;                    // full body
+      if (!inMask(bodyMask, x, y)) continue;
+      pts.push({
+        x, y,
+        face: inMask(faceMask, x, y),
+        r: 0.7 + rand() * 1.3,
+        ph: rand() * Math.PI * 2,
+        sp: 0.4 + rand() * 0.9,
+        tw: rand()                       // twinkle offset
+      });
+    }
+    return pts;
+  }
+
+  // Horizontal segments through the mask, for the contour treatment.
+  function contourSegments(step) {
+    const segs = [];
+    for (let y = -170; y < 170; y += step) {
+      let start = null;
+      for (let x = -120; x <= 120; x++) {
+        const hit = inMask(bodyMask, x, y);
+        if (hit && start === null) start = x;
+        if (!hit && start !== null) { segs.push({ y, x0: start, x1: x - 1 }); start = null; }
+      }
+      if (start !== null) segs.push({ y, x0: start, x1: 120 });
+    }
+    return segs;
+  }
+
+  // Plexus edges between nearby points.
+  function plexusEdges(pts, maxD) {
+    const edges = [];
+    for (let i = 0; i < pts.length; i++)
+      for (let j = i + 1; j < pts.length; j++) {
+        const dx = pts[i].x - pts[j].x, dy = pts[i].y - pts[j].y;
+        const d = Math.hypot(dx, dy);
+        if (d < maxD) edges.push([i, j, d / maxD]);
+      }
+    return edges;
+  }
+
+  // ---- Renderer ------------------------------------------------------
+  const HOLO = [102, 230, 210];
+  const col = (a, rgb = HOLO) => `rgba(${rgb[0]},${rgb[1]},${rgb[2]},${a})`;
+
+  // State targets: overall energy, halo radius offset, halo speed.
+  const STATES = {
+    idle:      { energy: 0.60, halo: 1.00, spin: 0.15, eyes: 0.6 },
+    listening: { energy: 0.80, halo: 0.86, spin: 0.35, eyes: 1.0 },
+    thinking:  { energy: 0.65, halo: 1.10, spin: 1.60, eyes: 0.75 },
+    speaking:  { energy: 1.00, halo: 1.00, spin: 0.30, eyes: 0.9 }
+  };
+
+  function makeRenderer(canvas, opts) {
+    const ctx = canvas.getContext("2d");
+    const dpr = Math.min(devicePixelRatio || 1, 2);
+    const w = canvas.width, h = canvas.height;
+    canvas.style.width = w + "px";
+    canvas.width = w * dpr; canvas.height = h * dpr;
+    ctx.scale(dpr, dpr);
+
+    const pts = samplePoints(opts.count, opts.seed || 7);
+    const plexPts = pts.filter((_, i) => i % Math.ceil(pts.length / 150) === 0);
+    const edges = plexusEdges(plexPts, 26);
+    const contours = contourSegments(opts.thumb ? 7 : 5);
+    const scale = opts.scale, ox = w / 2, oy = h / 2 + (opts.thumb ? 26 : 10);
+
+    let mode = opts.mode, state = "idle";
+    const cur = { ...STATES.idle };
+    let blink = 1, nextBlink = 2.5, level = 0;
+
+    function frame(t) {
+      const s = STATES[state];
+      // ease current params toward state targets
+      for (const k in cur) cur[k] += (s[k] - cur[k]) * 0.04;
+      // voice level: synthetic modulation while speaking
+      const targetLevel = state === "speaking"
+        ? 0.55 + 0.45 * Math.abs(Math.sin(t * 6.3) * Math.sin(t * 2.1))
+        : 0;
+      level += (targetLevel - level) * 0.15;
+
+      // blink clock
+      if (t > nextBlink) { blink = 0; nextBlink = t + 2.2 + (Math.sin(t * 13.7) + 1) * 1.6; }
+      blink = Math.min(1, blink + 0.12);
+
+      const breathe = Math.sin(t * 0.9) * 2.2;
+      const E = cur.energy + level * 0.25;
+
+      ctx.clearRect(0, 0, w, h);
+      ctx.save();
+      ctx.translate(ox, oy + breathe * scale * 0.5);
+      ctx.scale(scale, scale);
+
+      // ambient glow behind figure
+      const glow = ctx.createRadialGradient(0, -60, 10, 0, -40, 190);
+      glow.addColorStop(0, col(0.10 * E));
+      glow.addColorStop(1, col(0));
+      ctx.fillStyle = glow;
+      ctx.fillRect(-190, -230, 380, 430);
+
+      const fade = y => y > 72 ? Math.max(0, 1 - (y - 72) / 90) : 1;   // dissolve at base
+
+      if (mode === "particles") {
+        for (const p of pts) {
+          const wob = Math.sin(t * p.sp + p.ph);
+          const x = p.x + wob * 1.6, y = p.y + Math.cos(t * p.sp * 0.7 + p.ph) * 1.2;
+          const twinkle = 0.6 + 0.4 * Math.sin(t * 2 + p.tw * 20);
+          let a = (p.face ? 0.9 : 0.5) * E * twinkle * fade(p.y);
+          ctx.fillStyle = col(a);
+          ctx.beginPath();
+          ctx.arc(x, y, p.r * (p.face ? 1.05 : 0.9), 0, 7);
+          ctx.fill();
+        }
+      } else if (mode === "plexus") {
+        ctx.lineWidth = 0.55;
+        for (const [i, j, d] of edges) {
+          const a = (1 - d) * 0.30 * E * fade((plexPts[i].y + plexPts[j].y) / 2);
+          ctx.strokeStyle = col(a);
+          ctx.beginPath();
+          ctx.moveTo(plexPts[i].x + Math.sin(t + plexPts[i].ph) * 1.4, plexPts[i].y);
+          ctx.lineTo(plexPts[j].x + Math.sin(t + plexPts[j].ph) * 1.4, plexPts[j].y);
+          ctx.stroke();
+        }
+        for (const p of plexPts) {
+          ctx.fillStyle = col((p.face ? 0.9 : 0.5) * E * fade(p.y));
+          ctx.beginPath();
+          ctx.arc(p.x + Math.sin(t + p.ph) * 1.4, p.y, 1.15, 0, 7);
+          ctx.fill();
+        }
+      } else { // contour
+        ctx.lineWidth = 1;
+        for (const sgm of contours) {
+          const shimmer = 0.55 + 0.45 * Math.sin(sgm.y * 0.16 - t * 2.4);
+          const a = 0.34 * E * shimmer * fade(sgm.y);
+          ctx.strokeStyle = col(a);
+          ctx.beginPath();
+          ctx.moveTo(sgm.x0, sgm.y + Math.sin(t * 0.8 + sgm.y * 0.05) * 0.8);
+          ctx.lineTo(sgm.x1, sgm.y + Math.sin(t * 0.8 + sgm.y * 0.05) * 0.8);
+          ctx.stroke();
+        }
+      }
+
+      // eyes — two soft slits; blink scales them shut
+      const eyeH = 2.1 * blink * (0.7 + cur.eyes * 0.5);
+      ctx.save();
+      ctx.shadowColor = col(0.9); ctx.shadowBlur = 10;
+      ctx.fillStyle = col(Math.min(1, 0.55 + cur.eyes * 0.45));
+      for (const ex of [-15, 15]) {
+        ctx.beginPath();
+        ctx.ellipse(ex, -84, 7.5, Math.max(0.4, eyeH), 0, 0, 7);
+        ctx.fill();
+      }
+      ctx.restore();
+
+      // voice resonance line at the collar while speaking
+      if (level > 0.02) {
+        ctx.strokeStyle = col(0.5 * level);
+        ctx.lineWidth = 1.2;
+        ctx.beginPath();
+        for (let x = -34; x <= 34; x += 2) {
+          const y = 6 - Math.sin((x + 34) / 68 * Math.PI) * Math.sin(t * 22 + x * 0.5) * 7 * level;
+          x === -34 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+        }
+        ctx.stroke();
+      }
+
+      // halo — two counter-rotating arcs behind the head
+      const hr = 84 * cur.halo + Math.sin(t * 2.2) * (state === "listening" ? 4 : 1.2);
+      ctx.lineWidth = 1.1;
+      for (const [dir, len, alpha] of [[1, 1.9, 0.5], [-1, 0.9, 0.3]]) {
+        const a0 = t * cur.spin * dir;
+        ctx.strokeStyle = col(alpha * E);
+        ctx.beginPath();
+        ctx.arc(0, -84, hr, a0, a0 + len);
+        ctx.stroke();
+      }
+      // halo ticks while thinking
+      if (state === "thinking") {
+        for (let i = 0; i < 12; i++) {
+          const a = t * cur.spin + i * Math.PI / 6;
+          const flick = Math.sin(t * 5 + i * 2.4) > 0.4 ? 0.8 : 0.15;
+          ctx.fillStyle = col(flick * E);
+          ctx.fillRect(Math.cos(a) * (hr + 7) - 1, -84 + Math.sin(a) * (hr + 7) - 1, 2, 2);
+        }
+      }
+
+      ctx.restore();
+    }
+
+    return {
+      frame,
+      setMode: m => { mode = m; },
+      setState: s => { state = s; }
+    };
+  }
+
+  // ---- Wire up -------------------------------------------------------
+  const hero = makeRenderer(document.getElementById("hero"),
+    { count: 1500, scale: 1.28, mode: "particles", seed: 7 });
+
+  const thumbs = [];
+  document.querySelectorAll(".variant").forEach(btn => {
+    const r = makeRenderer(btn.querySelector("canvas"),
+      { count: 380, scale: 0.52, mode: btn.dataset.mode, seed: 7, thumb: true });
+    thumbs.push(r);
+    btn.addEventListener("click", () => {
+      document.querySelectorAll(".variant").forEach(b => b.classList.toggle("on", b === btn));
+      hero.setMode(btn.dataset.mode);
+      document.getElementById("hudMode").textContent =
+        { particles: "particle field", plexus: "wireframe plexus", contour: "scanline contour" }[btn.dataset.mode];
+    });
+  });
+
+  document.querySelectorAll(".states button").forEach(btn => {
+    btn.addEventListener("click", () => {
+      document.querySelectorAll(".states button").forEach(b => b.classList.toggle("on", b === btn));
+      hero.setState(btn.dataset.state);
+      document.getElementById("hudState").textContent = btn.dataset.state;
+    });
+  });
+
+  let start;
+  function loop(ts) {
+    if (start === undefined) start = ts;
+    const t = (ts - start) / 1000;
+    hero.frame(t);
+    for (const th of thumbs) th.frame(t * 0.6);
+    if (!reduced) requestAnimationFrame(loop);
+  }
+  requestAnimationFrame(loop);
+})();
+</script>
