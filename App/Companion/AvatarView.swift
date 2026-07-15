@@ -3,6 +3,13 @@ import SceneKit
 import GLTFKit2
 import AitvarasCore
 
+/// SceneKit otherwise advertises an opaque backing layer even when its
+/// background color is clear, which prevents the desktop from showing
+/// through translucent room geometry.
+private final class TransparentSceneView: SCNView {
+    override var isOpaque: Bool { false }
+}
+
 /// Renders Aitvaras (D4): the user's Ready Player Me GLB when installed,
 /// otherwise a placeholder mannequin. Blink + jaw lip-sync via ARKit
 /// blendshapes; states drive subtle motion.
@@ -14,7 +21,10 @@ struct AvatarView: NSViewRepresentable {
     }
 
     func makeNSView(context: Context) -> SCNView {
-        let view = SCNView()
+        let view = TransparentSceneView()
+        view.wantsLayer = true
+        view.layer?.isOpaque = false
+        view.layer?.backgroundColor = NSColor.clear.cgColor
         view.backgroundColor = .clear
         view.antialiasingMode = .multisampling4X
         view.autoenablesDefaultLighting = false
@@ -100,18 +110,21 @@ final class AvatarController {
         let wall = SCNNode(geometry: SCNPlane(width: 3.4, height: 2.8))
         let wallMat = SCNMaterial()
         wallMat.diffuse.contents = Self.verticalGradientImage(
-            top: NSColor(calibratedRed: 0.34, green: 0.33, blue: 0.38, alpha: 1),
-            bottom: NSColor(calibratedRed: 0.22, green: 0.21, blue: 0.25, alpha: 1))
+            top: NSColor(calibratedRed: 0.50, green: 0.46, blue: 0.64, alpha: 1),
+            bottom: NSColor(calibratedRed: 0.32, green: 0.29, blue: 0.44, alpha: 1))
         wallMat.lightingModel = .constant
+        wallMat.transparency = 0.34
+        wallMat.blendMode = .alpha
         wall.geometry?.materials = [wallMat]
         wall.position = SCNVector3(0, 1.35, -0.72)
         room.addChildNode(wall)
 
         // Floor plane meeting the wall, warm wood tone.
         let floor = SCNNode(geometry: SCNPlane(width: 3.4, height: 1.4))
-        floor.geometry?.materials = [matte(NSColor(calibratedRed: 0.30, green: 0.24, blue: 0.19, alpha: 1))]
+        floor.geometry?.materials = [matte(NSColor(calibratedRed: 0.34, green: 0.29, blue: 0.25, alpha: 1))]
         floor.eulerAngles.x = -.pi / 2
         floor.position = SCNVector3(0, 0.0, -0.1)
+        floor.opacity = 0.68
         room.addChildNode(floor)
 
         // Warm interior fill so the scene is NEVER black regardless of
@@ -119,7 +132,7 @@ final class AvatarController {
         let lamp = SCNNode()
         lamp.light = SCNLight()
         lamp.light!.type = .omni
-        lamp.light!.intensity = 160
+        lamp.light!.intensity = 42
         lamp.light!.categoryBitMask = 1
         lamp.light!.color = NSColor(calibratedRed: 1.0, green: 0.9, blue: 0.75, alpha: 1)
         lamp.position = SCNVector3(-0.5, 1.9, 0.2)
@@ -162,6 +175,7 @@ final class AvatarController {
         windowMaterial.lightingModel = .constant
         window.geometry?.materials = [windowMaterial]
         window.position = SCNVector3(0.46, 1.56, -0.66)
+        window.opacity = 0.86
         room.addChildNode(window)
         // Frame bars so it reads as a window, not a glowing slab.
         for barY in [1.56] {
@@ -295,11 +309,28 @@ final class AvatarController {
         #pragma body
         float3 viewDirection = normalize(_surface.view);
         float rim = pow(1.0 - clamp(dot(_surface.normal, viewDirection), 0.0, 1.0), 2.6);
-        _output.color.rgb += float3(0.25, 0.85, 0.78) * rim * 0.22;
+        float3 shaded = _output.color.rgb * 0.75;
+        _output.color.rgb = (shaded / (float3(1.0) + shaded)) * 0.60;
+        float luminance = dot(_output.color.rgb, float3(0.2126, 0.7152, 0.0722));
+        _output.color.rgb = mix(float3(luminance), _output.color.rgb, 1.28);
+        _output.color.rgb += float3(0.25, 0.85, 0.78) * rim * 0.06;
+        """
+        let skinFragment = """
+        #pragma body
+        float3 viewDirection = normalize(_surface.view);
+        float rim = pow(1.0 - clamp(dot(_surface.normal, viewDirection), 0.0, 1.0), 2.6);
+        float3 shaded = _output.color.rgb * 0.75;
+        _output.color.rgb = (shaded / (float3(1.0) + shaded)) * 0.60;
+        float luminance = dot(_output.color.rgb, float3(0.2126, 0.7152, 0.0722));
+        _output.color.rgb = mix(float3(luminance), _output.color.rgb, 1.28)
+            * float3(0.78, 0.70, 0.66);
+        _output.color.rgb += float3(0.25, 0.85, 0.78) * rim * 0.035;
         """
         root.enumerateHierarchy { node, _ in
             for material in node.geometry?.materials ?? [] {
-                material.shaderModifiers = [.fragment: fragment]
+                let isSkin = material.name?.lowercased().contains("skin") == true
+                    || node.name?.lowercased().contains("head") == true
+                material.shaderModifiers = [.fragment: isSkin ? skinFragment : fragment]
             }
         }
     }
@@ -350,27 +381,30 @@ final class AvatarController {
         scene.lightingEnvironment.contents = Self.verticalGradientImage(
             top: NSColor(calibratedRed: 0.7, green: 0.75, blue: 0.85, alpha: 1),
             bottom: NSColor(calibratedRed: 0.25, green: 0.22, blue: 0.28, alpha: 1))
-        scene.lightingEnvironment.intensity = 0.45
+        scene.lightingEnvironment.intensity = 0.09
 
         let key = SCNNode()
         key.light = SCNLight()
-        key.light!.type = .directional
-        key.light!.intensity = 480
+        // A close omni fill gives the face a broad, soft falloff instead
+        // of the hard split produced by the old directional key.
+        key.light!.type = .omni
+        key.light!.intensity = 58
         key.light!.categoryBitMask = 1
-        key.eulerAngles = SCNVector3(-0.4, 0.5, 0)
+        key.light!.color = NSColor(calibratedRed: 1.0, green: 0.93, blue: 0.86, alpha: 1)
+        key.position = SCNVector3(-0.75, 1.75, 1.15)
         scene.rootNode.addChildNode(key)
 
         let ambient = SCNNode()
         ambient.light = SCNLight()
         ambient.light!.type = .ambient
-        ambient.light!.intensity = 260
+        ambient.light!.intensity = 82
         ambient.light!.categoryBitMask = 1
         scene.rootNode.addChildNode(ambient)
 
         let rim = SCNNode()
         rim.light = SCNLight()
         rim.light!.type = .directional
-        rim.light!.intensity = 300
+        rim.light!.intensity = 30
         rim.light!.categoryBitMask = 1
         rim.light!.color = NSColor(calibratedRed: 0.4, green: 0.9, blue: 0.82, alpha: 1)
         rim.eulerAngles = SCNVector3(0.3, .pi - 0.4, 0)
@@ -949,7 +983,7 @@ final class AvatarController {
     }
 
     private func installGLTF(_ asset: GLTFAsset) {
-        scene?.lightingEnvironment.intensity = 0.45   // dragon mode lowers it
+        scene?.lightingEnvironment.intensity = 0.09   // dragon mode lowers it
         let source = GLTFSCNSceneSource(asset: asset)
         guard let avatarScene = source.defaultScene else {
             installPlaceholder()
@@ -1034,7 +1068,7 @@ final class AvatarController {
         let height = maxVec.y - minVec.y
         let cameraNode = SCNNode()
         cameraNode.camera = SCNCamera()
-        cameraNode.camera!.fieldOfView = 30
+        cameraNode.camera!.fieldOfView = headBias ? 34 : 28
         // Human-scale scene in meters: the default zNear of 1.0 would
         // clip everything closer than 1m — i.e. the entire figure.
         cameraNode.camera!.zNear = 0.01
@@ -1053,6 +1087,9 @@ final class AvatarController {
             cameraNode.look(at: SCNVector3(0, centerY, 0))
         }
         scene.rootNode.addChildNode(cameraNode)
+        // Explicitly switch away from any camera embedded in the avatar
+        // asset. The tighter portrait camera should always win.
+        view?.pointOfView = cameraNode
     }
 
     private func addBreathing(to node: SCNNode) {

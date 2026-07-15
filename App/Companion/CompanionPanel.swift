@@ -16,7 +16,7 @@ final class CompanionPanelController {
 
     init(model: AppModel) {
         panel = KeyablePanel(
-            contentRect: NSRect(x: 0, y: 0, width: 240, height: 380),
+            contentRect: NSRect(x: 0, y: 0, width: 292, height: 390),
             styleMask: [.nonactivatingPanel, .fullSizeContentView, .borderless],
             backing: .buffered,
             defer: false)
@@ -25,7 +25,9 @@ final class CompanionPanelController {
         panel.isOpaque = false
         panel.backgroundColor = .clear
         panel.hasShadow = false
-        panel.isMovableByWindowBackground = true
+        // Window movement is handled only by the portrait's explicit
+        // WindowDragGesture. Interactive controls must never drag it.
+        panel.isMovableByWindowBackground = false
         panel.hidesOnDeactivate = false
         panel.becomesKeyOnlyIfNeeded = true
 
@@ -36,7 +38,7 @@ final class CompanionPanelController {
         if let screen = NSScreen.main {
             let frame = screen.visibleFrame
             panel.setFrameOrigin(NSPoint(
-                x: frame.maxX - 260,
+                x: frame.maxX - 312,
                 y: frame.minY + 24))
         }
     }
@@ -79,187 +81,190 @@ struct CompanionView: View {
     }
 
     var body: some View {
-        VStack(spacing: 8) {
-            if model.focusSessionActive {
-                Label("Focus session", systemImage: "moon.fill")
-                    .font(.caption2.weight(.medium))
-                    .foregroundStyle(.indigo)
-                    .padding(.horizontal, 8).padding(.vertical, 3)
-                    .background(Capsule().fill(.indigo.opacity(0.15)))
-                    .overlay(Capsule().strokeBorder(.indigo.opacity(0.4)))
-            }
-            if model.captureActive {
-                Label(model.capture?.scopeLabel ?? "Aufnahme", systemImage: "record.circle.fill")
-                    .font(.caption2.weight(.medium))
-                    .foregroundStyle(.red)
-                    .padding(.horizontal, 8).padding(.vertical, 3)
-                    .background(Capsule().fill(.red.opacity(0.15)))
-                    .overlay(Capsule().strokeBorder(.red.opacity(0.4)))
-                    .help("Capture läuft — Klick auf den Aufnahmeknopf beendet sie")
-            }
-
-            ZStack(alignment: .bottom) {
-                AvatarView()
-                    .frame(width: 220, height: 260)
-                    .background(
-                        RoundedRectangle(cornerRadius: 24)
-                            .fill(.black.opacity(0.35))
-                    )
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 24)
-                            .strokeBorder(stateColor.opacity(0.8), lineWidth: 1.5)
-                    )
-                    .clipShape(RoundedRectangle(cornerRadius: 24))
-
-                if !model.voiceSnapshot.userPartial.isEmpty && model.voiceEnabled {
-                    Text(model.voiceSnapshot.userPartial)
-                        .font(.caption)
-                        .lineLimit(2)
-                        .padding(6)
-                        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 8))
-                        .padding(8)
-                }
-            }
-
-            // Caption: what Aitvaras is saying, in text — always visible so
-            // it can be read when the volume is down or the room is muted.
-            if !model.voiceSnapshot.assistantText.isEmpty {
-                ScrollView {
-                    Text(model.voiceSnapshot.assistantText)
-                        .font(.callout)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .textSelection(.enabled)
-                }
-                .frame(maxHeight: 110)
-                .padding(8)
-                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 10))
-                .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(stateColor.opacity(0.4)))
-                .padding(.horizontal, 4)
-            }
-
-            HStack(spacing: 14) {
-                Button {
-                    model.toggleVoice()
-                } label: {
-                    Image(systemName: model.voiceEnabled ? "mic.fill" : "mic")
-                        .font(.title3)
-                        .foregroundStyle(model.voiceEnabled ? .red : .primary)
-                        .frame(width: 36, height: 36)
-                        .background(Circle().fill(.ultraThinMaterial))
-                }
-                .buttonStyle(.plain)
-                .help(model.voiceEnabled ? "Stop voice conversation" : "Start voice conversation")
-
-                Text(stateLabel)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .frame(minWidth: 60)
-
-                Button {
-                    let current = UserDefaults.standard.string(forKey: "voice.locale") ?? "en-US"
-                    model.setVoiceLanguage(current.hasPrefix("en") ? "de-DE" : "en-US")
-                    languageRefresh.toggle()
-                } label: {
-                    Text((UserDefaults.standard.string(forKey: "voice.locale") ?? "en-US").hasPrefix("en") ? "EN" : "DE")
-                        .font(.caption.weight(.semibold).monospaced())
-                        .frame(width: 36, height: 36)
-                        .background(Circle().fill(.ultraThinMaterial))
-                }
-                .buttonStyle(.plain)
-                .help("Speech recognition language (tap to switch)")
-                .id(languageRefresh)
-
-                if model.integrations?.focusCoach?.isEnabled == true {
-                    Button {
-                        model.toggleFocusSession()
-                    } label: {
-                        Image(systemName: model.focusSessionActive ? "moon.fill" : "moon")
-                            .foregroundStyle(model.focusSessionActive ? .indigo : .primary)
-                            .frame(width: 36, height: 36)
-                            .background(Circle().fill(.ultraThinMaterial))
-                    }
-                    .buttonStyle(.plain)
-                    .help(model.focusSessionActive ? "End focus session" : "Start focus session")
-                }
-
-                Button {
-                    model.toggleCapture()
-                } label: {
-                    Image(systemName: model.captureActive ? "record.circle.fill" : "record.circle")
-                        .foregroundStyle(model.captureActive ? .red : .primary)
-                        .frame(width: 36, height: 36)
-                        .background(Circle().fill(.ultraThinMaterial))
-                }
-                .buttonStyle(.plain)
-                .help(model.captureActive
-                    ? "Aufnahme beenden (Zusammenfassung wird erstellt)"
-                    : "Aufnahme starten (Meeting/Vorlesung/Video transkribieren)")
-
-                Button {
-                    openWindow(id: "main")
-                    NSApp.activate()
-                } label: {
-                    Image(systemName: "rectangle.expand.diagonal")
-                        .frame(width: 36, height: 36)
-                        .background(Circle().fill(.ultraThinMaterial))
-                }
-                .buttonStyle(.plain)
-                .help("Open Aitvaras")
-            }
-            .opacity(controlsVisible ? 1 : 0)
-            .allowsHitTesting(controlsVisible)
-
-            // Typed prompts, spoken answers — for when the mic is not an
-            // option (working with others around). ⌥Space double-tap
-            // focuses this field.
-            TextField("Type to Aitvaras…", text: $typedPrompt)
-                .textFieldStyle(.plain)
-                .font(.callout)
-                .focused($promptFocused)
-                .onSubmit {
-                    model.askCompanion(typedPrompt)
-                    typedPrompt = ""
-                }
-                .padding(.horizontal, 10)
-                .padding(.vertical, 6)
-                .background(RoundedRectangle(cornerRadius: 8).fill(.ultraThinMaterial))
-                .padding(.horizontal, 4)
-                .onChange(of: model.companionFocusRequest) {
-                    promptFocused = true
-                }
+        VStack(spacing: 0) {
+            topControls
+                .frame(height: 42)
                 .opacity(controlsVisible ? 1 : 0)
                 .allowsHitTesting(controlsVisible)
 
+            AvatarView()
+                .frame(width: 272, height: 282)
+                .background(.clear)
+                .glassEffect(.clear.tint(.black.opacity(0.08)),
+                             in: RoundedRectangle(cornerRadius: 20))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 20)
+                        .strokeBorder(stateColor.opacity(0.42), lineWidth: 0.8)
+                )
+                .clipShape(RoundedRectangle(cornerRadius: 20))
+                .gesture(WindowDragGesture())
+
+            bottomControls
+                .frame(height: 44)
+                .opacity(controlsVisible ? 1 : 0)
+                .allowsHitTesting(controlsVisible)
+        }
+        .padding(6)
+        .glassEffect(
+            controlsVisible
+                ? .clear.tint(.black.opacity(0.22)).interactive()
+                : .identity,
+            in: RoundedRectangle(cornerRadius: 27)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 27)
+                .strokeBorder(.white.opacity(controlsVisible ? 0.22 : 0), lineWidth: 0.8)
+        )
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+        .onHover { hovering = $0 }
+        .animation(.easeInOut(duration: 0.18), value: controlsVisible)
+    }
+
+    /// The upper rail contains every mode/action button. It is part of the
+    /// same glass frame as the portrait, rather than a floating toolbar.
+    private var topControls: some View {
+        HStack(spacing: 7) {
+            Button {
+                model.toggleVoice()
+            } label: {
+                Image(systemName: model.voiceEnabled ? "mic.fill" : "mic")
+                    .font(.body.weight(.medium))
+                    .foregroundStyle(model.voiceEnabled ? .red : .white.opacity(0.92))
+                    .frame(width: 30, height: 30)
+                    .background(controlSurface)
+            }
+            .buttonStyle(.plain)
+            .help(model.voiceEnabled ? "Stop voice conversation" : "Start voice conversation")
+
+            Button {
+                let current = UserDefaults.standard.string(forKey: "voice.locale") ?? "en-US"
+                model.setVoiceLanguage(current.hasPrefix("en") ? "de-DE" : "en-US")
+                languageRefresh.toggle()
+            } label: {
+                Text((UserDefaults.standard.string(forKey: "voice.locale") ?? "en-US").hasPrefix("en") ? "EN" : "DE")
+                    .font(.caption2.weight(.bold).monospaced())
+                    .foregroundStyle(.white.opacity(0.92))
+                    .frame(width: 30, height: 30)
+                    .background(controlSurface)
+            }
+            .buttonStyle(.plain)
+            .help("Speech recognition language (tap to switch)")
+            .id(languageRefresh)
+
+            if model.integrations?.focusCoach?.isEnabled == true {
+                Button {
+                    model.toggleFocusSession()
+                } label: {
+                    Image(systemName: model.focusSessionActive ? "moon.fill" : "moon")
+                        .foregroundStyle(model.focusSessionActive ? .purple : .white.opacity(0.92))
+                        .frame(width: 30, height: 30)
+                        .background(controlSurface)
+                }
+                .buttonStyle(.plain)
+                .help(model.focusSessionActive ? "End focus session" : "Start focus session")
+            }
+
+            Button {
+                model.toggleCapture()
+            } label: {
+                Image(systemName: model.captureActive ? "record.circle.fill" : "record.circle")
+                    .foregroundStyle(model.captureActive ? .red : .white.opacity(0.92))
+                    .frame(width: 30, height: 30)
+                    .background(controlSurface)
+            }
+            .buttonStyle(.plain)
+            .help(model.captureActive
+                ? "Aufnahme beenden (Zusammenfassung wird erstellt)"
+                : "Aufnahme starten (Meeting/Vorlesung/Video transkribieren)")
+
+            Spacer(minLength: 8)
+
+            Button {
+                openWindow(id: "main")
+                NSApp.activate()
+            } label: {
+                Image(systemName: "rectangle.expand.diagonal")
+                    .foregroundStyle(.white.opacity(0.92))
+                    .frame(width: 30, height: 30)
+                    .background(controlSurface)
+            }
+            .buttonStyle(.plain)
+            .help("Open Aitvaras")
+        }
+        .padding(.horizontal, 8)
+    }
+
+    /// Prompt and volume share a single lower rail. Voice status and
+    /// transcript text surface as the prompt placeholder, never as a
+    /// detached bubble over the character.
+    private var bottomControls: some View {
+        HStack(spacing: 8) {
             HStack(spacing: 6) {
-                Image(systemName: "speaker.wave.1")
+                TextField(promptPlaceholder, text: $typedPrompt)
+                    .textFieldStyle(.plain)
+                    .font(.caption)
+                    .foregroundStyle(.white.opacity(0.94))
+                    .tint(.white)
+                    .focused($promptFocused)
+                    .onSubmit(sendTypedPrompt)
+
+                Button(action: sendTypedPrompt) {
+                    Image(systemName: "arrow.up.circle.fill")
+                        .font(.body)
+                        .foregroundStyle(.white.opacity(0.9))
+                }
+                .buttonStyle(.plain)
+                .disabled(typedPrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+            .padding(.horizontal, 9)
+            .frame(height: 30)
+            .background(.black.opacity(0.42), in: RoundedRectangle(cornerRadius: 9))
+            .overlay(RoundedRectangle(cornerRadius: 9).strokeBorder(.white.opacity(0.18)))
+            .onChange(of: model.companionFocusRequest) {
+                promptFocused = true
+            }
+
+            HStack(spacing: 6) {
+                Image(systemName: volume < 0.01 ? "speaker.slash.fill" : "speaker.wave.2.fill")
                     .font(.caption2)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.white.opacity(0.86))
+
                 Slider(value: $volume, in: 0...2) { editing in
                     if !editing { VoiceVolume.gain = Float(volume) }
                 }
                 .controlSize(.mini)
-                .frame(width: 110)
-                Image(systemName: "speaker.wave.3")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
+                .frame(width: 48)
             }
-            .padding(.bottom, 4)
-            .opacity(controlsVisible ? 1 : 0)
-            .allowsHitTesting(controlsVisible)
-
-            if let message = model.voiceSnapshot.errorMessage ?? model.voiceSnapshot.statusMessage {
-                Text(message)
-                    .font(.caption2)
-                    .foregroundStyle(model.voiceSnapshot.errorMessage != nil ? .red : .secondary)
-                    .multilineTextAlignment(.center)
-                    .lineLimit(4)
-                    .padding(6)
-                    .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 8))
-            }
+            .padding(.horizontal, 8)
+            .frame(height: 30)
+            .background(controlSurface)
         }
-        .padding(8)
-        .onHover { hovering = $0 }
-        .animation(.easeInOut(duration: 0.18), value: controlsVisible)
+        .padding(.horizontal, 8)
+    }
+
+    private var controlSurface: some View {
+        RoundedRectangle(cornerRadius: 9)
+            .fill(.black.opacity(0.42))
+            .overlay(RoundedRectangle(cornerRadius: 9).strokeBorder(.white.opacity(0.18)))
+    }
+
+    private var promptPlaceholder: String {
+        if let error = model.voiceSnapshot.errorMessage, !error.isEmpty { return error }
+        if let status = model.voiceSnapshot.statusMessage, !status.isEmpty { return status }
+        if model.voiceEnabled, !model.voiceSnapshot.userPartial.isEmpty {
+            return model.voiceSnapshot.userPartial
+        }
+        if !model.voiceSnapshot.assistantText.isEmpty {
+            return model.voiceSnapshot.assistantText
+        }
+        return "Type to Aitvaras…"
+    }
+
+    private func sendTypedPrompt() {
+        let prompt = typedPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !prompt.isEmpty else { return }
+        model.askCompanion(prompt)
+        typedPrompt = ""
     }
 
     private var stateColor: Color {
@@ -271,12 +276,4 @@ struct CompanionView: View {
         }
     }
 
-    private var stateLabel: String {
-        switch model.characterState {
-        case .idle: "idle"
-        case .listening: "listening…"
-        case .thinking: "thinking…"
-        case .speaking: "speaking"
-        }
-    }
 }

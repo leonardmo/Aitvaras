@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 enum SidebarItem: String, CaseIterable, Identifiable {
     case chat = "Chat"
@@ -33,6 +34,9 @@ struct MainWindow: View {
             List(SidebarItem.allCases, selection: $selection) { item in
                 Label(item.rawValue, systemImage: item.icon).tag(item)
             }
+            .listStyle(.sidebar)
+            .scrollContentBackground(.hidden)
+            .background(.clear)
             .navigationSplitViewColumnWidth(min: 170, ideal: 190)
             .safeAreaInset(edge: .bottom) {
                 statusFooter
@@ -46,6 +50,20 @@ struct MainWindow: View {
             case .activity: ActivityView()
             case .connectors: ConnectorsView()
             case .setup: OnboardingView()
+            }
+        }
+        .containerBackground(for: .window) {
+            ZStack {
+                Color(nsColor: .windowBackgroundColor)
+                LinearGradient(
+                    colors: [
+                        Color.accentColor.opacity(0.08),
+                        .clear,
+                        Color.indigo.opacity(0.035)
+                    ],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                )
             }
         }
         .alert("Aitvaras could not start", isPresented: .constant(model.bootError != nil)) {
@@ -65,7 +83,10 @@ struct MainWindow: View {
                 .foregroundStyle(.secondary)
             Spacer()
         }
-        .padding(10)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 7)
+        .glassEffect(.clear.tint(Color.accentColor.opacity(0.06)), in: Capsule())
+        .padding(8)
     }
 
     private var engineLabel: String {
