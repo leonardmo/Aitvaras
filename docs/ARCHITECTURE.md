@@ -46,7 +46,7 @@ Package.swift              — AitvarasKit: everything testable without the app
 ## Key mechanics
 
 - **AgentCore** runs the tool-use loop: user/voice/event input → context assembly (RAG retrieve + memories + activity) → model streams → typed tool calls into ConnectorHub → results back into the loop. Model choice per step: 4B/AppleFM for routing & triage, 30B for reasoning & conversation.
-- **Connectors** expose *typed* tools with declared risk levels (`read` / `reversibleWrite` / `confirmable`). AgentCore enforces D13 autonomy rules centrally — a connector can never bypass confirmation.
+- **Connectors** expose *typed* tools with declared risk levels (`read` / `reversibleWrite` / `confirmable`). AgentCore enforces D13 autonomy rules centrally; a connector can never bypass confirmation.
 - **Events** (new mail, Moodle deadline, homelab alert) enter the same loop as user messages, tagged with provenance that follows every downstream action into the activity log.
 - **VoicePipeline**: AVAudioEngine voice-processing I/O (echo cancellation) → SpeechAnalyzer streaming partials → end-of-turn VAD → agent streams → sentence-chunked TTS with barge-in cancellation.
 - **Character states** (idle / listening / thinking / speaking, plus mood accents) are driven by a small state machine observing AgentCore + VoicePipeline; RealityKit animations subscribe to it.

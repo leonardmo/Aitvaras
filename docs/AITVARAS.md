@@ -1,4 +1,4 @@
-# Warum „Aitvaras"? — Namensforschung (2026-07-13)
+# Warum „Aitvaras"?: Namensforschung (2026-07-13)
 
 > Ergebnis: Der lokale KI-Assistent heißt **Aitvaras**, nach dem litauischen
 > Hausdrachen und Schutzgeist. Der Name verbindet die Rolle des Assistenten,

@@ -3,19 +3,19 @@
 The guiding thesis (user, 2026-07-07): *the more Aitvaras knows about the
 day and the more signals she gets, the more useful she is.* Everything is
 local, so richer context is a feature, not a privacy cost. The bar: each
-signal must change a **decision** Aitvaras makes, not just be displayed.
+signal must change a **decision** Aitvaras makes rather than only being displayed.
 
-## Tier 1 — high leverage, clearly useful
+## Tier 1: high impact, clearly useful
 
 ### Context/presence engine (the backbone)
 A single `Context` the agent always sees: time, day-of-week, calendar
 state (in a meeting? free?), focus-session state, location label, network
 (home/uni/eduroam SSID), battery/power, recent activity. Most features
-below are just *consumers* of this context. Build this first — it's the
+below are just *consumers* of this context. Build this first; it's the
 multiplier.
 
-- **Location by meaning, not coordinates.** The useful signal isn't
-  lat/long, it's "at university" vs "home" vs "out". Cheapest reliable
+- **Location by meaning, not coordinates.** The useful signal is "at university" vs "home" vs "out", not
+  raw coordinates. Cheapest reliable
   source on macOS: **Wi-Fi SSID** (no permission prompt, instant) mapped
   to named places the user defines once ("eduroam → University"). Add
   CoreLocation later only if SSID is insufficient. This directly changes
@@ -40,7 +40,7 @@ Aitvaras has a memory store but barely writes to it. Let the background model
 24", "you prefer 50-min focus blocks", "Anna = study partner"), user
 approves. Feeds every future decision. Highest long-term payoff.
 
-## Tier 2 — useful once Tier 1 exists
+## Tier 2: useful once Tier 1 exists
 
 - **Commute / "leave now".** Calendar event with a location + travel time
   → a heads-up to leave. Needs a maps/travel-time source; the *decision*
@@ -53,10 +53,10 @@ approves. Feeds every future decision. Highest long-term payoff.
   "what's due and how close" view, surfaced proactively as things
   approach rather than only when asked.
 
-## Tier 3 — bigger builds / higher risk
+## Tier 3: bigger builds / higher risk
 
 - **Messenger bridge (WhatsApp/Signal via whatsmeow).** The one real gap
-  in "lunch invite from a friend" — notification-reading covers banners,
+  in "lunch invite from a friend": notification-reading covers banners,
   but true message access + replies needs a bridge. ToS-grey, separate
   project.
 - **Screen/document awareness.** "What am I looking at" via periodic OCR
@@ -72,7 +72,7 @@ approves. Feeds every future decision. Highest long-term payoff.
   save a real action, it's noise.
 
 ## Ordering
-1. Context/presence engine (SSID location + calendar state) — unlocks the rest.
-2. Morning brief + memory proposals — immediate daily value.
-3. Leave-now / decision-shaped weather — once context exists.
-4. Deadline radar, messenger bridge, screen awareness — later.
+1. Context/presence engine (SSID location + calendar state): unlocks the rest.
+2. Morning brief + memory proposals: immediate daily value.
+3. Leave-now / decision-shaped weather: once context exists.
+4. Deadline radar, messenger bridge, screen awareness: later.
