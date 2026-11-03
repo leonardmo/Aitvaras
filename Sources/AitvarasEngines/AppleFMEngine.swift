@@ -49,6 +49,14 @@ public actor AppleFMEngine: InferenceEngine {
                         }
                         previous = full
                     }
+                    // Foundation Models exposes no tokenizer count through
+                    // this API. Keep usage visible but label it estimated.
+                    continuation.yield(.usage(InferenceUsage(
+                        inputTokens: Self.estimatedTokens(
+                            instructions + "\n" + prompt),
+                        outputTokens: Self.estimatedTokens(previous),
+                        isEstimated: true,
+                        modelIdentifier: "apple-fm")))
                     continuation.yield(.done(stopReason: .endOfTurn))
                     continuation.finish()
                 } catch is CancellationError {
@@ -60,5 +68,10 @@ public actor AppleFMEngine: InferenceEngine {
             }
             continuation.onTermination = { _ in task.cancel() }
         }
+    }
+
+    private static func estimatedTokens(_ text: String) -> Int {
+        guard !text.isEmpty else { return 0 }
+        return max(1, Int(ceil(Double(text.utf8.count) / 4.0)))
     }
 }

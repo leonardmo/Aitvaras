@@ -24,7 +24,7 @@ enum AvatarShot {
     /// `<path>` and `<path>2.png`, then exit. Proves baked clips play.
     @MainActor
     static func runLive(path: String) async -> Never {
-        let view = SCNView(frame: NSRect(x: 0, y: 0, width: 440, height: 520))
+        let view = TransparentSceneView(frame: NSRect(x: 0, y: 0, width: 440, height: 520))
         let controller = AvatarController()
         controller.attach(to: view)
         // Optional forced state/mouth for previewing speaking poses.
@@ -55,16 +55,17 @@ enum AvatarShot {
                   let png = rep.representation(using: .png, properties: [:]) else { return }
             try? png.write(to: URL(fileURLWithPath: p))
         }
-        let bone = controller.scene?.rootNode.childNode(withName: "Bip001_Head_011", recursively: true)
-        func boneReport(_ tag: String) {
-            guard let bone else { print("[liveshot] bone NOT FOUND"); return }
-            let p = bone.presentation.worldPosition
-            print("[liveshot] \(tag) head bone at (\(p.x), \(p.y), \(p.z))")
+        func headReport(_ tag: String) {
+            guard let p = controller.diagnosticHeadPosition() else {
+                print("[liveshot] \(tag) head not ready")
+                return
+            }
+            print("[liveshot] \(tag) head at (\(p.x), \(p.y), \(p.z))")
         }
-        boneReport("t0")
+        headReport("t0")
         save(view.snapshot(), path)
         try? await Task.sleep(for: .seconds(3))
-        boneReport("t3")
+        headReport("t3")
         save(view.snapshot(), path.replacingOccurrences(of: ".png", with: "2.png"))
         print("[liveshot] wrote \(path) (+2)")
         exit(0)
@@ -79,6 +80,7 @@ enum AvatarShot {
 
         // Give async GLB loading / scene setup a moment.
         try? await Task.sleep(for: .seconds(2))
+        controller.diagnosticApplyStaticPose(state: .listening, mouth: 0)
 
         guard let scene = controller.scene,
               let device = MTLCreateSystemDefaultDevice() else {

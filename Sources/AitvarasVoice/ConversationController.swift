@@ -3,7 +3,9 @@ import Foundation
 import AitvarasCore
 
 public enum VoicePhase: String, Sendable {
-    case idle, listening, thinking, speaking
+    /// A committed utterance is being checked for a deterministic local route.
+    /// The avatar remains neutral; only `.modelThinking` may enter `thinking`.
+    case idle, listening, routing, thinking, speaking
 }
 
 /// UI-facing state of the voice conversation — drives both the voice
@@ -23,6 +25,9 @@ public struct VoiceSnapshot: Sendable, Equatable {
 /// A reply stream element from the agent (adapter type so AitvarasVoice
 /// doesn't depend on AitvarasAgent).
 public enum VoiceReply: Sendable {
+    /// The response will use an inference engine. Deterministic replies omit
+    /// this marker so the avatar never falsely presents model thinking.
+    case modelThinking
     case delta(String)
     case done
 }
@@ -64,7 +69,7 @@ public actor ConversationController {
 
     /// Silence after the last (partial) result before we commit the turn.
     /// Below ~1.1s natural mid-sentence pauses cause premature commits
-    /// (observed live: "Hi Naom" → commit → barge-in → recommit).
+    /// (observed live: a partial greeting → commit → barge-in → recommit).
     private let endOfTurnSilence: TimeInterval = 1.2
     /// Volatile text length that triggers barge-in while she speaks.
     private let bargeInThreshold = 10
@@ -82,14 +87,25 @@ public actor ConversationController {
     // MARK: State publishing
 
     public func states() -> AsyncStream<VoiceSnapshot> {
-        AsyncStream { continuation in
-            let id = UUID()
-            stateContinuations[id] = continuation
-            continuation.yield(snapshot)
-            continuation.onTermination = { _ in
-                Task { await self.removeContinuation(id) }
-            }
+        let pair = Self.makeStateStream()
+        let id = UUID()
+        stateContinuations[id] = pair.continuation
+        pair.continuation.yield(snapshot)
+        pair.continuation.onTermination = { _ in
+            Task { await self.removeContinuation(id) }
         }
+        return pair.stream
+    }
+
+    /// Snapshots replace one another; retaining more than the newest state
+    /// only queues increasingly large transcript copies behind a slow UI.
+    static func makeStateStream() -> (
+        stream: AsyncStream<VoiceSnapshot>,
+        continuation: AsyncStream<VoiceSnapshot>.Continuation
+    ) {
+        AsyncStream.makeStream(
+            of: VoiceSnapshot.self,
+            bufferingPolicy: .bufferingNewest(1))
     }
 
     private func removeContinuation(_ id: UUID) {
@@ -135,7 +151,9 @@ public actor ConversationController {
             }
         }
 
-        let mic = MicCapture()
+        let mic = MicCapture { [weak self] message in
+            Task { await self?.microphoneFailed(message) }
+        }
         let transcriber = TranscriberSession()
         self.mic = mic
         self.transcriber = transcriber
@@ -183,6 +201,7 @@ public actor ConversationController {
 
     public func stop() async {
         turnTask?.cancel(); turnTask = nil
+        cancelAnnouncements()
         tts.stop()
         await stopListeningHardware()
         publish { $0.phase = .idle; $0.mouthLevel = 0 }
@@ -206,6 +225,12 @@ public actor ConversationController {
 
     private func fail(_ message: String) {
         publish { $0.errorMessage = message }
+    }
+
+    private func microphoneFailed(_ message: String) async {
+        guard mic != nil else { return }
+        fail(message)
+        await stop()
     }
 
     // MARK: Turn handling
@@ -260,7 +285,7 @@ public actor ConversationController {
         let bargeInAllowed = snapshot.phase == .thinking
             || (snapshot.phase == .speaking && headphonesActive)
         if bargeInAllowed, combined.count >= bargeInThreshold {
-            VoiceLog.log("turn: barge-in with \"\(combined)\"")
+            VoiceLog.log("turn: barge-in (\(combined.count) chars)")
             bargeIn()
         }
     }
@@ -295,6 +320,7 @@ public actor ConversationController {
     private func bargeIn() {
         turnTask?.cancel()
         turnTask = nil
+        interruptAnnouncements(clearQueue: false)
         tts.stop()
         let nextPhase: VoicePhase = mic == nil ? .idle : .listening
         publish { $0.phase = nextPhase; $0.assistantText = ""; $0.mouthLevel = 0 }
@@ -315,12 +341,12 @@ public actor ConversationController {
         volatileTail = ""
         lastCommittedText = combined
         publish { $0.userPartial = combined; $0.assistantText = "" }
-        VoiceLog.log("turn: committing \"\(combined)\"")
+        VoiceLog.log("turn: committing (\(combined.count) chars)")
         runTurn(with: combined)
     }
 
     private func runTurn(with text: String) {
-        publish { $0.phase = .thinking }
+        publish { $0.phase = .routing }
         let priorHistory = history
         history.append(ChatMessage(role: .user, content: text))
 
@@ -336,6 +362,8 @@ public actor ConversationController {
             for await reply in replies {
                 if Task.isCancelled { return }
                 switch reply {
+                case .modelThinking:
+                    await self.setPhase(.thinking)
                 case .delta(let delta):
                     if !firstDeltaLogged {
                         firstDeltaLogged = true
@@ -390,15 +418,35 @@ public actor ConversationController {
     private func completeTurn(response: String) {
         history.append(ChatMessage(role: .assistant, content: response))
         if history.count > 24 { history.removeFirst(history.count - 24) }
+        // A completed Task handle is still non-nil. Clear it before returning
+        // to idle/listening so proactive announcements are not mistaken for
+        // attempts to talk over a user turn forever after the first reply.
+        turnTask = nil
         lastInteractionAt = .now
         // Typed-only usage has no mic session — return to idle, not to
         // a listening state that isn't real.
         setPhase(mic == nil ? .idle : .listening)
         publish { $0.userPartial = ""; $0.mouthLevel = 0 }
+        if !announcementQueue.isEmpty {
+            Task { [weak self] in await self?.drainAnnouncements() }
+        }
     }
 
     private var announcementQueue: [String] = []
     private var announcing = false
+    /// Incremented on stop/barge-in so a re-entrant `announce` invocation
+    /// cannot resume after `tts.speak` and continue an obsolete queue.
+    private var announcementGeneration = 0
+
+    private func cancelAnnouncements() {
+        interruptAnnouncements(clearQueue: true)
+    }
+
+    private func interruptAnnouncements(clearQueue: Bool) {
+        announcementGeneration &+= 1
+        if clearQueue { announcementQueue.removeAll() }
+        announcing = false
+    }
 
     /// Proactive speech Aitvaras initiates (break reminder, drift nudge,
     /// urgent message) — spoken aloud with a visible caption, no mic
@@ -408,13 +456,28 @@ public actor ConversationController {
     public func announce(_ text: String) async {
         let clean = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !clean.isEmpty else { return }
-        if turnTask != nil { return }   // user turn in progress
-        publish { $0.assistantText = clean }
         announcementQueue.append(clean)
-        if announcing { return }
+        // A user turn owns the voice and caption. Keep the update queued and
+        // drain it from completeTurn instead of silently dropping it.
+        guard turnTask == nil else { return }
+        await drainAnnouncements()
+    }
+
+    /// User-controlled stop for long-form narration such as the News reader.
+    /// Unlike `stop()`, this leaves an active microphone session intact.
+    public func stopAnnouncement() {
+        interruptAnnouncements(clearQueue: true)
+        tts.stop()
+        setPhase(mic == nil ? .idle : .listening)
+        publish { $0.mouthLevel = 0; $0.assistantText = "" }
+    }
+
+    private func drainAnnouncements() async {
+        guard turnTask == nil, !announcing, !announcementQueue.isEmpty else { return }
 
         announcing = true
-        while !announcementQueue.isEmpty {
+        let generation = announcementGeneration
+        while generation == announcementGeneration, !announcementQueue.isEmpty {
             let next = announcementQueue.removeFirst()
             publish { $0.assistantText = next }
             setPhase(.speaking)
@@ -422,10 +485,13 @@ public actor ConversationController {
             while let sentence = Self.extractSentence(from: &buffer) {
                 let spoken = Self.sanitizeForSpeech(sentence)
                 if !spoken.isEmpty { await tts.speak(spoken, languageCode: nil) }
+                guard generation == announcementGeneration else { return }
             }
             let rest = Self.sanitizeForSpeech(buffer)
             if !rest.isEmpty { await tts.speak(rest, languageCode: nil) }
+            guard generation == announcementGeneration else { return }
         }
+        guard generation == announcementGeneration else { return }
         announcing = false
         setPhase(mic == nil ? .idle : .listening)
         publish { $0.mouthLevel = 0 }
@@ -437,9 +503,11 @@ public actor ConversationController {
     public func submitTyped(_ text: String) async {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
-        if snapshot.phase == .thinking || snapshot.phase == .speaking {
+        if snapshot.phase == .routing || snapshot.phase == .thinking
+            || snapshot.phase == .speaking {
             turnTask?.cancel()
             turnTask = nil
+            interruptAnnouncements(clearQueue: false)
             tts.stop()
         }
         if mic != nil {
@@ -449,7 +517,7 @@ public actor ConversationController {
         lastCommittedText = trimmed
         lastInteractionAt = .now
         publish { $0.userPartial = trimmed; $0.assistantText = ""; $0.errorMessage = nil }
-        VoiceLog.log("turn: typed \"\(trimmed)\"")
+        VoiceLog.log("turn: typed input (\(trimmed.count) chars)")
         runTurn(with: trimmed)
     }
 

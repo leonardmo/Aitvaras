@@ -1,64 +1,85 @@
 import Foundation
+import AppKit
 import UserNotifications
 import AitvarasCore
 import AitvarasStore
 
-/// Single gate for every proactive thing Aitvaras says (mail triage,
-/// trigger events, focus nudges, break reminders). When the user is at
-/// the Mac, Aitvaras APPEARS and SPEAKS with a visible caption (embodied,
-/// not a system notification). Only when the user is away does this fall
-/// back to a macOS notification. Focus mode holds non-urgent updates
-/// until the next break; urgent items punch through immediately.
+/// Quiet, private-safe delivery. Routine updates remain inside the app;
+/// explicitly enabled urgent updates may produce a generic system alert.
 @MainActor
 final class NotificationRouter {
     private let stores: Stores
-    private struct Held { let title: String; let body: String; let at: Date }
-    private var held: [Held] = []
 
     /// Embodied announcement — show Aitvaras, speak, caption. Set by the app.
     var announce: ((_ text: String) -> Void)?
+    var reportError: ((_ title: String, _ error: Error) -> Void)?
 
     init(stores: Stores) {
         self.stores = stores
     }
 
+    /// No permission request and no sensitive preview. Only a failure of work
+    /// the user requested (or capture data-loss risk) calls this path.
+    static func requestedWorkNeedsAttention() {
+        guard !NSApplication.shared.isActive else { return }
+        Task {
+            let center = UNUserNotificationCenter.current()
+            let settings = await center.notificationSettings()
+            guard settings.authorizationStatus == .authorized || settings.authorizationStatus == .provisional else { return }
+            let content = UNMutableNotificationContent()
+            content.title = "Aitvaras needs your attention"
+            content.body = "A requested action could not finish. Open Aitvaras to review it."
+            try? await center.add(UNNotificationRequest(identifier: "requested-work-needs-attention", content: content, trigger: nil))
+        }
+    }
+
     /// Non-urgent notifications hold while a Focus Session is running
     /// (single source of truth — was a separate "focus mode" flag).
-    var focusModeActive: Bool {
-        (try? stores.value(forKey: FocusCoach.sessionKey)) == "1"
+    private func focusModeActive() throws -> Bool {
+        try stores.value(forKey: FocusCoach.sessionKey) == "1"
     }
 
     /// Route a message. `urgent` bypasses the focus hold.
     func deliver(title: String, body: String, urgent: Bool = false) {
-        if urgent || !focusModeActive {
+        if urgent {
             surface(title: title, body: body, urgent: urgent)
-        } else {
-            held.append(Held(title: title, body: body, at: .now))
-            try? stores.record(ActivityEvent(
+            return
+        }
+        do {
+            let held = HeldNotification(title: title, body: body)
+            try stores.holdNotification(held, recording: ActivityEvent(
                 kind: .notificationSent, connectorID: "focus",
-                summary: "Held for break: \(title)"))
+                summary: "Update available inside Aitvaras"))
+        } catch {
+            reportError?("Update could not be held for the next break", error)
+            // Storage failure must degrade to immediate delivery, never loss.
+            surface(title: title, body: body, urgent: false)
         }
     }
 
-    /// Remove and return held items (the caller composes a briefing).
-    func takeHeld() -> [(title: String, body: String)] {
-        let items = held.map { ($0.title, $0.body) }
-        held.removeAll()
-        return items
+    /// Read without deleting: the caller may spend time composing a briefing.
+    func heldItems() -> [HeldNotification] {
+        do {
+            return try stores.heldNotifications()
+        } catch {
+            reportError?("Held updates could not be loaded", error)
+            return []
+        }
     }
 
-    var heldCount: Int { held.count }
+    func markDelivered(_ items: [HeldNotification]) {
+        do {
+            try stores.clearHeldNotifications(ids: items.map(\.id))
+        } catch {
+            // Retaining them can duplicate a later briefing, but cannot lose it.
+            reportError?("Delivered updates could not be cleared", error)
+        }
+    }
 
-    /// Deliver everything held back — simple fallback path.
+    /// Compatibility hook for old break/wake paths. Held updates stay available
+    /// in Home until reviewed; a wake must not requeue, speak or discard them.
     func flushHeld(reason: String) {
-        let items = takeHeld()
-        guard !items.isEmpty else { return }
-        if items.count == 1, let item = items.first {
-            surface(title: item.title, body: item.body, urgent: false)
-        } else {
-            let lines = items.map { "\($0.title): \($0.body)" }.joined(separator: ". ")
-            surface(title: "\(items.count) updates while you were focused", body: lines, urgent: false)
-        }
+        NotificationCenter.default.post(name: .aitvarasActivityChanged, object: nil)
     }
 
     /// Public surface: present → embodied (speak + caption), away → macOS.
@@ -69,18 +90,19 @@ final class NotificationRouter {
     /// Present → embodied (Aitvaras appears + speaks + caption). Away → a
     /// macOS notification, since the on-screen overlay would be missed.
     private func surface(title: String, body: String, urgent: Bool) {
-        let present = !IntegrationCoordinator.userIsAway()
-        if present, let announce {
-            announce(body.isEmpty ? title : "\(title). \(body)")
-        } else {
-            post(title: title, body: body, sound: urgent)
-        }
+        // Background progress never expands the companion or starts speech.
+        let held = HeldNotification(title: title, body: body)
+        try? stores.holdNotification(held, recording: ActivityEvent(
+            kind: .notificationQueued, connectorID: "local",
+            summary: urgent ? "An urgent update needs review" : "An update is available"))
+        NotificationCenter.default.post(name: .aitvarasActivityChanged, object: nil)
+        if urgent, !NSApplication.shared.isActive { post(title: "Aitvaras needs your attention", body: "Open Aitvaras to review an urgent update.", sound: true) }
     }
 
     private func post(title: String, body: String, sound urgent: Bool) {
         let content = UNMutableNotificationContent()
-        content.title = title
-        content.body = String(body.prefix(600))
+        content.title = "Aitvaras needs your attention"
+        content.body = "Open Aitvaras to review an update."
         if urgent {
             content.sound = .default
             // The intended workflow is: user turns on a macOS Focus to

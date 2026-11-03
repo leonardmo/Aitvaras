@@ -8,11 +8,12 @@ import AitvarasStore
 actor ScriptedEngine: InferenceEngine {
     static let throwMarker = "<<THROW>>"
 
-    let identifier = "scripted"
+    let identifier: String
     private var responses: [String]
     private(set) var calls = 0
 
-    init(responses: [String]) {
+    init(identifier: String = "scripted", responses: [String]) {
+        self.identifier = identifier
         self.responses = responses
     }
 

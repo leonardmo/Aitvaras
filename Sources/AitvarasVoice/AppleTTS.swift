@@ -13,7 +13,7 @@ public final class AppleTTS: @unchecked Sendable {
     private let engine = AVAudioEngine()
     private let player = AVAudioPlayerNode()
     private var started = false
-    private let cancelled = Mutex(false)
+    private let generation = Mutex<UInt64>(0)
 
     /// Called with 0…1 mouth energy while speaking (main-thread hop is the
     /// consumer's job).
@@ -52,8 +52,15 @@ public final class AppleTTS: @unchecked Sendable {
     /// Speak one chunk of text; returns when playback finished or was
     /// cancelled. Amplitude flows via `amplitudeHandler`.
     public func speak(_ text: String, languageCode: String? = nil) async {
+        let speechGeneration = generation.withLock { value in
+            value &+= 1
+            return value
+        }
+        // A second caller supersedes any buffers or synthesis still owned by
+        // the previous generation, even if it arrived before stop() settled.
+        synthesizer.stopSpeaking(at: .immediate)
+        player.stop()
         let language = languageCode ?? Self.detectLanguage(of: text)
-        cancelled.withLock { $0 = false }
 
         let utterance = AVSpeechUtterance(string: text)
         if let preferred = preferredVoiceIdentifiers[language],
@@ -87,7 +94,7 @@ public final class AppleTTS: @unchecked Sendable {
         let amplitude = amplitudeHandler
 
         for await buffer in bufferStream {
-            if cancelled.withLock({ $0 }) { break }
+            if !isCurrent(speechGeneration) { break }
 
             if format == nil {
                 format = buffer.format
@@ -96,25 +103,30 @@ public final class AppleTTS: @unchecked Sendable {
             VoiceVolume.apply(to: buffer)
             tracker.willSchedule()
             let level = Self.energy(of: buffer)
-            player.scheduleBuffer(buffer) {
-                amplitude?(level)
+            player.scheduleBuffer(buffer, completionCallbackType: .dataPlayedBack) { [weak self] _ in
+                if self?.isCurrent(speechGeneration) == true { amplitude?(level) }
                 tracker.didFinishOne()
             }
         }
 
-        if cancelled.withLock({ $0 }) {
+        if !isCurrent(speechGeneration) {
             tracker.abandon()
         } else {
             await tracker.waitUntilDrained()
         }
-        amplitudeHandler?(0)
+        if isCurrent(speechGeneration) { amplitudeHandler?(0) }
     }
 
     /// Immediate stop (barge-in).
     public func stop() {
-        cancelled.withLock { $0 = true }
+        generation.withLock { $0 &+= 1 }
+        synthesizer.stopSpeaking(at: .immediate)
         player.stop()
         amplitudeHandler?(0)
+    }
+
+    private func isCurrent(_ value: UInt64) -> Bool {
+        generation.withLock { $0 == value }
     }
 
     private func startEngineIfNeeded(format: AVAudioFormat) {

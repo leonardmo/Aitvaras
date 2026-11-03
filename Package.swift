@@ -15,8 +15,13 @@ let package = Package(
     ],
     dependencies: [
         .package(url: "https://github.com/groue/GRDB.swift", from: "7.0.0"),
+        // Declared here as well as in project.yml so `swift test` and the
+        // generated app project share one stable Package.resolved graph.
+        .package(url: "https://github.com/warrenm/GLTFKit2", from: "0.5.9"),
         .package(url: "https://github.com/ml-explore/mlx-swift-lm", from: "3.31.4"),
-        .package(url: "https://github.com/huggingface/swift-transformers", from: "1.3.3")
+        .package(url: "https://github.com/huggingface/swift-transformers", from: "1.3.3"),
+        // Pinned before the upstream MLX 0.32 migration; shares our 0.31 graph.
+        .package(url: "https://github.com/Blaizzy/mlx-audio-swift", revision: "8d86630ade569728aaea3dc1a29fc44e2efa719b")
     ],
     targets: [
         .target(name: "AitvarasCore"),
@@ -38,15 +43,29 @@ let package = Package(
             ]
         ),
         .target(name: "AitvarasRAG", dependencies: ["AitvarasCore", "AitvarasStore"]),
-        .target(name: "AitvarasConnectors", dependencies: ["AitvarasCore", "AitvarasStore"]),
-        .target(name: "AitvarasVoice", dependencies: ["AitvarasCore"]),
+        .target(
+            name: "AitvarasConnectors",
+            dependencies: ["AitvarasCore", "AitvarasStore"],
+            resources: [.process("Resources")]
+        ),
+        .target(name: "AitvarasVoice", dependencies: [
+            "AitvarasCore",
+            .product(name: "MLXAudioSTT", package: "mlx-audio-swift")
+        ]),
         .target(
             name: "AitvarasAgent",
             dependencies: ["AitvarasCore", "AitvarasStore", "AitvarasEngines", "AitvarasRAG", "AitvarasConnectors"]
         ),
         .testTarget(
             name: "AitvarasCoreTests",
-            dependencies: ["AitvarasCore", "AitvarasStore", "AitvarasRAG", "AitvarasConnectors", "AitvarasAgent", "AitvarasEngines", "AitvarasVoice"]
+            dependencies: [
+                "AitvarasCore", "AitvarasStore", "AitvarasRAG",
+                "AitvarasConnectors", "AitvarasAgent", "AitvarasEngines",
+                "AitvarasVoice",
+                // Keeps the package and generated-app dependency graphs in
+                // lockstep; avatar rendering itself remains in the app target.
+                .product(name: "GLTFKit2", package: "GLTFKit2")
+            ]
         )
     ]
 )

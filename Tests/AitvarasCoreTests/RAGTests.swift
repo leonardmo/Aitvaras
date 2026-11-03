@@ -49,6 +49,15 @@ private actor FakeEmbedder: EmbeddingEngine {
     }
 }
 
+private actor ShortEmbedder: EmbeddingEngine {
+    let identifier = "short"
+    let dimensions = 8
+
+    func embed(texts: [String]) async throws -> [[Float]] {
+        Array(texts.dropLast()).map(FakeEmbedder.vector(for:))
+    }
+}
+
 @Suite struct RAGTests {
 
     // MARK: Chunkers
@@ -205,6 +214,281 @@ private actor FakeEmbedder: EmbeddingEngine {
         #expect(stats.embedded == stats.chunks)
     }
 
+    @Test func unavailableSourceDoesNotPruneTrustedDocuments() async throws {
+        let stores = try inMemoryStores()
+        let missingRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("missing-\(UUID().uuidString)")
+            .resolvingSymlinksInPath()
+        let path = missingRoot.appendingPathComponent("notes.md").path
+        let doc = RAGDocument(source: "offline", path: path, mtime: 1, contentHash: "old")
+        try stores.upsertDocument(
+            doc, chunks: [RAGChunk(documentID: doc.id, ord: 0, text: "trusted old note")])
+        let indexer = Indexer(stores: stores, embedder: FakeEmbedder())
+
+        await #expect(throws: RAGError.self) {
+            try await indexer.fullScan(sources: [
+                IndexSource(id: "offline", name: "Offline", url: missingRoot)
+            ])
+        }
+        #expect(try stores.document(path: path)?.id == doc.id)
+        #expect(try stores.chunkStats().chunks == 1)
+    }
+
+    @Test func databaseWriteFailureIsReportedByFullScan() async throws {
+        let dir = try makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try "A durable note long enough to become a searchable chunk in the index."
+            .write(to: dir.appendingPathComponent("note.txt"), atomically: true, encoding: .utf8)
+        let stores = try inMemoryStores()
+        try await stores.db.queue.write { dbc in
+            try dbc.execute(sql: """
+                CREATE TRIGGER reject_rag_document
+                BEFORE INSERT ON ragDocument
+                BEGIN
+                    SELECT RAISE(ABORT, 'injected index write failure');
+                END
+                """)
+        }
+        let indexer = Indexer(stores: stores, embedder: FakeEmbedder())
+
+        await #expect(throws: RAGError.self) {
+            try await indexer.fullScan(sources: [IndexSource(id: "test", name: "Test", url: dir)])
+        }
+        #expect(try stores.chunkStats().documents == 0)
+    }
+
+    @Test func unreadablePDFIsReportedInsteadOfIndexedAsEmpty() async throws {
+        let dir = try makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try Data("this is not a PDF".utf8)
+            .write(to: dir.appendingPathComponent("broken.pdf"))
+        let stores = try inMemoryStores()
+        let indexer = Indexer(stores: stores, embedder: FakeEmbedder())
+
+        await #expect(throws: RAGError.self) {
+            try await indexer.fullScan(sources: [
+                IndexSource(id: "pdfs", name: "PDFs", url: dir)
+            ])
+        }
+        #expect(try stores.chunkStats().documents == 0)
+        #expect(try stores.chunkStats().chunks == 0)
+    }
+
+    @Test func invalidUTF8TextIsRejectedInsteadOfIndexedAsReplacementCharacters() async throws {
+        let dir = try makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try Data([0xFF, 0xFE, 0xFD]).write(to: dir.appendingPathComponent("binary.txt"))
+        let stores = try inMemoryStores()
+        let indexer = Indexer(stores: stores, embedder: FakeEmbedder())
+
+        await #expect(throws: RAGError.self) {
+            try await indexer.fullScan(sources: [
+                IndexSource(id: "text", name: "Text", url: dir)
+            ])
+        }
+        #expect(try stores.chunkStats().documents == 0)
+    }
+
+    @Test func embeddingBackfillRechecksFileSizeBeforeReading() async throws {
+        let dir = try makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let file = dir.appendingPathComponent("grew.txt")
+        #expect(FileManager.default.createFile(atPath: file.path, contents: nil))
+        let handle = try FileHandle(forWritingTo: file)
+        try handle.truncate(atOffset: UInt64(Indexer.maxFileSize + 1))
+        try handle.close()
+
+        let stores = try inMemoryStores()
+        let document = RAGDocument(
+            source: "test", path: file.path, mtime: 1, contentHash: "old")
+        try stores.upsertDocument(document, chunks: [
+            RAGChunk(documentID: document.id, ord: 0, text: "old searchable text")
+        ])
+        let indexer = Indexer(stores: stores, embedder: FakeEmbedder())
+
+        await #expect(throws: RAGError.self) {
+            try await indexer.embedMissing()
+        }
+        #expect(try stores.keywordSearch("searchable", limit: 5).count == 1)
+    }
+
+    @Test func symlinkCannotPullKnowledgeFromOutsideSelectedFolder() async throws {
+        let parent = try makeTempDir()
+        defer { try? FileManager.default.removeItem(at: parent) }
+        let selected = parent.appendingPathComponent("selected")
+        try FileManager.default.createDirectory(at: selected, withIntermediateDirectories: true)
+        let outside = parent.appendingPathComponent("outside.txt")
+        try "Private text outside the selected knowledge folder."
+            .write(to: outside, atomically: true, encoding: .utf8)
+        try "Normal searchable text inside the selected folder."
+            .write(to: selected.appendingPathComponent("inside.txt"),
+                   atomically: true, encoding: .utf8)
+        try FileManager.default.createSymbolicLink(
+            at: selected.appendingPathComponent("linked.txt"),
+            withDestinationURL: outside)
+        let stores = try inMemoryStores()
+        let indexer = Indexer(stores: stores, embedder: FakeEmbedder())
+
+        try await indexer.fullScan(sources: [
+            IndexSource(id: "selected", name: "Selected", url: selected)
+        ])
+
+        #expect(try stores.chunkStats().documents == 1)
+        #expect(try stores.document(path: outside.path) == nil)
+        #expect(try stores.keywordSearch("Private", limit: 5).isEmpty)
+        #expect(try !stores.keywordSearch("Normal", limit: 5).isEmpty)
+    }
+
+    @Test func shortEmbeddingBatchStaysEntirelyKeywordOnly() async throws {
+        let dir = try makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try "First paragraph about a cat and its daily routine.\n\nSecond paragraph about a network router and firmware."
+            .write(to: dir.appendingPathComponent("notes.txt"), atomically: true, encoding: .utf8)
+        let stores = try inMemoryStores()
+        let indexer = Indexer(stores: stores, embedder: ShortEmbedder())
+
+        try await indexer.fullScan(sources: [IndexSource(id: "test", name: "Test", url: dir)])
+        let stats = try stores.chunkStats()
+        #expect(stats.chunks > 0)
+        #expect(stats.embedded == 0)
+        await #expect(throws: RAGError.self) { try await indexer.embedMissing() }
+    }
+
+    @Test func removingSourceCommitsConfigurationAndIndexCleanupTogether() throws {
+        let stores = try inMemoryStores()
+        let removed = RAGDocument(
+            source: "removed", path: "/tmp/removed.md", mtime: 1, contentHash: "a")
+        let kept = RAGDocument(
+            source: "kept", path: "/tmp/kept.md", mtime: 1, contentHash: "b")
+        try stores.upsertDocument(removed, chunks: [
+            RAGChunk(documentID: removed.id, ord: 0, text: "obsolete aardvark note")
+        ])
+        try stores.upsertDocument(kept, chunks: [
+            RAGChunk(documentID: kept.id, ord: 0, text: "current badger note")
+        ])
+        try stores.setValue("old-config", forKey: "rag.sources")
+
+        try stores.setValue(
+            "new-config", forKey: "rag.sources", removingRAGDocumentsFrom: "removed")
+
+        #expect(try stores.value(forKey: "rag.sources") == "new-config")
+        #expect(try stores.allDocuments().map(\.id) == [kept.id])
+        #expect(try stores.keywordSearch("aardvark", limit: 5).isEmpty)
+        #expect(try stores.keywordSearch("badger", limit: 5).map(\.chunkID).count == 1)
+    }
+
+    @Test func failedSourceRemovalRollsBackConfigurationAndSearchIndex() throws {
+        let stores = try inMemoryStores()
+        let doc = RAGDocument(
+            source: "blocked", path: "/tmp/blocked.md", mtime: 1, contentHash: "a")
+        try stores.upsertDocument(doc, chunks: [
+            RAGChunk(documentID: doc.id, ord: 0, text: "durable capybara note")
+        ])
+        try stores.setValue("old-config", forKey: "rag.sources")
+        try stores.db.queue.write { dbc in
+            try dbc.execute(sql: """
+                CREATE TRIGGER reject_source_removal
+                BEFORE DELETE ON ragDocument
+                WHEN OLD.source = 'blocked'
+                BEGIN
+                    SELECT RAISE(ABORT, 'injected source removal failure');
+                END
+                """)
+        }
+
+        #expect(throws: (any Error).self) {
+            try stores.setValue(
+                "new-config", forKey: "rag.sources", removingRAGDocumentsFrom: "blocked")
+        }
+        #expect(try stores.value(forKey: "rag.sources") == "old-config")
+        #expect(try stores.document(path: doc.path)?.id == doc.id)
+        #expect(try stores.keywordSearch("capybara", limit: 5).map(\.chunkID).count == 1)
+    }
+
+    @Test func replacingAndRemovingDocumentPrunesStaleSearchRows() throws {
+        let stores = try inMemoryStores()
+        let doc = RAGDocument(
+            source: "notes", path: "/tmp/changing.md", mtime: 1, contentHash: "old")
+        try stores.upsertDocument(doc, chunks: [
+            RAGChunk(documentID: doc.id, ord: 0, text: "legacy dragonfruit note")
+        ])
+        #expect(try stores.keywordSearch("dragonfruit", limit: 5).count == 1)
+
+        let replacement = RAGDocument(
+            id: doc.id, source: doc.source, path: doc.path, mtime: 2, contentHash: "new")
+        try stores.upsertDocument(replacement, chunks: [
+            RAGChunk(documentID: doc.id, ord: 0, text: "current elderberry note")
+        ])
+        #expect(try stores.keywordSearch("dragonfruit", limit: 5).isEmpty)
+        #expect(try stores.keywordSearch("elderberry", limit: 5).count == 1)
+
+        try stores.removeDocument(path: doc.path)
+        #expect(try stores.keywordSearch("elderberry", limit: 5).isEmpty)
+    }
+
+    @Test func fileEventsReindexAndPruneWithoutWaitingForPoll() async throws {
+        let dir = try makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let stores = Stores(db: try AitvarasDatabase(url: nil))
+        try stores.saveBackgroundWorkPolicy(BackgroundWorkPolicy(reviewed: true, allowed: [.indexing]))
+        let indexer = Indexer(stores: stores, embedder: FakeEmbedder())
+        let source = IndexSource(id: "watch", name: "Watch", url: dir)
+        await indexer.startWatching(
+            sources: [source], debounce: .milliseconds(100),
+            fallbackInterval: .seconds(30))
+        defer { Task { await indexer.stopWatching() } }
+
+        let note = dir.appendingPathComponent("live.md")
+        try "# Live\n\nA watched cat note."
+            .write(to: note, atomically: true, encoding: .utf8)
+        let indexed = await eventually {
+            (try? stores.document(path: note.path)) != nil
+        }
+        #expect(indexed)
+
+        try FileManager.default.removeItem(at: note)
+        let pruned = await eventually {
+            (try? stores.document(path: note.path)) == nil
+        }
+        #expect(pruned)
+        await indexer.stopWatching()
+    }
+
+    @Test func watcherReportsRefreshFailures() async throws {
+        let missing = FileManager.default.temporaryDirectory
+            .appendingPathComponent("missing-watch-\(UUID().uuidString)")
+        let stores = try inMemoryStores()
+        try stores.saveBackgroundWorkPolicy(BackgroundWorkPolicy(reviewed: true, allowed: [.indexing]))
+        let errors = Mutex<[String]>([])
+        let indexer = Indexer(
+            stores: stores, embedder: FakeEmbedder(),
+            onError: { message in errors.withLock { $0.append(message) } })
+        await indexer.startWatching(
+            sources: [IndexSource(id: "missing", name: "Missing", url: missing)],
+            debounce: .milliseconds(10), fallbackInterval: .milliseconds(25))
+        defer { Task { await indexer.stopWatching() } }
+
+        let reported = await eventually {
+            errors.withLock { !$0.isEmpty }
+        }
+        #expect(reported)
+        #expect(errors.withLock { $0.first?.contains("unavailable") == true })
+        await indexer.stopWatching()
+    }
+
+    private func eventually(
+        timeout: Duration = .seconds(5),
+        condition: () -> Bool
+    ) async -> Bool {
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: timeout)
+        while clock.now < deadline {
+            if condition() { return true }
+            try? await Task.sleep(for: .milliseconds(50))
+        }
+        return condition()
+    }
+
     // MARK: Retriever
 
     @Test func retrieverFusesVectorAndKeywordArms() async throws {
@@ -270,5 +554,15 @@ private actor FakeEmbedder: EmbeddingEngine {
         // embedding, so the vector arm is empty too) — no results, no throw.
         let empty = try await retriever.retrieve(query: "+++ ???", limit: 5)
         #expect(empty.isEmpty)
+    }
+
+    @Test func retrieverReportsStorageFailureInsteadOfLookingEmpty() async throws {
+        let stores = try inMemoryStores()
+        let retriever = HybridRetriever(stores: stores, embedder: FakeEmbedder(failing: true))
+        try stores.db.queue.close()
+
+        await #expect(throws: (any Error).self) {
+            try await retriever.retrieve(query: "network", limit: 5)
+        }
     }
 }

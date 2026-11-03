@@ -32,5 +32,30 @@ for pattern in "${PATTERNS[@]}"; do
         FAILED=1
     fi
 done
-[ "$FAILED" -eq 0 ] && echo "✓ no personal identifiers in tracked files"
+
+# A pasted Home Assistant long-lived token and many other bearer credentials
+# are JWT-shaped. Reject likely three-segment tokens from every tracked file;
+# fixtures should use short, plainly synthetic values instead.
+if git grep -I -E -- '[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}' \
+    -- . >/dev/null 2>&1; then
+    echo "✗ likely JWT/bearer token tracked"
+    FAILED=1
+fi
+
+# Live speech recognition itself never saves audio. Source-audio persistence
+# belongs exclusively to the separately consented CaptureAudioRecorder path.
+if git grep -I --fixed-strings -- "AVAudioFile" -- \
+    Sources/AitvarasVoice/TranscriberSession.swift >/dev/null 2>&1; then
+    echo "✗ live transcriber contains an audio-file persistence path"
+    FAILED=1
+fi
+
+# Focus sampling is explicitly memory-only. App names may influence a local
+# nudge or spoken session summary, but must never enter the durable event JSON.
+if git grep -I --fixed-strings -- "detailJSON" -- \
+    App/FocusCoach.swift >/dev/null 2>&1; then
+    echo "✗ Focus Coach contains a durable detail payload for memory-only app usage"
+    FAILED=1
+fi
+[ "$FAILED" -eq 0 ] && echo "✓ tracked-file privacy checks passed"
 exit $FAILED

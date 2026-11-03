@@ -58,7 +58,7 @@ final class HotkeyManager: @unchecked Sendable {
             },
             2, &eventTypes, selfPointer, &eventHandler)
 
-        let hotKeyID = EventHotKeyID(signature: OSType(0x4E414F4D), id: 1)   // 'NAOM'
+        let hotKeyID = EventHotKeyID(signature: OSType(0x41495456), id: 1)   // 'AITV'
         RegisterEventHotKey(
             UInt32(kVK_Space),
             UInt32(optionKey),

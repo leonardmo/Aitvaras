@@ -18,6 +18,10 @@ Machine-specific context (the developer's paths, accounts, hardware) lives in `C
 - Every side effect goes through AgentCore's autonomy policy (risk levels `read`/`reversibleWrite`/`confirmable`) and is written to the activity log with provenance. Connectors never bypass this.
 - Memory writes follow the same discipline: pipeline-extracted sensitive facts are quarantined (`needsReview`) until approved; superseded facts are invalidated, never deleted; hard deletion is a user action.
 - Secrets (Moodle cookies, homelab tokens, Telegram bot token) live in the macOS Keychain, never in the DB or files.
+- Never commit installation-specific values (real hosts/IPs, Home Assistant
+  entity/device/area names, usernames, email addresses, personal paths or live
+  service identifiers). Keep non-secret connection details in local runtime
+  config/SQLite and use synthetic reserved examples in code, tests and docs.
 - Character aesthetic: rigged 3D human avatar, recognizably human, serious, cyber only as accents. Not anime, not a mascot, not abstract/hologram.
 - Swift 6 strict concurrency; engines and connectors are actors.
 - GRDB stores UUID columns in its own encoding: never compare/insert UUIDs in raw SQL via `.uuidString` (silent no-ops / FK failures); use record APIs. Exception: FTS mirror tables (`ragFTS`, `factFTS`) key on `.uuidString` text by design.

@@ -3,16 +3,18 @@ import Foundation
 import AitvarasCore
 import AitvarasEngines
 
-/// Real-model smoke tests — they run only when the MLX models are
-/// downloaded (they are on the dev machine; CI without models skips).
+/// Real-model smoke tests for an Xcode-hosted environment that bundles the
+/// MLX Metal library. Plain `swift test` cannot load that library, so local
+/// weights alone must not accidentally enable these process-fatal tests.
 @Suite struct MLXIntegrationTests {
-    static var lightModelPresent: Bool {
-        FileManager.default.fileExists(
+    static var liveTestsEnabled: Bool {
+        ProcessInfo.processInfo.environment["AITVARAS_RUN_MLX_TESTS"] == "1"
+        && FileManager.default.fileExists(
             atPath: MLXEngine.modelsDirectory()
                 .appendingPathComponent("Qwen3-4B-4bit/config.json").path)
     }
 
-    @Test(.enabled(if: lightModelPresent), .timeLimit(.minutes(5)))
+    @Test(.enabled(if: liveTestsEnabled), .timeLimit(.minutes(5)))
     func lightModelGeneratesText() async throws {
         let engine = MLXEngine()
         #expect(await engine.isAvailable(for: .voice))
@@ -29,6 +31,7 @@ import AitvarasEngines
             case .text(let t): text += t
             case .reasoning(let r): reasoning += r
             case .toolCall: break
+            case .usage: break
             case .done: finished = true
             }
         }
@@ -40,7 +43,7 @@ import AitvarasEngines
         await engine.unload(tier: .voice)
     }
 
-    @Test(.enabled(if: lightModelPresent), .timeLimit(.minutes(5)))
+    @Test(.enabled(if: liveTestsEnabled), .timeLimit(.minutes(5)))
     func lightModelEmitsToolCall() async throws {
         let engine = MLXEngine()
         let tool = ToolDefinition(

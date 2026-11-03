@@ -68,7 +68,7 @@ public actor CaptureConnector: Connector {
 
         case "capture_status":
             let live = await status?() ?? "No capture session running."
-            let recent = (try? stores.captureRecords(limit: 3)) ?? []
+            let recent = try stores.captureRecords(limit: 3)
             guard !recent.isEmpty else { return live }
             let lines = recent.map { record in
                 let date = record.startedAt.formatted(date: .abbreviated, time: .shortened)

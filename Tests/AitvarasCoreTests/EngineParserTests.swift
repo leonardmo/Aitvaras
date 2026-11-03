@@ -69,6 +69,26 @@ import AitvarasCore
         #expect(prompt.contains("VOICE"))
     }
 
+    @Test func promptBuilderBoundsStoredAndRetrievedText() {
+        let fact = MemoryFact(
+            text: "FACT_START" + String(repeating: "f", count: 2_000) + "FACT_END",
+            entitiesText: String(repeating: "entity", count: 100))
+        let prompt = PromptBuilder.systemPrompt(
+            memories: [],
+            facts: [fact],
+            retrieved: [RetrievedChunk(
+                text: "CHUNK_START" + String(repeating: "r", count: 10_000) + "CHUNK_END",
+                origin: String(repeating: "origin", count: 500),
+                score: 1)],
+            voiceMode: false)
+
+        #expect(prompt.contains("FACT_START"))
+        #expect(prompt.contains("CHUNK_START"))
+        #expect(!prompt.contains("FACT_END"))
+        #expect(!prompt.contains("CHUNK_END"))
+        #expect(prompt.count < 12_000)
+    }
+
     @Test func unkeptPromiseDetection() {
         #expect(AgentLoop.soundsLikeUnkeptPromise("I will set a reminder for you."))
         #expect(AgentLoop.soundsLikeUnkeptPromise("Let me create an entry for that."))
@@ -103,5 +123,74 @@ import AitvarasCore
 enum AitvarasVoiceSentenceProxy {
     static func extract(_ buffer: inout String) -> String? {
         ConversationController.extractSentence(from: &buffer)
+    }
+}
+
+@Suite struct InferenceStreamTimeoutTests {
+    @Test func silentStreamFailsWithTimeout() async {
+        let (source, sourceContinuation) = AsyncThrowingStream<InferenceChunk, Error>.makeStream()
+        let watched = InferenceStreams.withInactivityTimeout(
+            source, timeout: .milliseconds(30), checkEvery: .milliseconds(5))
+
+        await #expect(throws: InferenceInactivityError.self) {
+            for try await _ in watched {}
+        }
+        sourceContinuation.finish()
+    }
+
+    @Test func arrivingChunksResetInactivityDeadline() async throws {
+        let (source, continuation) = AsyncThrowingStream<InferenceChunk, Error>.makeStream()
+        let producer = Task {
+            // Total runtime exceeds the timeout, while each individual gap is
+            // comfortably below it. This proves chunks reset the deadline and
+            // avoids an 80ms scheduler race under the parallel full suite.
+            for piece in ["one", " two", " three", " four"] {
+                try await Task.sleep(for: .milliseconds(300))
+                continuation.yield(.text(piece))
+            }
+            continuation.finish()
+        }
+        let watched = InferenceStreams.withInactivityTimeout(
+            source, timeout: .seconds(1), checkEvery: .milliseconds(25))
+
+        var output = ""
+        for try await chunk in watched {
+            if case .text(let text) = chunk { output += text }
+        }
+        try await producer.value
+        #expect(output == "one two three four")
+    }
+
+    @Test func activeButRunawayStreamFailsAtOutputLimit() async {
+        let (source, continuation) = AsyncThrowingStream<InferenceChunk, Error>.makeStream()
+        let watched = InferenceStreams.withInactivityTimeout(
+            source, timeout: .seconds(5), checkEvery: .milliseconds(5),
+            maximumOutputCharacters: 10)
+        let producer = Task {
+            continuation.yield(.text("12345"))
+            continuation.yield(.reasoning("6789"))
+            continuation.yield(.text("too much"))
+            continuation.finish()
+        }
+
+        await #expect(throws: InferenceOutputLimitError.self) {
+            for try await _ in watched {}
+        }
+        await producer.value
+    }
+
+    @Test func toolArgumentsCountTowardOutputLimit() async {
+        let source = AsyncThrowingStream<InferenceChunk, Error> { continuation in
+            continuation.yield(.toolCall(ToolCall(
+                id: "id", toolName: "memory.remember",
+                argumentsJSON: String(repeating: "x", count: 100))))
+            continuation.finish()
+        }
+        let watched = InferenceStreams.withInactivityTimeout(
+            source, timeout: .seconds(5), maximumOutputCharacters: 50)
+
+        await #expect(throws: InferenceOutputLimitError.self) {
+            for try await _ in watched {}
+        }
     }
 }

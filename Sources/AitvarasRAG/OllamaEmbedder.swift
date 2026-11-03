@@ -1,9 +1,33 @@
 import Foundation
 import AitvarasCore
 
-public enum RAGError: Error, Sendable {
+public enum RAGError: Error, LocalizedError, Sendable {
     case embedderUnavailable(status: Int)
     case embeddingCountMismatch(expected: Int, got: Int)
+    case sourceUnavailable(path: String)
+    case noExtractableText(path: String)
+    case invalidTextEncoding(path: String)
+    case fileTooLarge(path: String, maximumBytes: Int)
+    case indexingFailures(count: Int, first: String)
+
+    public var errorDescription: String? {
+        switch self {
+        case .embedderUnavailable(let status):
+            "The local embedding service is unavailable (status \(status))."
+        case .embeddingCountMismatch(let expected, let got):
+            "The embedding service returned \(got) vectors for \(expected) texts."
+        case .sourceUnavailable(let path):
+            "The indexed folder is unavailable: \(path)"
+        case .noExtractableText(let path):
+            "No searchable text could be extracted from \(path)"
+        case .invalidTextEncoding(let path):
+            "The text file is not valid UTF-8: \(path)"
+        case .fileTooLarge(let path, let maximumBytes):
+            "The file grew beyond the \(ByteCountFormatter.string(fromByteCount: Int64(maximumBytes), countStyle: .file)) indexing limit: \(path)"
+        case .indexingFailures(let count, let first):
+            "\(count) file\(count == 1 ? "" : "s") could not be indexed. First error: \(first)"
+        }
+    }
 }
 
 /// Stopgap embedding engine (D11): nomic-embed-text via the local Ollama

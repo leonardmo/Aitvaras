@@ -6,6 +6,11 @@ import MLXLMCommon
 import AitvarasCore
 import Tokenizers
 
+public enum LocalModelLoadEvent: Sendable {
+    case started(id: UUID, model: String)
+    case finished(id: UUID, succeeded: Bool)
+}
+
 /// Primary engine (D2): runs Qwen3 models in-process via MLX.
 /// Tool calls are handled natively by MLXLMCommon (it parses the model's
 /// <tool_call> output); <think> reasoning blocks are split out here.
@@ -14,6 +19,7 @@ public actor MLXEngine: InferenceEngine {
 
     private var containers: [String: ModelContainer] = [:]
     private var lastUsed: [String: Date] = [:]
+    private let reportLoad: (@Sendable (LocalModelLoadEvent) -> Void)?
 
     /// Combined on-disk size of loaded models above which the least
     /// recently used gets evicted before a new load on memory-constrained machines.
@@ -23,8 +29,9 @@ public actor MLXEngine: InferenceEngine {
         AitvarasPaths.modelsDirectory
     }
 
-    public init() {
-        MLX.GPU.set(cacheLimit: 1024 * 1024 * 1024)   // 1 GB reuse cache; keep RAM headroom
+    public init(reportLoad: (@Sendable (LocalModelLoadEvent) -> Void)? = nil) {
+        self.reportLoad = reportLoad
+        MLX.Memory.cacheLimit = 1024 * 1024 * 1024   // 1 GB reuse cache; keep RAM headroom
     }
 
     // MARK: Role → model assignment (user-selectable, D2 revised)
@@ -36,21 +43,21 @@ public actor MLXEngine: InferenceEngine {
     ]
 
     public static func assignedModel(for tier: ModelTier) -> String {
-        UserDefaults.standard.string(forKey: "model.role.\(tier.rawValue)")
+        AitvarasPreferences.current.string(forKey: "model.role.\(tier.rawValue)")
             ?? defaultAssignments[tier]!
     }
 
     public static func assign(model directoryName: String, to tier: ModelTier) {
-        UserDefaults.standard.set(directoryName, forKey: "model.role.\(tier.rawValue)")
+        AitvarasPreferences.current.set(directoryName, forKey: "model.role.\(tier.rawValue)")
     }
 
-    /// Model directories on disk (anything with a config.json).
+    /// Complete model directories on disk (configuration + all weights).
     public static func installedModels() -> [String] {
         let dir = modelsDirectory()
         let entries = (try? FileManager.default.contentsOfDirectory(
             at: dir, includingPropertiesForKeys: nil)) ?? []
         return entries
-            .filter { FileManager.default.fileExists(atPath: $0.appendingPathComponent("config.json").path) }
+            .filter(AitvarasPaths.isCompleteModelDirectory)
             .map(\.lastPathComponent)
             .sorted()
     }
@@ -71,15 +78,16 @@ public actor MLXEngine: InferenceEngine {
     }
 
     public func isAvailable(for tier: ModelTier) async -> Bool {
-        let url = modelURL(named: Self.assignedModel(for: tier))
-            .appendingPathComponent("config.json")
-        return FileManager.default.fileExists(atPath: url.path)
+        AitvarasPaths.isCompleteModelDirectory(
+            modelURL(named: Self.assignedModel(for: tier)))
     }
 
     private func container(for tier: ModelTier) async throws -> ModelContainer {
         let key = Self.assignedModel(for: tier)
         lastUsed[key] = .now
         if let existing = containers[key] { return existing }
+        let loadID = UUID()
+        reportLoad?(.started(id: loadID, model: key))
 
         // Evict least-recently-used models until the new one fits.
         let incomingSize = Self.sizeOnDisk(of: key)
@@ -88,14 +96,21 @@ public actor MLXEngine: InferenceEngine {
               let oldest = containers.keys.min(by: { (lastUsed[$0] ?? .distantPast) < (lastUsed[$1] ?? .distantPast) }) {
             containers[oldest] = nil
             loadedSize -= Self.sizeOnDisk(of: oldest)
-            MLX.GPU.clearCache()
+            MLX.Memory.clearCache()
         }
 
-        let container = try await LLMModelFactory.shared.loadContainer(
-            from: modelURL(named: key),
-            using: #huggingFaceTokenizerLoader())
-        containers[key] = container
-        return container
+        do {
+            let container = try await LLMModelFactory.shared.loadContainer(
+                from: modelURL(named: key),
+                using: #huggingFaceTokenizerLoader())
+            try Task.checkCancellation()
+            containers[key] = container
+            reportLoad?(.finished(id: loadID, succeeded: true))
+            return container
+        } catch {
+            reportLoad?(.finished(id: loadID, succeeded: false))
+            throw error
+        }
     }
 
     /// Load a role's model ahead of first use.
@@ -106,7 +121,7 @@ public actor MLXEngine: InferenceEngine {
     /// Free a loaded model (e.g. under memory pressure).
     public func unload(tier: ModelTier) {
         containers[Self.assignedModel(for: tier)] = nil
-        MLX.GPU.clearCache()
+        MLX.Memory.clearCache()
     }
 
     public func complete(
@@ -117,6 +132,8 @@ public actor MLXEngine: InferenceEngine {
         AsyncThrowingStream { continuation in
             let task = Task {
                 do {
+                    let modelIdentifier =
+                        "mlx:\(Self.assignedModel(for: tier))"
                     let container = try await self.container(for: tier)
 
                     try await container.perform { (context: ModelContext) in
@@ -163,8 +180,11 @@ public actor MLXEngine: InferenceEngine {
                             case .toolCall(let call):
                                 sawToolCall = true
                                 continuation.yield(.toolCall(Self.convert(call)))
-                            case .info:
-                                break
+                            case .info(let info):
+                                continuation.yield(.usage(InferenceUsage(
+                                    inputTokens: info.promptTokenCount,
+                                    outputTokens: info.generationTokenCount,
+                                    modelIdentifier: modelIdentifier)))
                             }
                         }
                         for chunk in parser.finish() {

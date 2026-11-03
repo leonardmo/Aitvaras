@@ -9,6 +9,7 @@
   POST /tts {text, language, engine?} -> WAV bytes
 """
 import argparse
+import hashlib
 import io
 import json
 import struct
@@ -17,6 +18,9 @@ import threading
 parser = argparse.ArgumentParser()
 parser.add_argument("--port", type=int, default=8756)
 args = parser.parse_args()
+
+with open(__file__, "rb") as script_file:
+    SCRIPT_SHA256 = hashlib.sha256(script_file.read()).hexdigest()
 
 
 def log(*items):
@@ -35,7 +39,11 @@ from mlx_audio.tts.utils import load_model  # noqa: E402
 
 kokoro_patches.apply()
 
-KOKORO = load_model("prince-canuma/Kokoro-82M")
+KOKORO = load_model(
+    "prince-canuma/Kokoro-82M",
+    revision="e02c9eada7ce7416798af36b190a8a2dd2ecd566",
+    token=False,
+)
 KOKORO_SR = 24000
 KOKORO_VOICE = "af_heart"
 log("kokoro ready")
@@ -56,6 +64,16 @@ def load_chatterbox():
         # leaving the symbol None and crashing Chatterbox init.
         if perth.PerthImplicitWatermarker is None:
             perth.PerthImplicitWatermarker = perth.DummyWatermarker
+        import chatterbox.mtl_tts as chatterbox_mtl
+
+        original_snapshot_download = chatterbox_mtl.snapshot_download
+
+        def pinned_snapshot_download(*args, **kwargs):
+            kwargs["revision"] = "5bb1f6ee58e50c3b8d408bc82a6d3740c2db6e18"
+            kwargs["token"] = False
+            return original_snapshot_download(*args, **kwargs)
+
+        chatterbox_mtl.snapshot_download = pinned_snapshot_download
         from chatterbox.mtl_tts import ChatterboxMultilingualTTS
 
         device = "mps" if torch.backends.mps.is_available() else "cpu"
@@ -122,7 +140,8 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/health":
             self._reply(200, json.dumps({
                 "ok": True,
-                "version": 2,
+                "version": 4,
+                "scriptSHA256": SCRIPT_SHA256,
                 "kokoro": True,
                 "chatterbox": CHATTERBOX is not None,
                 "chatterboxError": CHATTERBOX_ERROR,

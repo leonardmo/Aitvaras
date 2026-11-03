@@ -7,12 +7,23 @@ struct KnowledgeView: View {
     @State private var query = ""
     @State private var results: [RetrievedChunk] = []
     @State private var searching = false
+    @State private var searchError = ""
     @State private var showFolderPicker = false
 
     var body: some View {
         Form {
             if let coordinator = model.integrations {
                 Section("Sources") {
+                    Text("Only registered, available folders are eligible for recall. Archived or unavailable index data is preserved, not silently searched.")
+                        .font(.caption).foregroundStyle(.secondary)
+                    if coordinator.unregisteredIndexDocumentCount > 0 {
+                        Label("\(coordinator.unregisteredIndexDocumentCount) indexed documents have no registered source and are excluded from recall.", systemImage: "archivebox")
+                            .font(.callout).foregroundStyle(.orange)
+                    }
+                    ForEach(coordinator.unavailableRAGSourceNames, id: \.self) { name in
+                        Label("\(name): folder unavailable; excluded from recall. Existing index retained.", systemImage: "externaldrive.badge.exclamationmark")
+                            .font(.caption).foregroundStyle(.orange)
+                    }
                     if coordinator.ragSourceConfigs.isEmpty {
                         Text("No folders indexed yet. Add your notes or code folders — Aitvaras grounds answers in them.")
                             .foregroundStyle(.secondary)
@@ -24,10 +35,16 @@ struct KnowledgeView: View {
                                 Text(source.path)
                                     .font(.caption.monospaced())
                                     .foregroundStyle(.secondary)
+                                Text("Configured source · \(coordinator.indexedSourceDocumentCounts[source.id, default: 0]) indexed documents")
+                                    .font(.caption).foregroundStyle(.secondary)
                             }
                             Spacer()
                             Button("Remove", role: .destructive) {
-                                coordinator.removeRAGSource(id: source.id)
+                                do {
+                                    try coordinator.removeRAGSource(id: source.id)
+                                } catch {
+                                    model.presentError(title: "Folder could not be removed", error: error)
+                                }
                             }
                             .buttonStyle(.borderless)
                         }
@@ -35,8 +52,15 @@ struct KnowledgeView: View {
                     Button("Add Folder…") { showFolderPicker = true }
                         .fileImporter(isPresented: $showFolderPicker,
                                       allowedContentTypes: [.folder]) { result in
-                            if case .success(let url) = result {
-                                coordinator.addRAGSource(url: url)
+                            switch result {
+                            case .success(let url):
+                                do {
+                                    try coordinator.addRAGSource(url: url)
+                                } catch {
+                                    model.presentError(title: "Folder could not be added", error: error)
+                                }
+                            case .failure(let error):
+                                model.presentError(title: "Folder could not be opened", error: error)
                             }
                         }
                 }
@@ -50,10 +74,10 @@ struct KnowledgeView: View {
                             coordinator.reindex()
                         }
                         .disabled(coordinator.isIndexing)
-                        if coordinator.isIndexing {
+                        if !coordinator.indexProgressText.isEmpty {
                             Text(coordinator.indexProgressText)
                                 .font(.caption)
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(coordinator.indexStatusIsWarning ? Color.orange : Color.secondary)
                         }
                     }
                     Text("Embeddings need Ollama running (`ollama serve`) with nomic-embed-text. Without it, keyword search still works; embeddings backfill on the next reindex.")
@@ -79,6 +103,11 @@ struct KnowledgeView: View {
                         }
                         .padding(.vertical, 4)
                     }
+                    if !searchError.isEmpty {
+                        Text(searchError)
+                            .font(.caption)
+                            .foregroundStyle(.red)
+                    }
                 }
             }
         }
@@ -90,9 +119,15 @@ struct KnowledgeView: View {
     private func search() {
         guard let retriever = model.integrations?.retriever else { return }
         searching = true
+        searchError = ""
         let q = query
         Task {
-            results = (try? await retriever.retrieve(query: q, limit: 8)) ?? []
+            do {
+                results = try await retriever.retrieve(query: q, limit: 8)
+            } catch {
+                results = []
+                searchError = "Search failed: \(error.localizedDescription)"
+            }
             searching = false
         }
     }
