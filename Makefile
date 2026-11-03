@@ -12,8 +12,8 @@ NODE_TESTS := scripts/test-claude-interactive.mjs scripts/check-codex-interactiv
 help: ## List targets
 	@grep -E '^[a-z-]+:.*## ' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-10s %s\n", $$1, $$2}'
 
-setup: ## Enable the repo git hooks (once per clone)
-	git config core.hooksPath .githooks
+setup: ## Install the git hooks and the private denylist template (once per clone)
+	scripts/install-hooks.sh
 	@echo "Hooks enabled. Commit author: $$(git config user.email)"
 
 test: ## Package tests (swift test)

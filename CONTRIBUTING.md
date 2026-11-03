@@ -13,7 +13,7 @@ and Node 22+ for the sidecar helper tests.
 ```sh
 git clone https://github.com/leonardmo/Aitvaras.git && cd Aitvaras
 git config user.email "<id>+<user>@users.noreply.github.com"   # public repo
-make setup     # enable git hooks
+make setup     # install git hooks (all worktrees) and the private denylist template
 make check     # privacy sweep, Node helper tests, swift test
 make app       # Debug app build
 ```
@@ -30,8 +30,13 @@ Run the app against a throwaway profile, never your real one; see
   tests, app build) must be green; PRs are squash-merged.
 - Product and architecture changes start with
   [docs/DECISIONS.md](docs/DECISIONS.md).
-- Never commit personal or installation-specific data. The pre-commit hook
-  and CI enforce the basics.
+- Never commit personal or installation-specific data, in tests and fixtures
+  too (see "Public repository hygiene" in [AGENTS.md](AGENTS.md)). The hooks
+  check every commit and push. Put your own private terms (name, addresses,
+  institution, city, hostnames, project names) into
+  `.git/info/privacy-denylist`, one case-insensitive regex per line; the
+  maintainer mirrors theirs into the `PRIVACY_DENYLIST` repository secret so
+  CI checks them without publishing them.
 
 ## Releases
 

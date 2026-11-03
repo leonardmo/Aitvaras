@@ -23,10 +23,19 @@ jobs:
         with:
           fetch-depth: 0
       - name: Privacy sweep
+        env:
+          # The maintainer's private denylist (one regex per line). Hits are
+          # reported by file and line only, so the terms never reach the log.
+          AITVARAS_PRIVACY_DENYLIST: ${{ secrets.PRIVACY_DENYLIST }}
         run: scripts/check-privacy.sh
-      - name: Commit metadata
+      - name: Commit metadata and history
         if: github.event_name == 'pull_request'
-        run: scripts/check-commits.sh "origin/${{ github.base_ref }}..${{ github.event.pull_request.head.sha }}"
+        env:
+          AITVARAS_PRIVACY_DENYLIST: ${{ secrets.PRIVACY_DENYLIST }}
+          RANGE: origin/${{ github.base_ref }}..${{ github.event.pull_request.head.sha }}
+        run: |
+          scripts/check-commits.sh "$RANGE"
+          scripts/check-privacy.sh --commits "$RANGE"
 
   package:
     name: Package tests

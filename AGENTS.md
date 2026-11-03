@@ -30,11 +30,11 @@ Use `make` targets so every agent runs the same thing:
 
 | Command | What it does |
 |---|---|
-| `make setup` | Once per clone: enables the repo's git hooks (`.githooks/`). |
+| `make setup` | Once per clone: installs the git hooks (pre-commit, commit-msg, pre-push) for all worktrees and the private denylist template. |
 | `make test` | `swift test` on the AitvarasKit package. Works without Xcode. |
 | `make node-test` | Offline contract tests for the Node sidecar helpers. |
 | `make app` | `xcodegen generate` plus a Debug app build into `.build-xcode`. |
-| `make privacy` | Privacy and secret sweep over tracked files. |
+| `make privacy` | Privacy and secret sweep over tracked files, including the private denylist. |
 | `make check` | privacy + node-test + test. Run it before every commit. |
 | `make smoke` | check + app. Run it before every PR that touches `App/` or `project.yml`. |
 
@@ -70,21 +70,56 @@ also builds with Xcode 26. Both `-skipMacroValidation` and
 
 ## Public repository hygiene
 
-This repository is public. Everything you commit, including commit messages
-and PR text, is published.
+This repository is public and linked from the maintainer's portfolio.
+Everything you commit, including commit messages, branch names, PR text and
+issue comments, is published, and history is permanent: a later fix commit
+does not remove a leak.
 
-- Never commit installation-specific values: credentials, tokens, cookies,
-  email addresses, usernames, hostnames, IP addresses, Home Assistant
-  entity/device/area names, personal filesystem paths, or identifiers copied
-  from a live service. Docs, fixtures and tests use clearly synthetic values
-  and reserved domains (`example.invalid`, `192.0.2.0/24`, `/home/user`).
-- If live verification needs real values, inject them at runtime and make
-  sure commands and logs never print them.
+**No private data, anywhere, including tests, fixtures, demo data and
+examples.** Private means anything about the maintainer or their setup:
+
+- identity: names, email addresses (any real domain), usernames, account ids;
+- places and institutions: university or employer, campus, city, district,
+  transit lines, local services named after them (`moodle.<uni>.de`, a
+  canteen API, a city transit API);
+- their own projects, repositories, folder names, RAG sources and tools they
+  use privately (sync tools, note apps by vault name);
+- machines: hostnames, IP addresses, ports, hardware specs, Home Assistant
+  entity/device/area names, personal filesystem paths;
+- secrets and live identifiers: tokens, cookies, session ids, calendar or
+  course names copied from a live service;
+- anything you learned from `CLAUDE.local.md`, `AGENTS.local.md`, memory,
+  the maintainer's files or a live run. Context helps you work; it never
+  goes into tracked files.
+
+Use generic placeholders instead: "Studium", "Example University",
+`moodle.example.edu`, `person@example.org`, `*.invalid`, `192.0.2.0/24`,
+`/home/user`, a big-city example such as "Berlin". The demo persona "Alex"
+is fictional and must stay generic; don't give it details from the
+maintainer's life. If a real third-party domain is the point of a test (a
+shared mail provider), build addresses from a constant instead of writing a
+real-looking address. When unsure whether something is private, treat it as
+private and ask.
+
+Enforcement (don't work around it):
+
+- `make setup` installs git hooks into the shared git dir, so they guard
+  every worktree: pre-commit scans added lines, commit-msg checks messages,
+  and **pre-push scans every commit a push would publish** (identities,
+  messages, added lines). A blocked push means: rewrite those commits.
+- `scripts/check-privacy.sh` combines generic patterns with the
+  maintainer's **private denylist**, kept outside the repository in
+  `$(git rev-parse --git-common-dir)/info/privacy-denylist` and as the
+  `PRIVACY_DENYLIST` CI secret. Never copy its contents anywhere, never
+  print it, and never commit a pattern list containing private terms.
 - Commits are authored with the maintainer's GitHub noreply address. No
   co-author or "generated with" attribution lines in commits, PRs, issues or
   comments; the hooks and CI reject them.
-- `make privacy` must pass. If it flags something, fix the content; don't
-  widen the exclusions.
+- Never push a branch that contains history from the private archive
+  (`aitvaras.privateRemote` remotes); start from `origin/main`.
+- If a check flags something, fix the content. Don't widen exclusions,
+  disable hooks (`--no-verify`, changing `core.hooksPath`) or split strings
+  to dodge a pattern.
 
 ## How work flows (several agents at once)
 
