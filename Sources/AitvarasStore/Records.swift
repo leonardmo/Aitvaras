@@ -14,7 +14,8 @@ extension ActivityEvent: FetchableRecord, PersistableRecord {
             summary: row["summary"],
             detailJSON: row["detailJSON"],
             causedBy: row["causedBy"],
-            sourceID: row["sourceID"]
+            sourceID: row["sourceID"],
+            runID: row["runID"]
         )
     }
 
@@ -27,6 +28,7 @@ extension ActivityEvent: FetchableRecord, PersistableRecord {
         container["detailJSON"] = detailJSON
         container["causedBy"] = causedBy
         container["sourceID"] = sourceID
+        container["runID"] = runID
     }
 }
 
@@ -58,6 +60,9 @@ public struct Memory: Codable, Sendable, Identifiable, Equatable, FetchableRecor
 /// names ("fact-augmented keys") into the same sqlite-vec store as RAG.
 public struct MemoryFact: Codable, Sendable, Identifiable, Equatable, FetchableRecord, PersistableRecord {
     public static var databaseTableName: String { "memoryFact" }
+    public static let maximumTextCharacters = 2_000
+    public static let maximumEntitiesCharacters = 1_000
+    public static let maximumEntityCount = 20
 
     /// What sort of fact this is (drives retrieval weighting and the
     /// sensitive-kind confirmation gate, O7).
@@ -152,6 +157,7 @@ struct FactEntityLink: Codable, Sendable, FetchableRecord, PersistableRecord {
 /// graph traversal — the "graph-lite" shape (MASTERPLAN §9 L3).
 public struct MemoryEntity: Codable, Sendable, Identifiable, Equatable, FetchableRecord, PersistableRecord {
     public static var databaseTableName: String { "memoryEntity" }
+    public static let maximumNameCharacters = 200
 
     public enum Kind: String, Sendable, CaseIterable {
         case person, place, course, system, org, other
@@ -182,6 +188,8 @@ public struct MemoryEntity: Codable, Sendable, Identifiable, Equatable, Fetchabl
 /// Q&A sessions; an answer becomes a `userAnswered` fact and retires it.
 public struct CuriosityQuestion: Codable, Sendable, Identifiable, Equatable, FetchableRecord, PersistableRecord {
     public static var databaseTableName: String { "curiosityQuestion" }
+    public static let maximumTextCharacters = 1_000
+    public static let maximumMotivationCharacters = 1_000
 
     public enum Status: String, Sendable {
         case open, answered, dismissed
@@ -210,7 +218,9 @@ public struct CuriosityQuestion: Codable, Sendable, Identifiable, Equatable, Fet
     public var statusValue: Status { Status(rawValue: status) ?? .open }
 }
 
-/// A finished capture session (F12): transcript + screen notes + summary.
+/// A capture session (F12): transcript + screen notes + summary. While a
+/// session is live, a summary-pending version can also be checkpointed here
+/// so an app or system failure does not erase a long transcript.
 /// Deliberately contains NO media — raw audio/frames are transcribe-and-
 /// discard by hard rule; text is all that ever persists.
 public struct CaptureRecord: Codable, Sendable, Identifiable, Equatable, FetchableRecord, PersistableRecord {
@@ -222,14 +232,14 @@ public struct CaptureRecord: Codable, Sendable, Identifiable, Equatable, Fetchab
     public var title: String
     /// Human-readable scope, e.g. "Fenster: Zoom", "Ganzer Bildschirm", "Nur Audio".
     public var scope: String
-    /// "none" | "system" | "system+mic"
+    /// "none" | "mic" | "system" | "system+mic"
     public var audio: String
     /// The user confirmed all recorded people know and agree (O13).
     public var consentConfirmed: Bool
     public var transcript: String
     public var summary: String
-    /// Set when summarization failed (engine unavailable) — transcript is
-    /// still intact and the summary can be regenerated later.
+    /// Set while summarization is incomplete or its result could not be
+    /// persisted — transcript is still intact and can be retried later.
     public var summaryPending: Bool
 
     public init(id: UUID = UUID(), startedAt: Date, endedAt: Date = .now,
@@ -246,6 +256,78 @@ public struct CaptureRecord: Codable, Sendable, Identifiable, Equatable, Fetchab
         self.transcript = transcript
         self.summary = summary
         self.summaryPending = summaryPending
+    }
+}
+
+/// Durable outbox entry for an urgent phone push. The event itself is already
+/// in the activity log; this small copy exists only until Telegram confirms
+/// delivery (or the alert becomes too old to be useful).
+public struct PhoneNotificationOutboxItem: Codable, Sendable, Identifiable, Equatable,
+                                            FetchableRecord, PersistableRecord {
+    public static var databaseTableName: String { "phoneNotificationOutbox" }
+
+    public var id: UUID
+    public var text: String
+    public var createdAt: Date
+    public var attempts: Int
+    public var nextAttemptAt: Date
+    public var causedBy: UUID
+    public var sourceID: String?
+    public var queueEventID: UUID
+
+    public init(id: UUID = UUID(), text: String, createdAt: Date = .now,
+                attempts: Int = 0, nextAttemptAt: Date = .now,
+                causedBy: UUID, sourceID: String? = nil, queueEventID: UUID) {
+        self.id = id
+        self.text = text
+        self.createdAt = createdAt
+        self.attempts = attempts
+        self.nextAttemptAt = nextAttemptAt
+        self.causedBy = causedBy
+        self.sourceID = sourceID
+        self.queueEventID = queueEventID
+    }
+
+    /// 1m, 5m, 15m, then hourly until the six-hour usefulness window ends.
+    public static func retryDelay(afterAttempt attempt: Int) -> TimeInterval {
+        switch attempt {
+        case ...1: 60
+        case 2: 5 * 60
+        case 3: 15 * 60
+        default: 60 * 60
+        }
+    }
+}
+
+/// Process-local duplicate/backoff guard layered under the durable outbox.
+/// It matters only when SQLite cannot save a deferral after an external send;
+/// normal retry state always comes from `phoneNotificationOutbox`.
+public struct PhoneNotificationAttemptGate: Sendable {
+    private var suppressedUntil: [UUID: Date] = [:]
+
+    public init() {}
+
+    public mutating func suppress(id: UUID, until: Date) {
+        suppressedUntil[id] = until
+    }
+
+    public mutating func clear(id: UUID) {
+        suppressedUntil[id] = nil
+    }
+
+    public mutating func clearAll() {
+        suppressedUntil = [:]
+    }
+
+    public mutating func eligible(
+        _ items: [PhoneNotificationOutboxItem],
+        now: Date = .now
+    ) -> [PhoneNotificationOutboxItem] {
+        suppressedUntil = suppressedUntil.filter { $0.value > now }
+        return items.filter { item in
+            guard let until = suppressedUntil[item.id] else { return true }
+            return until <= now
+        }
     }
 }
 
@@ -352,6 +434,23 @@ public struct Goal: Codable, Sendable, Identifiable, Equatable, FetchableRecord,
     }
 }
 
+/// A non-urgent update deferred until the user's next focus break. Persisted
+/// so restarting Aitvaras during a focus session cannot discard it.
+public struct HeldNotification: Codable, Sendable, Identifiable, Equatable,
+                                FetchableRecord, PersistableRecord {
+    public var id: UUID
+    public var title: String
+    public var body: String
+    public var createdAt: Date
+
+    public init(id: UUID = UUID(), title: String, body: String, createdAt: Date = .now) {
+        self.id = id
+        self.title = title
+        self.body = body
+        self.createdAt = createdAt
+    }
+}
+
 /// A pending action card (D5/D13): Aitvaras proposes, the user accepts/rejects.
 public struct Suggestion: Codable, Sendable, Identifiable, Equatable, FetchableRecord, PersistableRecord {
     public var id: UUID
@@ -376,5 +475,84 @@ public struct Suggestion: Codable, Sendable, Identifiable, Equatable, FetchableR
         self.argumentsJSON = argumentsJSON
         self.status = status
         self.causedBy = causedBy
+    }
+}
+
+/// A sender or exact domain the user has approved for assistant processing.
+/// This is a routing preference, not proof of message authenticity.
+public struct TrustedMessageSource: Codable, Sendable, Identifiable, Equatable,
+                                    FetchableRecord, PersistableRecord {
+    public static var databaseTableName: String { "trustedMessageSource" }
+
+    public var id: UUID
+    public var kind: TrustedMessageSourceKind
+    public var value: String
+    public var applicationID: String
+    public var label: String
+    public var createdAt: Date
+
+    public init(
+        id: UUID = UUID(),
+        kind: TrustedMessageSourceKind,
+        value: String,
+        applicationID: String = "",
+        label: String,
+        createdAt: Date = .now
+    ) {
+        self.id = id
+        self.kind = kind
+        self.value = value
+        self.applicationID = applicationID
+        self.label = label
+        self.createdAt = createdAt
+    }
+}
+
+/// Privacy-minimal review queue: only sender identity and counters are kept;
+/// message subjects/bodies are not duplicated into the trust database.
+public struct MessageSourceObservation: Codable, Sendable, Identifiable, Equatable,
+                                        FetchableRecord, PersistableRecord {
+    public static var databaseTableName: String { "messageSourceObservation" }
+
+    public var id: UUID
+    public var connectorID: String
+    public var kind: TrustedMessageSourceKind
+    public var value: String
+    public var applicationID: String
+    public var displayName: String
+    public var domain: String?
+    public var canApproveExactSender: Bool
+    public var firstSeenAt: Date
+    public var lastSeenAt: Date
+    public var messageCount: Int
+    public var dismissedAt: Date?
+
+    public init?(
+        id: UUID = UUID(),
+        connectorID: String,
+        source: ExternalMessageSource,
+        firstSeenAt: Date = .now,
+        lastSeenAt: Date = .now,
+        messageCount: Int = 1,
+        dismissedAt: Date? = nil
+    ) {
+        let kind: TrustedMessageSourceKind
+        switch source.kind {
+        case .email: kind = .emailAddress
+        case .notification: kind = .notificationSender
+        case .configuredService: return nil
+        }
+        self.id = id
+        self.connectorID = connectorID
+        self.kind = kind
+        self.value = source.identity
+        self.applicationID = source.applicationID
+        self.displayName = source.displayName
+        self.domain = source.domain
+        self.canApproveExactSender = source.canApproveExactSender
+        self.firstSeenAt = firstSeenAt
+        self.lastSeenAt = lastSeenAt
+        self.messageCount = messageCount
+        self.dismissedAt = dismissedAt
     }
 }

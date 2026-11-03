@@ -53,6 +53,7 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: app.aitvaras.Aitvaras
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         PRODUCT_NAME: Aitvaras
         MARKETING_VERSION: 0.1.0
         CURRENT_PROJECT_VERSION: 1
@@ -76,10 +77,10 @@ targets:
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         LSApplicationCategoryType: public.app-category.productivity
-        NSHumanReadableCopyright: Local-first personal AI. All inference on-device.
-        NSMicrophoneUsageDescription: Aitvaras listens to you during voice conversations. Audio never leaves this Mac.
-        NSSpeechRecognitionUsageDescription: Aitvaras transcribes your speech on-device for voice conversations.
+        NSHumanReadableCopyright: Local-first personal AI. Cloud use is explicit.
+        NSMicrophoneUsageDescription: Aitvaras uses the microphone for voice conversations and captures you start. Audio stays on this Mac and is saved only if you explicitly enable source retention for capture.
+        NSSpeechRecognitionUsageDescription: Aitvaras transcribes speech on-device for voice conversations and captures you start.
         NSCalendarsFullAccessUsageDescription: Aitvaras reads your calendar and creates events for you (she only ever modifies events she created herself).
         NSRemindersFullAccessUsageDescription: Aitvaras reads and creates reminders/todos for you.
-        NSAppleEventsUsageDescription: Aitvaras reads new mail from Apple Mail to summarize it and suggest actions. Mail stays unread and no mail is ever sent automatically.
-        NSAudioCaptureUsageDescription: During a capture session Aitvaras transcribes system audio on-device. No audio is ever recorded to disk.
+        NSAppleEventsUsageDescription: Aitvaras reads new mail from Apple Mail, holds unknown senders for review, and can summarize approved senders or suggest confirmation-gated actions. Mail stays unread and no mail is ever sent automatically.
+        NSAudioCaptureUsageDescription: During a capture session Aitvaras transcribes system audio on-device. Audio is discarded unless you explicitly choose to retain source audio locally.

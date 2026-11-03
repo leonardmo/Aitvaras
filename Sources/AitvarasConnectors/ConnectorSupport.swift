@@ -14,6 +14,62 @@ public struct ConnectorError: Error, LocalizedError, Sendable {
     public var errorDescription: String? { message }
 }
 
+/// Converts transport failures into useful, credential-safe messages. Some
+/// services (notably Telegram and Moodle calendar exports) put secrets in the
+/// request URL; `URLError.localizedDescription` and its userInfo may repeat
+/// that URL, so connector errors must never forward it verbatim.
+enum ConnectorDiagnostics {
+    static func networkFailure(operation: String, error: Error) -> ConnectorError {
+        let reason: String
+        if let oversized = error as? HTTPResponseTooLargeError {
+            reason = oversized.localizedDescription
+        } else if let urlError = error as? URLError {
+            switch urlError.code {
+            case .notConnectedToInternet, .networkConnectionLost:
+                reason = "No internet connection"
+            case .timedOut:
+                reason = "The request timed out"
+            case .cannotFindHost, .cannotConnectToHost, .dnsLookupFailed:
+                reason = "The service could not be reached"
+            case .secureConnectionFailed, .serverCertificateHasBadDate,
+                 .serverCertificateUntrusted, .serverCertificateHasUnknownRoot,
+                 .serverCertificateNotYetValid, .clientCertificateRejected,
+                 .clientCertificateRequired:
+                reason = "The secure connection could not be verified"
+            case .cancelled:
+                reason = "The request was cancelled"
+            default:
+                reason = "Network error (code \(urlError.errorCode))"
+            }
+        } else {
+            // Numeric codes are enough for diagnosis and cannot contain a
+            // credential, URL, local path, or server-provided response text.
+            reason = "Request error (code \((error as NSError).code))"
+        }
+        return ConnectorError("\(operation) failed: \(reason).")
+    }
+
+    /// Remove configured credentials from data returned by a remote service.
+    /// Besides the raw value, cover the encodings commonly used by query,
+    /// Basic-auth and JSON transports so an echo/debug endpoint cannot feed a
+    /// Keychain secret back into chat, activity, memory, or trigger state.
+    static func redacted(_ text: String, secrets: [String]) -> String {
+        let variants = Set(secrets.flatMap { secret -> [String] in
+            guard !secret.isEmpty else { return [] }
+            return [
+                secret,
+                Data(secret.utf8).base64EncodedString(),
+                secret.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? secret,
+                JSONText.escape(secret)
+            ]
+        }).sorted { $0.count > $1.count }
+
+        return variants.reduce(text) { partial, secret in
+            partial.replacingOccurrences(of: secret, with: "[redacted]")
+        }
+    }
+}
+
 /// Decoded tool-call arguments (the raw JSON object the model produced).
 /// Lenient on types: numbers arriving as strings and vice versa are accepted,
 /// because small local models are not always schema-strict.
@@ -62,6 +118,15 @@ struct ToolArgs {
         if let b = dict[key] as? Bool { return b }
         if let s = dict[key] as? String { return Bool(s.lowercased()) }
         return nil
+    }
+
+    func requireOnly(_ allowedKeys: Set<String>) throws {
+        let unexpected = Set(dict.keys).subtracting(allowedKeys).sorted()
+        guard unexpected.isEmpty else {
+            throw ConnectorError(
+                "Unexpected tool argument\(unexpected.count == 1 ? "" : "s"): "
+                    + unexpected.joined(separator: ", "))
+        }
     }
 
     /// Every argument as a string, for `{placeholder}` substitution in

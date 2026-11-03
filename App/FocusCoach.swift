@@ -23,9 +23,12 @@ final class FocusCoach {
     private let stores: Stores
     private let router: EngineRouter
     private let notifications: NotificationRouter
+    private let reporter: ActivityReporter?
+    private var activityID: UUID?
 
     private var samplerTask: Task<Void, Never>?
     private var driftTask: Task<Void, Never>?
+    private var shortcutTask: Task<Void, Never>?
 
     private struct Sample { let at: Date; let app: String }
     private var samples: [Sample] = []
@@ -34,102 +37,222 @@ final class FocusCoach {
     private var lastBreakNudge: Date = .distantPast
     private var lastDriftNudge: Date = .distantPast
     private var sessionApps: [String: Int] = [:]     // whole-session app tally
+    /// UI and routing read the last complete durable snapshot. A temporary
+    /// database failure must not turn a known running session into "off".
+    private var cachedEnabled = false
+    private var cachedSessionActive = false
+    private var cachedSessionStart: Date?
+    private var cachedBreakIntervalMinutes = 50
 
     /// How responsive drift detection is, and how it's rate-limited.
     private let driftCheckInterval: TimeInterval = 4 * 60
     private let sustainedDriftBeforeNudge: TimeInterval = 5 * 60
     private let minGapBetweenDriftNudges: TimeInterval = 15 * 60
 
-    init(stores: Stores, router: EngineRouter, notifications: NotificationRouter) {
+    init(stores: Stores, router: EngineRouter, notifications: NotificationRouter, reporter: ActivityReporter? = nil) {
         self.stores = stores
         self.router = router
         self.notifications = notifications
+        self.reporter = reporter
+    }
+
+    deinit {
+        samplerTask?.cancel()
+        driftTask?.cancel()
+        shortcutTask?.cancel()
     }
 
     // MARK: Capability + session state
 
     var isEnabled: Bool {
-        (try? stores.value(forKey: Self.enabledKey)) == "1"
+        cachedEnabled
     }
 
     var isSessionActive: Bool {
-        (try? stores.value(forKey: Self.sessionKey)) == "1"
+        cachedSessionActive
     }
 
     var sessionStart: Date? {
-        guard let raw = try? stores.value(forKey: Self.sessionStartKey) ?? nil,
-              let secs = Double(raw) else { return nil }
-        return Date(timeIntervalSince1970: secs)
+        cachedSessionStart
     }
 
     var breakIntervalMinutes: Int {
-        Int((try? stores.value(forKey: Self.breakIntervalKey) ?? nil) ?? "") ?? 50
+        cachedBreakIntervalMinutes
     }
 
-    func setBreakInterval(minutes: Int) {
-        try? stores.setValue(String(max(10, min(180, minutes))), forKey: Self.breakIntervalKey)
+    func setBreakInterval(minutes: Int) throws {
+        let bounded = max(10, min(180, minutes))
+        try stores.setValue(String(bounded), forKey: Self.breakIntervalKey)
+        cachedBreakIntervalMinutes = bounded
     }
 
-    func setEnabled(_ enabled: Bool) {
-        try? stores.setValue(enabled ? "1" : "0", forKey: Self.enabledKey)
+    func setEnabled(_ enabled: Bool) throws {
+        let wasActive = try storedSessionActive()
+        if enabled {
+            try stores.setValue("1", forKey: Self.enabledKey)
+        } else {
+            try stores.setValues([
+                Self.enabledKey: "0",
+                Self.sessionKey: "0"
+            ])
+        }
+        cachedEnabled = enabled
+        if !enabled { cachedSessionActive = false }
         if enabled {
             UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
         } else {
-            endSession()
+            finishSession(wasActive: wasActive)
         }
     }
 
     /// Resume a session that was active when the app last quit.
     func startIfSessionActive() {
-        if isEnabled, isSessionActive { startMonitoring() }
+        do {
+            let state = try readStoredState()
+            apply(state)
+            if state.enabled, state.active {
+                runMacFocusShortcut(on: true)
+                startMonitoring()
+            }
+        } catch {
+            notifications.reportError?("Focus session state could not be restored", error)
+        }
+    }
+
+    /// A previous process's observation session never silently resumes.
+    func suspendRestoredSession() {
+        do {
+            let state = try readStoredState()
+            apply(state)
+            if state.active { try stores.setValue("0", forKey: Self.sessionKey) }
+            cachedSessionActive = false
+            stopMonitoring()
+        } catch { notifications.reportError?("Focus state needs attention", error) }
+    }
+
+    func suspendMonitoring() {
+        if let activityID { reporter?.finish(id: activityID, state: .interrupted, outcome: "Observation paused; start a new focus session explicitly") }
+        activityID = nil
+        stopMonitoring()
+        shortcutTask?.cancel()
+        if cachedSessionActive {
+            try? stores.setValue("0", forKey: Self.sessionKey)
+            cachedSessionActive = false
+            notifyStateChanged()
+        }
     }
 
     /// Bring monitoring in line with the stored session flag — the flag
     /// can be flipped from voice/chat tools (which only write the store),
     /// so the app calls this after turns to start/stop the coach tasks.
     func reconcile() {
-        if !isEnabled { stopMonitoring(); return }
-        if isSessionActive, samplerTask == nil {
-            sessionApps = [:]; lastBreakNudge = .now; lastDriftNudge = .distantPast; driftingSince = nil
-            runMacFocusShortcut(on: true)
-            startMonitoring()
-            notifyStateChanged()
-        } else if !isSessionActive, samplerTask != nil {
-            stopMonitoring()
-            runMacFocusShortcut(on: false)
-            notifications.flushHeld(reason: "Focus session ended")
-            Task { await deliverSessionSummary() }
-            notifyStateChanged()
+        do {
+            let state = try readStoredState()
+            apply(state)
+            guard state.enabled else { stopMonitoring(); return }
+            if state.active, samplerTask == nil {
+                sessionApps = [:]; lastBreakNudge = .now; lastDriftNudge = .distantPast; driftingSince = nil
+                runMacFocusShortcut(on: true)
+                startMonitoring()
+                notifyStateChanged()
+            } else if !state.active, samplerTask != nil {
+                stopMonitoring()
+                runMacFocusShortcut(on: false)
+                notifications.flushHeld(reason: "Focus session ended")
+                Task { await deliverSessionSummary() }
+                notifyStateChanged()
+            }
+        } catch {
+            // A failed durable read is not the same as a disabled or ended
+            // session. Preserve the last monitoring state and surface it.
+            notifications.reportError?("Focus session state could not be refreshed", error)
         }
     }
 
     // MARK: Session lifecycle
 
-    func startSession() {
-        guard isEnabled else { return }
-        guard !isSessionActive else { return }
-        try? stores.setValue("1", forKey: Self.sessionKey)
-        try? stores.setValue(String(Date.now.timeIntervalSince1970), forKey: Self.sessionStartKey)
+    func startSession() throws {
+        guard try storedEnabled() else {
+            throw FocusSessionError("Enable Focus Coach in Connections before starting a session.")
+        }
+        guard try !storedSessionActive() else { return }
+        let startedAt = Date.now
+        try stores.setValues([
+            Self.sessionKey: "1",
+            Self.sessionStartKey: String(startedAt.timeIntervalSince1970)
+        ])
+        cachedEnabled = true
+        cachedSessionActive = true
+        cachedSessionStart = startedAt
         sessionApps = [:]
         lastBreakNudge = .now
         lastDriftNudge = .distantPast
         driftingSince = nil
         runMacFocusShortcut(on: true)
         startMonitoring()
-        try? stores.record(ActivityEvent(
+        recordActivity(ActivityEvent(
             kind: .notificationSent, connectorID: "focus", summary: "Focus session started"))
         notifyStateChanged()
     }
 
-    func endSession() {
-        let wasActive = isSessionActive
-        try? stores.setValue("0", forKey: Self.sessionKey)
+    func endSession() throws {
+        let wasActive = try storedSessionActive()
+        try stores.setValue("0", forKey: Self.sessionKey)
+        cachedSessionActive = false
+        finishSession(wasActive: wasActive)
+    }
+
+    private func storedEnabled() throws -> Bool {
+        try stores.value(forKey: Self.enabledKey) == "1"
+    }
+
+    private func storedSessionActive() throws -> Bool {
+        try stores.value(forKey: Self.sessionKey) == "1"
+    }
+
+    private struct StoredState {
+        var enabled: Bool
+        var active: Bool
+        var start: Date?
+        var breakIntervalMinutes: Int
+    }
+
+    /// Read every field before replacing the cache, so a partial database
+    /// failure cannot produce a half-new state in the UI.
+    private func readStoredState() throws -> StoredState {
+        let enabled = try storedEnabled()
+        var active = try storedSessionActive()
+        // This combination can only be left by an interrupted/older build.
+        // Repair it before notification routing sees a focus hold that no
+        // coach task will ever drain.
+        if active, !enabled {
+            try stores.setValue("0", forKey: Self.sessionKey)
+            active = false
+        }
+        let startRaw = try stores.value(forKey: Self.sessionStartKey)
+        let start = startRaw.flatMap(Double.init)
+            .map(Date.init(timeIntervalSince1970:))
+        let intervalRaw = try stores.value(forKey: Self.breakIntervalKey)
+        let interval = intervalRaw.flatMap(Int.init).map { max(10, min(180, $0)) } ?? 50
+        return StoredState(
+            enabled: enabled, active: active, start: start,
+            breakIntervalMinutes: interval)
+    }
+
+    private func apply(_ state: StoredState) {
+        cachedEnabled = state.enabled
+        cachedSessionActive = state.active
+        cachedSessionStart = state.start
+        cachedBreakIntervalMinutes = state.breakIntervalMinutes
+    }
+
+    private func finishSession(wasActive: Bool) {
         stopMonitoring()
         runMacFocusShortcut(on: false)
         notifications.flushHeld(reason: "Focus session ended")
         if wasActive {
             Task { await deliverSessionSummary() }
-            try? stores.record(ActivityEvent(
+            recordActivity(ActivityEvent(
                 kind: .notificationSent, connectorID: "focus", summary: "Focus session ended"))
         }
         notifyStateChanged()
@@ -144,22 +267,28 @@ final class FocusCoach {
 
     private func startMonitoring() {
         guard samplerTask == nil else { return }
+        activityID = reporter?.begin(ActivityRun(category: .automation, title: "Focus session",
+            stage: "Observing app activity locally", executionLocation: "This Mac",
+            dataAccess: "Active app and idle-time metadata", dataDestination: "Local processing only"))
         continuousActiveSince = .now
         samplerTask = Task { [weak self] in
             while !Task.isCancelled {
                 self?.takeSample()
-                try? await Task.sleep(for: .seconds(30))
+                do { try await Task.sleep(for: .seconds(30)) } catch { return }
             }
         }
         driftTask = Task { [weak self] in
             while !Task.isCancelled {
-                try? await Task.sleep(for: .seconds(self?.driftCheckInterval ?? 240))
+                do { try await Task.sleep(for: .seconds(self?.driftCheckInterval ?? 240)) } catch { return }
+                guard !Task.isCancelled, self?.cachedSessionActive == true else { return }
                 await self?.checkDrift()
             }
         }
     }
 
     private func stopMonitoring() {
+        if let activityID { reporter?.finish(id: activityID, state: .succeeded, outcome: "Focus observation ended") }
+        activityID = nil
         samplerTask?.cancel(); samplerTask = nil
         driftTask?.cancel(); driftTask = nil
         samples.removeAll()
@@ -201,14 +330,15 @@ final class FocusCoach {
     // MARK: Break + session briefings (model-composed)
 
     private func deliverBreakBriefing(trigger: String) async {
-        let held = notifications.takeHeld()
+        let held = notifications.heldItems()
         let breakLine = trigger.contains("away")
             ? "Welcome back."
             : "You've been focused for a while — time for a short break. Stretch, water, look away from the screen."
 
         if held.isEmpty {
             notifications.speakOrPost(title: trigger, body: breakLine.contains("Welcome") ? "" : "Stretch and rest your eyes.", urgent: true)
-            try? stores.record(ActivityEvent(kind: .notificationSent, connectorID: "focus", summary: trigger))
+            recordActivity(ActivityEvent(
+                kind: .notificationSent, connectorID: "focus", summary: trigger))
             return
         }
 
@@ -216,7 +346,8 @@ final class FocusCoach {
             intro: breakLine,
             items: held.map { "\($0.title): \($0.body)" })
         notifications.speakOrPost(title: "Break", body: composed, urgent: true)
-        try? stores.record(ActivityEvent(
+        notifications.markDelivered(held)
+        recordActivity(ActivityEvent(
             kind: .notificationSent, connectorID: "focus",
             summary: "Break briefing (\(held.count) held)"))
         notifyStateChanged()
@@ -228,15 +359,24 @@ final class FocusCoach {
         guard minutes >= 5 else { return }
         let topApps = sessionApps.sorted { $0.value > $1.value }.prefix(3)
             .map { "\($0.key) (\($0.value / 2)min)" }.joined(separator: ", ")
-        let goals = (try? stores.goals(day: Goal.today())) ?? []
-        let done = goals.filter(\.done).count
+        let goalLine: String
+        do {
+            let goals = try stores.goals(day: Goal.today())
+            let done = goals.filter(\.done).count
+            goalLine = goals.isEmpty
+                ? "No goals set today"
+                : "Goals completed: \(done) of \(goals.count)"
+        } catch {
+            notifications.reportError?("Goals could not be loaded for the focus summary", error)
+            goalLine = "Goal status unavailable"
+        }
 
         let summary = await composeBriefing(
             intro: "Focus session over.",
             items: [
                 "Duration: about \(minutes) minutes",
                 "Main apps: \(topApps.isEmpty ? "none tracked" : topApps)",
-                goals.isEmpty ? "No goals set today" : "Goals completed: \(done) of \(goals.count)"
+                goalLine
             ])
         notifications.speakOrPost(title: "Session summary", body: summary, urgent: false)
     }
@@ -259,7 +399,8 @@ final class FocusCoach {
         ]
         var out = ""
         do {
-            for try await chunk in await engine.complete(messages: messages, tools: [], tier: .background) {
+            for try await chunk in await engine.completeWithInactivityTimeout(
+                messages: messages, tools: [], tier: .background) {
                 if case .text(let t) = chunk { out += t }
             }
         } catch {
@@ -273,7 +414,13 @@ final class FocusCoach {
 
     private func checkDrift() async {
         guard isSessionActive, continuousActiveSince != nil else { return }
-        let goals = (try? stores.goals(day: Goal.today())) ?? []
+        let goals: [Goal]
+        do {
+            goals = try stores.goals(day: Goal.today())
+        } catch {
+            notifications.reportError?("Goals could not be loaded for focus coaching", error)
+            return
+        }
         let openGoals = goals.filter { !$0.done }
         guard !openGoals.isEmpty else { return }
 
@@ -303,28 +450,34 @@ final class FocusCoach {
         ]
         var raw = ""
         do {
-            for try await chunk in await engine.complete(messages: messages, tools: [], tier: .background) {
+            for try await chunk in await engine.completeWithInactivityTimeout(
+                messages: messages, tools: [], tier: .background) {
                 if case .text(let t) = chunk { raw += t }
             }
         } catch { return }
 
-        let drifting = (try? JSONSerialization.jsonObject(with: Data(
-            raw[(raw.firstIndex(of: "{") ?? raw.startIndex)...(raw.lastIndex(of: "}") ?? raw.index(before: raw.endIndex))].utf8)))
-            .flatMap { $0 as? [String: Any] }
+        guard let start = raw.firstIndex(of: "{"),
+              let end = raw.lastIndex(of: "}"), start <= end,
+              let drifting = (try? JSONSerialization.jsonObject(
+                with: Data(raw[start...end].utf8))) as? [String: Any] else {
+            return
+        }
 
-        if drifting?["drifting"] as? Bool == true {
+        if drifting["drifting"] as? Bool == true {
             if driftingSince == nil { driftingSince = .now }
             // Only nudge once drift is SUSTAINED, and not too often.
             guard let since = driftingSince,
                   Date.now.timeIntervalSince(since) >= sustainedDriftBeforeNudge,
                   Date.now.timeIntervalSince(lastDriftNudge) >= minGapBetweenDriftNudges,
-                  let nudge = drifting?["nudge"] as? String, !nudge.isEmpty else { return }
+                  let nudge = drifting["nudge"] as? String, !nudge.isEmpty else { return }
             lastDriftNudge = .now
             driftingSince = nil
             notifications.deliver(title: "Aitvaras", body: nudge, urgent: true)
-            try? stores.record(ActivityEvent(
+            // App usage is deliberately memory-only. Do not attach `usage`
+            // to this durable event even though it helped the local model.
+            recordActivity(ActivityEvent(
                 kind: .notificationSent, connectorID: "focus",
-                summary: "Focus nudge: \(nudge)", detailJSON: #"{"usage":"\#(usage)"}"#))
+                summary: "Focus nudge: \(nudge)"))
             notifyStateChanged()
         } else {
             driftingSince = nil   // back on task
@@ -334,16 +487,51 @@ final class FocusCoach {
     // MARK: Optional macOS Focus automation via Shortcuts
 
     private func runMacFocusShortcut(on: Bool) {
-        guard let base = try? stores.value(forKey: Self.macFocusShortcutKey) ?? nil, !base.isEmpty else { return }
+        let base: String
+        do {
+            guard let saved = try stores.value(forKey: Self.macFocusShortcutKey)?
+                .trimmingCharacters(in: .whitespacesAndNewlines), !saved.isEmpty else { return }
+            base = saved
+        } catch {
+            notifications.reportError?("Focus shortcut could not be loaded", error)
+            return
+        }
+
         let name = on ? base : "\(base) Off"
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/shortcuts")
-        process.arguments = ["run", name]
-        process.standardError = FileHandle.nullDevice
-        try? process.run()
+        shortcutTask?.cancel()
+        shortcutTask = Task { [weak self] in
+            do {
+                let output = try await DisclaimedProcess.run(
+                    executable: "/usr/bin/shortcuts",
+                    arguments: ["run", name],
+                    timeout: 30)
+                guard output.exitCode == 0 else {
+                    throw FocusSessionError(
+                        "The macOS Shortcut exited with code \(output.exitCode).")
+                }
+            } catch is CancellationError {
+                return
+            } catch {
+                self?.notifications.reportError?("Focus shortcut could not run", error)
+            }
+        }
+    }
+
+    private func recordActivity(_ event: ActivityEvent) {
+        do {
+            _ = try stores.record(event)
+        } catch {
+            notifications.reportError?("Focus activity could not be saved", error)
+        }
     }
 }
 
 extension Notification.Name {
     static let aitvarasFocusChanged = Notification.Name("aitvarasFocusChanged")
+}
+
+private struct FocusSessionError: Error, LocalizedError {
+    let message: String
+    init(_ message: String) { self.message = message }
+    var errorDescription: String? { message }
 }
