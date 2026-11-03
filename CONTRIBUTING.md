@@ -45,6 +45,11 @@ The `Release` workflow builds the app and attaches a zip to a GitHub
 Release. It signs and notarizes when the signing secrets are configured;
 otherwise the build is ad-hoc signed.
 
+## Repository settings
+
+Branch rules, merge options, security features and labels are kept as code
+in `scripts/configure-github.sh`. Re-run it after changing what it sets.
+
 ## License
 
 The repository is source-available for portfolio and review purposes. No
