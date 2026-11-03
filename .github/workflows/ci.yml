@@ -63,8 +63,12 @@ jobs:
 
   app:
     name: App build
-    runs-on: macos-26
+    # Xcode 26.6's Swift 6.3 compiler crashes in IRGen on the app target;
+    # build with the same Xcode 27 the app is developed with.
+    runs-on: xcode-27
     timeout-minutes: 60
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_27.2.app/Contents/Developer
     steps:
       - uses: actions/checkout@v7
       - name: Tools
