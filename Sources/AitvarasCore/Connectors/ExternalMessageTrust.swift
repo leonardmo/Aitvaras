@@ -157,7 +157,7 @@ public enum TrustedMessageSourceKind: String, Sendable, Codable, CaseIterable {
 public enum MessageTrustPolicy {
     /// Domain-wide approval is intentionally unavailable for shared consumer
     /// mailbox providers. Approving gmx.de, for example, would approve
-    /// every Gmail user rather than one known contact.
+    /// every GMX customer rather than one known contact.
     public static let broadMailboxDomains: Set<String> = [
         "aol.com", "freenet.de", "gmail.com", "googlemail.com", "gmx.com",
         "gmx.de", "gmx.net", "hotmail.com", "icloud.com", "live.com",

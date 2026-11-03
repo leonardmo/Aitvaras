@@ -1,3 +1,5 @@
 #!/usr/bin/env bash
-# Rejects tool attribution lines in commit messages (public repository).
-exec "$(git rev-parse --show-toplevel)/scripts/check-commits.sh" --message "$1"
+# Rejects tool attribution and private data in commit messages.
+set -e
+. "$(dirname "$0")/lib.sh"
+"$(tool check-commits.sh)" --message "$1"

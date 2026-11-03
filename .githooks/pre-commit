@@ -1,12 +1,19 @@
 #!/usr/bin/env bash
-# Enabled by `make setup` (core.hooksPath=.githooks).
+# Blocks commits that are not authored with the GitHub noreply address or that
+# add private data. Installed by `make setup`.
 set -e
-root="$(git rev-parse --show-toplevel)"
+. "$(dirname "$0")/lib.sh"
+
+branch="$(git symbolic-ref --quiet --short HEAD || true)"
+if [ -n "$branch" ] && is_private_remote "$(git config "branch.$branch.remote" || true)"; then
+    exit 0
+fi
+
 case "$(git var GIT_AUTHOR_IDENT)" in
     *@users.noreply.github.com\>*) ;;
     *) echo "✗ Commit author must use the GitHub noreply address (git config user.email)." >&2; exit 1 ;;
 esac
-"$root/scripts/check-privacy.sh" --staged >/dev/null || {
-    "$root/scripts/check-privacy.sh" --staged
+"$(tool check-privacy.sh)" --staged >/dev/null 2>&1 || {
+    "$(tool check-privacy.sh)" --staged
     exit 1
 }

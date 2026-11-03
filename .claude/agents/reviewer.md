@@ -26,7 +26,7 @@ Look for, in priority order:
    - an API-key or cloud-LLM fallback
    - secrets outside the Keychain
 3. **Missing tests**, especially the failure path of a new pipeline.
-4. **Installation-specific data** in code, fixtures, docs or messages.
+4. **Private or installation-specific data** in code, tests, fixtures, demo data, docs or messages (see "Public repository hygiene" in `AGENTS.md`; places, institutions and the maintainer's own projects count).
 
 Verify each finding by reading the surrounding code. Drop anything you
 cannot tie to a concrete scenario. Report findings most severe first, each
