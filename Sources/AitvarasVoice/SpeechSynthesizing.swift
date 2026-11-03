@@ -1,15 +1,16 @@
 import Foundation
 @preconcurrency import AVFoundation
+import AitvarasCore
 
 /// Aitvaras's speech volume (0…2; >1 is soft-boosted). Applied per buffer
 /// in both engines so slider changes take effect mid-sentence.
 public enum VoiceVolume {
     public static var gain: Float {
         get {
-            let raw = UserDefaults.standard.object(forKey: "voice.volume") as? Double
+            let raw = AitvarasPreferences.current.object(forKey: "voice.volume") as? Double
             return Float(raw ?? 1.0)
         }
-        set { UserDefaults.standard.set(Double(newValue), forKey: "voice.volume") }
+        set { AitvarasPreferences.current.set(Double(newValue), forKey: "voice.volume") }
     }
 
     /// Scale float samples in place, hard-limiting to avoid crackle.

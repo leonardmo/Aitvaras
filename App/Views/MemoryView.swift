@@ -46,6 +46,7 @@ private struct FactsTab: View {
     @State private var kindFilter: MemoryFact.Kind?
     @State private var showHistory = false
     @State private var editing: MemoryFact?
+    @State private var errorMessage: String?
 
     var body: some View {
         List {
@@ -111,6 +112,7 @@ private struct FactsTab: View {
                 .environment(model)
         }
         .task { reload() }
+        .memoryErrorAlert($errorMessage)
     }
 
     private var visibleFacts: [MemoryFact] {
@@ -125,18 +127,32 @@ private struct FactsTab: View {
 
     private func reload() {
         guard let stores = model.stores else { return }
-        facts = ((try? stores.allFacts()) ?? []).filter { !$0.needsReview }
-        pendingReview = (try? stores.factsNeedingReview()) ?? []
+        do {
+            let loadedFacts = try stores.allFacts()
+            let loadedReview = try stores.factsNeedingReview()
+            facts = loadedFacts.filter { !$0.needsReview }
+            pendingReview = loadedReview
+        } catch {
+            errorMessage = error.localizedDescription
+        }
     }
 
     private func approve(_ fact: MemoryFact) {
-        try? model.stores?.approveFact(fact.id)
-        reload()
+        do {
+            try model.stores?.approveFact(fact.id)
+            reload()
+        } catch {
+            errorMessage = error.localizedDescription
+        }
     }
 
     private func delete(_ fact: MemoryFact) {
-        try? model.stores?.deleteFact(fact.id)
-        reload()
+        do {
+            try model.stores?.deleteFact(fact.id)
+            reload()
+        } catch {
+            errorMessage = error.localizedDescription
+        }
     }
 }
 
@@ -202,6 +218,7 @@ private struct FactEditorSheet: View {
     let fact: MemoryFact
     let onChange: () -> Void
     @State private var text: String = ""
+    @State private var errorMessage: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -226,16 +243,13 @@ private struct FactEditorSheet: View {
             Spacer()
             HStack {
                 Button("Delete", role: .destructive) {
-                    try? model.stores?.deleteFact(fact.id)
-                    onChange()
-                    dismiss()
+                    delete()
                 }
                 Spacer()
                 Button("Cancel") { dismiss() }
                     .keyboardShortcut(.escape)
                 Button("Save correction") {
                     save()
-                    dismiss()
                 }
                 .buttonStyle(.borderedProminent)
                 .disabled(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -245,6 +259,7 @@ private struct FactEditorSheet: View {
         .padding(24)
         .frame(width: 480, height: 340)
         .onAppear { text = fact.text }
+        .memoryErrorAlert($errorMessage)
     }
 
     private func save() {
@@ -256,9 +271,23 @@ private struct FactEditorSheet: View {
             importance: fact.importance,
             confidence: 1.0,
             source: .userStated)
-        try? stores.saveFact(replacement)
-        try? stores.supersedeFact(fact.id, by: replacement.id)
-        onChange()
+        do {
+            try stores.replaceFact(fact.id, with: replacement)
+            onChange()
+            dismiss()
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    private func delete() {
+        do {
+            try model.stores?.deleteFact(fact.id)
+            onChange()
+            dismiss()
+        } catch {
+            errorMessage = error.localizedDescription
+        }
     }
 }
 
@@ -268,6 +297,7 @@ private struct EntitiesTab: View {
     @Environment(AppModel.self) private var model
     @State private var entities: [MemoryEntity] = []
     @State private var selected: MemoryEntity?
+    @State private var errorMessage: String?
 
     var body: some View {
         List(entities, id: \.id) { entity in
@@ -306,10 +336,15 @@ private struct EntitiesTab: View {
                 .environment(model)
         }
         .task { reload() }
+        .memoryErrorAlert($errorMessage)
     }
 
     private func reload() {
-        entities = (try? model.stores?.entities()) ?? []
+        do {
+            entities = try model.stores?.entities() ?? []
+        } catch {
+            errorMessage = error.localizedDescription
+        }
     }
 
     private func icon(for kind: MemoryEntity.Kind) -> String {
@@ -329,6 +364,7 @@ private struct EntityFactsSheet: View {
     @Environment(\.dismiss) private var dismiss
     let entity: MemoryEntity
     @State private var facts: [MemoryFact] = []
+    @State private var errorMessage: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -354,8 +390,13 @@ private struct EntityFactsSheet: View {
         .padding(24)
         .frame(width: 480, height: 380)
         .task {
-            facts = (try? model.stores?.facts(forEntity: entity.id)) ?? []
+            do {
+                facts = try model.stores?.facts(forEntity: entity.id) ?? []
+            } catch {
+                errorMessage = error.localizedDescription
+            }
         }
+        .memoryErrorAlert($errorMessage)
     }
 }
 
@@ -364,6 +405,7 @@ private struct EntityFactsSheet: View {
 private struct QuestionsTab: View {
     @Environment(AppModel.self) private var model
     @State private var open: [CuriosityQuestion] = []
+    @State private var errorMessage: String?
 
     var body: some View {
         List {
@@ -399,14 +441,35 @@ private struct QuestionsTab: View {
             Button("Refresh", systemImage: "arrow.clockwise") { reload() }
         }
         .task { reload() }
+        .memoryErrorAlert($errorMessage)
     }
 
     private func reload() {
-        open = (try? model.stores?.openQuestions()) ?? []
+        do {
+            open = try model.stores?.openQuestions() ?? []
+        } catch {
+            errorMessage = error.localizedDescription
+        }
     }
 
     private func dismissQuestion(_ question: CuriosityQuestion) {
-        try? model.stores?.setQuestionStatus(question.id, to: .dismissed)
-        reload()
+        do {
+            try model.stores?.setQuestionStatus(question.id, to: .dismissed)
+            reload()
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+}
+
+private extension View {
+    func memoryErrorAlert(_ message: Binding<String?>) -> some View {
+        alert(
+            "Memory update failed",
+            isPresented: Binding(
+                get: { message.wrappedValue != nil },
+                set: { if !$0 { message.wrappedValue = nil } }),
+            actions: { Button("OK") { message.wrappedValue = nil } },
+            message: { Text(message.wrappedValue ?? "Unknown error") })
     }
 }

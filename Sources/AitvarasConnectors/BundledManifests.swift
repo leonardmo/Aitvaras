@@ -1,10 +1,10 @@
 import Foundation
 import AitvarasCore
 
-/// Built-in homelab connectors (D10) expressed as manifests on the
-/// GenericHTTPConnector engine (D17). Read-only by design: API tokens are
-/// scoped read-only server-side (PVEAuditor role, non-admin HA user), and
-/// every tool here is `risk: .read` — no shell, no writes.
+/// Built-in homelab connector capabilities (D10). Proxmox and TrueNAS run
+/// directly through GenericHTTPConnector. Home Assistant reuses its manifest
+/// metadata but has a constrained adapter for searchable state summaries and
+/// idempotent light writes. No connector exposes shell access.
 ///
 /// Base URLs are runtime configuration (kv store, e.g. "proxmox.baseURL"),
 /// so these are functions, not constants. Secrets live in the Keychain
@@ -32,7 +32,7 @@ public enum BundledManifests {
                     description: "All Proxmox cluster resources (VMs, containers, storage, nodes) with status, CPU and memory usage.",
                     method: "GET",
                     path: "/api2/json/cluster/resources",
-                    parametersJSON: #"{"type":"object","properties":{},"required":[]}"#,
+                    parametersJSON: #"{"type":"object","properties":{},"required":[],"additionalProperties":false}"#,
                     risk: .read),
                 .init(
                     name: "nodes",
@@ -70,8 +70,8 @@ public enum BundledManifests {
     }
 
     /// Home Assistant REST API, long-lived access token (non-admin user).
-    /// `/api/states` can be enormous — the engine truncates every response
-    /// to its 6000-char limit; prefer ha_entity for specific devices.
+    /// HomeAssistantConnector interprets these tools; it compacts the large
+    /// state inventory and validates every exact entity id before a write.
     public static func homeAssistant(baseURL: String) -> ConnectorManifest {
         ConnectorManifest(
             id: "homeassistant",
@@ -81,18 +81,41 @@ public enum BundledManifests {
             tools: [
                 .init(
                     name: "ha_states",
-                    description: "All Home Assistant entity states. Output is truncated — when you know the entity, use ha_entity instead.",
+                    description: "Compact Home Assistant inventory with entity counts by domain. Use search_entities to find exact ids before reading or controlling one.",
                     method: "GET",
                     path: "/api/states",
-                    parametersJSON: #"{"type":"object","properties":{},"required":[]}"#,
+                    parametersJSON: #"{"type":"object","properties":{},"required":[],"additionalProperties":false}"#,
+                    risk: .read),
+                .init(
+                    name: "search_entities",
+                    description: "Search Home Assistant entities by friendly name or exact-id text, optionally narrowed by domain or state. Use this before acting when the exact entity id is unknown.",
+                    method: "GET",
+                    path: "/api/states",
+                    parametersJSON: #"{"type":"object","properties":{"query":{"type":"string","description":"Friendly-name or entity-id text, e.g. desk or living room"},"domain":{"type":"string","pattern":"^[a-z0-9_]+$","description":"Optional domain such as light, sensor or climate"},"state":{"type":"string","description":"Optional exact state such as on, off or unavailable"},"limit":{"type":"integer","minimum":1,"maximum":50,"default":20}},"required":[],"additionalProperties":false}"#,
                     risk: .read),
                 .init(
                     name: "ha_entity",
-                    description: "State and attributes of one Home Assistant entity, e.g. 'sensor.living_room_temperature'.",
+                    description: "Compact state and safe operational attributes of one exact Home Assistant entity.",
                     method: "GET",
                     path: "/api/states/{entity_id}",
-                    parametersJSON: #"{"type":"object","properties":{"entity_id":{"type":"string","description":"Entity id like 'light.desk' or 'sensor.cpu_temp'"}},"required":["entity_id"]}"#,
-                    risk: .read)
+                    parametersJSON: #"{"type":"object","properties":{"entity_id":{"type":"string","pattern":"^[a-z0-9_]+\\.[a-z0-9_]+$","description":"Exact entity id such as light.desk or sensor.cpu_temp"}},"required":["entity_id"],"additionalProperties":false}"#,
+                    risk: .read),
+                .init(
+                    name: "light_off",
+                    description: "Idempotently turn off one exact Home Assistant light entity. Search first when its id is unknown.",
+                    method: "POST",
+                    path: "/api/services/light/turn_off",
+                    parametersJSON: #"{"type":"object","properties":{"entity_id":{"type":"string","pattern":"^light\\.[a-z0-9_]+$","description":"Exact light entity id, e.g. light.desk"},"transition_seconds":{"type":"integer","minimum":0,"maximum":30}},"required":["entity_id"],"additionalProperties":false}"#,
+                    risk: .reversibleWrite,
+                    bodyTemplate: #"{"entity_id":"{entity_id}"}"#),
+                .init(
+                    name: "light_on",
+                    description: "Idempotently turn on one exact Home Assistant light entity, optionally with brightness and a short transition. Search first when its id is unknown.",
+                    method: "POST",
+                    path: "/api/services/light/turn_on",
+                    parametersJSON: #"{"type":"object","properties":{"entity_id":{"type":"string","pattern":"^light\\.[a-z0-9_]+$","description":"Exact light entity id, e.g. light.desk"},"brightness_pct":{"type":"integer","minimum":1,"maximum":100},"transition_seconds":{"type":"integer","minimum":0,"maximum":30}},"required":["entity_id"],"additionalProperties":false}"#,
+                    risk: .reversibleWrite,
+                    bodyTemplate: #"{"entity_id":"{entity_id}"}"#)
             ])
     }
 

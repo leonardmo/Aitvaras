@@ -7,6 +7,11 @@ import AitvarasCore
 /// Swift required. Secrets are never in the manifest; it references
 /// Keychain entries by key name.
 public struct ConnectorManifest: Codable, Sendable, Equatable {
+    public static let maximumEncodedBytes = 256 * 1024
+    public static let maximumTools = 32
+    public static let maximumTriggers = 16
+    public static let maximumTriggerInterval: TimeInterval = 30 * 24 * 60 * 60
+
     public var id: String
     public var displayName: String
     /// e.g. "https://proxmox.local:8006" — no trailing slash needed.
@@ -33,6 +38,152 @@ public struct ConnectorManifest: Codable, Sendable, Equatable {
         auth = try c.decode(Auth.self, forKey: .auth)
         tools = try c.decode([Tool].self, forKey: .tools)
         triggers = try c.decodeIfPresent([Trigger].self, forKey: .triggers) ?? []
+    }
+
+    /// Single bounded entry point for hand/model-authored manifest data.
+    public static func decodeAndValidate(_ data: Data) throws -> ConnectorManifest {
+        guard data.count <= maximumEncodedBytes else {
+            throw ConnectorError(
+                "Connector manifest is larger than \(maximumEncodedBytes / 1024) KB.")
+        }
+        let manifest = try JSONDecoder().decode(ConnectorManifest.self, from: data)
+        try manifest.validate()
+        return manifest
+    }
+
+    /// Validate the trust boundary between hand/model-authored JSON and the
+    /// connector runtime. In particular, identifiers become filenames and
+    /// tool namespaces, while risk labels decide whether user confirmation is
+    /// required, so neither can be accepted as arbitrary text.
+    public func validate() throws {
+        try Self.validateIdentifier(id, label: "Connector id")
+        guard !displayName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              displayName.count <= 80 else {
+            throw ConnectorError("Connector displayName must contain 1–80 characters.")
+        }
+        guard let components = URLComponents(string: baseURL),
+              ["http", "https"].contains(components.scheme?.lowercased() ?? ""),
+              components.host != nil,
+              components.user == nil,
+              components.password == nil,
+              components.query == nil,
+              components.fragment == nil else {
+            throw ConnectorError(
+                "baseURL must be an http(s) origin without credentials, query, or fragment.")
+        }
+        guard baseURL.count <= 2_048 else {
+            throw ConnectorError("baseURL must contain at most 2,048 characters.")
+        }
+        guard tools.count <= Self.maximumTools else {
+            throw ConnectorError(
+                "A connector can expose at most \(Self.maximumTools) tools.")
+        }
+        guard triggers.count <= Self.maximumTriggers else {
+            throw ConnectorError(
+                "A connector can run at most \(Self.maximumTriggers) polling triggers.")
+        }
+
+        if auth.type != .none {
+            guard let key = auth.keychainKey,
+                  !key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                throw ConnectorError("Authenticated manifests require a keychainKey.")
+            }
+            guard key.hasPrefix("\(id)."), key.count > id.count + 1 else {
+                throw ConnectorError(
+                    "keychainKey must start with the connector id ('\(id).') so it cannot reuse another connection's secret.")
+            }
+            guard key.count <= 128 else {
+                throw ConnectorError("keychainKey must contain at most 128 characters.")
+            }
+        }
+        if auth.type == .header,
+           auth.headerName?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty != false {
+            throw ConnectorError("Header authentication requires headerName.")
+        }
+        if auth.type == .query,
+           auth.queryParam?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty != false {
+            throw ConnectorError("Query authentication requires queryParam.")
+        }
+
+        var toolNames: Set<String> = []
+        for tool in tools {
+            try Self.validateIdentifier(tool.name, label: "Tool name")
+            guard toolNames.insert(tool.name).inserted else {
+                throw ConnectorError("Duplicate tool name '\(tool.name)'.")
+            }
+            let method = tool.method.uppercased()
+            guard ["GET", "POST", "PUT", "PATCH", "DELETE"].contains(method) else {
+                throw ConnectorError("Tool '\(tool.name)' uses unsupported method '\(tool.method)'.")
+            }
+            guard tool.path.hasPrefix("/") else {
+                throw ConnectorError("Tool '\(tool.name)' path must start with '/'.")
+            }
+            guard !tool.description.isEmpty, tool.description.count <= 1_000 else {
+                throw ConnectorError(
+                    "Tool '\(tool.name)' description must contain 1–1,000 characters.")
+            }
+            guard tool.path.count <= 2_048 else {
+                throw ConnectorError("Tool '\(tool.name)' path is too long.")
+            }
+            guard tool.parametersJSON.utf8.count <= 64 * 1024 else {
+                throw ConnectorError(
+                    "Tool '\(tool.name)' parametersJSON is larger than 64 KB.")
+            }
+            guard (tool.bodyTemplate?.utf8.count ?? 0) <= 64 * 1024 else {
+                throw ConnectorError(
+                    "Tool '\(tool.name)' bodyTemplate is larger than 64 KB.")
+            }
+            guard let schemaData = tool.parametersJSON.data(using: .utf8),
+                  (try? JSONSerialization.jsonObject(with: schemaData)) is [String: Any] else {
+                throw ConnectorError("Tool '\(tool.name)' parametersJSON must be a JSON object.")
+            }
+            if method != "GET", tool.risk == .read {
+                throw ConnectorError(
+                    "Tool '\(tool.name)' uses \(method) and cannot be marked as read-only.")
+            }
+            if method == "DELETE", tool.risk != .confirmable {
+                throw ConnectorError("DELETE tool '\(tool.name)' must require confirmation.")
+            }
+        }
+
+        var triggerNames: Set<String> = []
+        for trigger in triggers {
+            try Self.validateIdentifier(trigger.name, label: "Trigger name")
+            guard triggerNames.insert(trigger.name).inserted else {
+                throw ConnectorError("Duplicate trigger name '\(trigger.name)'.")
+            }
+            guard trigger.method.uppercased() == "GET" else {
+                throw ConnectorError("Polling trigger '\(trigger.name)' must use GET.")
+            }
+            guard trigger.path.hasPrefix("/") else {
+                throw ConnectorError("Trigger '\(trigger.name)' path must start with '/'.")
+            }
+            guard trigger.path.count <= 2_048 else {
+                throw ConnectorError("Trigger '\(trigger.name)' path is too long.")
+            }
+            guard trigger.intervalSeconds.isFinite, trigger.intervalSeconds >= 5,
+                  trigger.intervalSeconds <= Self.maximumTriggerInterval else {
+                throw ConnectorError(
+                    "Trigger '\(trigger.name)' intervalSeconds must be between 5 seconds and 30 days.")
+            }
+            guard !trigger.watchPath.isEmpty, trigger.watchPath.count <= 512 else {
+                throw ConnectorError(
+                    "Trigger '\(trigger.name)' watchPath must contain 1–512 characters.")
+            }
+            guard !trigger.titleTemplate.isEmpty, trigger.titleTemplate.count <= 1_000 else {
+                throw ConnectorError(
+                    "Trigger '\(trigger.name)' titleTemplate must contain 1–1,000 characters.")
+            }
+        }
+    }
+
+    public static func validateIdentifier(_ value: String, label: String = "Identifier") throws {
+        let pattern = "^[a-z][a-z0-9_-]{0,63}$"
+        guard value.range(of: pattern, options: .regularExpression)
+                == value.startIndex..<value.endIndex else {
+            throw ConnectorError(
+                "\(label) must start with a lowercase letter and contain only lowercase letters, numbers, '_' or '-'.")
+        }
     }
 
     // MARK: Auth

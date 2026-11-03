@@ -15,13 +15,17 @@ public actor TelegramConnector: Connector {
 
     public static let tokenKeychainKey = "telegram.botToken"
     public static let chatIDKey = "telegram.chatID"
+    static let responseByteLimit = 1024 * 1024
 
     private let keychain: KeychainStore
     private let stores: Stores
+    private let session: URLSession
 
-    public init(keychain: KeychainStore, stores: Stores) {
+    public init(keychain: KeychainStore, stores: Stores,
+                session: URLSession = ConnectorHTTPSession.make()) {
         self.keychain = keychain
         self.stores = stores
+        self.session = session
     }
 
     public nonisolated let tools: [ToolDefinition] = [
@@ -36,13 +40,17 @@ public actor TelegramConnector: Connector {
     ]
 
     public func health() async -> ConnectorHealth {
-        guard let token = try? keychain.get(Self.tokenKeychainKey), !token.isEmpty else {
-            return .needsAuthentication(message: "No Telegram bot token. Create a bot with @BotFather and paste the token in Settings → Connectors → Telegram.")
+        do {
+            guard let token = try keychain.get(Self.tokenKeychainKey), !token.isEmpty else {
+                return .needsAuthentication(message: "No Telegram bot token. Create a bot with @BotFather and paste the token in Settings → Connectors → Telegram.")
+            }
+            guard let chatID = try stores.value(forKey: Self.chatIDKey), !chatID.isEmpty else {
+                return .needsAuthentication(message: "Telegram chat not linked. Send any message to your bot, then use \"Discover chat\" in Settings → Connectors → Telegram.")
+            }
+            return .ready
+        } catch {
+            return .error(message: "Telegram settings could not be checked: \(error.localizedDescription)")
         }
-        guard let chatID = try? stores.value(forKey: Self.chatIDKey), !chatID.isEmpty else {
-            return .needsAuthentication(message: "Telegram chat not linked. Send any message to your bot, then use \"Discover chat\" in Settings → Connectors → Telegram.")
-        }
-        return .ready
     }
 
     public func execute(toolName: String, argumentsJSON: String) async throws -> String {
@@ -93,7 +101,7 @@ public actor TelegramConnector: Connector {
     // MARK: - Telegram Bot API
 
     private func sendMessage(_ text: String) async throws {
-        guard let chatID = try? stores.value(forKey: Self.chatIDKey), !chatID.isEmpty else {
+        guard let chatID = try stores.value(forKey: Self.chatIDKey), !chatID.isEmpty else {
             throw ConnectorError("Telegram chat id missing — run chat discovery in Settings first.")
         }
         let body = try JSONSerialization.data(withJSONObject: ["chat_id": chatID, "text": text])
@@ -102,13 +110,12 @@ public actor TelegramConnector: Connector {
             let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
             root["ok"] as? Bool == true
         else {
-            let snippet = String(data: data, encoding: .utf8)?.prefix(300) ?? ""
-            throw ConnectorError("Telegram rejected the message: \(snippet)")
+            throw ConnectorError("Telegram returned an unexpected response.")
         }
     }
 
     private func api(method: String, body: Data?) async throws -> Data {
-        guard let token = try? keychain.get(Self.tokenKeychainKey), !token.isEmpty else {
+        guard let token = try keychain.get(Self.tokenKeychainKey), !token.isEmpty else {
             throw ConnectorError("Telegram bot token missing — paste it in Settings first.")
         }
         guard let url = URL(string: "https://api.telegram.org/bot\(token)/\(method)") else {
@@ -120,10 +127,25 @@ public actor TelegramConnector: Connector {
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
             request.httpBody = body
         }
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await BoundedHTTP.data(
+                for: request, using: session,
+                maximumBytes: Self.responseByteLimit)
+        } catch {
+            throw ConnectorDiagnostics.networkFailure(
+                operation: "Telegram request", error: error)
+        }
         if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
-            let snippet = String(data: data, encoding: .utf8)?.prefix(300) ?? ""
-            throw ConnectorError("Telegram API \(method) failed with HTTP \(http.statusCode): \(snippet)")
+            let rawDescription = ((try? JSONSerialization.jsonObject(with: data))
+                as? [String: Any])?["description"] as? String
+            let description = rawDescription.map {
+                ConnectorDiagnostics.redacted(String($0.prefix(300)), secrets: [token])
+            }
+            throw ConnectorError(
+                "Telegram API \(method) failed with HTTP \(http.statusCode)"
+                    + (description.map { ": \($0)" } ?? "."))
         }
         return data
     }

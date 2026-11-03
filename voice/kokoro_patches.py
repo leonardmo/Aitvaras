@@ -1,4 +1,4 @@
-"""Runtime patches for mlx-audio 0.4.4 Kokoro length-mismatch bugs.
+"""Runtime patches for mlx-audio 0.4.x Kokoro length-mismatch bugs.
 
 For certain input lengths the harmonic-source branch and the main
 upsampling branch of the iSTFT vocoder disagree by a few frames

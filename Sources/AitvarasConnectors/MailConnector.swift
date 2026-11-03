@@ -30,16 +30,20 @@ public actor MailConnector: Connector {
     public nonisolated let displayName = "Mail"
 
     private let stores: Stores
+    private let reporter: ActivityReporter?
+    private var pollingInterval: TimeInterval = 60
     /// NSAppleScript is not thread-safe — every script runs on this queue.
     private let scriptQueue = DispatchQueue(label: "app.aitvaras.mail.applescript")
 
     private let eventStream: AsyncStream<ConnectorEvent>
     private let eventContinuation: AsyncStream<ConnectorEvent>.Continuation
     private var pollTask: Task<Void, Never>?
+    private var lastPollingError: String?
 
-    public init(stores: Stores) {
+    public init(stores: Stores, reporter: ActivityReporter? = nil) {
         self.stores = stores
-        (self.eventStream, self.eventContinuation) = AsyncStream.makeStream(of: ConnectorEvent.self)
+        self.reporter = reporter
+        (self.eventStream, self.eventContinuation) = ConnectorEventStreams.make()
     }
 
     deinit {
@@ -83,6 +87,9 @@ public actor MailConnector: Connector {
         }
         do {
             _ = try await runAppleScript("tell application \"Mail\" to return name")
+            if let lastPollingError {
+                return .error(message: "Inbox polling failed: \(lastPollingError)")
+            }
             return .ready
         } catch let error as AppleScriptError where error.code == -1743 {
             return .needsAuthentication(message: "Automation access to Mail was denied. Allow Aitvaras to control Mail in System Settings → Privacy & Security → Automation.")
@@ -98,20 +105,22 @@ public actor MailConnector: Connector {
             let count = min(max(args.int("count") ?? 10, 1), 20)
             let messages = try await fetchMessages(script: Self.recentMessagesScript(count: count, contentLimit: 1500))
             guard !messages.isEmpty else { return "No messages found in the inboxes." }
-            return messages.map(\.jsonLine).joined(separator: "\n")
+            return try messages.map { try agentFacingLine(for: $0) }
+                .joined(separator: "\n")
         case "get_message":
             let messageID = try args.requiredString("messageID")
             let messages = try await fetchMessages(script: Self.getMessageScript(messageID: messageID, contentLimit: 8000))
             guard let message = messages.first else {
                 throw ConnectorError("No inbox message with message id '\(messageID)'.")
             }
-            return message.jsonLine
+            return try agentFacingLine(for: message)
         case "search_messages":
             let query = try args.requiredString("query")
             let count = min(max(args.int("count") ?? 10, 1), 20)
             let messages = try await fetchMessages(script: Self.searchMessagesScript(query: query, count: count, contentLimit: 500))
             guard !messages.isEmpty else { return "No inbox messages match '\(query)' in subject or sender." }
-            return messages.map(\.jsonLine).joined(separator: "\n")
+            return try messages.map { try agentFacingLine(for: $0) }
+                .joined(separator: "\n")
         default:
             throw ConnectorError("Mail connector has no tool named '\(toolName)'.")
         }
@@ -124,36 +133,135 @@ public actor MailConnector: Connector {
     /// Begin watching for new mail. Called by the app once at startup —
     /// the connector never polls on its own.
     public func startPolling(interval: TimeInterval = 60) {
-        guard pollTask == nil else { return }
+        guard pollTask == nil, automaticChecksAllowed else { return }
+        pollingInterval = max(5, interval)
         pollTask = Task { [weak self] in
             while !Task.isCancelled {
-                await self?.pollOnce()
-                try? await Task.sleep(for: .seconds(interval))
+                await self?.pollOnce(trigger: .automatic)
+                do { try await Task.sleep(for: .seconds(max(5, interval))) }
+                catch { return }
             }
         }
     }
 
-    public func stopPolling() {
-        pollTask?.cancel()
+    public func stopPolling() async {
+        let previous = pollTask
+        previous?.cancel()
         pollTask = nil
+        await previous?.value
+        reporter?.service(ServiceStatus(id: id, name: displayName, configured: true,
+            enabled: false, paused: true, stage: "Automatic mail checks paused"))
+    }
+
+    /// Fetch the mail window missed while macOS was asleep. The caller sends
+    /// these events through the same central trust and deduplication intake as
+    /// live polling; this method never exposes message text to the wake recap.
+    public func wakeCatchUpEvents(
+        since: Date,
+        now: Date = .now,
+        trigger: ActivityTrigger = ActivityTaskContext.trigger
+    ) async throws -> (events: [ConnectorEvent], wasLimited: Bool) {
+        guard pollAllowed(trigger) else { return ([], false) }
+        reportPollStart()
+        guard pollAllowed(trigger) else { return ([], false) }
+        let elapsed = max(60, now.timeIntervalSince(since))
+        let maximum = WakeBriefingPolicy.maximumLookback
+        let secondsAgo = Int(min(elapsed, maximum).rounded(.up))
+        do {
+            let messages = try await fetchMessages(
+                script: Self.messagesSinceScript(secondsAgo: secondsAgo, contentLimit: 2000))
+            guard pollAllowed(trigger) else { return ([], false) }
+            lastPollingError = nil
+            reportPollResult(succeeded: true)
+            let newest = messages.sorted {
+                ($0.date ?? .distantPast) > ($1.date ?? .distantPast)
+            }
+            let selected = ConnectorEventStreams.boundedWakeCatchUp(newest)
+            return (
+                events: selected.items.map(event(for:)),
+                wasLimited: selected.wasLimited)
+        } catch {
+            if pollAllowed(trigger) {
+                lastPollingError = error.localizedDescription
+                reportPollResult(succeeded: false)
+            }
+            throw error
+        }
     }
 
     // MARK: - Polling
 
-    private func pollOnce() async {
-        guard let messages = try? await fetchMessages(
-            script: Self.messagesSinceScript(secondsAgo: 15 * 60, contentLimit: 2000)) else { return }
+    private func pollOnce(trigger: ActivityTrigger = .manual) async {
+        guard pollAllowed(trigger) else { return }
+        reportPollStart()
+        guard pollAllowed(trigger) else { return }
+        let messages: [Message]
+        do {
+            messages = try await fetchMessages(
+                script: Self.messagesSinceScript(secondsAgo: 15 * 60, contentLimit: 2000))
+            guard pollAllowed(trigger) else { return }
+            lastPollingError = nil
+        } catch {
+            if pollAllowed(trigger) {
+                lastPollingError = error.localizedDescription
+                reportPollResult(succeeded: false)
+            }
+            return
+        }
+        reportPollResult(succeeded: true)
 
         for message in messages {
-            // markSeen returns true only the first time — provenance-stable dedup.
-            guard (try? stores.markSeen(connectorID: id, itemID: message.messageID)) == true else { continue }
-            eventContinuation.yield(ConnectorEvent(
-                connectorID: id,
-                sourceID: "mail:\(message.messageID)",
-                title: "New mail from \(message.sender): \(message.subject)",
-                body: String(message.content.prefix(2000)),
-                occurredAt: message.date ?? .now))
+            guard pollAllowed(trigger) else { return }
+            // The central intake transaction owns deduplication. Re-emitting
+            // recent mail is safe and keeps a failed activity write retryable.
+            eventContinuation.yield(event(for: message))
         }
+    }
+
+    private func pollAllowed(_ trigger: ActivityTrigger) -> Bool {
+        guard !Task.isCancelled else { return false }
+        guard trigger != .manual else { return true }
+        let allowed = automaticChecksAllowed
+        if !allowed {
+            reporter?.service(ServiceStatus(id: id, name: displayName, configured: true,
+                enabled: false, paused: true, stage: "Automatic mail checks not permitted"))
+        }
+        return allowed
+    }
+
+    private var automaticChecksAllowed: Bool {
+        reporter?.failureMessage == nil
+            && (try? stores.backgroundWorkPolicy().permits(.mail, trigger: .automatic)) == true
+    }
+
+    private func reportPollStart() {
+        let enabled = automaticChecksAllowed
+        reporter?.service(ServiceStatus(id: id, name: displayName, configured: true,
+            enabled: enabled, paused: !enabled,
+            stage: "Checking inboxes", lastAttempt: .now,
+            problem: lastPollingError == nil ? nil : "The previous mail check failed; retrying."))
+    }
+
+    private func reportPollResult(succeeded: Bool) {
+        let now = Date.now
+        let enabled = automaticChecksAllowed
+        reporter?.serviceCheck(id: id, succeeded: succeeded, at: now)
+        reporter?.service(ServiceStatus(id: id, name: displayName, configured: true,
+            enabled: enabled, paused: !enabled,
+            stage: succeeded ? "Waiting for next check" : "Mail check failed",
+            lastAttempt: now, lastSuccess: succeeded ? now : nil,
+            nextOpportunity: enabled ? now.addingTimeInterval(pollingInterval) : nil,
+            problem: succeeded ? nil : "Mail could not be checked. Review the connection and permissions."))
+    }
+
+    private func event(for message: Message) -> ConnectorEvent {
+        ConnectorEvent(
+            connectorID: id,
+            sourceID: "mail:\(message.messageID)",
+            title: "New mail from \(message.sender): \(message.subject)",
+            body: String(message.content.prefix(2000)),
+            occurredAt: message.date ?? .now,
+            externalMessageSource: .email(senderHeader: message.sender))
     }
 
     // MARK: - AppleScript execution
@@ -197,6 +305,24 @@ public actor MailConnector: Connector {
                 ("content", .string(content))
             ])
         }
+    }
+
+    /// Mail read/search tools share the same sender boundary as proactive
+    /// polling. Unknown senders expose only a canonical identity and opaque
+    /// message id; their subject and body never enter the normal agent prompt.
+    func agentFacingLine(for message: Message) throws -> String {
+        let source = ExternalMessageSource.email(senderHeader: message.sender)
+        guard try stores.isApprovedMessageSource(source) else {
+            return JSONText.object([
+                ("id", .string(message.messageID)),
+                ("date", .string(message.dateRaw)),
+                ("sender", .string(
+                    source.canApproveExactSender ? source.identity : "unparseable sender")),
+                ("status", .string(
+                    "held for sender review; approve locally in Connections > Message safety"))
+            ])
+        }
+        return message.jsonLine
     }
 
     /// Scripts emit fields separated by ASCII 31 (unit separator) and

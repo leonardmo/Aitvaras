@@ -26,7 +26,8 @@ enum SelfTest {
                 ChatMessage(role: .user, content: "Reply with exactly the word: pong")
             ]
             let start = Date()
-            for try await chunk in await engine.complete(messages: messages, tools: [], tier: .voice) {
+            for try await chunk in await engine.completeWithInactivityTimeout(
+                messages: messages, tools: [], tier: .voice) {
                 if case .text(let t) = chunk {
                     text += t
                     if t.contains("<think>") { sawThinkTagInText = true }
@@ -43,7 +44,7 @@ enum SelfTest {
                 risk: .reversibleWrite)
             var toolName = ""
             var toolArgs = ""
-            for try await chunk in await engine.complete(
+            for try await chunk in await engine.completeWithInactivityTimeout(
                 messages: [
                     ChatMessage(role: .system, content: "Use the available tools."),
                     ChatMessage(role: .user, content: "Put 'Dentist' in my calendar for 2026-07-10 14:00.")

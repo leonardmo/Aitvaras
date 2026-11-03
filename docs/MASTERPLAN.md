@@ -1,5 +1,15 @@
 # Master plan: a situational, learning Aitvaras
 
+> Historical proposal. The 2026-10-19 consolidated product/delivery direction is
+> [`WORK-HUB-PLAN.md`](WORK-HUB-PLAN.md), indexed by [`ROADMAP.md`](ROADMAP.md).
+> It supersedes this document's build order, local-assistant-first emphasis,
+> fixed provider roles, server deferral and original text-only capture scope.
+> Preserve the ideas below as background, not current implementation authority.
+
+> Capture exception: the old no-audio-on-disk rule below is superseded only by
+> explicitly selected local source retention. The default still discards audio;
+> see [`CAPTURE-REFINEMENT.md`](CAPTURE-REFINEMENT.md).
+
 Status: **proposal** (2026-07-07). Nothing here is implemented, and nothing here is
 decided, decisions get culled into `DECISIONS.md` (as D22+) and milestones into
 `ROADMAP.md` once agreed. **Part I** answers: *what should Aitvaras become after v0.1,
