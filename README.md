@@ -1,5 +1,7 @@
 # Aitvaras
 
+[![CI](https://github.com/leonardmo/Aitvaras/actions/workflows/ci.yml/badge.svg)](https://github.com/leonardmo/Aitvaras/actions/workflows/ci.yml)
+
 A local-first agentic AI assistant for macOS, with an animated 3D companion
 character, high-quality bilingual (DE/EN) voice, structured long-term memory,
 and deep integration into native macOS apps and personal infrastructure.
@@ -13,7 +15,8 @@ facts stay in a local SQLite file, and prompts/responses are not copied into
 the local cloud-usage ledger.
 
 [Portfolio](https://leonardmo.com) · [Architecture](docs/ARCHITECTURE.md) ·
-[Roadmap](docs/ROADMAP.md)
+[Roadmap](docs/ROADMAP.md) · [Docs](docs/README.md) ·
+[Contributing](CONTRIBUTING.md)
 
 Lecture capture includes live captions, optional local source-audio retention,
 and user-started Qwen/Whisper re-transcription with separate saved versions.

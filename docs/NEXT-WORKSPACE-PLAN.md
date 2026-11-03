@@ -273,6 +273,6 @@ same-title identities, scope/permission canaries, archive knowledge retention,
 native ownership, duplicate delivery, uncertain effects, deletion/rebuild,
 backup/restore, long capture interruption and idle resource use.
 
-Commit reviewed changes and push only to the private development repository.
-Never include installation paths, personal project identifiers, credentials or
-live service data in committed examples. Public changes require explicit action.
+Land reviewed changes through PRs as described in AGENTS.md. Never include
+installation paths, personal project identifiers, credentials or live service
+data in committed examples.
