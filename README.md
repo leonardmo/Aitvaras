@@ -124,6 +124,37 @@ than opening another chat tab.
   its full provenance chain ("event created ← suggestion accepted ← mail
   classified urgent ← mail received").
 
+## Interface
+
+The native app keeps chat, reviewable memory, activity provenance and
+connections visible in one place.
+
+| Chat | Memory |
+| --- | --- |
+| [![Aitvaras answering a weather question using web search and personal context](docs/images/aitvaras-chat.png)](docs/images/aitvaras-chat.png) | [![Aitvaras memory view with reviewable and current facts](docs/images/aitvaras-memory.png)](docs/images/aitvaras-memory.png) |
+| **Activity** | **Connections** |
+| [![Aitvaras activity view showing memory consolidation and provenance events](docs/images/aitvaras-activity.png)](docs/images/aitvaras-activity.png) | [![Aitvaras connections view showing native tools and configured integrations](docs/images/aitvaras-connections.png)](docs/images/aitvaras-connections.png) |
+
+### Floating companion
+
+<p align="center">
+  <a href="docs/images/aitvaras-companion.png">
+    <img src="docs/images/aitvaras-companion.png" width="420" alt="Aitvaras floating 3D companion with translucent controls on the macOS desktop">
+  </a>
+</p>
+
+The long-term character direction is an original small dragon inspired by the
+aitvaras of Lithuanian folklore. I am still developing that model; the current
+dragon prototype did not yet meet the visual quality bar for the public
+version. For now, the companion therefore falls back to
+[`avatars/brunette.glb`](https://github.com/met4citizen/TalkingHead/blob/main/avatars/brunette.glb)
+from Mika Suominen's MIT-licensed
+[TalkingHead](https://github.com/met4citizen/TalkingHead) project. It is a
+Ready Player Me-generated character with facial blendshapes that support
+blinking, expressions and voice-driven lip sync. The source and third-party
+license notice are preserved in
+[`App/Resources/AVATAR-CREDITS.md`](App/Resources/AVATAR-CREDITS.md).
+
 ## Technical highlights
 
 - **Native macOS architecture** — Swift 6 with strict concurrency, SwiftUI and
