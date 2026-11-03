@@ -85,7 +85,6 @@ companion. Do not enable mail/cloud/external deliveries merely to demonstrate th
 Native vibrancy/selection controls may not flatten faithfully in in-process cached
 screenshots; their appearance still needs the installed-app check.
 
-No public repository or startup-at-login change is part of this checkpoint.
-Completed changes are committed and pushed only to the private development
-remote under the standing delivery rule in AGENTS.md. Installation requires
+No startup-at-login change is part of this checkpoint. Completed changes
+land through PRs as described in AGENTS.md. Installation requires
 coordinating with the user so capture or voice work is not interrupted unexpectedly.
