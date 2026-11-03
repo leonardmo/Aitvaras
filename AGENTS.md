@@ -39,7 +39,8 @@ Use `make` targets so every agent runs the same thing:
 | `make smoke` | check + app. Run it before every PR that touches `App/` or `project.yml`. |
 
 Run a single suite with `swift test --filter <Suite>`. The app needs full
-Xcode 26+ and the macOS 26 SDK. Both `-skipMacroValidation` and
+Xcode 27 (Xcode 26.6's compiler crashes on the app target); the package
+also builds with Xcode 26. Both `-skipMacroValidation` and
 `-skipPackagePluginValidation` are required; `make app` passes them.
 
 ## Hard rules

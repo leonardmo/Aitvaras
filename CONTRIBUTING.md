@@ -6,8 +6,8 @@ agents alike, are in [AGENTS.md](AGENTS.md). This page is the short version.
 
 ## Setup
 
-Requirements: Apple Silicon Mac, macOS 26, Xcode 26+ (full Xcode, not just
-the command line tools), [XcodeGen](https://github.com/yonaskolb/XcodeGen),
+Requirements: Apple Silicon Mac, macOS 26+, Xcode 27 (full Xcode, not just
+the command line tools, with the Metal Toolchain component installed), [XcodeGen](https://github.com/yonaskolb/XcodeGen),
 and Node 22+ for the sidecar helper tests.
 
 ```sh
