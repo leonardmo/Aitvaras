@@ -1,0 +1,23 @@
+name: Task
+description: A unit of work for a human or an agent.
+labels: [task]
+body:
+  - type: textarea
+    id: goal
+    attributes:
+      label: Goal
+      description: What should be true when this is done?
+    validations:
+      required: true
+  - type: textarea
+    id: scope
+    attributes:
+      label: Scope and files
+      description: Areas or files involved, and what is explicitly out of scope.
+  - type: textarea
+    id: done
+    attributes:
+      label: Done when
+      description: How the result is verified (tests, app check, docs).
+    validations:
+      required: true

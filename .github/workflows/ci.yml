@@ -1,0 +1,72 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  hygiene:
+    name: Privacy & commit hygiene
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: Privacy sweep
+        run: scripts/check-privacy.sh
+      - name: Commit metadata
+        if: github.event_name == 'pull_request'
+        run: scripts/check-commits.sh "origin/${{ github.base_ref }}..${{ github.event.pull_request.head.sha }}"
+
+  package:
+    name: Package tests
+    runs-on: macos-26
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+      - name: Toolchain
+        run: |
+          xcodebuild -version
+          swift --version
+      - uses: actions/cache@v4
+        with:
+          path: .build
+          key: spm-${{ runner.os }}-${{ hashFiles('Package.resolved', 'Package.swift') }}
+          restore-keys: spm-${{ runner.os }}-
+      - name: Node helper contracts
+        run: make node-test
+      - name: swift test
+        run: swift test
+
+  app:
+    name: App build
+    runs-on: macos-26
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+      - name: Tools
+        run: |
+          brew install xcodegen
+          xcodebuild -downloadComponent MetalToolchain || true
+      - uses: actions/cache@v4
+        with:
+          path: |
+            .build-xcode/SourcePackages
+            ~/Library/Caches/org.swift.swiftpm
+          key: xcode-spm-${{ runner.os }}-${{ hashFiles('Package.resolved', 'project.yml') }}
+          restore-keys: xcode-spm-${{ runner.os }}-
+      - name: Build (Debug)
+        run: make app
