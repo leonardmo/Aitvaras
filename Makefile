@@ -25,13 +25,20 @@ node-test: ## Offline contract tests for the Node sidecar helpers
 project: ## Generate Aitvaras.xcodeproj from project.yml
 	xcodegen generate --quiet
 
+# Full logs go to <derived data>/build.log; failures print the errors.
+define xcodebuild_logged
+	@mkdir -p $(2); xcodebuild $(XCODE_FLAGS) -configuration $(1) -derivedDataPath $(2) build \
+		> $(2)/build.log 2>&1 \
+		&& tail -1 $(2)/build.log \
+		|| { grep -E ' error: |error: |BUILD FAILED' $(2)/build.log | sort -u | head -40; \
+		     echo "Full log: $(2)/build.log"; exit 1; }
+endef
+
 app: project ## Debug app build into .build-xcode
-	set -o pipefail; xcodebuild $(XCODE_FLAGS) -configuration Debug \
-		-derivedDataPath .build-xcode build | tail -5
+	$(call xcodebuild_logged,Debug,.build-xcode)
 
 release: project ## Release app build into .build/DerivedData
-	set -o pipefail; xcodebuild $(XCODE_FLAGS) -configuration Release \
-		-derivedDataPath .build/DerivedData build | tail -5
+	$(call xcodebuild_logged,Release,.build/DerivedData)
 
 privacy: ## Privacy and secret sweep over tracked files
 	scripts/check-privacy.sh

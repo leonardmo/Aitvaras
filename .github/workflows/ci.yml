@@ -19,7 +19,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - name: Privacy sweep
@@ -31,42 +31,61 @@ jobs:
   package:
     name: Package tests
     runs-on: macos-26
-    timeout-minutes: 60
+    timeout-minutes: 120
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-node@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
       - name: Toolchain
         run: |
           xcodebuild -version
           swift --version
-      - uses: actions/cache@v4
+      - uses: actions/cache/restore@v6
         with:
           path: .build
           key: spm-${{ runner.os }}-${{ hashFiles('Package.resolved', 'Package.swift') }}
           restore-keys: spm-${{ runner.os }}-
       - name: Node helper contracts
         run: make node-test
+      - name: Build tests
+        run: swift build --build-tests
+      - uses: actions/cache/save@v6
+        if: always()
+        with:
+          path: .build
+          key: spm-${{ runner.os }}-${{ hashFiles('Package.resolved', 'Package.swift') }}
+      # Hosted runners have 3 cores; the subprocess-heavy suites starve each
+      # other when run in parallel, so CI runs them serially.
       - name: swift test
-        run: swift test
+        timeout-minutes: 60
+        run: swift test --skip-build --no-parallel
 
   app:
     name: App build
     runs-on: macos-26
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - name: Tools
         run: |
           brew install xcodegen
           xcodebuild -downloadComponent MetalToolchain || true
-      - uses: actions/cache@v4
+      - uses: actions/cache/restore@v6
         with:
-          path: |
-            .build-xcode/SourcePackages
-            ~/Library/Caches/org.swift.swiftpm
+          path: .build-xcode/SourcePackages
           key: xcode-spm-${{ runner.os }}-${{ hashFiles('Package.resolved', 'project.yml') }}
           restore-keys: xcode-spm-${{ runner.os }}-
       - name: Build (Debug)
         run: make app
+      - uses: actions/cache/save@v6
+        if: always()
+        with:
+          path: .build-xcode/SourcePackages
+          key: xcode-spm-${{ runner.os }}-${{ hashFiles('Package.resolved', 'project.yml') }}
+      - name: Upload build log
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: xcodebuild-log
+          path: .build-xcode/build.log
