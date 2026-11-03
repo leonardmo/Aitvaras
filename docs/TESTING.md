@@ -502,9 +502,10 @@ export AITVARAS_SHARE_MODELS=1                # reuse downloaded model weights
 ./scripts/test-smoke.sh
 ```
 
-Runs Layer 1 + Layer 2 and the tracked-file privacy sweep from
-`scripts/prepare-public-release.sh` (pattern check only, no branch creation).
-Green smoke = safe to push.
+Same as `make smoke`: the tracked-file privacy sweep
+(`scripts/check-privacy.sh`), the offline Node helper contracts, Layer 1 and
+Layer 2. Green smoke = safe to open a PR. CI runs the same checks on every
+PR (`.github/workflows/ci.yml`); `main` only accepts green PRs.
 
 ## Layer 5: manual checklist (the irreducible human part)
 
