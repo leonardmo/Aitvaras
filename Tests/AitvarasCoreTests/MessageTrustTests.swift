@@ -59,23 +59,26 @@ import AitvarasStore
 
     @Test func sharedMailboxDomainsCannotBeApprovedAsDomains() throws {
         let stores = try inMemoryStores()
+        // A real shared provider is the point of this test; addresses are
+        // built from it so no real-looking address appears in the source.
+        let provider = "gmx.de"
 
-        #expect(MessageTrustPolicy.isBroadMailboxDomain("T-ONLINE.DE"))
+        #expect(MessageTrustPolicy.isBroadMailboxDomain("GMX.DE"))
         #expect(MessageTrustPolicy.isBroadMailboxDomain("gmail.com"))
         #expect(!MessageTrustPolicy.isBroadMailboxDomain("example.org"))
         #expect(throws: AitvarasStoreError.self) {
             try stores.trustMessageSource(
-                kind: .emailDomain, value: "t-online.de", label: "T-Online")
+                kind: .emailDomain, value: provider, label: "GMX")
         }
 
         _ = try stores.trustMessageSource(
             kind: .emailAddress,
-            value: "known.person@t-online.de",
+            value: "known.person@\(provider)",
             label: "Known person")
         #expect(try stores.isApprovedMessageSource(.email(
-            senderHeader: "Known <known.person@t-online.de>")))
+            senderHeader: "Known <known.person@\(provider)>")))
         #expect(!(try stores.isApprovedMessageSource(.email(
-            senderHeader: "Phisher <other.person@t-online.de>"))))
+            senderHeader: "Phisher <other.person@\(provider)>"))))
     }
 
     @Test func domainApprovalIsExactAndDoesNotMatchSuffixTricks() throws {

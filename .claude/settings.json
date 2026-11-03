@@ -44,7 +44,14 @@
       "Bash(gh repo delete:*)",
       "Bash(gh secret:*)",
       "Read(./.env)",
-      "Read(./.env.*)"
+      "Read(./.env.*)",
+      "Bash(git commit --no-verify:*)",
+      "Bash(git commit -n:*)",
+      "Bash(git push --no-verify:*)",
+      "Bash(git * --no-verify*)",
+      "Bash(git config core.hooksPath:*)",
+      "Bash(git -c core.hooksPath*)",
+      "Read(.git/info/privacy-denylist)"
     ]
   },
   "hooks": {
@@ -53,7 +60,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "cd \"$CLAUDE_PROJECT_DIR\" && [ \"$(git config core.hooksPath)\" = .githooks ] || git config core.hooksPath .githooks"
+            "command": "cd \"$CLAUDE_PROJECT_DIR\" && scripts/install-hooks.sh >/dev/null"
           }
         ]
       }

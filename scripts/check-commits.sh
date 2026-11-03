@@ -2,7 +2,7 @@
 # Checks commit metadata before it becomes public: author emails must be
 # GitHub noreply addresses and messages must not carry tool attribution.
 #
-#   scripts/check-commits.sh <rev-range>      # e.g. origin/main..HEAD (CI)
+#   scripts/check-commits.sh <rev...>         # e.g. origin/main..HEAD (CI, pre-push)
 #   scripts/check-commits.sh --message <file> # one message (commit-msg hook)
 set -euo pipefail
 
@@ -21,16 +21,17 @@ if [[ "${1:-}" == "--message" ]]; then
     exit $?
 fi
 
-RANGE="${1:?usage: check-commits.sh <rev-range> | --message <file>}"
+[[ $# -gt 0 ]] || { echo "usage: check-commits.sh <rev...> | --message <file>" >&2; exit 2; }
 FAILED=0
 TMP=$(mktemp)
 trap 'rm -f "$TMP"' EXIT
-for sha in $(git rev-list --no-merges "$RANGE"); do
-    email=$(git log -1 --format=%ae "$sha")
-    case "$email" in
-        *@users.noreply.github.com|noreply@github.com) ;;
-        *) echo "✗ $sha: author email is not a GitHub noreply address" >&2; FAILED=1 ;;
-    esac
+for sha in $(git rev-list --no-merges "$@"); do
+    for email in $(git log -1 --format='%ae %ce' "$sha"); do
+        case "$email" in
+            *@users.noreply.github.com|noreply@github.com) ;;
+            *) echo "✗ ${sha:0:12}: author/committer email is not a GitHub noreply address" >&2; FAILED=1 ;;
+        esac
+    done
     git log -1 --format=%B "$sha" > "$TMP"
     check_message "$TMP" "$sha" || FAILED=1
 done

@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+# Last line of defence before anything becomes public: every commit a push
+# would publish must have noreply identities, no tool attribution and no
+# private data, in its message or in any line it adds. Installed by
+# `make setup`; pushes to remotes listed in aitvaras.privateRemote are exempt.
+set -e
+. "$(dirname "$0")/lib.sh"
+remote="$1"
+is_private_remote "$remote" && exit 0
+
+# What the remote really has right now; local remote-tracking refs can be
+# stale (a deleted branch still listed locally would hide its commits).
+published=()
+while read -r sha _; do
+    git cat-file -e "$sha^{commit}" 2>/dev/null && published+=("^$sha")
+done < <(git ls-remote "$remote" 'refs/heads/*' 'refs/tags/*')
+
+zero=0000000000000000000000000000000000000000
+status=0
+while read -r local_ref local_sha remote_ref remote_sha; do
+    [ "$local_sha" = "$zero" ] && continue   # branch deletion
+    range=("$local_sha" ${published[@]+"${published[@]}"})
+    [ -z "$(git rev-list -n1 "${range[@]}")" ] && continue
+    echo "── checking $(git rev-list --count "${range[@]}") new commit(s) for $remote_ref"
+    "$(tool check-commits.sh)" "${range[@]}" || status=1
+    "$(tool check-privacy.sh)" --commits "${range[@]}" || status=1
+done
+if [ "$status" -ne 0 ]; then
+    echo "✗ push blocked: fix the commits above (rewrite them; a later fix commit does not remove published history)." >&2
+fi
+exit "$status"
