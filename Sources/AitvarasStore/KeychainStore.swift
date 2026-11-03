@@ -1,13 +1,33 @@
 import Foundation
 import Security
+import AitvarasCore
 
 /// All secrets (API keys, tokens, cookies) live here — never in the
 /// database or on disk (hard rule, see CLAUDE.md).
 public struct KeychainStore: Sendable {
+    public static let defaultService = "app.aitvaras.secrets"
     public let service: String
 
-    public init(service: String = "app.aitvaras.secrets") {
-        self.service = service
+    /// The regular app keeps its historic service name so existing secrets
+    /// remain available. An isolated state profile gets a separate Keychain
+    /// service, preventing demos and test profiles from reading or replacing
+    /// credentials belonging to the user's normal profile.
+    public init(service: String? = nil) {
+        self.service = service ?? Self.serviceName(
+            stateDirectoryOverride: ProcessInfo.processInfo.environment[
+                AitvarasPaths.stateDirEnvVar])
+    }
+
+    public static func serviceName(
+        baseService: String = defaultService,
+        stateDirectoryOverride: String?
+    ) -> String {
+        guard let stateDirectoryOverride, !stateDirectoryOverride.isEmpty else {
+            return baseService
+        }
+        return baseService + ".profile."
+            + AitvarasPreferences.profileIdentifier(
+                forStateDirectory: stateDirectoryOverride)
     }
 
     public enum KeychainError: Error, LocalizedError {

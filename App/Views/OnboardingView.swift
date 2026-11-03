@@ -2,11 +2,14 @@ import SwiftUI
 import AVFoundation
 import EventKit
 import AppKit
+import AitvarasCore
 import AitvarasVoice
 import AitvarasEngines
+import AitvarasConnectors
+import AitvarasAgent
 
-/// First-run checklist: permissions, models, voice, avatar. Each row is
-/// independently retryable — nothing blocks anything else.
+/// Focused setup pages. Optional permissions and technical diagnostics never
+/// become a mandatory, all-or-nothing first-run checklist.
 struct OnboardingView: View {
     @Environment(AppModel.self) private var model
     @State private var micGranted = AVCaptureDevice.authorizationStatus(for: .audio) == .authorized
@@ -14,153 +17,320 @@ struct OnboardingView: View {
     @State private var calendarGranted = EKEventStore.authorizationStatus(for: .event) == .fullAccess
     @State private var remindersGranted = EKEventStore.authorizationStatus(for: .reminder) == .fullAccess
     @State private var mailStatus = "untested"
-    @State private var speechModelStatus = ""
     @State private var avatarInstalled = AvatarLocator.avatarExists()
-    @State private var voiceTestText = "Hallo! Ich bin Aitvaras. Schön, dass du da bist."
-    @State private var neuralInstalled = NeuralTTS.isInstalled()
-    @State private var installingNeural = false
+    @State private var voiceTestText = "Hello! I'm Aitvaras. It's good to see you."
     @State private var neuralLog = ""
+    @State private var voiceTestRunning = false
+    @State private var selectedPage: SetupPage
+    @State private var selectedAvatar = AvatarLocator.style
+    @State private var localModelCount = MLXEngine.installedModels().count
+    @State private var voiceVolume = Double(VoiceVolume.gain)
 
     private let eventStore = EKEventStore()
+    private static let dragonPreview = Bundle.main.url(forResource: "AitvarasDragonPreview", withExtension: "png")
+        .flatMap { NSImage(contentsOf: $0) }
+
+    init(initialPage: SetupPage = .overview) {
+        _selectedPage = State(initialValue: initialPage)
+    }
 
     var body: some View {
-        Form {
-            Section("Brain") {
-                row(done: mlxReady,
-                    title: "Local models (MLX)",
-                    detail: mlxReady ? "Ready" : "Missing — check ~/Library/Application Support/Aitvaras/Models") {}
-                LabeledContent("Active engine", value: model.engineName)
-            }
-
-            ModelsSection()
-
-            Section("Permissions") {
-                row(done: micGranted, title: "Microphone", detail: "For voice conversations") {
-                    AVCaptureDevice.requestAccess(for: .audio) { granted in
-                        Task { @MainActor in micGranted = granted }
-                    }
-                }
-                row(done: speechGranted, title: "Speech recognition", detail: "On-device transcription") {
-                    Task {
-                        speechGranted = await TranscriberSession.requestAuthorization()
-                    }
-                }
-                row(done: calendarGranted, title: "Calendar", detail: "Read events, create her own") {
-                    eventStore.requestFullAccessToEvents { granted, _ in
-                        Task { @MainActor in calendarGranted = granted }
-                    }
-                }
-                row(done: remindersGranted, title: "Reminders", detail: "Read + create todos") {
-                    eventStore.requestFullAccessToReminders { granted, _ in
-                        Task { @MainActor in remindersGranted = granted }
-                    }
-                }
+        VStack(spacing: 0) {
+            VStack(alignment: .leading, spacing: 16) {
                 HStack {
-                    Image(systemName: mailStatus == "ok" ? "checkmark.circle.fill" : "circle")
-                        .foregroundStyle(mailStatus == "ok" ? .green : .secondary)
-                    VStack(alignment: .leading) {
-                        Text("Apple Mail automation")
-                        Text(mailStatus == "untested"
-                             ? "Grant when macOS asks (Mail must be running)"
-                             : mailStatus)
-                            .font(.caption).foregroundStyle(.secondary)
-                    }
+                    Text("Setup").font(.largeTitle.weight(.semibold))
                     Spacer()
-                    Button("Test") { testMail() }
+                    Label("Changes save automatically", systemImage: "checkmark.circle")
+                        .font(.caption).foregroundStyle(.secondary)
                 }
+                Picker("Section", selection: $selectedPage) {
+                    ForEach(SetupPage.allCases) { page in Text(page.title).tag(page) }
+                }
+                .pickerStyle(.menu)
+                .frame(maxWidth: 300, alignment: .leading)
+                .accessibilityLabel("Setup section")
             }
-
-            Section("Voice") {
-                HStack {
-                    Button("Download German model") { ensureSpeech("de-DE") }
-                    Button("Download English model") { ensureSpeech("en-US") }
-                    if !speechModelStatus.isEmpty {
-                        Text(speechModelStatus).font(.caption).foregroundStyle(.secondary)
+            .padding(24)
+            Divider()
+            if selectedPage == .overview {
+                overview
+            } else {
+                VStack(alignment: .leading, spacing: 0) {
+                    VStack(alignment: .leading, spacing: 5) {
+                        Label(selectedPage.title, systemImage: selectedPage.icon)
+                            .font(.title2.weight(.semibold))
+                        Text(selectedPage.detail).font(.callout).foregroundStyle(.secondary)
                     }
-                }
-                LabeledContent("German voice", value: AppleTTS.bestVoice(for: "de")?.name ?? "none")
-                LabeledContent("English voice", value: AppleTTS.bestVoice(for: "en")?.name ?? "none")
-                HStack {
-                    TextField("Test sentence", text: $voiceTestText)
-                    Button("Speak") {
-                        let text = voiceTestText
-                        Task.detached { await AppleTTS().speak(text) }
-                    }
-                }
-                Text("Apple voices are only the fallback. The neural voice below is the real one.")
-                    .font(.caption)
-                    .foregroundStyle(.tertiary)
-            }
-
-            Section("Neural voice (Chatterbox — recommended)") {
-                row(done: neuralInstalled,
-                    title: "Chatterbox Multilingual",
-                    detail: neuralInstalled
-                        ? "Installed — Aitvaras speaks with her neural voice (German + English)"
-                        : "~6 GB one-time install (Python env + model). Runs fully local on the GPU.") {}
-                HStack {
-                    if !neuralInstalled {
-                        Button(installingNeural ? "Installing…" : "Install neural voice") { installNeuralVoice() }
-                            .disabled(installingNeural)
-                    }
-                    Button("Test neural voice") { testNeuralVoice() }
-                        .disabled(!neuralInstalled)
-                }
-                if !neuralLog.isEmpty {
-                    Text(neuralLog)
-                        .font(.caption.monospaced())
-                        .foregroundStyle(.secondary)
-                        .lineLimit(3)
-                }
-                LabeledContent("Voice volume") {
-                    Slider(value: Binding(
-                        get: { Double(VoiceVolume.gain) },
-                        set: { VoiceVolume.gain = Float($0) }), in: 0...2)
-                        .frame(width: 220)
-                }
-                Text("Aitvaras always speaks English with her Kokoro voice, regardless of the language you use. The EN/DE button on the companion switches which language she LISTENS for.")
-                    .font(.caption)
-                    .foregroundStyle(.tertiary)
-            }
-
-            Section("Avatar") {
-                Picker("Style", selection: Binding(
-                    get: { AvatarLocator.style },
-                    set: { AvatarLocator.style = $0 })) {
-                    Text("Human avatar").tag(AvatarStyle.human)
-                    Text("Companion creature").tag(AvatarStyle.creature)
-                }
-                .pickerStyle(.segmented)
-                Text(AvatarLocator.style == .creature
-                     ? "A small floating droid-creature: glowing eyes that blink and change with her mood, a light-mouth that lip-syncs. Non-human, fully expressive."
-                     : "A stylized human avatar (blink, lip-sync, expressions via ARKit blendshapes).")
-                    .font(.caption)
-                    .foregroundStyle(.tertiary)
-                if AvatarLocator.style == .human {
-                    HStack {
-                        Button("Replace with own .glb…") { importAvatar() }
-                        if avatarInstalled {
-                            Button("Back to Aitvaras's default") { removeCustomAvatar() }
-                        }
-                    }
-                    Text("Replacements need a Ready-Player-Me-style GLB with ARKit blendshapes.")
-                        .font(.caption)
-                        .foregroundStyle(.tertiary)
+                    .padding(.horizontal, 24).padding(.top, 22).padding(.bottom, 4)
+                    settingsForm
+                        .id(selectedPage)
                 }
             }
         }
-        .formStyle(.grouped)
+        .background(Color(nsColor: .windowBackgroundColor))
         .navigationTitle("Setup")
+        .onChange(of: selectedAvatar) { AvatarLocator.style = selectedAvatar }
+        .onChange(of: selectedPage) {
+            if selectedPage == .overview {
+                localModelCount = MLXEngine.installedModels().count
+                refreshPermissions()
+            }
+        }
+        .onChange(of: voiceVolume) { VoiceVolume.gain = Float(voiceVolume) }
+        .onChange(of: model.modelDownloads.completionRevision) {
+            localModelCount = MLXEngine.installedModels().count
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            refreshPermissions()
+            selectedAvatar = AvatarLocator.style
+            voiceVolume = Double(VoiceVolume.gain)
+        }
     }
 
-    private var mlxReady: Bool {
-        FileManager.default.fileExists(
-            atPath: MLXEngine.modelsDirectory()
-                .appendingPathComponent("Qwen3-30B-A3B-4bit/config.json").path)
+    private var overview: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 20) {
+                VStack(alignment: .leading, spacing: 7) {
+                    Text(SetupPage.overview.title).font(.title2.weight(.semibold))
+                    Text(SetupPage.overview.detail).foregroundStyle(.secondary)
+                }
+                HStack(spacing: 12) {
+                    Image(systemName: intelligenceAvailable ? "checkmark.circle.fill" : "arrow.down.circle")
+                        .font(.title2).foregroundStyle(intelligenceAvailable ? .green : Color.accentColor)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(model.modelDownloads.activeModelID != nil ? "Downloading a local model"
+                             : intelligenceAvailable ? "Local intelligence available" : "Start with local intelligence")
+                            .font(.headline)
+                        Text(intelligenceAvailable ? "Choose the model for chat, voice and background work."
+                             : "Download a model to run AI on this Mac. No cloud account is needed.")
+                            .font(.callout).foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Button(model.modelDownloads.activeModelID != nil ? "View download"
+                           : intelligenceAvailable ? "Manage models" : "Choose a model") { selectedPage = .models }
+                        .buttonStyle(.borderedProminent)
+                }
+                .padding(16)
+                .background(Color.accentColor.opacity(0.07), in: RoundedRectangle(cornerRadius: 14))
+
+                Text("Explore your settings").font(.headline)
+                LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
+                    overviewCard(.capture, status: "Apple on-device · language, assets & summaries")
+                    overviewCard(.voice, status: model.neuralVoiceInstaller.isInstalling ? "Voice installation in progress"
+                                 : micGranted && speechGranted ? "Voice access ready" : "Optional · listening & speaking")
+                    overviewCard(.avatar, status: !model.companionPresentation.usesAvatar ? "Minimal overlay · no 3D rendering"
+                                 : selectedAvatar == .creature ? "Fire-drake selected" : "Human avatar selected")
+                    overviewCard(.cloud, status: "Choose what may leave this Mac")
+                    overviewCard(.access, status: "Optional · grant only what you need")
+                    overviewCard(.memory, status: NightlyScheduleSettings.load().mode == .off ? "Automatic updates off" : "Automatic updates configured")
+                    overviewCard(.usage, status: "Local and cloud activity")
+                }
+                Label("Connected services are managed separately in Connections.", systemImage: "app.connected.to.app.below.fill")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            .padding(24)
+            .frame(maxWidth: 960, alignment: .leading)
+            .frame(maxWidth: .infinity)
+        }
+    }
+
+    private var intelligenceAvailable: Bool {
+        localModelCount > 0 || !["none", "…", ""].contains(model.engineName)
+    }
+
+    private func overviewCard(_ page: SetupPage, status: String) -> some View {
+        Button { selectedPage = page } label: {
+            HStack(alignment: .top, spacing: 12) {
+                Image(systemName: page.icon)
+                    .font(.title3).foregroundStyle(Color.accentColor).frame(width: 26)
+                VStack(alignment: .leading, spacing: 5) {
+                    Text(page.title).font(.headline).foregroundStyle(.primary)
+                    Text(status).font(.caption).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 2)
+                Image(systemName: "chevron.right").font(.caption).foregroundStyle(.tertiary)
+            }
+            .padding(16)
+            .frame(maxWidth: .infinity, minHeight: 78, alignment: .leading)
+            .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 12))
+            .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(.primary.opacity(0.07)))
+            .contentShape(RoundedRectangle(cornerRadius: 12))
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("\(page.title). \(status)")
+    }
+
+    private var settingsForm: some View {
+        Form {
+            switch selectedPage {
+            case .overview: EmptyView()
+            case .models:
+                Section("Current engine") {
+                    LabeledContent("Engine", value: model.engineName == "none" ? "Not connected"
+                                   : model.engineName == "…" ? "Checking availability…" : model.engineName)
+                }
+                ModelsSection(pane: .localModels)
+            case .cloud: ModelsSection(pane: .cloudAgents)
+            case .memory: ModelsSection(pane: .memory)
+            case .usage: ModelsSection(pane: .usage)
+            case .voice: voiceSettings
+            case .capture: CaptureSettingsView()
+            case .avatar: avatarSettings
+            case .access: accessSettings
+            }
+        }
+        .formStyle(.grouped)
+    }
+
+    @ViewBuilder private var voicePermissions: some View {
+        row(done: micGranted, title: "Microphone", detail: "Listen during a voice conversation") {
+            AVCaptureDevice.requestAccess(for: .audio) { granted in
+                Task { @MainActor in micGranted = granted }
+            }
+        }
+        row(done: speechGranted, title: "Speech recognition", detail: "Transcribe your speech on this Mac") {
+            Task { speechGranted = await TranscriberSession.requestAuthorization() }
+        }
+    }
+
+    @ViewBuilder private var voiceSettings: some View {
+        Section("Listening") {
+            voicePermissions
+            Text("The EN/DE button on the companion chooses the language it listens for.")
+                .font(.caption).foregroundStyle(.secondary)
+            Button("Manage English / German speech assets") { selectedPage = .capture }
+            Text("Voice and capture share Apple's on-device speech assets, but keep separate language selections.")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+        Section("Speaking") {
+            row(done: model.neuralVoiceInstaller.installed, title: "Local neural voice",
+                detail: model.neuralVoiceInstaller.installed
+                    ? "Installed · Aitvaras speaks English with Kokoro."
+                    : "Optional · about 6 GB for the voice environment and bundled models. Runs locally.")
+            if !model.neuralVoiceInstaller.installed {
+                if model.neuralVoiceInstaller.isInstalling {
+                    Button(model.neuralVoiceInstaller.isCancelling ? "Pausing…" : "Pause installation") {
+                        model.neuralVoiceInstaller.cancelActive()
+                    }.disabled(model.neuralVoiceInstaller.isCancelling)
+                } else {
+                    Button(model.neuralVoiceInstaller.status.isEmpty ? "Install neural voice" : "Retry installation") {
+                        neuralLog = ""
+                        model.neuralVoiceInstaller.start()
+                    }
+                }
+            }
+            if !model.neuralVoiceInstaller.status.isEmpty {
+                Text(model.neuralVoiceInstaller.status).font(.caption).foregroundStyle(.secondary)
+            }
+            LabeledContent("Volume") { Slider(value: $voiceVolume, in: 0...2).frame(maxWidth: 260) }
+            Text("Spoken replies stay in English, independently of the language you speak. Apple voices are the fallback when the neural voice is unavailable.")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+        Section("Try the voice") {
+            TextField("Test sentence", text: $voiceTestText)
+            Button(voiceTestRunning ? "Testing…" : "Test neural voice") { testNeuralVoice() }
+                .disabled(!model.neuralVoiceInstaller.installed || model.neuralTTS == nil || voiceTestRunning || voiceTestText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            if !neuralLog.isEmpty { Text(neuralLog).font(.caption).foregroundStyle(.secondary) }
+            DisclosureGroup("Apple fallback & diagnostics") {
+                LabeledContent("English voice", value: AppleTTS.bestVoice(for: "en")?.name ?? "Not available")
+                Button("Test Apple fallback") {
+                    let text = voiceTestText
+                    Task.detached { await AppleTTS().speak(text) }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder private var avatarSettings: some View {
+        Section("Floating companion") {
+            Picker("Display", selection: Binding(
+                get: { model.companionPresentation },
+                set: { model.companionPresentation = $0 })) {
+                Text("Avatar").tag(CompanionPresentation.avatar)
+                Text("Minimal overlay").tag(CompanionPresentation.minimal)
+            }.pickerStyle(.segmented)
+            Text(model.companionPresentation.usesAvatar
+                 ? "Show your character with controls on hover."
+                 : "A compact, draggable overlay with voice, typing and volume controls. The avatar is not loaded or rendered.")
+                .font(.callout).foregroundStyle(.secondary)
+            Text("Option–Space shows or hides either mode. Switching modes keeps your selected character and voice session.")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+        if model.companionPresentation.usesAvatar {
+            Section("Appearance") { avatarAppearance }
+        }
+    }
+
+    @ViewBuilder private var avatarAppearance: some View {
+        Picker("Character", selection: $selectedAvatar) {
+            Text("Fire-drake companion").tag(AvatarStyle.creature)
+            Text("Human avatar").tag(AvatarStyle.human)
+        }.pickerStyle(.segmented)
+        HStack(spacing: 18) {
+            if selectedAvatar == .creature, let preview = Self.dragonPreview {
+                Image(nsImage: preview).resizable().scaledToFit().frame(width: 100, height: 120)
+            } else {
+                Image(systemName: "person.crop.square").font(.system(size: 66)).foregroundStyle(.secondary)
+                    .frame(width: 100, height: 120)
+            }
+            VStack(alignment: .leading, spacing: 8) {
+                Text(selectedAvatar == .creature ? "Aitvaras, the fire-drake" : "A familiar human presence").font(.headline)
+                Text(selectedAvatar == .creature
+                     ? "A textured dragon with blinking eyes, expressive gaze and speech-driven mouth movement."
+                     : "A stylized human avatar with blinking, lip-sync and facial expressions.")
+                    .foregroundStyle(.secondary)
+                Label("Pauses rendering when hidden", systemImage: "leaf")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(.vertical, 8)
+        if selectedAvatar == .human {
+            Button("Import your own GLB…") { importAvatar() }
+            if avatarInstalled { Button("Restore the default human avatar") { removeCustomAvatar() } }
+            Text("Custom models need Ready-Player-Me-style ARKit blendshapes.")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+    }
+
+    @ViewBuilder private var accessSettings: some View {
+        Section("Voice access") { voicePermissions }
+        Section("Personal apps · optional") {
+            row(done: calendarGranted, title: "Calendar", detail: "Read events and create Aitvaras's own events") {
+                eventStore.requestFullAccessToEvents { granted, _ in Task { @MainActor in calendarGranted = granted } }
+            }
+            row(done: remindersGranted, title: "Reminders", detail: "Read reminders and create tasks") {
+                eventStore.requestFullAccessToReminders { granted, _ in Task { @MainActor in remindersGranted = granted } }
+            }
+            HStack {
+                Image(systemName: mailStatus == "ok" ? "checkmark.circle.fill" : "circle")
+                    .foregroundStyle(mailStatus == "ok" ? .green : .secondary)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Apple Mail")
+                    Text(mailStatus == "untested" ? "Test access with Mail open. macOS may ask for permission." : mailStatus)
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button("Test access") { testMail() }
+            }
+            Text("Mail access is read-only. This test does not send mail.")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+    }
+
+    private func refreshPermissions() {
+        micGranted = AVCaptureDevice.authorizationStatus(for: .audio) == .authorized
+        speechGranted = TranscriberSession.authorizationStatus() == .authorized
+        calendarGranted = EKEventStore.authorizationStatus(for: .event) == .fullAccess
+        remindersGranted = EKEventStore.authorizationStatus(for: .reminder) == .fullAccess
     }
 
     @ViewBuilder
-    private func row(done: Bool, title: String, detail: String, action: @escaping () -> Void) -> some View {
+    private func row(
+        done: Bool, title: String, detail: String,
+        action: (() -> Void)? = nil
+    ) -> some View {
         HStack {
             Image(systemName: done ? "checkmark.circle.fill" : "circle")
                 .foregroundStyle(done ? .green : .secondary)
@@ -169,20 +339,8 @@ struct OnboardingView: View {
                 Text(detail).font(.caption).foregroundStyle(.secondary)
             }
             Spacer()
-            if !done {
+            if !done, let action {
                 Button("Grant") { action() }
-            }
-        }
-    }
-
-    private func ensureSpeech(_ identifier: String) {
-        speechModelStatus = "Downloading…"
-        Task {
-            do {
-                let ok = try await TranscriberSession.ensureModel(locale: Locale(identifier: identifier))
-                speechModelStatus = ok ? "\(identifier) ready" : "\(identifier) not supported"
-            } catch {
-                speechModelStatus = "Failed: \(error.localizedDescription)"
             }
         }
     }
@@ -203,57 +361,30 @@ struct OnboardingView: View {
         }
     }
 
-    private func installNeuralVoice() {
-        installingNeural = true
-        neuralLog = "Starting install (this downloads several GB)…"
-        guard let script = Bundle.main.url(forResource: "setup-neural-voice", withExtension: "sh") else {
-            neuralLog = "setup-neural-voice.sh missing from the app bundle — rebuild the app."
-            installingNeural = false
-            return
-        }
-        Task.detached {
-            let process = Process()
-            process.executableURL = URL(fileURLWithPath: "/bin/zsh")
-            process.arguments = [script.path]
-            let pipe = Pipe()
-            process.standardOutput = pipe
-            process.standardError = pipe
-            do {
-                try process.run()
-                for try await line in pipe.fileHandleForReading.bytes.lines {
-                    await MainActor.run { neuralLog = line }
-                }
-                process.waitUntilExit()
-                let ok = process.terminationStatus == 0
-                await MainActor.run {
-                    installingNeural = false
-                    neuralInstalled = NeuralTTS.isInstalled()
-                    neuralLog = ok ? "Installed ✓" : "Install failed — see Console or run scripts/setup-neural-voice.sh manually"
-                }
-            } catch {
-                await MainActor.run {
-                    installingNeural = false
-                    neuralLog = "Could not run installer: \(error.localizedDescription)"
-                }
-            }
-        }
-    }
-
     private func testNeuralVoice() {
         guard let neural = model.neuralTTS else { return }
-        neuralLog = "Loading model (first time takes up to a minute)…"
+        voiceTestRunning = true
+        neuralLog = "Starting the local voice engine. A cold start may take up to a minute…"
+        let text = voiceTestText
         Task {
-            _ = await neural.ensureServer()
-            await neural.speak("Hallo! Ich bin Aitvaras, und das ist meine richtige Stimme.", languageCode: "de")
-            await neural.speak("And this is how I sound in English.", languageCode: "en")
-            neuralLog = "Done."
+            defer { voiceTestRunning = false }
+            guard await neural.ensureServer() else {
+                neuralLog = "The neural voice could not start. You can test the Apple fallback below."
+                return
+            }
+            await neural.speak(text, languageCode: "en")
+            neuralLog = "Voice test finished."
         }
     }
 
     private func removeCustomAvatar() {
-        try? FileManager.default.removeItem(at: AvatarLocator.avatarURL)
-        avatarInstalled = false
-        NotificationCenter.default.post(name: .aitvarasAvatarChanged, object: nil)
+        do {
+            try FileManager.default.removeItem(at: AvatarLocator.avatarURL)
+            avatarInstalled = false
+            NotificationCenter.default.post(name: .aitvarasAvatarChanged, object: nil)
+        } catch {
+            model.presentError(title: "Avatar could not be removed", error: error)
+        }
     }
 
     private func importAvatar() {
@@ -266,29 +397,34 @@ struct OnboardingView: View {
             avatarInstalled = true
             NotificationCenter.default.post(name: .aitvarasAvatarChanged, object: nil)
         } catch {
-            avatarInstalled = false
+            avatarInstalled = AvatarLocator.avatarExists()
+            model.presentError(title: "Avatar could not be imported", error: error)
         }
     }
 }
 
 enum AvatarStyle: String {
     case human       // Ready Player Me avatar
-    case creature    // procedural futuristic companion
+    case creature    // authored dragon companion
 }
 
 enum AvatarLocator {
     static var style: AvatarStyle {
-        get { AvatarStyle(rawValue: UserDefaults.standard.string(forKey: "avatar.style") ?? "human") ?? .human }
+        get {
+            if let override = ProcessInfo.processInfo.environment["AITVARAS_AVATAR_STYLE"],
+               let style = AvatarStyle(rawValue: override) { return style }
+            return AvatarStyle(rawValue: AitvarasPreferences.current.string(forKey: "avatar.style") ?? "creature") ?? .creature
+        }
         set {
-            UserDefaults.standard.set(newValue.rawValue, forKey: "avatar.style")
+            AitvarasPreferences.current.set(newValue.rawValue, forKey: "avatar.style")
             NotificationCenter.default.post(name: .aitvarasAvatarChanged, object: nil)
         }
     }
 
     /// User-supplied replacement (optional).
     static var avatarURL: URL {
-        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("Aitvaras/Avatar/aitvaras.glb")
+        AitvarasPaths.stateDirectory
+            .appendingPathComponent("Avatar/aitvaras.glb")
     }
 
     /// Aitvaras's own bundled avatar (D4) — always present.
@@ -309,10 +445,18 @@ enum AvatarLocator {
     static func install(from source: URL) throws {
         let dir = avatarURL.deletingLastPathComponent()
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        if FileManager.default.fileExists(atPath: avatarURL.path) {
-            try FileManager.default.removeItem(at: avatarURL)
+        let staged = dir.appendingPathComponent(".avatar-\(UUID().uuidString).glb")
+        defer { try? FileManager.default.removeItem(at: staged) }
+        try FileManager.default.copyItem(at: source, to: staged)
+        let size = try staged.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
+        guard size > 0 else {
+            throw CocoaError(.fileReadCorruptFile)
         }
-        try FileManager.default.copyItem(at: source, to: avatarURL)
+        if FileManager.default.fileExists(atPath: avatarURL.path) {
+            _ = try FileManager.default.replaceItemAt(avatarURL, withItemAt: staged)
+        } else {
+            try FileManager.default.moveItem(at: staged, to: avatarURL)
+        }
     }
 }
 

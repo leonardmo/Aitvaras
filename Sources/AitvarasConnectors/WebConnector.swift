@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 import AitvarasCore
 
 /// Read-only web access: DuckDuckGo search plus page fetching, reduced to
@@ -22,11 +23,13 @@ public actor WebConnector: Connector {
 
     static let searchEndpoint = "https://html.duckduckgo.com/html/"
     static let requestTimeout: TimeInterval = 15
+    /// Parsing happens only after download, so bound the raw response too.
+    static let responseByteLimit = 2 * 1024 * 1024
     /// DDG's HTML endpoint serves a JS challenge to unknown clients; a plain
     /// desktop-browser identity keeps the static HTML coming.
     static let userAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
 
-    public init(session: URLSession = .shared) {
+    public init(session: URLSession = ConnectorHTTPSession.make()) {
         self.session = session
     }
 
@@ -84,7 +87,7 @@ public actor WebConnector: Connector {
             throw ConnectorError("Could not build a search URL for '\(query)'.")
         }
 
-        let (data, response) = try await session.data(for: Self.request(for: url))
+        let (data, response) = try await fetchPublic(url)
         if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
             throw ConnectorError("DuckDuckGo search returned HTTP \(http.statusCode). Try again later.")
         }
@@ -107,7 +110,7 @@ public actor WebConnector: Connector {
 
     private func fetchPage(urlString: String, maxChars: Int) async throws -> String {
         let url = try Self.validatedFetchURL(urlString)
-        let (data, response) = try await session.data(for: Self.request(for: url))
+        let (data, response) = try await fetchPublic(url)
 
         let finalURL = response.url ?? url
         // Redirects must not smuggle the fetch onto a private host either.
@@ -141,6 +144,33 @@ public actor WebConnector: Connector {
         request.setValue("text/html,application/xhtml+xml;q=0.9,text/plain;q=0.8", forHTTPHeaderField: "Accept")
         request.setValue("en-US,en;q=0.9,de;q=0.8", forHTTPHeaderField: "Accept-Language")
         return request
+    }
+
+    /// Follow redirects ourselves so every hop passes the same literal and
+    /// DNS checks before URLSession can connect to it.
+    private func fetchPublic(_ initialURL: URL) async throws -> (Data, URLResponse) {
+        var url = try Self.validatedFetchURL(initialURL.absoluteString)
+        let noRedirects = NoRedirectsDelegate()
+        for redirectCount in 0...5 {
+            try await Self.validatePublicResolution(host: url.host!)
+            let (data, response) = try await BoundedHTTP.data(
+                for: Self.request(for: url), using: session,
+                maximumBytes: Self.responseByteLimit,
+                delegate: noRedirects)
+            guard let http = response as? HTTPURLResponse,
+                  [301, 302, 303, 307, 308].contains(http.statusCode),
+                  let location = http.value(forHTTPHeaderField: "Location") else {
+                return (data, response)
+            }
+            guard redirectCount < 5 else {
+                throw ConnectorError("Web page redirected too many times.")
+            }
+            guard let redirected = URL(string: location, relativeTo: url)?.absoluteURL else {
+                throw ConnectorError("Web page returned an invalid redirect.")
+            }
+            url = try Self.validatedFetchURL(redirected.absoluteString)
+        }
+        throw ConnectorError("Web page redirected too many times.")
     }
 
     // MARK: - DDG result parsing (pure, tested)
@@ -325,6 +355,9 @@ public actor WebConnector: Connector {
         guard let host = url.host, !host.isEmpty else {
             throw ConnectorError("URL has no host: \(string)")
         }
+        guard url.user == nil, url.password == nil else {
+            throw ConnectorError("Web URLs containing credentials are not allowed.")
+        }
         guard !isPrivateHost(host) else {
             throw ConnectorError("Refusing to fetch '\(host)' — local and private-network addresses are off limits for web fetching.")
         }
@@ -332,19 +365,122 @@ public actor WebConnector: Connector {
     }
 
     static func isPrivateHost(_ host: String) -> Bool {
-        let h = host.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "[]"))
-        if h == "localhost" || h == "::1" || h == "0.0.0.0" { return true }
-        if h.hasSuffix(".local") || h.hasSuffix(".localhost") { return true }
-        if h.hasPrefix("127.") || h.hasPrefix("10.") || h.hasPrefix("192.168.") || h.hasPrefix("169.254.") {
-            return true
+        var h = host.lowercased().trimmingCharacters(
+            in: CharacterSet(charactersIn: "[]"))
+        while h.hasSuffix(".") { h.removeLast() }
+        guard !h.isEmpty else { return true }
+
+        var ipv4 = in_addr()
+        if inet_aton(h, &ipv4) == 1 {
+            return isPrivateIPv4(ipv4)
         }
-        if h.hasPrefix("172.") {
-            let parts = h.split(separator: ".")
-            if parts.count == 4, let second = Int(parts[1]), (16...31).contains(second) { return true }
+        var ipv6 = in6_addr()
+        if inet_pton(AF_INET6, h, &ipv6) == 1 {
+            return isPrivateIPv6(ipv6)
         }
-        if h.contains(":") && (h.hasPrefix("fe80:") || h.hasPrefix("fd") || h.hasPrefix("fc")) {
-            return true   // IPv6 link-local / unique-local
+        if h.contains(":") { return true } // malformed/zone-scoped IPv6
+
+        if h == "localhost" || !h.contains(".") { return true }
+        let privateSuffixes = [
+            ".local", ".localhost", ".localdomain", ".internal", ".home", ".lan", ".arpa"
+        ]
+        return privateSuffixes.contains { h.hasSuffix($0) }
+    }
+
+    private static func isPrivateIPv4(_ address: in_addr) -> Bool {
+        var copy = address
+        let b = withUnsafeBytes(of: &copy) { Array($0) }
+        guard b.count == 4 else { return true }
+        if b[0] == 0 || b[0] == 10 || b[0] == 127 || b[0] >= 224 { return true }
+        if b[0] == 100, (64...127).contains(b[1]) { return true }
+        if b[0] == 169, b[1] == 254 { return true }
+        if b[0] == 172, (16...31).contains(b[1]) { return true }
+        if b[0] == 192, b[1] == 168 { return true }
+        if b[0] == 192, b[1] == 0, b[2] == 0 { return true }
+        if b[0] == 192, b[1] == 0, b[2] == 2 { return true }
+        if b[0] == 192, b[1] == 88, b[2] == 99 { return true }
+        if b[0] == 198, (18...19).contains(b[1]) { return true }
+        if b[0] == 198, b[1] == 51, b[2] == 100 { return true }
+        if b[0] == 203, b[1] == 0, b[2] == 113 { return true }
+        return false
+    }
+
+    private static func isPrivateIPv6(_ address: in6_addr) -> Bool {
+        var copy = address
+        let b = withUnsafeBytes(of: &copy) { Array($0) }
+        guard b.count == 16 else { return true }
+
+        // IPv4-compatible/mapped forms inherit the embedded IPv4 policy.
+        if b.prefix(10).allSatisfy({ $0 == 0 }),
+           (b[10] == 0 && b[11] == 0 || b[10] == 0xff && b[11] == 0xff) {
+            var ipv4 = in_addr()
+            withUnsafeMutableBytes(of: &ipv4) { destination in
+                destination.copyBytes(from: b[12..<16])
+            }
+            return isPrivateIPv4(ipv4)
+        }
+
+        // Currently allocated global unicast is 2000::/3. Everything else
+        // includes unspecified, loopback, ULA, link/site-local and multicast.
+        guard b[0] & 0xe0 == 0x20 else { return true }
+        if b[0] == 0x20, b[1] == 0x01, b[2] == 0x0d, b[3] == 0xb8 {
+            return true // documentation range 2001:db8::/32
         }
         return false
+    }
+
+    static func validatePublicResolution(host: String) async throws {
+        let containsPrivate = try await Task.detached(priority: .utility) {
+            try resolvedAddressesContainPrivateAddress(host)
+        }.value
+        guard !containsPrivate else {
+            throw ConnectorError(
+                "Refusing to fetch '\(host)' because it resolves to a local/private address.")
+        }
+    }
+
+    nonisolated private static func resolvedAddressesContainPrivateAddress(
+        _ host: String
+    ) throws -> Bool {
+        var results: UnsafeMutablePointer<addrinfo>?
+        let status = getaddrinfo(host, nil, nil, &results)
+        guard status == 0, let first = results else {
+            throw ConnectorError("Web host could not be resolved.")
+        }
+        defer { freeaddrinfo(first) }
+
+        var foundAddress = false
+        var current: UnsafeMutablePointer<addrinfo>? = first
+        while let info = current?.pointee {
+            defer { current = info.ai_next }
+            guard let socketAddress = info.ai_addr else { continue }
+            if info.ai_family == AF_INET {
+                foundAddress = true
+                let value = socketAddress.withMemoryRebound(
+                    to: sockaddr_in.self, capacity: 1) { $0.pointee.sin_addr }
+                if isPrivateIPv4(value) { return true }
+            } else if info.ai_family == AF_INET6 {
+                foundAddress = true
+                let value = socketAddress.withMemoryRebound(
+                    to: sockaddr_in6.self, capacity: 1) { $0.pointee.sin6_addr }
+                if isPrivateIPv6(value) { return true }
+            }
+        }
+        guard foundAddress else {
+            throw ConnectorError("Web host did not resolve to an IP address.")
+        }
+        return false
+    }
+}
+
+final class NoRedirectsDelegate: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
+    func urlSession(
+        _ session: URLSession,
+        task: URLSessionTask,
+        willPerformHTTPRedirection response: HTTPURLResponse,
+        newRequest request: URLRequest,
+        completionHandler: @escaping (URLRequest?) -> Void
+    ) {
+        completionHandler(nil)
     }
 }

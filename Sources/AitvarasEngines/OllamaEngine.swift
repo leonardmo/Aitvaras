@@ -9,6 +9,7 @@ public actor OllamaEngine: InferenceEngine {
     private let baseURL: URL
     /// Fallback engine: one model for every role.
     private let model: String
+    public var configuredModelName: String { model }
     private let session: URLSession
 
     public init(baseURL: URL = URL(string: "http://127.0.0.1:11434")!,
@@ -51,6 +52,9 @@ public actor OllamaEngine: InferenceEngine {
                     var body: [String: Any] = [
                         "model": modelName,
                         "stream": true,
+                        // Match the in-process engine and give Ollama a native
+                        // stop condition in addition to the shared stream cap.
+                        "options": ["num_predict": 8192],
                         "messages": messages.map { m -> [String: Any] in
                             var dict: [String: Any] = ["role": m.role.rawValue, "content": m.content]
                             if m.role == .tool, let id = m.toolCallID { dict["tool_name"] = id }
@@ -130,6 +134,13 @@ public actor OllamaEngine: InferenceEngine {
                             }
                         }
                         if (json["done"] as? Bool) == true {
+                            if let input = Self.intValue(json["prompt_eval_count"]),
+                               let output = Self.intValue(json["eval_count"]) {
+                                continuation.yield(.usage(InferenceUsage(
+                                    inputTokens: input,
+                                    outputTokens: output,
+                                    modelIdentifier: "ollama:\(modelName)")))
+                            }
                             continuation.yield(.done(stopReason: sawToolCall ? .toolUse : .endOfTurn))
                         }
                     }
@@ -143,5 +154,11 @@ public actor OllamaEngine: InferenceEngine {
             }
             continuation.onTermination = { _ in task.cancel() }
         }
+    }
+
+    private static func intValue(_ value: Any?) -> Int? {
+        if let value = value as? Int { return value }
+        if let value = value as? NSNumber { return value.intValue }
+        return nil
     }
 }

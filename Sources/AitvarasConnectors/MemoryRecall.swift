@@ -30,9 +30,11 @@ struct MemoryRecall {
     }
 
     /// Recall the most relevant currently-valid facts and bump their recency.
-    func recall(query: String, limit: Int, now: Date = .now) async -> [MemoryFact] {
-        let vectorRanked = await vectorArm(query)
-        let keywordRanked = ((try? stores.factKeywordSearch(query, limit: Self.armLimit)) ?? []).map(\.factID)
+    func recall(query: String, limit: Int, now: Date = .now) async throws -> [MemoryFact] {
+        let vectorRanked = try await vectorArm(query)
+        let keywordRanked = query.contains(where: { $0.isLetter || $0.isNumber })
+            ? try stores.factKeywordSearch(query, limit: Self.armLimit).map(\.factID)
+            : []
 
         var fused: [UUID: Double] = [:]
         for (rank, id) in vectorRanked.enumerated() {
@@ -43,9 +45,10 @@ struct MemoryRecall {
         }
         guard !fused.isEmpty else { return [] }
 
-        let factsByID = Dictionary(
-            uniqueKeysWithValues: (try? stores.facts(ids: Array(fused.keys)))?
-                .filter { $0.isCurrentlyValid && !$0.needsReview }.map { ($0.id, $0) } ?? [])
+        let factsByID = Dictionary(uniqueKeysWithValues:
+            try stores.facts(ids: Array(fused.keys))
+                .filter { $0.isCurrentlyValid && !$0.needsReview }
+                .map { ($0.id, $0) })
 
         let scored = fused.compactMap { id, rrf -> (MemoryFact, Double)? in
             guard let fact = factsByID[id] else { return nil }
@@ -60,10 +63,10 @@ struct MemoryRecall {
         return ranked
     }
 
-    private func vectorArm(_ query: String) async -> [UUID] {
-        guard let queryVector = try? await embedder.embed(texts: [query]).first,
-              let facts = try? stores.factsWithEmbeddings(activeOnly: true), !facts.isEmpty
-        else { return [] }
+    private func vectorArm(_ query: String) async throws -> [UUID] {
+        let facts = try stores.factsWithEmbeddings(activeOnly: true)
+        guard !facts.isEmpty,
+              let queryVector = try? await embedder.embed(texts: [query]).first else { return [] }
         let scored: [(UUID, Float)] = facts.compactMap { fact in
             guard let vector = fact.embeddingVector, vector.count == queryVector.count else { return nil }
             return (fact.id, Self.cosine(queryVector, vector))

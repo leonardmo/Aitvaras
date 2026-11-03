@@ -44,8 +44,7 @@ public enum StateFixtures {
         let old = MemoryFact(text: "Uses Notion for study notes", kind: .biography, source: .extracted)
         let new = MemoryFact(text: "Uses Obsidian for study notes", kind: .biography, source: .userStated)
         try stores.saveFact(old)
-        try stores.saveFact(new)
-        try stores.supersedeFact(old.id, by: new.id)
+        try stores.replaceFact(old.id, with: new)
 
         // One quarantined fact so the review flow is exercisable.
         var quarantined = MemoryFact(text: "Finds the Thursday lecture exhausting",
@@ -69,6 +68,36 @@ public enum StateFixtures {
             detailJSON: #"{"episodes":4,"added":1,"superseded":0,"insights":1,"questions":1}"#))
 
         try stores.saveGoal(Goal(day: Goal.today(), text: "Finish practical write-up"))
+
+        // No articles are fabricated: the normal silent scheduler fills the
+        // editable starter topics from live feeds when networking is available.
+        try stores.installDefaultNewsTopics()
+
+        let focusStep = CommandRoutineStep(
+            connectorID: "goals", toolName: "start_focus_session",
+            argumentsJSON: "{}", risk: .reversibleWrite,
+            label: "Start focus session")
+        try stores.saveCommandRoutine(CommandRoutine(
+            title: "Let's focus",
+            triggerKind: .phrase,
+            phrases: ["Let's focus", "Fokus an"],
+            steps: [focusStep],
+            status: .active,
+            evidenceCount: 4,
+            explanation: "Learned after 4 identical successful runs. Exact phrase only; no AI model is used.",
+            dedupeKey: "fixture:focus-shortcut",
+            lastRunAt: Date.now.addingTimeInterval(-86_400),
+            runCount: 2))
+        try stores.saveCommandRoutine(CommandRoutine(
+            title: "Start focus session",
+            triggerKind: .schedule,
+            scheduleMinuteOfDay: 9 * 60,
+            scheduleWeekdayMask: (2...6).reduce(0) { $0 | (1 << ($1 - 1)) },
+            steps: [focusStep],
+            status: .suggested,
+            evidenceCount: 7,
+            explanation: "Suggested—not active—after 7 weekday runs around the same time.",
+            dedupeKey: "fixture:focus-schedule"))
         return true
     }
 }

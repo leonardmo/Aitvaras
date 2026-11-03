@@ -1,5 +1,11 @@
 # Future directions
 
+> Historical idea backlog, not the current build order. See
+> [`WORK-HUB-PLAN.md`](WORK-HUB-PLAN.md) for the consolidated 2026-10-19 plan.
+> Local processing still has collection, retention and access-control privacy
+> costs. The old memory-status and permission assumptions below are not a current
+> implementation audit; none authorize new observation or data sharing.
+
 The guiding thesis (user, 2026-07-07): *the more Aitvaras knows about the
 day and the more signals she gets, the more useful she is.* Everything is
 local, so richer context is a feature, not a privacy cost. The bar: each
@@ -55,6 +61,12 @@ approves. Feeds every future decision. Highest long-term payoff.
 
 ## Tier 3: bigger builds / higher risk
 
+- **Mobile companion and shared task fabric.** An offline-capable Android app
+  can handle capture, local small-model routing and review while handing
+  Mac-only work to the desktop. A small encrypted relay may make delivery
+  reliable while the Mac sleeps without becoming the assistant's brain. The
+  architecture and staged validation plan live in
+  [`MOBILE-COMPANION.md`](MOBILE-COMPANION.md).
 - **Messenger bridge (WhatsApp/Signal via whatsmeow).** The one real gap
   in "lunch invite from a friend": notification-reading covers banners,
   but true message access + replies needs a bridge. ToS-grey, separate

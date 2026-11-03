@@ -59,7 +59,7 @@ public actor GoalsConnector: Connector {
         switch toolName {
         case "list_today":
             let goals = try stores.goals(day: Goal.today())
-            let focus = (try? stores.value(forKey: "focus.sessionActive")) == "1"
+            let focus = try stores.value(forKey: "focus.sessionActive") == "1"
             let header = "Focus session: \(focus ? "ACTIVE — non-urgent notifications held" : "not running")"
             if goals.isEmpty { return header + "\nNo goals set for today yet." }
             return header + "\n" + goals.map { goal in
@@ -74,20 +74,35 @@ public actor GoalsConnector: Connector {
 
         case "complete_goal":
             let id = try Self.uuid(from: args)
-            try stores.setGoalDone(id, done: true)
+            guard try stores.setGoalDone(id, done: true) else {
+                throw ConnectorError("That goal no longer exists — use list_today to refresh its id.")
+            }
             return #"{"completed": true}"#
 
         case "remove_goal":
             let id = try Self.uuid(from: args)
-            try stores.deleteGoal(id)
+            guard try stores.deleteGoal(id) else {
+                throw ConnectorError("That goal no longer exists — use list_today to refresh its id.")
+            }
             return #"{"removed": true}"#
 
         case "start_focus_session":
-            try stores.setValue("1", forKey: "focus.sessionActive")
-            try stores.setValue(String(Date().timeIntervalSince1970), forKey: "focus.sessionStart")
+            guard try stores.value(forKey: "focus.enabled") == "1" else {
+                throw ConnectorError("Focus Coach is disabled — enable it in Connections before starting a session.")
+            }
+            guard try stores.value(forKey: "focus.sessionActive") != "1" else {
+                return "A focus session is already running."
+            }
+            try stores.setValues([
+                "focus.sessionActive": "1",
+                "focus.sessionStart": String(Date().timeIntervalSince1970)
+            ])
             return "Focus session started — I'll hold non-urgent notifications, watch for distractions, and remind you to break. Say you're done to end it."
 
         case "end_focus_session":
+            guard try stores.value(forKey: "focus.sessionActive") == "1" else {
+                return "No focus session is running."
+            }
             try stores.setValue("0", forKey: "focus.sessionActive")
             return "Focus session ended — I'll share anything held and a short summary."
 

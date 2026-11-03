@@ -11,22 +11,38 @@ public struct HybridRetriever: ContextRetriever {
     private let stores: Stores
     private let embedder: any EmbeddingEngine
     private let sourcesByID: [String: IndexSource]
+    private let enforceSourceScope: Bool
 
     private static let armLimit = 20
     private static let rrfK = 60.0
 
-    /// `sources` is only used to render relative paths in chunk origins;
-    /// retrieval itself works without it.
-    public init(stores: Stores, embedder: any EmbeddingEngine, sources: [IndexSource] = []) {
+    /// Compatibility callers can omit scope enforcement. The application
+    /// enables it so removed, unavailable, or escaped sources stay excluded.
+    public init(stores: Stores, embedder: any EmbeddingEngine, sources: [IndexSource] = [],
+                enforceSourceScope: Bool = false) {
         self.stores = stores
         self.embedder = embedder
         self.sourcesByID = Dictionary(sources.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        self.enforceSourceScope = enforceSourceScope
     }
 
     public func retrieve(query: String, limit: Int) async throws -> [RetrievedChunk] {
-        let vectorRanked = await vectorArm(query)
+        guard limit > 0 else { return [] }
+        try Task.checkCancellation()
+        let documents = try stores.allDocuments()
+        let eligibleIDs: Set<UUID>? = enforceSourceScope
+            ? Set(documents.filter { documentIsEligible($0) }.map(\.id)) : nil
+        let vectorRanked = try await vectorArm(query, eligibleDocumentIDs: eligibleIDs)
         // bm25 scores are lower-is-better; keywordSearch already orders ascending.
-        let keywordRanked = ((try? stores.keywordSearch(query, limit: Self.armLimit)) ?? []).map(\.chunkID)
+        let keywordRanked: [UUID]
+        if query.contains(where: { $0.isLetter || $0.isNumber }) {
+            if let eligibleIDs {
+                keywordRanked = try stores.keywordSearch(query, limit: Self.armLimit,
+                                                        eligibleDocumentIDs: eligibleIDs).map(\.chunkID)
+            } else {
+                keywordRanked = try stores.keywordSearch(query, limit: Self.armLimit).map(\.chunkID)
+            }
+        } else { keywordRanked = [] }
 
         var fused: [UUID: Double] = [:]
         for (rank, id) in vectorRanked.enumerated() {
@@ -40,24 +56,45 @@ public struct HybridRetriever: ContextRetriever {
         guard !ranked.isEmpty else { return [] }
 
         let chunksByID = Dictionary(uniqueKeysWithValues: try stores.chunks(ids: ranked.map(\.key)).map { ($0.id, $0) })
-        let documentsByID = Dictionary(uniqueKeysWithValues: try stores.allDocuments().map { ($0.id, $0) })
+        let documentsByID = Dictionary(uniqueKeysWithValues: documents.map { ($0.id, $0) })
 
         return ranked.compactMap { id, score in
             guard let chunk = chunksByID[id] else { return nil }
+            if enforceSourceScope {
+                guard let document = documentsByID[chunk.documentID], documentIsEligible(document) else { return nil }
+            }
             return RetrievedChunk(text: chunk.text,
                                   origin: origin(of: chunk, in: documentsByID),
                                   score: score)
         }
     }
 
-    private func vectorArm(_ query: String) async -> [UUID] {
-        guard let queryVector = try? await embedder.embed(texts: [query]).first,
-              let chunks = try? stores.chunksWithEmbeddings(), !chunks.isEmpty else { return [] }
+    private func vectorArm(_ query: String, eligibleDocumentIDs: Set<UUID>?) async throws -> [UUID] {
+        let chunks = try eligibleDocumentIDs.map { try stores.chunksWithEmbeddings(eligibleDocumentIDs: $0) }
+            ?? stores.chunksWithEmbeddings()
+        guard !chunks.isEmpty else { return [] }
+        let queryVector: [Float]
+        do {
+            guard let vector = try await embedder.embed(texts: [query]).first else { return [] }
+            try Task.checkCancellation()
+            queryVector = vector
+        } catch is CancellationError { throw CancellationError() }
+        catch { return [] }
         let scored: [(UUID, Float)] = chunks.compactMap { chunk in
             guard let vector = chunk.embeddingVector, vector.count == queryVector.count else { return nil }
             return (chunk.id, Self.cosine(queryVector, vector))
         }
         return scored.sorted { $0.1 > $1.1 }.prefix(Self.armLimit).map(\.0)
+    }
+
+    private func documentIsEligible(_ document: RAGDocument) -> Bool {
+        guard let source = sourcesByID[document.source] else { return false }
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: source.url.path, isDirectory: &isDirectory),
+              isDirectory.boolValue else { return false }
+        let root = source.url.resolvingSymlinksInPath().standardizedFileURL.path
+        let path = URL(fileURLWithPath: document.path).resolvingSymlinksInPath().standardizedFileURL.path
+        return path.hasPrefix(root.hasSuffix("/") ? root : root + "/")
     }
 
     static func cosine(_ a: [Float], _ b: [Float]) -> Float {
@@ -80,7 +117,7 @@ public struct HybridRetriever: ContextRetriever {
             // Indexer stores symlink-resolved paths; resolve the root the same way.
             if let source = sourcesByID[doc.source],
                case let root = source.url.resolvingSymlinksInPath().path,
-               doc.path.hasPrefix(root) {
+               doc.path.hasPrefix(root.hasSuffix("/") ? root : root + "/") {
                 let relative = doc.path.dropFirst(root.count).drop(while: { $0 == "/" })
                 location = "\(source.name)/\(relative)"
             } else {

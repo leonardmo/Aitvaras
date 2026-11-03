@@ -1,6 +1,28 @@
 import Foundation
+import Synchronization
 import Testing
 @testable import AitvarasConnectors
+
+private final class PrivateRedirectURLProtocol: URLProtocol, @unchecked Sendable {
+    private static let requestCount = Mutex(0)
+
+    static func reset() { requestCount.withLock { $0 = 0 } }
+    static var requests: Int { requestCount.withLock { $0 } }
+
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        Self.requestCount.withLock { $0 += 1 }
+        let response = HTTPURLResponse(
+            url: request.url!, statusCode: 302, httpVersion: "HTTP/1.1",
+            headerFields: ["Location": "http://127.0.0.1/private"])!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocolDidFinishLoading(self)
+    }
+
+    override func stopLoading() {}
+}
 
 @Suite struct WebConnectorTests {
     // MARK: - Tag stripping & entity decoding
@@ -131,9 +153,16 @@ import Testing
         #expect(throws: ConnectorError.self) { _ = try WebConnector.validatedFetchURL("not a url") }
         #expect(throws: ConnectorError.self) { _ = try WebConnector.validatedFetchURL("http://localhost:8080/admin") }
         #expect(throws: ConnectorError.self) { _ = try WebConnector.validatedFetchURL("http://127.0.0.1/") }
+        #expect(throws: ConnectorError.self) { _ = try WebConnector.validatedFetchURL("http://2130706433/") }
+        #expect(throws: ConnectorError.self) { _ = try WebConnector.validatedFetchURL("http://0x7f000001/") }
+        #expect(throws: ConnectorError.self) { _ = try WebConnector.validatedFetchURL("http://127.1/") }
+        #expect(throws: ConnectorError.self) { _ = try WebConnector.validatedFetchURL("http://[::ffff:127.0.0.1]/") }
+        #expect(throws: ConnectorError.self) { _ = try WebConnector.validatedFetchURL("http://[::]/") }
         #expect(throws: ConnectorError.self) { _ = try WebConnector.validatedFetchURL("http://10.0.0.5/") }
         #expect(throws: ConnectorError.self) { _ = try WebConnector.validatedFetchURL("https://192.168.1.10/router") }
         #expect(throws: ConnectorError.self) { _ = try WebConnector.validatedFetchURL("http://truenas.local/api") }
+        #expect(throws: ConnectorError.self) { _ = try WebConnector.validatedFetchURL("http://intranet/api") }
+        #expect(throws: ConnectorError.self) { _ = try WebConnector.validatedFetchURL("https://user:pass@example.com/") }
 
         #expect(try WebConnector.validatedFetchURL("https://www.example.org/").host == "www.example.org")
         #expect(try WebConnector.validatedFetchURL("http://example.com/a?b=c").absoluteString == "http://example.com/a?b=c")
@@ -144,10 +173,31 @@ import Testing
         #expect(WebConnector.isPrivateHost("172.31.255.255"))
         #expect(!WebConnector.isPrivateHost("172.32.0.1"))
         #expect(WebConnector.isPrivateHost("169.254.1.1"))
+        #expect(WebConnector.isPrivateHost("100.64.0.1"))
+        #expect(WebConnector.isPrivateHost("224.0.0.1"))
         #expect(WebConnector.isPrivateHost("::1"))
+        #expect(WebConnector.isPrivateHost("2001:db8::1"))
+        #expect(!WebConnector.isPrivateHost("8.8.8.8"))
+        #expect(!WebConnector.isPrivateHost("2606:4700:4700::1111"))
         #expect(!WebConnector.isPrivateHost("wikipedia.org"))
         // ".local"-suffix check must not swallow normal domains.
         #expect(!WebConnector.isPrivateHost("localish.example.com"))
+    }
+
+    @Test func redirectToPrivateHostIsRejectedBeforeSecondRequest() async throws {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [PrivateRedirectURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        defer { session.invalidateAndCancel() }
+        PrivateRedirectURLProtocol.reset()
+        let connector = WebConnector(session: session)
+
+        await #expect(throws: ConnectorError.self) {
+            try await connector.execute(
+                toolName: "fetch_page",
+                argumentsJSON: #"{"url":"https://example.com/start"}"#)
+        }
+        #expect(PrivateRedirectURLProtocol.requests == 1)
     }
 
     // MARK: - Live network (opt-in: AITVARAS_LIVE_TESTS=1)

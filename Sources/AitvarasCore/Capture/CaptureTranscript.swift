@@ -6,12 +6,15 @@ import Foundation
 /// app; this part is fully testable.
 ///
 /// Raw audio and frames are NEVER part of this type: what goes in is already
-/// text, which is the only thing that ever persists (hard rule: no original
-/// recordings on disk).
+/// text. A separate, explicitly enabled audio archive can retain source audio;
+/// this value and the live recognizer never own or save that audio.
 public struct CaptureTranscript: Sendable, Equatable {
-    /// Which audio stream a line came from. Channel attribution is free:
-    /// the mic is the user, tapped system audio is everyone else.
-    public enum Channel: String, Sendable {
+    /// Audio-source attribution is not diarization. Do not identify the user
+    /// merely because speech arrived through a microphone.
+    public enum Channel: String, Sendable, Hashable {
+        case microphone = "Mikrofon"
+        case systemAudio = "Systemaudio"
+        // Retained for callers and historical transcript compatibility.
         case me = "Ich"
         case others = "Andere"
     }
@@ -30,6 +33,7 @@ public struct CaptureTranscript: Sendable, Equatable {
     public private(set) var startedAt: Date
     public private(set) var lines: [Line] = []
     public private(set) var screenNotes: [ScreenNote] = []
+    public private(set) var warnings: [String] = []
     /// OCR frames that arrived but were near-duplicates of the last note.
     public private(set) var duplicateFramesSkipped = 0
 
@@ -51,6 +55,22 @@ public struct CaptureTranscript: Sendable, Equatable {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         lines.append(Line(at: at, channel: channel, text: trimmed))
+    }
+
+    public mutating func addWarning(_ warning: String) {
+        guard !warnings.contains(warning) else { return }
+        warnings.append(warning)
+    }
+
+    /// Preserve provisional words without falsely presenting them as final.
+    /// Used on checkpoints and only retained at stop if finalization failed.
+    public func includingUnfinalized(_ tails: [Channel: String], at: Date = .now) -> Self {
+        var copy = self
+        for channel in [Channel.microphone, .systemAudio] {
+            guard let text = tails[channel]?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty else { continue }
+            copy.append(channel: channel, text: "[Unfinalized speech] " + text, at: at)
+        }
+        return copy
     }
 
     // MARK: Screen notes (slide-change detection)
@@ -99,7 +119,7 @@ public struct CaptureTranscript: Sendable, Equatable {
             lines.map { ($0.at, Entry.line($0)) } +
             screenNotes.map { ($0.at, Entry.note($0)) }
 
-        return merged.sorted { $0.0 < $1.0 }.map { at, entry in
+        let content = merged.sorted { $0.0 < $1.0 }.map { at, entry in
             let stamp = Self.offset(from: startedAt, to: at)
             switch entry {
             case .line(let line):
@@ -108,6 +128,8 @@ public struct CaptureTranscript: Sendable, Equatable {
                 return "[\(stamp)] [Bildschirm]\n\(note.text)"
             }
         }.joined(separator: "\n")
+        let notices = warnings.map { "> Capture warning: " + $0 }.joined(separator: "\n")
+        return notices.isEmpty ? content : notices + "\n\n" + content
     }
 
     static func offset(from start: Date, to date: Date) -> String {
