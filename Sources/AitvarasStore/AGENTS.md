@@ -17,4 +17,5 @@
   `grdb_migrations` and reopening, as `migrationImportsLegacyMemoriesIntoFacts`
   does.
 - `StateFixtures` (the `--seed-demo-state` persona "Alex") is fictional on
-  purpose. Keep it synthetic.
+  purpose. Keep it generic: no real university, city, district, people or
+  projects, and nothing modeled on the maintainer.
