@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# Enabled by `make setup` (core.hooksPath=.githooks).
+set -e
+root="$(git rev-parse --show-toplevel)"
+case "$(git var GIT_AUTHOR_IDENT)" in
+    *@users.noreply.github.com\>*) ;;
+    *) echo "✗ Commit author must use the GitHub noreply address (git config user.email)." >&2; exit 1 ;;
+esac
+"$root/scripts/check-privacy.sh" --staged >/dev/null || {
+    "$root/scripts/check-privacy.sh" --staged
+    exit 1
+}

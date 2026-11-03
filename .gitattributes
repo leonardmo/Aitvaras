@@ -1,0 +1,10 @@
+* text=auto eol=lf
+
+*.png binary
+*.jpg binary
+*.glb binary
+*.mp4 binary
+*.mov binary
+
+Package.resolved linguist-generated=true
+Sources/AitvarasConnectors/Resources/claude-sdk-package-lock.json linguist-generated=true
