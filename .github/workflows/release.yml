@@ -1,0 +1,92 @@
+name: Release
+
+# Cut a release by pushing a tag: git tag v0.3.0 && git push origin v0.3.0
+# Without signing secrets the app is ad-hoc signed (users must right-click →
+# Open on first launch). With the secrets below it is Developer ID signed and
+# notarized:
+#   MACOS_CERTIFICATE (base64 .p12), MACOS_CERTIFICATE_PASSWORD,
+#   MACOS_SIGNING_IDENTITY, APPLE_TEAM_ID, APPLE_ID, APPLE_APP_PASSWORD
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-26
+    timeout-minutes: 90
+    env:
+      SIGNED: ${{ secrets.MACOS_CERTIFICATE != '' }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: Tools
+        run: |
+          brew install xcodegen
+          xcodebuild -downloadComponent MetalToolchain || true
+
+      - name: Import signing certificate
+        if: env.SIGNED == 'true'
+        env:
+          MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+        run: |
+          KEYCHAIN="$RUNNER_TEMP/release.keychain-db"
+          KEYCHAIN_PASSWORD="$(uuidgen)"
+          echo "$MACOS_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security import "$RUNNER_TEMP/cert.p12" -P "$MACOS_CERTIFICATE_PASSWORD" \
+            -A -t cert -f pkcs12 -k "$KEYCHAIN"
+          security set-key-partition-list -S apple-tool:,apple: -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | tr -d '"')
+          rm "$RUNNER_TEMP/cert.p12"
+
+      - name: Build (Release)
+        env:
+          MACOS_SIGNING_IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          xcodegen generate --quiet
+          ARGS=(-project Aitvaras.xcodeproj -scheme Aitvaras -configuration Release
+                -derivedDataPath .build/DerivedData
+                -skipMacroValidation -skipPackagePluginValidation)
+          if [ "$SIGNED" = true ]; then
+            ARGS+=(CODE_SIGN_STYLE=Manual "CODE_SIGN_IDENTITY=$MACOS_SIGNING_IDENTITY"
+                   "DEVELOPMENT_TEAM=$APPLE_TEAM_ID" ENABLE_HARDENED_RUNTIME=YES
+                   "OTHER_CODE_SIGN_FLAGS=--timestamp")
+          fi
+          set -o pipefail
+          xcodebuild "${ARGS[@]}" build | tail -5
+
+      - name: Package
+        run: |
+          mkdir -p dist
+          ditto -c -k --keepParent .build/DerivedData/Build/Products/Release/Aitvaras.app \
+            "dist/Aitvaras-${GITHUB_REF_NAME}.zip"
+
+      - name: Notarize
+        if: env.SIGNED == 'true'
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          xcrun notarytool submit "dist/Aitvaras-${GITHUB_REF_NAME}.zip" --wait \
+            --apple-id "$APPLE_ID" --password "$APPLE_APP_PASSWORD" --team-id "$APPLE_TEAM_ID"
+          xcrun stapler staple .build/DerivedData/Build/Products/Release/Aitvaras.app
+          rm "dist/Aitvaras-${GITHUB_REF_NAME}.zip"
+          ditto -c -k --keepParent .build/DerivedData/Build/Products/Release/Aitvaras.app \
+            "dist/Aitvaras-${GITHUB_REF_NAME}.zip"
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          NOTE="Ad-hoc signed build: right-click → Open on first launch."
+          [ "$SIGNED" = true ] && NOTE="Developer ID signed and notarized."
+          gh release create "$GITHUB_REF_NAME" dist/*.zip --verify-tag --generate-notes \
+            --notes "$NOTE See CHANGELOG.md for highlights."

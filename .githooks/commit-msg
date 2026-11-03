@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+# Rejects tool attribution lines in commit messages (public repository).
+exec "$(git rev-parse --show-toplevel)/scripts/check-commits.sh" --message "$1"

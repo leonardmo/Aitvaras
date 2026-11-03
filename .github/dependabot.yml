@@ -1,0 +1,20 @@
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    groups:
+      actions:
+        patterns: ["*"]
+  - package-ecosystem: swift
+    directory: /
+    schedule:
+      interval: monthly
+    groups:
+      swift-minor:
+        update-types: [minor, patch]
+    # MLX packages move together; bump them deliberately in one PR.
+    ignore:
+      - dependency-name: "*mlx*"
+        update-types: [version-update:semver-major]

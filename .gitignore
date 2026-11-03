@@ -13,3 +13,7 @@ Aitvaras.xcodeproj/
 .build-xcode/
 
 CLAUDE.local.md
+AGENTS.local.md
+.claude/settings.local.json
+local/
+dist/
