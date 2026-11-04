@@ -2,6 +2,21 @@
 
 ## Unified chat and provider controls
 
+The direct CLI backends in `AitvarasAgents` have offline executable replay tests
+(`ClaudeBackendTests`, `CodexBackendTests`). Every sanitized recording under
+`Tests/AitvarasCoreTests/Fixtures/agents` is replayed through the real process
+transport, comparing outgoing JSON frames. Additional cases cover complete
+Claude content blocks and native IDs, subscription refusal, browser login,
+Codex thread multiplexing, mode changes, rate limits, stale approvals, exact
+integer/string request IDs, duplicate and late replies, disconnect/reconnect,
+malformed output and oversized lines. These tests neither launch installed
+providers nor send model prompts. Native history discovery remains unsupported
+until M5; the backends are not yet connected to the app or policy coordinator.
+
+Live acceptance still needs the official CLIs and an isolated synthetic project
+to verify subscription authentication, browser completion, native persistence,
+hook coverage and sandbox enforcement. Offline replay cannot establish those.
+
 One workspace chat now displays local and app-owned Codex/Claude messages in one
 bounded timeline. Backend thread IDs are internal, not another user-facing
 conversation selector. The chat-level Local/Codex/Claude segmented control has
