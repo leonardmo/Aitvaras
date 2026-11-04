@@ -37,7 +37,7 @@ actor ClaudeRun: AgentRun {
         let hook: (String) -> JSONValue = { .array([.object(["matcher": .null, "hookCallbackIds": .array([.string($0)])])]) }
         let value = try await wire.request("initialize", .object(["hooks": .object([
             "PreToolUse": hook("pre"), "PostToolUse": hook("post")])]), id: .string("init"))
-        if let account = value["account"], account["apiKeySource"]?.stringValue != "none" { throw AgentFailure.unsupported }
+        if let source = value["account"]?["apiKeySource"], source.stringValue != "none" { throw AgentFailure.unsupported }
         availableModels = (value["models"]?.arrayValue ?? []).compactMap {
             guard let id = $0["value"]?.stringValue else { return nil }
             return AgentModel(id: id, name: $0["displayName"]?.stringValue ?? id,

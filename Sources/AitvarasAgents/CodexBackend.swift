@@ -14,8 +14,8 @@ public actor CodexBackend: AgentBackend {
     private var loginInProgress = false
 
     public init(executable: URL? = nil, environment: [String: String] = ProcessInfo.processInfo.environment,
-                profile: String = "default") {
-        self.environment = ProviderEnvironment.make(inherited: environment)
+                profile: String = "default", overrides: [String: String] = [:]) {
+        self.environment = ProviderEnvironment.make(inherited: environment, overrides: overrides)
         self.executable = ProviderLocator.executable(for: .codex, environment: self.environment,
             overrides: executable.map { [.codex: $0] } ?? [:])
         self.profile = profile
@@ -27,7 +27,7 @@ public actor CodexBackend: AgentBackend {
         let generation = UUID(); self.generation = generation
         let task = Task { [self] () throws -> AgentWire in
             let wire = AgentWire(process: StreamingProcess(executable: executable,
-                arguments: ["app-server", "-c", "cli_auth_credentials_store=\"keyring\""],
+                arguments: ["app-server"],
                 currentDirectory: nil, environment: environment), format: .codex)
             self.transport = wire
             do {

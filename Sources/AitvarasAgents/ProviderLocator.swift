@@ -11,9 +11,17 @@ public enum ProviderLocator {
             directories += [home + "/.local/bin", home + "/.claude/local"]
         }
         directories += ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin"]
-        return directories.lazy.filter { $0.hasPrefix("/") }.map {
+        let onPath = directories.lazy.filter { $0.hasPrefix("/") }.map {
             URL(fileURLWithPath: $0, isDirectory: true).appendingPathComponent(name)
         }.first(where: executableFile)
+        return onPath ?? bundled(provider).first(where: executableFile)
+    }
+
+    /// The desktop apps ship their CLI inside the bundle and don't put it on PATH.
+    private static func bundled(_ provider: AgentProvider) -> [URL] {
+        guard provider == .codex else { return [] }
+        return ["/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex",
+                "/Applications/Codex.app/Contents/Resources/codex"].map { URL(fileURLWithPath: $0) }
     }
 
     private static func executableFile(_ url: URL) -> Bool {

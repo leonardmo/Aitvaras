@@ -6,8 +6,8 @@ public actor ClaudeBackend: AgentBackend {
     private let profile: String
 
     public init(executable: URL? = nil, environment: [String: String] = ProcessInfo.processInfo.environment,
-                profile: String = "default") {
-        self.environment = ProviderEnvironment.make(inherited: environment)
+                profile: String = "default", overrides: [String: String] = [:]) {
+        self.environment = ProviderEnvironment.make(inherited: environment, overrides: overrides)
         self.executable = ProviderLocator.executable(for: .claude, environment: self.environment,
             overrides: executable.map { [.claude: $0] } ?? [:])
         self.profile = profile
@@ -20,7 +20,7 @@ public actor ClaudeBackend: AgentBackend {
         guard !output.timedOut, let value = JSONValue.parse(output.stdout) else { throw AgentFailure.unknown }
         let authentication: AgentStatus.Authentication
         if value["loggedIn"]?.boolValue != true { authentication = .signedOut }
-        else if value["apiKeySource"]?.stringValue != "none" || value["apiProvider"]?.stringValue != "firstParty" { authentication = .unsupported }
+        else if value["apiKeySource"].map({ $0.stringValue != "none" }) ?? false || value["apiProvider"]?.stringValue != "firstParty" { authentication = .unsupported }
         else if value["authMethod"]?.stringValue == "claude.ai",
                 ["pro", "max", "team", "enterprise"].contains((value["subscriptionType"]?.stringValue ?? "").lowercased().replacingOccurrences(of: "claude ", with: "")) {
             authentication = .subscription
