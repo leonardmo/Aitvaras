@@ -7,7 +7,7 @@ XCODE_FLAGS := -project Aitvaras.xcodeproj -scheme Aitvaras \
 NODE_TESTS := scripts/test-claude-interactive.mjs scripts/check-codex-interactive.mjs \
 	scripts/check-codex-native.mjs scripts/check-codex-shared-runtime.mjs
 
-.PHONY: help setup test node-test project app release privacy commits check smoke install clean
+.PHONY: help setup test node-test project app e2e release privacy commits check smoke install clean
 
 help: ## List targets
 	@grep -E '^[a-z-]+:.*## ' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-10s %s\n", $$1, $$2}'
@@ -36,6 +36,11 @@ endef
 
 app: project ## Debug app build into .build-xcode
 	$(call xcodebuild_logged,Debug,.build-xcode)
+
+# Real clicks and real window screenshots. A separate bundle id keeps XCUITest
+# away from a running installed app. Screenshots land in .build-e2e/screenshots.
+e2e: project ## Real-app UI tests with an isolated profile and bundle id
+	scripts/run-e2e.sh $(E2E_FILTER)
 
 release: project ## Release app build into .build/DerivedData
 	$(call xcodebuild_logged,Release,.build/DerivedData)

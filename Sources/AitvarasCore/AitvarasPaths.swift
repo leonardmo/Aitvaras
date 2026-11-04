@@ -65,6 +65,11 @@ public enum AitvarasPaths {
 
     // MARK: Well-known locations
 
+    /// Per-chat git worktrees created for agent chats.
+    public static var agentWorktreesDirectory: URL {
+        stateDirectory.appendingPathComponent("AgentWorktrees", isDirectory: true)
+    }
+
     public static var databaseURL: URL {
         stateDirectory.appendingPathComponent("aitvaras.sqlite")
     }

@@ -317,3 +317,19 @@ This implements the "explicit context handover" promised in
 [CODEX-BIDIRECTIONAL-INTEGRATION.md](CODEX-BIDIRECTIONAL-INTEGRATION.md) and
 replaces the earlier Aitvaras-only rule that started a fresh Codex thread
 whenever the latest message was local: the thread is now kept and caught up.
+
+## D31 — Chats drive the official CLIs directly 🚧 (2026-11-04)
+
+Replaces the adapter approach in `CLAUDE-INTEGRATION.md` and
+`CODEX-BIDIRECTIONAL-INTEGRATION.md`; plan in `UNIFIED-CHAT-PLAN.md`. Chat runs
+`claude` and `codex app-server` as subprocesses with their default login and
+stores, so chats exist natively in those tools and there is no separate account
+or link step. Child environments inherit the app's environment minus a denylist of
+credential and endpoint overrides: the allowlist dropped `USER`, which pointed the
+CLI at a stale credential item. The session start checks first-party subscription
+status and refuses anything else. API keys stay forbidden.
+
+Changing provider and pressing Send is the consent for sending that chat's earlier
+messages to the provider (amends D30). Every provider action passes
+`AgentActionCoordinator`, using Claude's pre-tool hook callback and Codex's sandbox,
+approvals and item events, so the autonomy policy and activity log still hold.
