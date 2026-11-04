@@ -11,7 +11,21 @@ Codex thread multiplexing, mode changes, rate limits, stale approvals, exact
 integer/string request IDs, duplicate and late replies, disconnect/reconnect,
 malformed output and oversized lines. These tests neither launch installed
 providers nor send model prompts. Native history discovery remains unsupported
-until M5; the backends are not yet connected to the app or policy coordinator.
+until M5; the backends are not yet connected to the app.
+
+`AgentConformanceTests` exercises `AgentActionCoordinator` with both fake
+providers, including executable hook/approval replies and real Claude
+recording replays: Ask offers one native permission card, Accept edits
+continues Write/Bash without cards, and Plan allows its plan-file write and
+internal ToolSearch before requesting plan approval. Recorded hook envelopes
+with injected forbidden tools are denied in every mode. Additional cases
+cover bookkeeping tools, explicit whitelists, permission grants in Plan, modes,
+approve/deny, duplicate requests and answers, stale scopes, audit failures,
+shutdown during pending approvals and audit writes, forbidden service actions,
+unknown requests and uncertain outcomes. A real in-memory Store is also used
+as the audit sink. Claude interruption tests put an assistant execution error
+and terminal result before the interrupt acknowledgement to reproduce Stop
+races. The supervisor runs live-provider and host-only checks separately.
 
 Live acceptance still needs the official CLIs and an isolated synthetic project
 to verify subscription authentication, browser completion, native persistence,
