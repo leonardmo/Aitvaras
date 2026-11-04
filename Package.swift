@@ -29,7 +29,7 @@ let package = Package(
         .target(
             name: "AitvarasStore",
             dependencies: [
-                "AitvarasCore",
+                "AitvarasCore", "AitvarasAgents",
                 .product(name: "GRDB", package: "GRDB.swift")
             ]
         ),
