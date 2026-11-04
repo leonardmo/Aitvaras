@@ -926,6 +926,15 @@ public final class AitvarasDatabase: Sendable {
                 BEGIN SELECT RAISE(ABORT, 'Turn must belong to its chat session'); END;
                 """)
         }
+        m.registerMigration("v29-agent-handover") { db in
+            try db.alter(table: "agentChatSession") { t in
+                t.add(column: "instructions", .text).notNull().defaults(to: "")
+            }
+            try db.create(table: "agentHandover") { t in
+                t.primaryKey("turnID", .text).references("agentTurn", onDelete: .restrict)
+                t.column("contextJSON", .text).notNull()
+            }
+        }
         return m
     }
 }

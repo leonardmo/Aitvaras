@@ -365,6 +365,42 @@ struct ChatDetailView: View {
     }
 
     var body: some View {
+        if let chatID = model.selectedWorkspaceChatID, let chatModel = model.chatModel {
+            AgentChatView(chat: chatModel, chatID: chatID,
+                          canSend: model.selectedWorkspaceChat?.archivedAt == nil)
+                .navigationTitle(model.selectedWorkspaceChat?.title ?? "Chat")
+                .toolbar {
+                    Button("New Chat", systemImage: "square.and.pencil") { model.newChat() }
+                        .disabled(model.isWorkspaceSelectionBusy).accessibilityIdentifier("chat.new")
+                    if !nativeLinks.isEmpty {
+                        Menu("Imported History", systemImage: "clock.arrow.circlepath") {
+                            ForEach(nativeLinks) { link in
+                                Button(link.displayName) { importedHistory = link }
+                                    .accessibilityIdentifier("chat.import.\(link.id)")
+                            }
+                        }.accessibilityIdentifier("chat.imports")
+                    }
+                    Button("Chat Details", systemImage: "info.circle") { showingInspector = true }
+                        .accessibilityIdentifier("chat.details")
+                }
+                .sheet(isPresented: $showingInspector) {
+                    WorkspaceInspectorView(chatID: chatID,
+                        backend: WorkspaceChatBackend(rawValue: chatModel.provider.rawValue) ?? .local,
+                        directAgentChat: true)
+                }
+                .sheet(item: $importedHistory) { link in
+                    VStack {
+                        Button("Done") { importedHistory = nil }
+                            .keyboardShortcut(.cancelAction).accessibilityIdentifier("chat.import.done")
+                        NativeSessionSourceView(link: link)
+                    }.padding().frame(width: 760, height: 600)
+                }
+        } else {
+            legacyContent
+        }
+    }
+
+    private var legacyContent: some View {
         VStack(spacing: 0) {
             if model.selectedWorkspaceChatID != nil {
                 HStack(spacing: 10) {

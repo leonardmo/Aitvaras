@@ -31,11 +31,16 @@ public struct ChatState: Sendable, Equatable {
     public init(chatID: UUID, entries: [AgentTranscriptEntry] = []) {
         self.chatID = chatID; self.entries = entries
     }
-    public mutating func begin(_ input: AgentInput, session: AgentChatSession, outputID: UUID) {
+    public mutating func begin(_ input: AgentInput, session: AgentChatSession, outputID: UUID,
+                               context: ChatContextProjection? = nil) {
         inputID = input.id; self.outputID = outputID; provider = session.provider; sessionID = session.id
         streamingText = ""; thinking = ""; thinkingID = nil; toolEntryIDs = [:]
         tools = []; pendingCards = []; usage = nil; outcome = nil; isRunning = true
         if !entries.contains(where: { $0.id == input.id }) {
+            if let context {
+                entries.append(.init(chatID: chatID, provider: session.provider, kind: "handover",
+                    text: context.text, sessionID: session.id, position: entries.count))
+            }
             entries.append(.init(id: input.id, chatID: chatID, provider: session.provider,
                                  kind: "user", text: input.text, sessionID: session.id, position: entries.count))
         }
@@ -59,7 +64,9 @@ public struct ChatState: Sendable, Equatable {
                 put(id: thinkingID!, kind: "thinking", text: thinking)
             case .message(let nativeID, let role, let text):
                 if let index = entries.firstIndex(where: { $0.sessionID == sessionID && $0.nativeMessageID == nativeID }) {
-                    entries[index].text = text
+                    // Keep the original user text; a provider echo may include
+                    // the exact handover already displayed separately.
+                    if role != "user" { entries[index].text = text }
                 } else if role == "user", let index = entries.firstIndex(where: { $0.id == inputID }) {
                     entries[index].nativeMessageID = nativeID
                 } else {

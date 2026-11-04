@@ -5,6 +5,7 @@ import UserNotifications
 import AitvarasCore
 import AitvarasStore
 import AitvarasAgent
+import AitvarasAgents
 import AitvarasEngines
 import AitvarasConnectors
 import AitvarasRAG
@@ -89,6 +90,8 @@ final class IntegrationCoordinator {
         self.router = router
         self.reporter = reporter
         self.externalIntegrationsDisabled = AitvarasPaths.externalIntegrationsDisabled
+            || AgentProviderLaunchPolicy.isTestConfiguration(environment: ProcessInfo.processInfo.environment,
+                                                             isolated: AitvarasPaths.isIsolated)
     }
 
     func attach(agentLoop: AgentLoop) {

@@ -6,6 +6,7 @@ import AitvarasCore
 import AitvarasStore
 import AitvarasEngines
 import AitvarasAgent
+import AitvarasAgents
 import AitvarasConnectors
 import AitvarasVoice
 
@@ -68,6 +69,9 @@ final class AppModel {
     private(set) var captureOllamaModelName: String?
     private(set) var hub: ConnectorHub?
     private(set) var agentLoop: AgentLoop?
+    private(set) var agentSessionManager: AgentSessionManager?
+    private(set) var chatModel: ChatModel?
+    private var localAgentReplyActive = false
     private(set) var voice: ConversationController?
     private(set) var neuralTTS: NeuralTTS?
     private(set) var integrations: IntegrationCoordinator?
@@ -331,6 +335,7 @@ final class AppModel {
                 retriever: integrations.retriever,
                 routineReviewer: routineReviewer, reporter: reporter)
             self.agentLoop = agentLoop
+            try await bootstrapAgentChats(stores: stores, agentLoop: agentLoop)
             integrations.attach(agentLoop: agentLoop)
             let routineExecutor = CommandRoutineExecutor(hub: hub, stores: stores, reporter: reporter)
             self.routineExecutor = routineExecutor
@@ -410,6 +415,61 @@ final class AppModel {
     // MARK: Chat
 
     @discardableResult
+    private func bootstrapAgentChats(stores: Stores, agentLoop: AgentLoop) async throws {
+        let inherited = ProcessInfo.processInfo.environment
+        let environment = try await Task.detached {
+            try await ProviderEnvironment.resolve(inherited: inherited)
+        }.value
+        let isolated = AitvarasPaths.isIsolated
+        let claude = ClaudeBackend(executable: AgentProviderLaunchPolicy.executable(.claude,
+            environment: inherited, isolated: isolated), environment: environment)
+        let codex = CodexBackend(executable: AgentProviderLaunchPolicy.executable(.codex,
+            environment: inherited, isolated: isolated), environment: environment)
+        let local = LocalBackend { [weak self] configuration, input in
+            guard let self else { throw AgentFailure.offline }
+            return try await self.localAgentReply(agentLoop: agentLoop, configuration: configuration, input: input)
+        }
+        let backends: [AgentProvider: any AgentBackend] = [.claude: claude, .codex: codex, .local: local]
+        let available = backends.filter { AgentProviderLaunchPolicy.allows($0.key, environment: inherited, isolated: isolated) }
+        let manager = try AgentSessionManager(persistence: stores, backend: { provider in
+            guard let backend = available[provider] else { throw AgentFailure.offline }
+            return backend
+        }, audit: { _ = try stores.record($0) })
+        agentSessionManager = manager
+        chatModel = ChatModel(manager: manager, stores: stores, backends: available)
+    }
+
+    private func localAgentReply(agentLoop: AgentLoop, configuration: AgentSessionConfiguration,
+                                 input: AgentInput) throws -> AsyncThrowingStream<String, Error> {
+        guard !localAgentReplyActive, !isResponding, !microphoneInUseByVoice, !captureRefinement.isProcessing else {
+            throw AgentFailure.invalidTransition
+        }
+        localAgentReplyActive = true
+        return AsyncThrowingStream { continuation in
+            let task = Task { [weak self] in
+                defer { self?.localAgentReplyActive = false }
+                // A nonnil project context preserves the existing tool-free,
+                // no-shared-memory project path. Catch-up is already in input.
+                let stream = await agentLoop.run(history: [], userMessage: input.text,
+                    referenceID: input.id.uuidString, projectTextContext: configuration.instructions)
+                for await update in stream {
+                    if Task.isCancelled { break }
+                    switch update {
+                    case .textDelta(let text): continuation.yield(text)
+                    case .failed: continuation.finish(throwing: AgentFailure.offline); return
+                    default: break
+                    }
+                }
+                continuation.finish()
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
+    }
+
+    func shutdownAgentChats() async throws {
+        try await chatModel?.shutdown()
+    }
+
     func send(_ text: String) -> Bool {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return false }

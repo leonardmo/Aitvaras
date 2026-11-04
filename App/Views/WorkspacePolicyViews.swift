@@ -11,6 +11,7 @@ struct WorkspaceInspectorView: View {
     @Environment(\.dismiss) private var dismiss
     let chatID: UUID
     var backend: WorkspaceChatBackend = .local
+    var directAgentChat = false
     @State private var packet: WorkspaceContextPacket?
     @State private var captures: [CaptureRecord] = []
     @State private var error: String?
@@ -23,20 +24,23 @@ struct WorkspaceInspectorView: View {
                 Text("Chat Details").font(.title2.weight(.semibold))
                 Spacer()
                 Button("Refresh", systemImage: "arrow.clockwise", action: reload).labelStyle(.iconOnly)
+                    .accessibilityIdentifier("chat.details.refresh")
             }
             Picker("Details", selection: $tab) {
                 Text("Context").tag("context")
                 Text("Captures (\(captures.count))").tag("captures")
-            }.pickerStyle(.segmented)
+            }.pickerStyle(.segmented).accessibilityIdentifier("chat.details.tab")
             if let error { Label(error, systemImage: "exclamationmark.triangle").foregroundStyle(.orange) }
             Form {
                 if tab == "context", let packet {
                     Section {
                         LabeledContent("Provider", value: backend.title)
-                        LabeledContent("Destination", value: backend == .local ? "This Mac" : backend == .codex ? "OpenAI, when you send" : "Not available yet")
+                        LabeledContent("Destination", value: backend == .local ? "This Mac" : backend == .codex ? "OpenAI, when you send" : directAgentChat ? "Anthropic, when you send" : "Not available yet")
                         LabeledContent("History", value: "Messages created in this chat")
-                        LabeledContent("Project", value: packet.policyStatus == .reviewed ? "Settings saved" : "Settings need saving")
-                        if backend == .codex { LabeledContent("Project files", value: fileReadEnabled ? "Read-only, on request" : "Not shared") }
+                        if !directAgentChat {
+                            LabeledContent("Project", value: packet.policyStatus == .reviewed ? "Settings saved" : "Settings need saving")
+                            if backend == .codex { LabeledContent("Project files", value: fileReadEnabled ? "Read-only, on request" : "Not shared") }
+                        }
                     }
                     Section("Context") {
                         Text("Project instructions and this chat's messages provide context.")
@@ -47,13 +51,15 @@ struct WorkspaceInspectorView: View {
                             if packet.manifest.wasClipped {
                                 Label("Long project instructions were shortened.", systemImage: "scissors").font(.caption)
                             }
-                        }
+                        }.accessibilityIdentifier("chat.details.context")
                         DisclosureGroup("What stays excluded") {
-                            Text(fileReadEnabled && backend == .codex
+                            Text(directAgentChat
+                                ? "Imported chats, linked captures, other chats and shared memories are not attached. Local is text-only; provider tools follow the selected mode."
+                                : fileReadEnabled && backend == .codex
                                 ? "Imported chats, captures, other chats and shared memories. No shell or file writes."
                                 : "Imported chats, file contents, captures, other chats and shared memories. No file tools are enabled.")
                                 .font(.caption).foregroundStyle(.secondary)
-                        }
+                        }.accessibilityIdentifier("chat.details.exclusions")
                     }
                 } else if tab == "captures" {
                     Section {
@@ -67,6 +73,7 @@ struct WorkspaceInspectorView: View {
                                 }
                                 Spacer()
                                 Button("Open") { CaptureWindows.shared.showResult(record: record, model: model) }
+                                    .accessibilityIdentifier("chat.details.capture.\(record.id)")
                             }
                         }
                         Text("Linked captures stay local and are not attached to messages.")
@@ -74,7 +81,8 @@ struct WorkspaceInspectorView: View {
                     }
                 }
             }.formStyle(.grouped)
-            HStack { Spacer(); Button("Done") { dismiss() }.keyboardShortcut(.cancelAction) }
+            HStack { Spacer(); Button("Done") { dismiss() }.keyboardShortcut(.cancelAction)
+                    .accessibilityIdentifier("chat.details.done") }
         }
         .padding(20).frame(width: 570, height: 500)
         .task { reload() }

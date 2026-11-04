@@ -12,11 +12,13 @@ public struct AgentChatSession: Codable, Sendable, Equatable {
     public var model: String
     public var effort: String?
     public var mode: AgentMode
+    public var instructions: String
 
     public init(id: UUID = UUID(), chatID: UUID, provider: AgentProvider, cwd: String,
-                model: String, effort: String? = nil, mode: AgentMode = .ask) {
+                model: String, effort: String? = nil, mode: AgentMode = .ask, instructions: String = "") {
         self.id = id; self.chatID = chatID; self.provider = provider; self.cwd = cwd
         self.model = model; self.effort = effort; self.mode = mode
+        self.instructions = instructions
     }
     public var sessionID: AgentSessionID? {
         get {
@@ -26,7 +28,8 @@ public struct AgentChatSession: Codable, Sendable, Equatable {
         set { host = newValue?.host; profile = newValue?.profile; nativeID = newValue?.nativeID }
     }
     public var configuration: AgentSessionConfiguration {
-        .init(directory: URL(fileURLWithPath: cwd), resume: sessionID, model: model, effort: effort, mode: mode)
+        .init(directory: URL(fileURLWithPath: cwd), resume: sessionID, model: model, effort: effort, mode: mode,
+              instructions: instructions)
     }
 }
 
@@ -77,6 +80,7 @@ public protocol AgentSessionPersistence: Sendable {
     func agentEntries(chatID: UUID) throws -> [AgentTranscriptEntry]
     @discardableResult func saveAgentEntry(_ entry: AgentTranscriptEntry) throws -> AgentTranscriptEntry
     func prepareAgentTurn(_ turn: AgentJournalTurn) throws
+    func prepareAgentTurn(_ turn: AgentJournalTurn, context: ChatContextProjection?) throws
     func agentTurn(id: UUID) throws -> AgentJournalTurn?
     func latestAgentTurn(chatID: UUID) throws -> AgentJournalTurn?
     func advanceAgentDelivery(id: UUID, to state: AgentDeliveryState) throws
@@ -84,4 +88,6 @@ public protocol AgentSessionPersistence: Sendable {
     func finishAgentTurn(id: UUID, state: AgentJournalState) throws
     func claimAgentResend(id: UUID) throws -> AgentJournalTurn
     func recoverAgentTurns() throws
+    func agentContext(session: AgentChatSession) throws -> ChatContextProjection?
+    func agentHandover(turnID: UUID) throws -> ChatContextProjection?
 }
