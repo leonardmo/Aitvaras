@@ -87,9 +87,18 @@ Package.swift              — AitvarasKit: everything testable without the app
   `willDeliver` barrier before input leaves. Provider acknowledgement advances it
   separately. Startup marks running turns interrupted, retaining partial output
   and sending nothing. An explicit retry can claim only prepared input, once.
+  `ChatModel` binds project-chat selection, provider settings and per-chat drafts
+  to this manager in the existing Chat tab. `AgentHandoverStore` selects completed
+  canonical user/assistant entries; `ChatContextProjection` retains the newest
+  entries in one labelled 16,000-byte UTF-8 block, explicitly clipping an
+  oversized newest message at a Unicode character boundary. Its exact text is saved
+  atomically with the prepared turn. Only acknowledged journal rows contribute
+  to a provider watermark. Local reads bounded completed context on every Send
+  through a tool-free injected `AgentLoop` adapter.
   Existing workspace project/chat/conversation identities and legacy execution
-  tables, triggers and readers remain intact. This manager is not yet wired into
-  the app; catch-up and Local integration follow separately.
+  tables, triggers and readers remain intact. Unassigned chat, voice, shortcuts,
+  capture and memory archiving retain their existing paths; legacy project
+  transcript migration remains separate work.
 - **CloudAgentService** is the single provider-neutral boundary for optional
   Claude Code and Codex CLI use. Authentication is checked before each call;
   prompts travel over stdin in a sanitized environment and always begin with

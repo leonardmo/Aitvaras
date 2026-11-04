@@ -581,6 +581,34 @@ to the respective subsystem, with the app installed normally:
 | Cloud routine review | In an isolated profile, enable Claude and then Codex for Shortcut & automation review. Create a fictional candidate and verify only its title/explanation gain a reviewed badge; phrase, schedule, tools, arguments, risk and approval state remain byte-for-byte unchanged. Local-only must create the same executable candidate without any cloud call. |
 | Permissions | Fresh macOS user: Setup checklist flows through mic/speech/calendar/reminders/mail grants in order |
 
+## Unified project-chat shell (M2)
+
+The Chat tab uses `ChatModel` and the application-owned `AgentSessionManager`
+for project chats. Opening or switching chats/providers sends no message;
+status checks are the only provider work on opening. Send persists the exact
+wire input and bounded catch-up before delivery. Restart restores the transcript
+and provider choice; drafts remain per chat for the app lifetime. Model, effort
+and mode are saved with Send. Existing unassigned chat, voice, shortcuts,
+capture targets and memory archiving keep their legacy paths. Legacy project
+history migration is still M5 work.
+
+For provider E2E, always set `AITVARAS_STATE_DIR` to a disposable profile.
+`AITVARAS_AGENT_TEST_PROVIDERS=real` enables the new real backends even with
+`AITVARAS_DISABLE_EXTERNAL_INTEGRATIONS=1` or `AITVARAS_UI_TEST_MODE=1`.
+Personal connectors remain disabled by the provider-test configuration itself.
+`AITVARAS_FAKE_CLAUDE` and `AITVARAS_FAKE_CODEX` may instead name absolute fake
+executable paths. A fake-only configuration enables only the named providers;
+it never falls back to a real provider. These overrides require isolation and
+do not relax any legacy client guard. Normal launches need none of these flags.
+
+Host verification: generate/build the app, create a project chat, send through
+Claude, switch to Codex without sending, then Send and inspect the single
+catch-up disclosure. Switch to Local and reply, stop a streaming turn, revisit
+another chat to check draft retention, quit/reopen to check transcript/provider
+restoration, and verify imported history and Chat Details remain reachable.
+Check both appearance modes and minimum window size. The sandbox package checks
+do not compile the app or verify real authentication, Liquid Glass or accessibility.
+
 ## What an agent session should do
 
 For Claude Code (or any agent) working on this repo: Layers 1–2 after every

@@ -333,3 +333,10 @@ Changing provider and pressing Send is the consent for sending that chat's earli
 messages to the provider (amends D30). Every provider action passes
 `AgentActionCoordinator`, using Claude's pre-tool hook callback and Codex's sandbox,
 approvals and item events, so the autonomy policy and activity log still hold.
+
+The new chat path bounds each deterministic handover block, including labels, to
+16,000 UTF-8 bytes. It keeps the newest completed messages, orders them
+oldest first, states the omitted count (and explicitly clips an oversized newest
+message at a Unicode character boundary) and advances the per-provider watermark
+only on acknowledgement. Local receives completed context on every Send. Legacy
+adapters retain their existing sharing checks until migration.

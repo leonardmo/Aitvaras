@@ -71,6 +71,7 @@ public actor AgentSessionManager {
         guard !closing else { throw AgentSessionManagerError.shuttingDown }
         guard live[session.chatID]?.inputID == nil else { throw AgentSessionManagerError.chatBusy }
         try persistence.saveAgentSession(session)
+        if live[session.chatID]?.session == session { return }
         if let slot = live.removeValue(forKey: session.chatID) {
             slot.reader?.cancel(); slot.idle?.cancel()
             if let run = slot.coordinator { await Self.close(run, timeout: .seconds(2)) }
@@ -88,7 +89,8 @@ public actor AgentSessionManager {
             throw AgentSessionManagerError.missingSession
         }
         try await deliver(chatID: turn.chatID, provider: session.provider,
-                          input: .init(id: turn.id, text: turn.prompt), retry: true)
+                          input: .init(id: turn.id, text: try persistence.agentEntries(chatID: turn.chatID)
+                            .first(where: { $0.id == turn.id })?.text ?? turn.prompt), retry: true)
     }
     private func providerForTurn(_ turn: AgentJournalTurn) throws -> AgentProvider {
         for provider in [AgentProvider.claude, .codex, .local] {
@@ -104,6 +106,9 @@ public actor AgentSessionManager {
             throw AgentSessionManagerError.missingSession
         }
         _ = try state(chatID: chatID)
+        let context = try retry ? persistence.agentHandover(turnID: input.id) : persistence.agentContext(session: session)
+        let wireText = try retry ? persistence.agentTurn(id: input.id)?.prompt : nil
+        let wireInput = AgentInput(id: input.id, text: wireText ?? context?.wire(message: input.text) ?? input.text)
         if live[chatID] == nil, live.count >= 3 {
             states[chatID]?.end(.failed(.invalidTransition)); publish(chatID)
             throw AgentSessionManagerError.runningChatLimit
@@ -116,9 +121,9 @@ public actor AgentSessionManager {
         live[chatID] = Live(token: token, session: session, coordinator: reusable, inputID: input.id)
         do {
             if retry { _ = try persistence.claimAgentResend(id: input.id) }
-            else { try persistence.prepareAgentTurn(.init(input: input, chatID: chatID, sessionID: session.id)) }
+            else { try persistence.prepareAgentTurn(.init(input: wireInput, chatID: chatID, sessionID: session.id), context: context) }
         } catch { live[chatID] = old; if let old { armIdle(chatID, token: old.token) }; throw error }
-        states[chatID]?.begin(input, session: session, outputID: UUID())
+        states[chatID]?.begin(input, session: session, outputID: UUID(), context: context)
         do {
             try persistEntries(chatID)
             publish(chatID)
@@ -149,7 +154,7 @@ public actor AgentSessionManager {
                 throw AgentSessionManagerError.staleRun
             }
             let persistence = persistence
-            try await coordinator.send(input) { try persistence.advanceAgentDelivery(id: input.id, to: .deliveryUnknown) }
+            try await coordinator.send(wireInput) { try persistence.advanceAgentDelivery(id: input.id, to: .deliveryUnknown) }
         } catch {
             await failedSend(chatID, token: token, inputID: input.id, error: error)
             throw error

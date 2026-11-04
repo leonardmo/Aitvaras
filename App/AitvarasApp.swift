@@ -234,6 +234,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             await AppModel.shared.neuralVoiceInstaller.stopBeforeTermination()
             await SpeechAssetReadiness.shared.stopBeforeTermination(reporter: AppModel.shared.activityReporter)
             do {
+                try await AppModel.shared.shutdownAgentChats()
                 try await AppModel.shared.capture?.stopBeforeTermination()
                 sender.reply(toApplicationShouldTerminate: true)
             } catch {

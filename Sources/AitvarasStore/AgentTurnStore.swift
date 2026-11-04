@@ -16,10 +16,13 @@ public struct AgentTurnStore: Sendable {
         try db.queue.read { try AgentJournalTurn.filter(Column("chatID") == chatID)
             .order(Column("startedAt").desc, Column("id")).fetchOne($0) }
     }
-    public func prepare(_ turn: AgentJournalTurn) throws {
+    public func prepare(_ turn: AgentJournalTurn, context: ChatContextProjection? = nil) throws {
         guard turn.delivery == .prepared, turn.state == .running, turn.resendCount == 0,
               turn.partialOutput.isEmpty else { throw AgentFailure.invalidTransition }
-        try db.queue.write { try turn.insert($0) }
+        try db.queue.write { dbc in
+            try turn.insert(dbc)
+            if let context { try AgentHandoverRecord(context: context, turnID: turn.id).insert(dbc) }
+        }
     }
     private func change(_ id: UUID, _ body: (inout AgentJournalTurn) throws -> Void) throws {
         try db.queue.write { dbc in
@@ -72,6 +75,9 @@ public struct AgentTurnStore: Sendable {
 extension Stores {
     public func latestAgentTurn(chatID: UUID) throws -> AgentJournalTurn? { try AgentTurnStore(db: db).latest(chatID: chatID) }
     public func prepareAgentTurn(_ turn: AgentJournalTurn) throws { try AgentTurnStore(db: db).prepare(turn) }
+    public func prepareAgentTurn(_ turn: AgentJournalTurn, context: ChatContextProjection?) throws {
+        try AgentTurnStore(db: db).prepare(turn, context: context)
+    }
     public func agentTurn(id: UUID) throws -> AgentJournalTurn? { try AgentTurnStore(db: db).turn(id: id) }
     public func advanceAgentDelivery(id: UUID, to state: AgentDeliveryState) throws { try AgentTurnStore(db: db).advanceDelivery(id: id, to: state) }
     public func saveAgentPartial(id: UUID, text: String) throws { try AgentTurnStore(db: db).savePartial(id: id, text: text) }
