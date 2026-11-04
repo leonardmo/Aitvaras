@@ -16,8 +16,8 @@ setup: ## Install the git hooks and the private denylist template (once per clon
 	scripts/install-hooks.sh
 	@echo "Hooks enabled. Commit author: $$(git config user.email)"
 
-test: ## Package tests (swift test)
-	swift test
+test: ## Package tests, serial like CI (the suite has timing tests that fail in parallel)
+	swift test --no-parallel
 
 node-test: ## Offline contract tests for the Node sidecar helpers
 	@set -e; for t in $(NODE_TESTS); do echo "── $$t"; node $$t; done
