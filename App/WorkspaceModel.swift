@@ -33,6 +33,9 @@ extension AppModel {
             let chats = try selectedWorkspaceProjectID.map {
                 try stores.workspaceChats(projectID: $0, includeArchived: true)
             } ?? []
+            workspaceSidebarChats = try projects.filter(\.isVisible).flatMap {
+                try stores.workspaceChats(projectID: $0.id, includeArchived: true)
+            }
             workspaceProjects = projects
             workspaceChats = chats
             unassignedChatConversations = unassigned
@@ -169,8 +172,8 @@ extension AppModel {
     }
 
     @discardableResult
-    func createWorkspaceChat(title: String, kind: WorkspaceChat.Kind, purpose: String) -> Bool {
-        guard allowWorkspaceSelection(), let stores, let projectID = selectedWorkspaceProjectID else { return false }
+    func createWorkspaceChat(title: String, kind: WorkspaceChat.Kind, purpose: String, projectID: UUID? = nil) -> Bool {
+        guard allowWorkspaceSelection(), let stores, let projectID = projectID ?? selectedWorkspaceProjectID else { return false }
         do {
             let chat = try stores.createWorkspaceChat(projectID: projectID, title: title,
                 kind: kind, purpose: purpose)

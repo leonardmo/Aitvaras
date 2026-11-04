@@ -1,95 +1,187 @@
 import SwiftUI
 import AitvarasAgents
 
-/// M2 shell. Provider-specific adapters and their views remain compiled until
-/// migration; this surface only observes the application-owned chat manager.
+/// One transcript and composer, observing the application-owned chat manager.
 struct AgentChatView: View {
     @Bindable var chat: ChatModel
     let chatID: UUID
     var canSend = true
+    var workspaceError: String? = nil
     @State private var answers: [String: String] = [:]
+
+    @State private var atBottom = true
+    @State private var bottomVisible = true
+    @State private var scrolling = false
 
     var body: some View {
         VStack(spacing: 0) {
             ScrollViewReader { proxy in
                 ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 14) {
+                    VStack(alignment: .leading, spacing: 18) {
                         ForEach(chat.state?.entries ?? []) { entry in
-                            if entry.kind == "handover" {
-                                DisclosureGroup("Context sent to \(entry.provider.rawValue.capitalized)") {
-                                    Text(entry.text).font(.caption).textSelection(.enabled)
-                                }
-                                .accessibilityIdentifier("chat.handover.\(entry.id)")
-                            } else if entry.kind == "thinking" || entry.kind == "tool" {
-                                DisclosureGroup(entry.kind == "thinking" ? "Thinking" : entry.text) {
-                                    Text(entry.payloadJSON ?? entry.text).font(.caption).textSelection(.enabled)
-                                }
-                                .accessibilityIdentifier("chat.entry.\(entry.id)")
-                            } else {
-                                VStack(alignment: .leading, spacing: 4) {
-                                    Text(entry.kind == "user" ? "You" : entry.provider.rawValue.capitalized)
-                                        .font(.caption).foregroundStyle(.secondary)
-                                    Text(entry.text).textSelection(.enabled)
-                                }
-                                .id(entry.id)
-                            }
+                            transcriptEntry(entry).id(entry.id)
                         }
                         ForEach(Array((chat.state?.pendingCards ?? []).enumerated()), id: \.offset) { index, request in
                             requestCard(request, index: index)
                         }
                         Color.clear.frame(height: 1).id("chat.end")
-                    }.padding(20).frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .frame(maxWidth: 720, alignment: .leading)
+                    .padding(20).frame(maxWidth: .infinity)
+                }
+                .defaultScrollAnchor(.bottom)
+                .onScrollGeometryChange(for: Bool.self) { geometry in
+                    geometry.contentSize.height - geometry.contentOffset.y - geometry.containerSize.height < 60
+                } action: { _, value in
+                    bottomVisible = value
+                    if scrolling { atBottom = value }
+                }
+                .onScrollPhaseChange { _, phase in
+                    scrolling = phase != .idle && phase != .animating
+                    if phase == .idle && bottomVisible { atBottom = true }
                 }
                 .accessibilityIdentifier("chat.transcript")
-                .onChange(of: chat.state?.entries) { proxy.scrollTo("chat.end", anchor: .bottom) }
+                .onChange(of: chat.state?.entries) {
+                    if atBottom { proxy.scrollTo("chat.end", anchor: .bottom) }
+                }
+                .onChange(of: chatID) { atBottom = true; proxy.scrollTo("chat.end", anchor: .bottom) }
             }
-            if let error = chat.error {
-                Text(error).font(.caption).foregroundStyle(.red).padding(8)
-            } else if case .failed = chat.state?.outcome {
-                Text("The response did not complete.").font(.caption).foregroundStyle(.red).padding(8)
+            VStack(spacing: 6) {
+                composer
+                // Reserved height keeps the transcript steady when an error appears.
+                HStack(spacing: 8) {
+                    if let error = chat.error ?? workspaceError ?? outcomeError {
+                        Text(error).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                        Spacer(minLength: 0)
+                        if chat.signingIn != nil {
+                            ProgressView().controlSize(.mini)
+                            Button("Cancel") { chat.cancelSignIn() }
+                                .accessibilityIdentifier("chat.signin.cancel")
+                        } else if let provider = chat.authProvider {
+                            Button("Sign in") { chat.signIn(provider) }
+                                .accessibilityIdentifier("chat.signin")
+                        }
+                    }
+                }
+                .controlSize(.small).frame(height: 24)
+                .accessibilityIdentifier("chat.error")
             }
-            Divider()
-            VStack(spacing: 10) {
-                HStack {
-                    ForEach([AgentProvider.claude, .codex, .local], id: \.self) { provider in
-                        Button(provider.rawValue.capitalized) { chat.setProvider(provider) }
-                            .tint(chat.provider == provider ? Color.accentColor : Color.secondary)
-                            .accessibilityAddTraits(chat.provider == provider ? .isSelected : [])
-                            .accessibilityIdentifier("chat.provider.\(provider.rawValue)")
-                    }
-                    Spacer()
-                    if chat.isBusy {
-                        Button("Stop", systemImage: "stop.fill") { Task { await chat.stop() } }
-                            .accessibilityIdentifier("chat.stop")
-                    }
-                }
-                HStack {
-                    TextField("Model", text: $chat.model).accessibilityIdentifier("chat.model")
-                    TextField("Effort", text: $chat.effort).accessibilityIdentifier("chat.effort")
-                    Picker("Mode", selection: $chat.mode) {
-                        Text("Ask").tag(AgentMode.ask)
-                        Text("Accept edits").tag(AgentMode.acceptEdits)
-                        Text("Plan").tag(AgentMode.plan)
-                        Text("Auto").tag(AgentMode.auto)
-                    }.accessibilityIdentifier("chat.mode")
-                }
-                .disabled(chat.isBusy || chat.provider == .local)
-                HStack(alignment: .bottom) {
-                    TextField("Message", text: $chat.draft, axis: .vertical)
-                        .lineLimit(1...6).textFieldStyle(.roundedBorder)
-                        .accessibilityIdentifier("chat.composer.input")
-                        .onSubmit { Task { await chat.send() } }
-                    Button("Send", systemImage: "arrow.up") { Task { await chat.send() } }
-                        .keyboardShortcut(.return, modifiers: .command)
-                        .disabled(chat.isBusy || !canSend || chat.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                        .accessibilityIdentifier("chat.composer.send")
-                }
-                .disabled(!canSend)
-            }.padding(16)
+            .frame(maxWidth: 760).padding(.horizontal, 16).padding(.top, 8)
         }
         .task(id: chatID) { chat.select(chatID) }
         .task { await chat.refreshStatus() }
+        .task(id: "\(chatID).\(chat.provider.rawValue).\(chat.signingIn == nil)") { await chat.loadModels() }
         .onChange(of: chatID) { answers = [:] }
+    }
+
+    private var composer: some View {
+        VStack(spacing: 8) {
+            TextField("Message", text: $chat.draft, axis: .vertical)
+                .lineLimit(2...6).textFieldStyle(.plain)
+                .disabled(!canSend)
+                .accessibilityIdentifier("chat.composer.input")
+                .onKeyPress(.return, phases: .down) { press in
+                    if press.modifiers.contains(.shift) { return .ignored }
+                    if !chat.isBusy && canSend { Task { await chat.send() } }
+                    return .handled
+                }
+            HStack(spacing: 5) {
+                Picker("Provider", selection: Binding(get: { chat.provider }, set: { chat.setProvider($0) })) {
+                    ForEach([AgentProvider.claude, .codex, .local], id: \.self) { provider in
+                        Text(provider.rawValue.capitalized).tag(provider)
+                            .accessibilityIdentifier("chat.provider.\(provider.rawValue)")
+                    }
+                }
+                .pickerStyle(.segmented).labelsHidden().frame(width: 154)
+                .accessibilityIdentifier("chat.provider")
+                .disabled(chat.isBusy)
+                if !chat.models.isEmpty {
+                    Menu {
+                        Picker("Model", selection: $chat.model) {
+                            ForEach(chat.models, id: \.id) { Text($0.name).tag($0.id) }
+                        }.pickerStyle(.inline)
+                    } label: {
+                        Text(chat.selectedModel?.name ?? "Model").lineLimit(1)
+                    }
+                    .frame(minWidth: 36, maxWidth: 100)
+                    .accessibilityIdentifier("chat.model")
+                    .disabled(chat.isBusy)
+                }
+                if let model = chat.selectedModel, !model.efforts.isEmpty, chat.provider != .local {
+                    Menu {
+                        Picker("Effort", selection: $chat.effort) {
+                            Text("Default").tag("")
+                            ForEach(model.efforts, id: \.self) { Text($0.capitalized).tag($0) }
+                        }.pickerStyle(.inline)
+                    } label: { Text(chat.effort.isEmpty ? "Effort" : chat.effort.capitalized).lineLimit(1) }
+                    .frame(minWidth: 32, maxWidth: 60)
+                    .accessibilityIdentifier("chat.effort").disabled(chat.isBusy)
+                }
+                if chat.provider != .local {
+                    Menu {
+                        Picker("Mode", selection: $chat.mode) {
+                            Text("Ask").tag(AgentMode.ask)
+                            Text("Accept edits").tag(AgentMode.acceptEdits)
+                            Text("Plan").tag(AgentMode.plan)
+                            Text("Auto").tag(AgentMode.auto)
+                        }.pickerStyle(.inline)
+                    } label: { Text(modeTitle).lineLimit(1) }
+                    .frame(minWidth: 30, maxWidth: 76)
+                    .accessibilityIdentifier("chat.mode").disabled(chat.isBusy)
+                }
+                Spacer(minLength: 0)
+                if chat.state?.entries.last?.provider == chat.provider,
+                   let value = ChatSettings.contextFraction(chat.state?.usage) {
+                    ChatGauge(value: value, title: "Context", identifier: "chat.gauge.context")
+                }
+                if let value = chat.providerLimits[chat.provider]?.compactMap(\.utilization).filter(\.isFinite).max() {
+                    ChatGauge(value: value, title: "Usage", identifier: "chat.gauge.usage")
+                }
+                if chat.isBusy {
+                    Button { Task { await chat.stop() } } label: { Image(systemName: "stop.fill") }
+                        .accessibilityLabel("Stop").accessibilityIdentifier("chat.stop")
+                } else {
+                    Button { Task { await chat.send() } } label: { Image(systemName: "arrow.up") }
+                        .keyboardShortcut(.return, modifiers: .command)
+                        .disabled(!canSend || chat.signingIn != nil || chat.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        .accessibilityLabel("Send").accessibilityIdentifier("chat.composer.send")
+                }
+            }
+            .controlSize(.small).menuStyle(.borderlessButton).fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(12)
+        .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 18))
+    }
+    private var outcomeError: String? {
+        if case .failed = chat.state?.outcome { return "The response did not complete." }
+        return nil
+    }
+    private var modeTitle: String {
+        switch chat.mode { case .ask: "Ask"; case .acceptEdits: "Accept edits"; case .plan: "Plan"; case .auto: "Auto" }
+    }
+
+    @ViewBuilder private func transcriptEntry(_ entry: AgentTranscriptEntry) -> some View {
+        if entry.kind == "handover" || entry.kind == "thinking" || entry.kind == "tool" {
+            DisclosureGroup {
+                Text(entry.payloadJSON ?? entry.text).font(.caption.monospaced()).textSelection(.enabled)
+            } label: {
+                Text(entry.kind == "handover" ? "Context sent to \(entry.provider.rawValue.capitalized)"
+                     : entry.kind == "thinking" ? "Thinking" : entry.text.isEmpty ? "Tool" : entry.text)
+                    .lineLimit(1).font(.caption).foregroundStyle(.secondary)
+            }
+            .accessibilityIdentifier(entry.kind == "handover" ? "chat.handover.\(entry.id)" : "chat.entry.\(entry.id)")
+        } else if entry.kind == "user" {
+            HStack {
+                Spacer(minLength: 30)
+                Text(entry.text).textSelection(.enabled)
+                    .padding(12).background(.quaternary, in: RoundedRectangle(cornerRadius: 14))
+            }
+            .accessibilityIdentifier("chat.entry.\(entry.id)")
+        } else {
+            ChatMarkdown(text: entry.text)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .accessibilityIdentifier("chat.entry.\(entry.id)")
+        }
     }
 
     private func requestCard(_ request: AgentRequest, index: Int) -> some View {
@@ -112,6 +204,19 @@ struct AgentChatView: View {
                 }.accessibilityIdentifier("chat.request.\(index).submit")
             default:
                 Text(requestTitle(request)).font(.headline)
+                if case .permission(let tool) = request.kind {
+                    DisclosureGroup("Details") {
+                        Text(tool.input.jsonString).font(.caption.monospaced()).textSelection(.enabled)
+                    }
+                } else if case .preToolUse(let tool) = request.kind {
+                    DisclosureGroup("Details") {
+                        Text(tool.input.jsonString).font(.caption.monospaced()).textSelection(.enabled)
+                    }
+                } else if case .permissions(let value) = request.kind {
+                    DisclosureGroup("Details") {
+                        Text(value.jsonString).font(.caption.monospaced()).textSelection(.enabled)
+                    }
+                }
                 Button("Allow") { Task { await chat.respond(to: request, with: .allow(updatedInput: nil)) } }
                     .accessibilityIdentifier("chat.request.\(index).allow")
             }
@@ -124,10 +229,116 @@ struct AgentChatView: View {
     }
     private func requestTitle(_ request: AgentRequest) -> String {
         switch request.kind {
-        case .permission(let tool), .preToolUse(let tool): return "Allow \(tool.name)?\n\(tool.input.jsonString)"
-        case .permissions(let value): return "Allow permissions?\n\(value.jsonString)"
+        case .permission(let tool), .preToolUse(let tool): return "Allow \(tool.name)?"
+        case .permissions: return "Allow permissions?"
         case .plan(let text): return text
         default: return "Provider request"
         }
+    }
+}
+
+/// Native text rendering, including readable fenced code and Markdown inline
+/// styles. Stable block indices keep incremental text in place while streaming.
+private struct ChatMarkdown: View {
+    let text: String
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            ForEach(Array(text.components(separatedBy: "```").enumerated()), id: \.offset) { index, block in
+                if index.isMultiple(of: 2) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        ForEach(Array(block.components(separatedBy: "\n").enumerated()), id: \.offset) { _, line in
+                            markdownLine(line)
+                        }
+                    }
+                } else {
+                    let code = block.firstIndex(of: "\n").map { String(block[block.index(after: $0)...]) } ?? block
+                    ScrollView(.horizontal) {
+                        Text(code).font(.callout.monospaced()).textSelection(.enabled).padding(10)
+                    }
+                    .background(.quaternary, in: RoundedRectangle(cornerRadius: 8))
+                }
+            }
+        }
+    }
+    @ViewBuilder private func markdownLine(_ line: String) -> some View {
+        if line.hasPrefix("# ") {
+            inline(String(line.dropFirst(2))).font(.title2.weight(.semibold))
+        } else if line.hasPrefix("## ") {
+            inline(String(line.dropFirst(3))).font(.title3.weight(.semibold))
+        } else if line.hasPrefix("### ") {
+            inline(String(line.dropFirst(4))).font(.headline)
+        } else if line.hasPrefix("- ") || line.hasPrefix("* ") {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text("•"); inline(String(line.dropFirst(2)))
+            }.padding(.leading, 6)
+        } else if line.hasPrefix("> ") {
+            inline(String(line.dropFirst(2))).foregroundStyle(.secondary).padding(.leading, 12)
+        } else {
+            inline(line.isEmpty ? " " : line)
+        }
+    }
+    private func inline(_ text: String) -> some View {
+        Text((try? AttributedString(markdown: text, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))) ?? AttributedString(text))
+            .textSelection(.enabled)
+    }
+
+}
+
+struct ChatGauge: View {
+    let value: Double
+    let title: String
+    let identifier: String
+    var body: some View {
+        Gauge(value: min(1, max(0, value))) { Text(title) }
+            .gaugeStyle(.accessoryCircularCapacity).labelsHidden()
+            .scaleEffect(0.55).frame(width: 22, height: 22)
+            .help("\(title): \(Int(min(1, max(0, value)) * 100))%")
+            .accessibilityLabel(title).accessibilityValue("\(Int(min(1, max(0, value)) * 100)) percent")
+            .accessibilityIdentifier(identifier)
+    }
+}
+
+struct AgentProviderSettingsView: View {
+    @Bindable var chat: ChatModel
+    var body: some View {
+        Form {
+            ForEach([AgentProvider.claude, .codex, .local], id: \.self) { provider in
+                HStack(spacing: 12) {
+                    Image(systemName: statusIcon(provider)).foregroundStyle(statusColor(provider))
+                        .accessibilityLabel(statusLabel(provider))
+                        .accessibilityIdentifier("chat.settings.status.\(provider.rawValue)")
+                    Text(provider.rawValue.capitalized)
+                    Spacer()
+                    if let value = chat.providerLimits[provider]?.compactMap(\.utilization).filter(\.isFinite).max() {
+                        ChatGauge(value: value, title: "Usage", identifier: "chat.settings.gauge.\(provider.rawValue)")
+                    }
+                    if chat.signingIn == provider {
+                        ProgressView().controlSize(.small)
+                        Button("Cancel") { chat.cancelSignIn() }
+                    } else if provider != .local {
+                        Button("Sign in") { chat.signIn(provider) }
+                            .disabled(chat.signingIn != nil)
+                            .accessibilityIdentifier("chat.signin")
+                    }
+                }
+                .accessibilityElement(children: .contain)
+                .accessibilityIdentifier("chat.settings.\(provider.rawValue)")
+            }
+        }
+        .formStyle(.grouped).task { await chat.refreshStatus() }
+    }
+    private func statusIcon(_ provider: AgentProvider) -> String {
+        guard let status = chat.statuses[provider] else { return "circle.dotted" }
+        return status.installed && (status.authentication == .subscription || status.authentication == .local)
+            ? "checkmark.circle.fill" : "exclamationmark.circle"
+    }
+    private func statusColor(_ provider: AgentProvider) -> Color {
+        guard let status = chat.statuses[provider] else { return .secondary }
+        return status.installed && (status.authentication == .subscription || status.authentication == .local) ? .green : .orange
+    }
+    private func statusLabel(_ provider: AgentProvider) -> String {
+        guard let status = chat.statuses[provider] else { return "Unknown" }
+        if !status.installed { return "Not installed" }
+        return status.authentication == .subscription || status.authentication == .local ? "Ready" : "Signed out"
     }
 }

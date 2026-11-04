@@ -3,6 +3,49 @@ import Testing
 @testable import AitvarasAgents
 
 struct CodexBackendTests {
+    @Test func loginCancellationReachesNativeProvider() async throws {
+        let fixture = try BackendExecutableFixture(script: #"""
+codex_init()
+r=read()
+assert r['method']=='account/login/start'
+emit({'id':r['id'],'result':{'loginId':'test-login','authUrl':'https://example.invalid/login'}})
+r=read()
+assert r['method']=='account/login/cancel'
+assert r['params']=={'loginId':'test-login'}
+open('done','w').close()
+emit({'id':r['id'],'result':{'status':'canceled'}})
+done()
+"""#)
+        defer { fixture.remove() }
+        let backend = CodexBackend(executable: fixture.executable, environment: fixture.environment)
+        let (urls, opened) = AsyncStream<URL>.makeStream()
+        let login = Task { try await backend.signIn { opened.yield($0) } }
+        for await _ in urls { break }
+        login.cancel()
+        await #expect(throws: CancellationError.self) { try await login.value }
+        try fixture.assertComplete()
+        try await backend.shutdown()
+    }
+
+    @Test func defaultModelUsesNativeDefaultWithoutInventingAnID() async throws {
+        let fixture = try BackendExecutableFixture(script: #"""
+codex_init()
+r=read()
+account(r)
+r=read()
+assert r['method']=='thread/start'
+assert 'model' not in r['params']
+emit({'id':r['id'],'result':{'thread':{'id':'test-thread'}}})
+done()
+"""#)
+        defer { fixture.remove() }
+        let backend = CodexBackend(executable: fixture.executable, environment: fixture.environment)
+        let run = try await backend.start(.init(directory: fixture.directory, model: "default"))
+        try await Task.sleep(for: .milliseconds(20))
+        try fixture.assertComplete()
+        try await run.shutdown(); try await backend.shutdown()
+    }
+
     @Test(arguments: ["write-ask", "write-onreq", "readonly", "interrupt"])
     func recordings(name: String) async throws {
         let fixture = try BackendExecutableFixture(provider: "codex", name: name)

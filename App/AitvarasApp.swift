@@ -9,7 +9,7 @@ struct AitvarasApp: App {
         Window("Aitvaras", id: "main") {
             MainWindow()
                 .environment(AppModel.shared)
-                .frame(minWidth: 900, maxWidth: .infinity, minHeight: 600, maxHeight: .infinity, alignment: .topLeading)
+                .frame(minWidth: 800, maxWidth: .infinity, minHeight: 500, maxHeight: .infinity, alignment: .topLeading)
                 .overlay {
                     if UIShot.requestedPath != nil, CommandLine.arguments.contains("--single-window-check") {
                         SingleMainWindowProbe()
