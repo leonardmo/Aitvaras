@@ -1,0 +1,167 @@
+{
+  "mode": "seated static body, live facial morphs",
+  "meshes": [
+    {
+      "name": "Runtime.Dragon.Body",
+      "source_triangles": 1159728,
+      "triangles": 119450,
+      "vertices": 59836,
+      "maximum_source_surface_distance": 0.0011241277679800987,
+      "morph_displacements": {
+        "jawOpen": 0.01795361345276711
+      }
+    },
+    {
+      "name": "Runtime.Dragon.Eye.Left",
+      "source_triangles": 6400,
+      "triangles": 2559,
+      "vertices": 1310,
+      "maximum_source_surface_distance": 0.00010838005982805043,
+      "morph_displacements": {
+        "eyeLookLeft": 0.006278100116991986,
+        "eyeLookRight": 0.006278101276212995,
+        "eyeLookUp": 0.004709715085394868,
+        "eyeLookDown": 0.0047097348448413645
+      }
+    },
+    {
+      "name": "Runtime.Dragon.Lid.Left.Upper",
+      "source_triangles": 3840,
+      "triangles": 1536,
+      "vertices": 856,
+      "maximum_source_surface_distance": 1.9187615180271678e-05,
+      "morph_displacements": {
+        "eyeBlinkLeft": 0.02600769999230042
+      }
+    },
+    {
+      "name": "Runtime.Dragon.Lid.Left.Lower",
+      "source_triangles": 3840,
+      "triangles": 1535,
+      "vertices": 853,
+      "maximum_source_surface_distance": 6.039746949682012e-05,
+      "morph_displacements": {
+        "eyeBlinkLeft": 0.024437010288238525
+      }
+    },
+    {
+      "name": "Runtime.Dragon.Eye.Right",
+      "source_triangles": 6400,
+      "triangles": 2560,
+      "vertices": 1312,
+      "maximum_source_surface_distance": 0.00010767779895104468,
+      "morph_displacements": {
+        "eyeLookLeft": 0.006278103462060459,
+        "eyeLookRight": 0.006278100210245563,
+        "eyeLookUp": 0.004710094811949114,
+        "eyeLookDown": 0.004710106933653007
+      }
+    },
+    {
+      "name": "Runtime.Dragon.Lid.Right.Upper",
+      "source_triangles": 3840,
+      "triangles": 1536,
+      "vertices": 854,
+      "maximum_source_surface_distance": 0.00012425122258719057,
+      "morph_displacements": {
+        "eyeBlinkRight": 0.02600769999230042
+      }
+    },
+    {
+      "name": "Runtime.Dragon.Lid.Right.Lower",
+      "source_triangles": 3840,
+      "triangles": 1536,
+      "vertices": 852,
+      "maximum_source_surface_distance": 3.3785112464101985e-05,
+      "morph_displacements": {
+        "eyeBlinkRight": 0.023275375366210938
+      }
+    },
+    {
+      "name": "Runtime.Dragon.Mouth.Interior",
+      "source_triangles": 2268,
+      "triangles": 1512,
+      "vertices": 2268,
+      "maximum_source_surface_distance": 0.0005218066507950425,
+      "morph_displacements": {
+        "jawOpen": 0.017959233499934425
+      }
+    },
+    {
+      "name": "Runtime.Dragon.EyeSkinBridge.Left",
+      "source_triangles": 2560,
+      "triangles": 1024,
+      "vertices": 659,
+      "maximum_source_surface_distance": 9.215058526024222e-05,
+      "morph_displacements": {}
+    },
+    {
+      "name": "Runtime.Dragon.EyeSkinBridge.Right",
+      "source_triangles": 2560,
+      "triangles": 1023,
+      "vertices": 666,
+      "maximum_source_surface_distance": 6.445594044635072e-05,
+      "morph_displacements": {}
+    }
+  ],
+  "animations": 0,
+  "source_sha256": "45bcce4b6ce8ce2d504d5d98f096fd526f3de3ea2ba2455073fb9cf73e147de1",
+  "limits": "No locomotion clips; original rig retained only in the master.",
+  "textures": [
+    {
+      "name": "Dragon.Runtime.ScaleNormals",
+      "size": [
+        2048,
+        2048
+      ]
+    },
+    {
+      "name": "Image_0",
+      "size": [
+        2048,
+        2048
+      ]
+    },
+    {
+      "name": "Dragon.Face.FriendlyLidSkinAtlas",
+      "size": [
+        256,
+        256
+      ]
+    },
+    {
+      "name": "Dragon.Face.SkinBridgeAtlas.Left",
+      "size": [
+        512,
+        64
+      ]
+    },
+    {
+      "name": "Dragon.Face.FriendlyHoneyIrisAtlas",
+      "size": [
+        1024,
+        512
+      ]
+    },
+    {
+      "name": "Image_1",
+      "size": [
+        1024,
+        1024
+      ]
+    },
+    {
+      "name": "Dragon.Face.SkinBridgeAtlas.Right",
+      "size": [
+        512,
+        64
+      ]
+    }
+  ],
+  "triangles": 134271,
+  "vertices": 69466,
+  "bytes": 17670196,
+  "sha256": "99adee10dc7638d6465a1edc57dbda88ef81e084ca30c7c633bf1156bafffd14",
+  "elapsed_seconds": 10.56,
+  "source_unchanged": true
+}

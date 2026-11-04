@@ -35,6 +35,8 @@
   gives the cloud agents it delegates to.
 - [research/](research/): dated research notes.
 - [character/](character/): companion character direction.
+- [character/dragon-runtime/](character/dragon-runtime/): how the default dragon
+  asset is built and checked.
 - [archive/](archive/): superseded notes and session logs, kept for history.
 
 ## Conventions
