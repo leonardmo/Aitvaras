@@ -7,7 +7,7 @@ XCODE_FLAGS := -project Aitvaras.xcodeproj -scheme Aitvaras \
 NODE_TESTS := scripts/test-claude-interactive.mjs scripts/check-codex-interactive.mjs \
 	scripts/check-codex-native.mjs scripts/check-codex-shared-runtime.mjs
 
-.PHONY: help setup test node-test project app e2e release privacy commits check smoke install clean
+.PHONY: help setup test node-test project app e2e live release privacy commits check smoke install clean
 
 help: ## List targets
 	@grep -E '^[a-z-]+:.*## ' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-10s %s\n", $$1, $$2}'
@@ -41,6 +41,14 @@ app: project ## Debug app build into .build-xcode
 # away from a running installed app. Screenshots land in .build-e2e/screenshots.
 e2e: project ## Real-app UI tests with an isolated profile and bundle id
 	scripts/run-e2e.sh $(E2E_FILTER)
+
+# Real CLIs on the real login. Runs from a launchd-style environment on purpose,
+# because a GUI app gets none of the shell's variables. Spends a little usage.
+live: ## Live provider checks against the installed CLIs
+	swift build --build-tests -q
+	env -i HOME="$$HOME" USER="$$USER" LOGNAME="$$USER" SHELL="$$SHELL" TMPDIR="$$TMPDIR" LANG=en_US.UTF-8 \
+		PATH=/usr/bin:/bin:/usr/sbin:/sbin AITVARAS_LIVE_AGENTS=1 \
+		"$$(xcrun -f swift)" test --skip-build --no-parallel --filter AgentLiveTests
 
 release: project ## Release app build into .build/DerivedData
 	$(call xcodebuild_logged,Release,.build/DerivedData)

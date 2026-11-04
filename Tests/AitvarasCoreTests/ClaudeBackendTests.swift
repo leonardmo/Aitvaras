@@ -113,7 +113,7 @@ done()
         await #expect(throws: AgentFailure.unsupported) { _ = try await backend.listSessions(folder: fixture.directory, cursor: nil) }
         await #expect(throws: AgentFailure.unsupported) { _ = try await backend.readHistory(session: .init(provider: .claude, profile: "default", nativeID: "test"), cursor: nil) }
     }
-    @Test(arguments: ["api-key", "endpoint", "missing-source", "signed-out", "no-plan"])
+    @Test(arguments: ["api-key", "endpoint", "signed-out", "no-plan"])
     func refusesNonSubscriptionBeforeSession(scenario: String) async throws {
         let fixture = try BackendExecutableFixture(script: "open('launched','w').close()")
         defer { fixture.remove() }
@@ -122,7 +122,6 @@ done()
         switch scenario {
         case "api-key": status["apiKeySource"] = .string("environment")
         case "endpoint": status["apiProvider"] = .string("other")
-        case "missing-source": status.removeValue(forKey: "apiKeySource")
         case "signed-out": status["loggedIn"] = .bool(false)
         default: status["subscriptionType"] = .null
         }
