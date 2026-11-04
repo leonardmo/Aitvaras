@@ -24,9 +24,12 @@ public struct AgentStatus: Sendable, Equatable {
     public let installed: Bool
     public let authentication: Authentication
     public let capabilities: Set<AgentCapability>
+    /// Non-secret opaque account identity, when the native CLI exposes it.
+    public let accountID: String?
 
-    public init(installed: Bool, authentication: Authentication, capabilities: Set<AgentCapability>) {
+    public init(installed: Bool, authentication: Authentication, capabilities: Set<AgentCapability>, accountID: String? = nil) {
         self.installed = installed; self.authentication = authentication; self.capabilities = capabilities
+        self.accountID = accountID
     }
 
     public func require(_ capability: AgentCapability) throws {

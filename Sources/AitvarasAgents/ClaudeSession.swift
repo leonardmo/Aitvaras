@@ -22,7 +22,8 @@ actor ClaudeRun: AgentRun {
         self.profile = profile; session = configuration.resume
         var arguments = ["-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose",
                          "--include-partial-messages", "--permission-prompt-tool", "stdio", "--permission-mode",
-                         configuration.mode.claudePermission, "--model", configuration.model]
+                         configuration.mode.claudePermission]
+        if configuration.model != "default" { arguments += ["--model", configuration.model] }
         if let resume = configuration.resume { arguments += ["--resume", resume.nativeID] }
         if let effort = configuration.effort { arguments += ["--effort", effort] }
         if !configuration.instructions.isEmpty { arguments += ["--append-system-prompt", configuration.instructions] }

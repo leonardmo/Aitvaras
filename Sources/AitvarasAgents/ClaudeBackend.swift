@@ -25,7 +25,8 @@ public actor ClaudeBackend: AgentBackend {
                 ["pro", "max", "team", "enterprise"].contains((value["subscriptionType"]?.stringValue ?? "").lowercased().replacingOccurrences(of: "claude ", with: "")) {
             authentication = .subscription
         } else { authentication = .unsupported }
-        return AgentStatus(installed: true, authentication: authentication, capabilities: subscriptionCapabilities)
+        return AgentStatus(installed: true, authentication: authentication, capabilities: subscriptionCapabilities,
+                           accountID: value["accountUuid"]?.stringValue ?? value["accountId"]?.stringValue)
     }
 
     public func signIn(onBrowserURL: @escaping @Sendable (URL) async -> Void) async throws {

@@ -585,10 +585,10 @@ to the respective subsystem, with the app installed normally:
 
 The Chat tab uses `ChatModel` and the application-owned `AgentSessionManager`
 for project chats. Opening or switching chats/providers sends no message;
-status checks are the only provider work on opening. Send persists the exact
-wire input and bounded catch-up before delivery. Restart restores the transcript
-and provider choice; drafts remain per chat for the app lifetime. Model, effort
-and mode are saved with Send. Existing unassigned chat, voice, shortcuts,
+status checks and the authenticated backend model list never prompt or sign in.
+Send persists the exact wire input and bounded catch-up before delivery.
+Restart restores the transcript and provider choice; drafts remain per chat for the app lifetime. Model, effort
+and mode are saved when chosen. Existing unassigned chat, voice, shortcuts,
 capture targets and memory archiving keep their legacy paths. Legacy project
 history migration is still M5 work.
 
@@ -605,9 +605,31 @@ Host verification: generate/build the app, create a project chat, send through
 Claude, switch to Codex without sending, then Send and inspect the single
 catch-up disclosure. Switch to Local and reply, stop a streaming turn, revisit
 another chat to check draft retention, quit/reopen to check transcript/provider
-restoration, and verify imported history and Chat Details remain reachable.
-Check both appearance modes and minimum window size. The sandbox package checks
-do not compile the app or verify real authentication, Liquid Glass or accessibility.
+restoration, and verify imported history remains reachable.
+Check both appearance modes at 800×500, a long Markdown/code reply, collapsed
+thinking/tools, Return to send and Shift-Return for a newline. Scroll upward
+during streaming: new text must not pull the transcript back to the bottom.
+Projects list their chats directly, with primary chats pinned first and scoped
+running/needs-you/failed dots. Rename, pin, archive and restore from row menus.
+Project chats expose no context inspector, boundary review or setup flow.
+
+Settings → Providers has one row per provider: status icon, known usage gauge
+and Sign in (Local needs no login). Model choices come from the backend; effort
+is hidden for models without it, and Local omits effort and mode. Unknown gauges
+are absent. In a signed-out temporary profile, Send must show one inline sign-in
+action. Verify the browser URL, Cancel, a five-minute timeout and successful
+completion followed by one automatic send. The maintainer must complete the
+real browser login once for each provider. Pending text survives cancellation
+and restart; opening Chat never initiates login. Only a journal entry still
+`prepared`, never `deliveryUnknown` or `acknowledged`, is eligible for retry.
+A single durable intent per profile is bounded to 64 KiB and five minutes;
+changing chat/provider, settings or the draft invalidates it. Native profile,
+session and any opaque account ID exposed by the CLI must still match. An
+existing native session without an exposed account identity requires an explicit
+Send after login; its account cannot be proven unchanged.
+`ChatSettingsTests` and `ProviderSignInTests` cover these policies against an
+in-memory store, including cancellation, timeout, drift, failed persistence and
+duplicate completion. The sandbox package checks do not compile the app or verify real authentication, Liquid Glass or accessibility.
 
 ## What an agent session should do
 

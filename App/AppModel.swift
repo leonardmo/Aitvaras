@@ -115,6 +115,7 @@ final class AppModel {
     // Existing conversations remain unassigned until the user chooses otherwise.
     var workspaceProjects: [WorkspaceProject] = []
     var workspaceChats: [WorkspaceChat] = []
+    var workspaceSidebarChats: [WorkspaceChat] = []
     var unassignedChatConversations: [Conversation] = []
     var selectedWorkspaceProjectID: UUID?
     var selectedWorkspaceChatID: UUID?

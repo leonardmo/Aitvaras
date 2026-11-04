@@ -3,6 +3,20 @@ import Testing
 @testable import AitvarasAgents
 
 struct ClaudeBackendTests {
+    @Test func defaultModelUsesNativeDefaultWithoutInventingAnID() async throws {
+        let fixture = try BackendExecutableFixture(script: #"""
+assert '--model' not in sys.argv
+claude_init()
+done()
+"""#)
+        defer { fixture.remove() }
+        let backend = ClaudeBackend(executable: fixture.executable, environment: fixture.environment)
+        let run = try await backend.start(.init(directory: fixture.directory, model: "default"))
+        try await Task.sleep(for: .milliseconds(20))
+        try fixture.assertComplete()
+        try await run.shutdown()
+    }
+
     @Test(arguments: ["aborted_streaming", "error_during_execution"])
     func interruptResultOverridesAssistantError(marker: String) async throws {
         let result = marker == "aborted_streaming"

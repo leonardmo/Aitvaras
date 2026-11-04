@@ -49,7 +49,8 @@ public actor CodexBackend: AgentBackend {
         let account = try await rpc("account/read", .object(["refreshToken": .bool(false)]))["account"]
         let authentication: AgentStatus.Authentication = account == nil || account == .null ? .signedOut
             : account?["type"]?.stringValue == "chatgpt" ? .subscription : .unsupported
-        return AgentStatus(installed: true, authentication: authentication, capabilities: subscriptionCapabilities)
+        return AgentStatus(installed: true, authentication: authentication, capabilities: subscriptionCapabilities,
+                           accountID: account?["chatgptAccountId"]?.stringValue ?? account?["id"]?.stringValue)
     }
     public func signIn(onBrowserURL: @escaping @Sendable (URL) async -> Void) async throws {
         guard !loginInProgress else { throw AgentFailure.invalidTransition }
@@ -58,19 +59,31 @@ public actor CodexBackend: AgentBackend {
         let result = try await rpc("account/login/start", .object(["type": .string("chatgpt")]))
         guard let id = result["loginId"]?.stringValue, let rawURL = result["authUrl"]?.stringValue,
               let url = URL(string: rawURL), url.scheme == "https" || url.scheme == "http" else { throw AgentFailure.authRequired }
-        await onBrowserURL(url)
-        let deadline = ContinuousClock.now.advanced(by: .seconds(300))
-        while ContinuousClock.now < deadline {
-            try Task.checkCancellation()
-            if let success = loginResults[id] {
-                guard success else { throw AgentFailure.authRequired }
-                return
+        do {
+            await onBrowserURL(url)
+            let deadline = ContinuousClock.now.advanced(by: .seconds(300))
+            while ContinuousClock.now < deadline {
+                try Task.checkCancellation()
+                if let success = loginResults[id] {
+                    guard success else { throw AgentFailure.authRequired }
+                    return
+                }
+                guard wire != nil else { throw AgentFailure.crashed(exitCode: nil) }
+                try await Task.sleep(for: .milliseconds(25))
             }
-            guard wire != nil else { throw AgentFailure.crashed(exitCode: nil) }
-            try await Task.sleep(for: .milliseconds(25))
+            throw AgentFailure.offline
+        } catch {
+            // Explicitly cancel the native login too; a late browser completion
+            // must not leave an abandoned application login active.
+            let wire = wire
+            let cancellation = Task {
+                _ = try? await wire?.request("account/login/cancel", .object(["loginId": .string(id)]), timeout: .seconds(2))
+            }
+            await cancellation.value
+            throw error
         }
-        throw AgentFailure.offline
     }
+
     public func models() async throws -> [AgentModel] {
         var models: [AgentModel] = [], cursor: String?
         repeat {
@@ -98,8 +111,9 @@ public actor CodexBackend: AgentBackend {
             throw authentication == .signedOut ? AgentFailure.authRequired : AgentFailure.unsupported
         }
         var parameters: [String: JSONValue] = ["cwd": .string(configuration.directory.path),
-            "model": .string(configuration.model), "approvalPolicy": .string(configuration.mode.codexApproval),
+            "approvalPolicy": .string(configuration.mode.codexApproval),
             "sandbox": .string(configuration.mode.codexSandbox)]
+        if configuration.model != "default" { parameters["model"] = .string(configuration.model) }
         if !configuration.instructions.isEmpty { parameters["developerInstructions"] = .string(configuration.instructions) }
         let method: String
         if let resume = configuration.resume {
