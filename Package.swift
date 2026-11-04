@@ -11,7 +11,8 @@ let package = Package(
         .library(name: "AitvarasRAG", targets: ["AitvarasRAG"]),
         .library(name: "AitvarasConnectors", targets: ["AitvarasConnectors"]),
         .library(name: "AitvarasVoice", targets: ["AitvarasVoice"]),
-        .library(name: "AitvarasAgent", targets: ["AitvarasAgent"])
+        .library(name: "AitvarasAgent", targets: ["AitvarasAgent"]),
+        .library(name: "AitvarasAgents", targets: ["AitvarasAgents"])
     ],
     dependencies: [
         .package(url: "https://github.com/groue/GRDB.swift", from: "7.0.0"),
@@ -43,6 +44,7 @@ let package = Package(
             ]
         ),
         .target(name: "AitvarasRAG", dependencies: ["AitvarasCore", "AitvarasStore"]),
+        .target(name: "AitvarasAgents", dependencies: ["AitvarasCore"]),
         .target(
             name: "AitvarasConnectors",
             dependencies: ["AitvarasCore", "AitvarasStore"],
@@ -61,7 +63,7 @@ let package = Package(
             dependencies: [
                 "AitvarasCore", "AitvarasStore", "AitvarasRAG",
                 "AitvarasConnectors", "AitvarasAgent", "AitvarasEngines",
-                "AitvarasVoice",
+                "AitvarasVoice", "AitvarasAgents",
                 // Keeps the package and generated-app dependency graphs in
                 // lockstep; avatar rendering itself remains in the app target.
                 .product(name: "GLTFKit2", package: "GLTFKit2")

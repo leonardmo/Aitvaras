@@ -1,0 +1,261 @@
+# Unified chat: technical plan
+
+Goal: Aitvaras's Chat tab works like the Claude Code and Codex apps, with one
+click to switch between Claude, Codex and local models, and sign-in that is at
+most one click. Product intent comes from `docs/NEXT-WORKSPACE-PLAN.md`, D30 and
+the maintainer's UI feedback. This document replaces the *technical* approach of
+`docs/CLAUDE-INTEGRATION.md` and `docs/CODEX-BIDIRECTIONAL-INTEGRATION.md`.
+
+## 1. Why the last attempt failed
+
+Measured on 2026-11-04 with the installed CLIs:
+
+| Finding | Evidence | Consequence |
+|---|---|---|
+| Claude sign-in failure has a concrete cause. The adapters build an allowlisted environment without `USER`. | `claude -p` with HOME+PATH only: "OAuth session expired". Same command plus `USER`: answers. The Keychain holds a second credential item under account `unknown`, last changed at the time of a failed sign-in, so those runs apparently wrote it. `claude auth status` reports logged in either way. | Sign-in "succeeded" into a stale, separate slot, and the status check could not see it. |
+| A direct connection is simple. | A throwaway script of about 60 lines drove `codex app-server` over stdio using the existing login: streaming, command approval, second turn, in 10 s. The Claude CLI answered stream-json input and the control protocol directly, with no Node or SDK. | Node helpers, the SDK download, the WebSocket proxy and separate profiles are unnecessary. |
+| All tests were synthetic. | 601 tests passed while the first real "hello" failed. Project rules made real provider runs a separate, rarely run gate. | Green tests said nothing about the product. |
+| Screenshots could not catch UI bugs. | `--uishot` renders offscreen: headings and icons are invisible in the output, and `TESTING.md` already warns about it. | No one, human or agent, saw the real UI before delivery. |
+| Too many parallel paths. | Three adapters, three workspace models, per-provider link and consent views, and Claude with no shell or edit tools at all. | Slow to change, complex to use, and not "the same actions". |
+
+## 2. Principles
+
+1. **Drive the official CLIs directly, with their own default login and stores.**
+   No separate profiles, no token handling, no API keys. Chats then exist natively
+   in Claude Code and Codex, so there is nothing to sync or link.
+2. **One backend protocol, one event stream, one UI.** Provider differences stop
+   at the backend.
+3. **The provider's own permission system does the enforcing.** Aitvaras presents
+   its requests as inline cards and logs them; it doesn't build a second sandbox.
+4. **Real first.** Nothing counts as done until it has worked in the real app,
+   through real clicks, against the real CLI.
+5. **Reuse what works.** `claude-workspace` has a tested process layer, stream
+   parser, git layer and changes panel. Port the files, not the history.
+
+## 3. Architecture
+
+New SwiftPM target `AitvarasAgents` (actors, Swift 6 strict, no Node):
+
+```
+ChatView ─ ChatModel (@MainActor) ─ AgentSessionManager ─┬ ClaudeBackend  claude -p stream-json + control protocol
+                     │                                   ├ CodexBackend   codex app-server, stdio JSON-RPC
+                     │                                   └ LocalBackend   decided at gate M4
+                     └ transcript store, autonomy policy, activity log
+```
+
+- **`AgentBackend`**: `status()`, `signIn()`, `models()`, `start(...) -> AgentRun`,
+  `listSessions(folder:)`, `readHistory(session:)`.
+- **`AgentRun`**: `events`, `send`, `respond(approval:)`, `setMode`, `interrupt`.
+- **`AgentEvent`**: session started, text and thinking deltas, tool started,
+  output and finished, file changed with diff, approval request, plan proposed,
+  question, usage, and turn ended with an outcome.
+- **`AgentFailure`** is typed: `authRequired`, `quota(resetsAt)`, `offline`,
+  `notInstalled`, `crashed`, `unknown`. Claude can report `subtype: success` with
+  `is_error: true`, so outcomes come from the error fields.
+- **`ProviderEnvironment`** is the one place that builds a child environment: the
+  app's inherited environment plus the login-shell `PATH`, **minus a denylist** of
+  credential and endpoint overrides (`ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`,
+  `ANTHROPIC_BASE_URL`, `CLAUDE_CODE_OAUTH_TOKEN`, `OPENAI_API_KEY`, `CODEX_HOME`,
+  `CLAUDE_CONFIG_DIR` and similar). Tests may set the last two explicitly. An
+  allowlist caused the bug, and it also hid Homebrew tools from the agents.
+
+**Sign-in.** Opening Chat checks status locally and sends nothing. If the CLI is
+already logged in, there is no sign-in step at all. Otherwise a failed send, or
+the provider row in Settings, shows one button: Claude runs `claude auth login
+--claudeai`, Codex uses `account/login/start`. The browser opens, the app notices
+completion, and a message that certainly never left (`authRequired`, zero cost) is
+sent automatically. `auth status` is treated as a hint; a real send decides.
+
+**Data.** Aitvaras keeps D30's single transcript per chat: additive tables for a
+chat's per-provider native session and normalized entries. Old tables are kept,
+and old chats stay readable. Switching provider and pressing Send carries the
+catch-up block from D30. Interrupted turns are marked as such, and the next Send
+resumes the native session. Only a message that certainly wasn't delivered is ever
+resent automatically.
+
+**Projects.** A project is a set of folders with instructions and a default
+permission mode. A folder also used in Claude Code or Codex is the same project
+automatically, with no link step. Native sessions for that folder appear in the
+project's chat list and can be continued directly with `--resume` or
+`thread/resume`. claude.ai chats have no supported interface and stay out.
+
+**Permissions and hard rules.** Modes: Ask, Accept edits, Plan, Auto, mapped per
+provider. Full access isn't offered in this version. Every request reaching the
+user becomes an inline card, a `Suggestion` and activity-log entries with
+provenance (`read`, `reversibleWrite`, `confirmable`). Keeps D20, the Keychain
+rule and no API-key fallback.
+
+**Local models.** Gate at M4: `codex --oss --local-provider ollama` would give
+local models the same tools, approvals and event stream. If the installed local
+model can't do tools acceptably there, wrap the existing `AgentLoop` as
+`LocalBackend` with whatever actions it supports, and show unsupported ones as
+unavailable.
+
+## 4. UI rules (acceptance criteria)
+
+From the maintainer's feedback; a violation fails review.
+
+- Layout as in the Codex and Claude Code apps: sidebar with projects and chats
+  (status dot per chat), transcript in the centre, changes panel on the right that
+  appears only when there are changes.
+- Composer holds everything per-chat: provider switcher (Claude, Codex, Local),
+  model, effort, permission mode, gauges for context and usage.
+- Status is gauges and icons, not sentences. No walls of text.
+- At most one popover level. No sheet on top of a sheet.
+- No start or connect buttons. No "check setup". No consent checkboxes. Nothing
+  like "conversation" as a concept separate from chat. No link, boundary-review or
+  account-mode screens.
+- Provider settings: one row each in Settings with status, gauge and sign-in.
+- Errors appear once, inline, with the single action that fixes them.
+- Native Liquid Glass, Apple HIG, light and dark, usable at minimum window size,
+  full keyboard support, no layout jumps during streaming.
+
+## 5. Same actions as the native apps
+
+Streaming with thinking; tool runs with expandable input and output; file edits
+with diffs; inline approvals; plan mode with an approve card; questions from the
+agent; Stop; follow-ups while running; slash commands from the CLI's own list;
+`@` file mentions; image and file attachments; native skills, MCP and project
+instructions; git worktree per chat; changes panel with commit and discard;
+several chats running in parallel and in the background; resume after restart;
+context and quota gauges; rename and archive.
+
+## 6. Testing
+
+Each layer catches what the one below can't.
+
+| Layer | What runs | Where | When |
+|---|---|---|---|
+| **Unit and contract** | Parsers and state machines against **recordings of real CLI output** plus garbage input. | Codex sandbox, CI | Every task |
+| **Fake-CLI process tests** | The real process code against scripted executables: crash, hang, huge output, quota, revoked login, partial lines. | Codex sandbox, CI | Every task |
+| **Backend conformance** | One scenario suite, parameterized over every backend: send, stream, tool approve and deny, stop, resume, two turns, failure typing. Fake in CI; real with `make live`. | Fake everywhere; live on host | Live at every gate and after CLI updates |
+| **Environment regression** | Live conformance launched from a launchd-style environment, plus a test that `USER` survives and denied variables don't. | Host | Every gate |
+| **Sign-in** | With temporary `CLAUDE_CONFIG_DIR` and `CODEX_HOME`: signed-out detection, login start yields a valid browser URL, cancel. Real browser completion once, by the maintainer. | Host | M2, M6 |
+| **Real-app E2E** | New XCUITest target: launches the real app with an isolated profile, real clicks and typing, **real window screenshots**. Fake CLIs for determinism, real ones for the golden path. | Host | Every UI task |
+| **Visual review** | Supervisor reads real screenshots against section 4 for a state matrix: empty, long, streaming, approval, error, signed out, light, dark, minimum size. | Supervisor | Every UI gate |
+| **Golden path** | The acceptance script in section 8. | Host | M2 onward; before delivery |
+| **Migration** | Open a copy of the real DB with the new build, check old chats. The copy never leaves the machine or enters git. | Host | M5, M6 |
+
+Live runs use the cheapest model of each provider in a temporary folder, with
+session persistence off where possible. The fake and real CLI share one process
+path, and the fake is selected only by an explicit test variable.
+
+Codex has no network, home folder or Keychain in its sandbox. So it builds against
+fakes and recordings, and the supervisor runs the live, app and E2E layers on the
+host and feeds failures back. The supervisor's gate is the source of truth, not
+the worker's report.
+
+## 7. Milestones
+
+Each ends in a gate the supervisor runs. Work isn't presented until its gate passes.
+
+| | Delivers | Gate |
+|---|---|---|
+| **M0** | Plan review by Codex. Seed port from `claude-workspace`. `AitvarasAgents` target. XCUITest target proven with a real-window screenshot. `make live`, `make e2e`, harness support. | E2E test clicks through the current app and yields a true screenshot. |
+| **M1** | `ProviderEnvironment`, Claude and Codex backends, conformance suite, recordings, CLI schema check. No UI. | Live conformance passes for both from a launchd-style environment. |
+| **M2** | New Chat screen, vertical slice: sidebar, transcript, composer, provider switch, inline sign-in, gauges. | Golden path steps 1–5 on real CLIs; visual review. **Maintainer's one checkpoint: try it before the rest is built on it.** |
+| **M3** | All of section 5. | E2E for each action, both providers. |
+| **M4** | Local gate decided, `LocalBackend`. | Conformance plus golden path on a local model, within the memory budget. |
+| **M5** | Native sessions in project lists, continue both ways, provider-switch catch-up, transcript migration. | Chat started here continues in the native CLI and back; DB-copy migration. |
+| **M6** | Remove old adapters, Node helpers, link and consent views, SDK download, old models. Update D14, D30, new D31, `TESTING.md`, `ARCHITECTURE.md`; mark the old integration docs as superseded. | Full golden path, full test suite, one PR. |
+
+Out of scope, kept possible by the design: shared project knowledge service, capture
+discussion, usage ledger, supervisor continuation inside the app, phone dashboard.
+
+## 8. Golden path
+
+Disposable project, isolated app profile, real CLIs.
+
+1. Launch the app; Chat opens with no setup step or dialog.
+2. Create a project on a temp git repo; new chat; send on Claude; reply streams.
+3. Switch to Codex with one click; send; it knows the earlier conversation.
+4. Switch to Local; send; reply.
+5. With a signed-out temp profile: Send shows one sign-in button; the browser URL
+   is correct; after sign-in the message goes out by itself.
+6. Ask for a file edit in Ask mode: card appears; deny is respected; approve works;
+   diff appears in the changes panel.
+7. Ask for a shell command: card, approve, output in the transcript.
+8. Plan mode: plan card, approve, it executes.
+9. Stop mid-stream: stops within 2 s; the next message continues.
+10. Two chats running at once; switching between them loses nothing.
+11. Quit during a turn; relaunch; chat is marked interrupted; next Send resumes the
+    same native session.
+12. Open that chat in the native CLI; it is there and continues; back in Aitvaras
+    the new messages appear.
+13. Activity log shows the chain with provenance. No API key was used.
+
+## 9. Running Codex
+
+The harness in `.claude/skills/supervise` on branch `codex/unified-chat`: small
+tasks, supervisor reviews each diff and commits; `run` exits 75 at a usage limit,
+`wait-limit` waits for the reset, then the same session continues. Credits are
+never bought. If a task fails review three times, the supervisor changes the
+approach or does it directly. One PR at the end; the maintainer merges. The
+installed app isn't replaced without asking, and never during a recording.
+
+## 10. Risks
+
+| Risk | Mitigation |
+|---|---|
+| CLI protocols change (`app-server` is labelled experimental; the control protocol is the SDK's). | Unknown events kept and ignored; recordings and schema check flag drift; `make live` after CLI updates. Failures appear as typed errors. |
+| Anthropic's docs bar third-party developers from offering claude.ai login or limits in their products without approval. | Aitvaras holds no login: it runs the official CLI for its owner. Treat this as personal use, and revisit before distributing builds. No "Claude Code" branding in the UI. |
+| Parallel use of one session in two clients. | Separate chats are fine. Aitvaras only holds a session during a turn and re-reads after; it doesn't claim a lock. |
+| XCUITest needs a one-time macOS permission. | Supervisor asks once, at M0. |
+| A local model may be too weak for agent work. | Gate at M4 with a defined fallback. |
+| Usage limits stretch the calendar time. | Automatic waits. Time is hard to predict until M1 shows the burn rate. |
+
+## 11. Results of the plan review and CLI checks (2026-11-04)
+
+Codex reviewed this plan against the code; the supervisor then checked the open
+questions against the real CLIs. These override earlier sections where they differ.
+
+**Verified on real CLIs** (recordings in `Tests/AitvarasCoreTests/Fixtures/agents/`):
+
+- **Claude, hard rule on side effects:** `initialize` can register `PreToolUse` and
+  `PostToolUse` hook callbacks. They fire before every tool, also when `can_use_tool`
+  doesn't fire because of Accept edits or the user's allow rules. So
+  `AgentActionCoordinator` sees, can deny and logs each action before it runs.
+- **Claude, other:** `initialize` returns models, slash commands and account;
+  `rate_limit_event` carries 5-hour and 7-day utilization for the gauges. Plan
+  approval and questions arrive through `can_use_tool`. Interrupt ends the turn at
+  once with `error_during_execution`. Signed out gives `assistant.error:
+  authentication_failed` plus `result` with `subtype: success, is_error: true`.
+- **Codex, hard rule on side effects:** the sandbox enforces limits and approvals
+  come as server requests. `untrusted` asks for commands; `on-request` with
+  `workspace-write` writes inside the workspace without asking (the policy's
+  `reversibleWrite`); `read-only` wrote nothing. Item events feed the log.
+- **Codex, other:** full `thread/*` API including list, read, resume, fork, name,
+  archive, `turn/steer`, `fuzzyFileSearch`, `skills/list`, `account/rateLimits/read`.
+  `account/login/start` returns a browser URL and works with a temporary `CODEX_HOME`.
+
+**Plan changes from the review:**
+
+1. `AgentActionCoordinator` (new) is the single place for policy and audit before a
+   provider action runs. A `Suggestion` alone can't answer a CLI, so it holds a scoped
+   reply handler, expires on exit, and rejects duplicates.
+2. Persistence comes before the UI: new tables, because existing owned-session tables
+   and triggers require tool-free context and immutable settings.
+3. A durable turn journal with explicit delivery states. Automatic resend needs proof
+   of non-delivery recorded in that journal, not zero cost.
+4. `AgentSessionManager` owns chats per chat. Today's one-active-turn models and the
+   global selection lock can't support parallel chats.
+5. Seed code isn't copied blindly: the process layer has a timeout deadlock and
+   unbounded buffers, the parser keeps only the first content block, unknown control
+   requests get a false success, the git layer force-removes.
+6. M2's gate needed M4 and M5 parts, so minimal catch-up and today's Local path move
+   into M2. Note today's Local mode is text-only in project chats.
+7. Environment-only checks can't exclude configured credential helpers or endpoints.
+   Check `apiKeySource: none` and first-party status at session start and refuse
+   otherwise. Same for Codex's account type.
+8. Provider-run guards: `AITVARAS_UI_TEST_MODE` and the disabled-integrations flag
+   block all clients today. Add a separate, explicit test configuration that allows
+   providers and keeps personal connectors off.
+9. Native identity includes host and profile, not just folder; worktrees map to their
+   chat through durable ownership records. Conflicts are shown, not merged silently.
+10. Keep working: companion, voice, shortcuts, capture targets, memory-archiver project
+    isolation, Activity Stop, quit coordination, the four `CloudAgentService` features
+    and saved native evidence. Replace history readers before deleting the SDK.
+
+**Task list:** the review's M1.1 to M6.4 table, stored at
+`.build/agent-recordings/tasks.md` next to the worktree build output.
+

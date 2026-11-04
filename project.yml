@@ -49,10 +49,14 @@ targets:
           - AitvarasConnectors
           - AitvarasVoice
           - AitvarasAgent
+          - AitvarasAgents
       - package: GLTFKit2
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: app.aitvaras.Aitvaras
+        # `make e2e` overrides this: XCUITest terminates running apps with the
+        # same bundle id, and the installed app may be recording.
+        AITVARAS_BUNDLE_ID: app.aitvaras.Aitvaras
+        PRODUCT_BUNDLE_IDENTIFIER: $(AITVARAS_BUNDLE_ID)
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         PRODUCT_NAME: Aitvaras
         MARKETING_VERSION: 0.1.0
@@ -84,3 +88,30 @@ targets:
         NSRemindersFullAccessUsageDescription: Aitvaras reads and creates reminders/todos for you.
         NSAppleEventsUsageDescription: Aitvaras reads new mail from Apple Mail, holds unknown senders for review, and can summarize approved senders or suggest confirmation-gated actions. Mail stays unread and no mail is ever sent automatically.
         NSAudioCaptureUsageDescription: During a capture session Aitvaras transcribes system audio on-device. Audio is discarded unless you explicitly choose to retain source audio locally.
+
+  AitvarasUITests:
+    type: bundle.ui-testing
+    platform: macOS
+    sources:
+      - UITests
+    dependencies:
+      - target: Aitvaras
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: app.aitvaras.AitvarasUITests
+        SWIFT_VERSION: "6.0"
+        CODE_SIGN_IDENTITY: "-"
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_TARGET_NAME: Aitvaras
+
+schemes:
+  Aitvaras:
+    build:
+      targets:
+        Aitvaras: all
+    run:
+      config: Debug
+    test:
+      config: Debug
+      targets:
+        - AitvarasUITests
