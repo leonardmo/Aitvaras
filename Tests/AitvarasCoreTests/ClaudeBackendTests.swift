@@ -3,6 +3,34 @@ import Testing
 @testable import AitvarasAgents
 
 struct ClaudeBackendTests {
+    @Test(arguments: ["aborted_streaming", "error_during_execution"])
+    func interruptResultOverridesAssistantError(marker: String) async throws {
+        let result = marker == "aborted_streaming"
+            ? "{'type':'result','is_error':True,'terminal_reason':'aborted_streaming'}"
+            : "{'type':'result','is_error':True,'subtype':'error_during_execution'}"
+        let fixture = try BackendExecutableFixture(script: """
+claude_init()
+read()
+emit({'type':'stream_event','event':{'type':'content_block_delta','delta':{'text':'working'}}})
+request=read()
+assert request['request']['subtype']=='interrupt'
+emit({'type':'assistant','error':'execution_error','message':{'role':'assistant','content':[]}})
+emit(\(result))
+# The result races ahead of the interrupt acknowledgement.
+open('done','w').close()
+emit({'type':'control_response','response':{'subtype':'success','request_id':request['request_id'],'response':{}}})
+done()
+""")
+        defer { fixture.remove() }
+        let backend = ClaudeBackend(executable: fixture.executable, environment: fixture.environment)
+        let run = try await backend.start(.init(directory: fixture.directory, model: "test"))
+        try await run.send(.init(text: "test"), willDeliver: {})
+        let events = try await collectTurn(run, interrupt: true)
+        #expect(events.last?.kind == .turnEnded(.interrupted))
+        try fixture.assertComplete()
+        try await run.shutdown()
+    }
+
     @Test(arguments: ["accept-edits", "ask-mode", "plan-mode", "question", "interrupt", "auth-failed"])
     func recordings(name: String) async throws {
         let fixture = try BackendExecutableFixture(provider: "claude", name: name)

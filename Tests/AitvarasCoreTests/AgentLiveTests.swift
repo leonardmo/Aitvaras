@@ -1,6 +1,12 @@
 import Foundation
 import Testing
+import AitvarasCore
 @testable import AitvarasAgents
+
+private actor LiveAuditLog {
+    private(set) var count = 0
+    func add(_ event: ActivityEvent) { count += 1 }
+}
 
 /// Real CLIs on the real login, cheapest models, a throwaway folder. Run with
 /// `make live`, which starts this from a launchd-style environment on purpose:
@@ -124,6 +130,31 @@ struct AgentLiveTests {
         try await run.send(AgentInput(text: "Write a 400 word story about a dragon."), willDeliver: {})
         let events = try await collectTurn(run, interrupt: true)
         #expect(events.last?.kind == .turnEnded(.interrupted))
+        try await run.shutdown()
+    }
+
+    /// The whole gate on a real CLI: Ask shows exactly one card and the audit has entries.
+    @Test(arguments: providers) func coordinatorAsksOnceAndAudits(provider: AgentProvider) async throws {
+        let directory = try folder()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let backend = try await backend(provider)
+        let native = try await backend.start(.init(directory: directory, model: model(provider), mode: .ask))
+        let log = LiveAuditLog()
+        let run = AgentActionCoordinator(run: native, mode: .ask, provenance: .init(chatID: UUID()),
+                                         audit: { await log.add($0) })
+        try await run.send(AgentInput(text: "Run this exact shell command and nothing else: touch made-by-shell.txt"), willDeliver: {})
+        var cards = 0
+        for try await event in run.events {
+            // Hook requests are answered by the coordinator; only pending ones are cards.
+            if case .request(let request) = event.kind, await run.pendingRequests().contains(request) {
+                cards += 1
+                try await run.respond(to: request, with: .allow(updatedInput: nil))
+            }
+            if case .turnEnded = event.kind { break }
+        }
+        #expect(cards == 1)
+        #expect(await log.count > 0)
+        #expect(FileManager.default.fileExists(atPath: directory.appendingPathComponent("made-by-shell.txt").path))
         try await run.shutdown()
     }
 

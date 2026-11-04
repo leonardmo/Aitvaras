@@ -123,8 +123,12 @@ actor ClaudeRun: AgentRun {
                 outputTokens: usage["output_tokens"]?.int, cachedInputTokens: usage["cache_read_input_tokens"]?.int,
                 cacheWriteInputTokens: usage["cache_creation_input_tokens"]?.int,
                 thinkingTokens: usage["output_tokens_details"]?["thinking_tokens"]?.int, costUSD: value["total_cost_usd"]?.doubleValue)))
-            let outcome: AgentTurnOutcome = assistantFailure.map { .failed($0) } ?? (interrupted ? .interrupted
-                : value["is_error"]?.boolValue == false ? .completed : .failed(.unknown))
+            // Interrupt results can also contain an assistant execution error.
+            // That error must not turn a user Stop into an unknown failure.
+            let aborted = value["terminal_reason"]?.stringValue == "aborted_streaming"
+            let outcome: AgentTurnOutcome = (interrupted || aborted)
+                ? .interrupted : assistantFailure.map { .failed($0) }
+                    ?? (value["is_error"]?.boolValue == false ? .completed : .failed(.unknown))
             emit(.turnEnded(outcome)); input = nil; requests.removeAll()
         default: emit(.unknown(name: value["type"]?.stringValue ?? "unknown", payload: value))
         }

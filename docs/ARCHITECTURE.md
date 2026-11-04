@@ -48,6 +48,27 @@ Package.swift              — AitvarasKit: everything testable without the app
 
 - **AgentCore** runs the tool-use loop: user/voice/event input → context assembly (RAG retrieve + memories + activity) → model streams → typed tool calls into ConnectorHub → results back into the loop. Model choice per step: 4B/AppleFM for routing & triage, 30B for reasoning & conversation.
 - **Connectors** expose *typed* tools with declared risk levels (`read` / `reversibleWrite` / `confirmable`). AgentCore enforces D13 autonomy rules centrally; a connector can never bypass confirmation.
+- **Direct chat actions** use `AitvarasAgents.AgentActionCoordinator`, an
+  `AgentRun` wrapper around each raw CLI run. The session owner must expose
+  the wrapper and supply the same initial mode plus a durable activity sink
+  (for example `Stores.record`). It reuses `AutonomyPolicy` and `ActivityEvent`
+  without a store dependency. Claude pre-tool hooks deny forbidden actions,
+  otherwise audit and continue without an approval card. Native permission
+  modes decide when to ask, including allowing internal bookkeeping and the
+  native plan-file write. Tool permission requests need a card unless the
+  user explicitly whitelisted `provider.<native tool name>` in the supplied
+  autonomy policy; forbidden actions cannot be whitelisted. Permission grants
+  also need a card in Plan mode. Risk remains audit metadata, not a second
+  permission decision. Codex's sandbox governs operations without requests,
+  whose item events are logged as observations. Pending requests retain
+  the full run/input scope and expire on interrupt, turn end, exit or shutdown.
+  Audit failure denies the request; audit failure on a Codex observation stops
+  the run without claiming that an observed side effect was prevented.
+  Service mail writes and unverified Calendar/Reminders mutations are denied,
+  as are recognizable mail-sending shell commands. Tool-name classification
+  does not establish arbitrary shell semantics.
+  Activity stores scope, decisions, risk and safe tool identifiers, with hashes
+  for native identifiers and custom tool names; it omits raw inputs and outputs.
 - **CloudAgentService** is the single provider-neutral boundary for optional
   Claude Code and Codex CLI use. Authentication is checked before each call;
   prompts travel over stdin in a sanitized environment and always begin with
