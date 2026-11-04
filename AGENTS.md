@@ -31,7 +31,7 @@ Use `make` targets so every agent runs the same thing:
 | Command | What it does |
 |---|---|
 | `make setup` | Once per clone: installs the git hooks (pre-commit, commit-msg, pre-push) for all worktrees and the private denylist template. |
-| `make test` | `swift test` on the AitvarasKit package. Works without Xcode. |
+| `make test` | `swift test --no-parallel` on the AitvarasKit package, as in CI. Works without Xcode. |
 | `make node-test` | Offline contract tests for the Node sidecar helpers. |
 | `make app` | `xcodegen generate` plus a Debug app build into `.build-xcode`. |
 | `make privacy` | Privacy and secret sweep over tracked files, including the private denylist. |
@@ -180,6 +180,16 @@ Parallel branches tend to collide in a few places. Rules for each:
 - Docs that describe the changed behavior are updated in the same PR,
   including `DECISIONS.md` when a decision changed.
 - The PR description states what was verified and what wasn't.
+
+### Supervised Codex runs
+
+A Claude Code session can supervise Codex CLI as its worker with the `supervise`
+skill (`.claude/skills/supervise/SKILL.md`) and `scripts/codex-task.sh`. Codex
+runs in a sandbox with no network, no access to the home folder, and read-only
+access to the guards (`.git`, `.githooks`, `.github`, `.claude`, the check and
+harness scripts). It leaves its work uncommitted, and the supervisor reviews,
+verifies and commits it through the hooks. Inside the sandbox, build and test
+with `scripts/codex-swift.sh`, because plain `swift` fails there.
 
 ## Boundaries
 
