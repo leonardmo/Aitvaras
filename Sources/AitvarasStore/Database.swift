@@ -875,6 +875,57 @@ public final class AitvarasDatabase: Sendable {
                 BEGIN SELECT RAISE(ABORT, 'Claude history observations are immutable'); END;
                 """)
         }
+        m.registerMigration("v28-agent-chat-journal") { db in
+            try db.create(table: "agentChatSession") { t in
+                t.primaryKey("id", .text)
+                t.column("chatID", .text).notNull().references("workspaceChat", onDelete: .restrict)
+                t.column("provider", .text).notNull()
+                t.column("host", .text)
+                t.column("profile", .text)
+                t.column("nativeID", .text)
+                t.column("cwd", .text).notNull()
+                t.column("model", .text).notNull()
+                t.column("effort", .text)
+                t.column("mode", .text).notNull()
+                t.uniqueKey(["chatID", "provider"])
+                t.uniqueKey(["provider", "host", "profile", "nativeID"])
+                t.uniqueKey(["id", "chatID", "provider"])
+                t.check(sql: "(host IS NULL AND profile IS NULL AND nativeID IS NULL) OR (host IS NOT NULL AND profile IS NOT NULL AND nativeID IS NOT NULL)")
+            }
+            try db.create(table: "agentTranscriptEntry") { t in
+                t.primaryKey("id", .text)
+                t.column("chatID", .text).notNull().references("workspaceChat", onDelete: .restrict)
+                t.column("provider", .text).notNull()
+                t.column("kind", .text).notNull()
+                t.column("text", .text).notNull()
+                t.column("payloadJSON", .text)
+                t.column("sessionID", .text)
+                t.column("nativeMessageID", .text)
+                t.column("position", .integer).notNull().check { $0 >= 0 }
+                t.uniqueKey(["chatID", "position"])
+                t.uniqueKey(["sessionID", "nativeMessageID"])
+                t.foreignKey(["sessionID", "chatID", "provider"], references: "agentChatSession", columns: ["id", "chatID", "provider"], onDelete: .restrict)
+                t.check(sql: "nativeMessageID IS NULL OR sessionID IS NOT NULL")
+            }
+            try db.create(table: "agentTurn") { t in
+                t.primaryKey("id", .text)
+                t.column("chatID", .text).notNull().references("workspaceChat", onDelete: .restrict)
+                t.column("sessionID", .text).notNull().references("agentChatSession", onDelete: .restrict)
+                t.column("prompt", .text).notNull()
+                t.column("delivery", .text).notNull().check { ["prepared", "deliveryUnknown", "acknowledged"].contains($0) }
+                t.column("state", .text).notNull().check { ["running", "completed", "interrupted", "failed"].contains($0) }
+                t.column("resendCount", .integer).notNull().check { (0...1).contains($0) }
+                t.column("partialOutput", .text).notNull()
+                t.column("startedAt", .datetime).notNull()
+                t.column("endedAt", .datetime)
+            }
+            try db.execute(sql: """
+                CREATE UNIQUE INDEX agentRunningTurn ON agentTurn(chatID) WHERE state = 'running';
+                CREATE TRIGGER agentTurnChat BEFORE INSERT ON agentTurn
+                WHEN NOT EXISTS (SELECT 1 FROM agentChatSession WHERE id = NEW.sessionID AND chatID = NEW.chatID)
+                BEGIN SELECT RAISE(ABORT, 'Turn must belong to its chat session'); END;
+                """)
+        }
         return m
     }
 }

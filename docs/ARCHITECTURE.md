@@ -69,6 +69,27 @@ Package.swift              — AitvarasKit: everything testable without the app
   does not establish arbitrary shell semantics.
   Activity stores scope, decisions, risk and safe tool identifiers, with hashes
   for native identifiers and custom tool names; it omits raw inputs and outputs.
+- **Direct chat lifetime and storage**: `AgentSessionManager` is an application
+  lifetime actor with independent per-chat runs, each wrapped by
+  `AgentActionCoordinator`. Sends start/resume lazily; views subscribe to bounded
+  per-chat `AsyncStream<ChatState>` snapshots and can detach without stopping work.
+  Starting and live processes share a three-chat limit. Idle runs close after ten
+  minutes; Stop is scoped to one chat. Shutdown detaches generations before bounded
+  cleanup and permits a new Send if application quit is cancelled.
+  `ChatState` reduces normalized events into transcript, streaming text, thinking,
+  tools, usage, rate limits and outcome. Cards come exclusively from the
+  coordinator's pending set, since automatically answered hooks also appear in
+  the event stream.
+  `AgentChatStore` and `AgentTurnStore` add normalized provider sessions, ordered
+  entries and a separate durable journal. The store implements the injected
+  `AgentSessionPersistence` interface; backend values remain independent of GRDB.
+  The journal is prepared before startup and commits `deliveryUnknown` at the
+  `willDeliver` barrier before input leaves. Provider acknowledgement advances it
+  separately. Startup marks running turns interrupted, retaining partial output
+  and sending nothing. An explicit retry can claim only prepared input, once.
+  Existing workspace project/chat/conversation identities and legacy execution
+  tables, triggers and readers remain intact. This manager is not yet wired into
+  the app; catch-up and Local integration follow separately.
 - **CloudAgentService** is the single provider-neutral boundary for optional
   Claude Code and Codex CLI use. Authentication is checked before each call;
   prompts travel over stdin in a sanitized environment and always begin with

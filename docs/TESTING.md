@@ -27,6 +27,22 @@ as the audit sink. Claude interruption tests put an assistant execution error
 and terminal result before the interrupt acknowledgement to reproduce Stop
 races. The supervisor runs live-provider and host-only checks separately.
 
+`AgentChatStoreTests` and `AgentTurnStoreTests` exercise fresh and upgraded
+schemas, UUID foreign keys, duplicate native identities, cross-chat rejection,
+legacy identity preservation, monotonic delivery, partial output and recovery
+without replay. `AgentSessionManagerTests` use both generated provider executables
+and controllable runs: two same-provider chats, view detachment, scoped Stop,
+capacity, idle resume, failures before/after the durable barrier, duplicate input,
+stale input/generation callbacks, startup interruption and bounded shutdown with
+subsequent sends. Reducer checks include stable canonical message IDs, tools,
+thinking, hook observations, usage, rate limits and outcomes. Snapshot streams
+coalesce updates; provider event streams remain lossless.
+
+Host acceptance for this foundation still needs a private database copy upgrade,
+a real force-quit during delivery, parallel real chats, idle resume, and application
+quit cancellation once the manager is wired into the UI. The package tests do not
+establish those UI or live-provider properties.
+
 Live acceptance still needs the official CLIs and an isolated synthetic project
 to verify subscription authentication, browser completion, native persistence,
 hook coverage and sandbox enforcement. Offline replay cannot establish those.

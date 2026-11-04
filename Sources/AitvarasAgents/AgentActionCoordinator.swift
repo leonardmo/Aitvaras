@@ -117,6 +117,9 @@ public actor AgentActionCoordinator: AgentRun {
 
     private func receive(_ event: AgentEvent) async {
         guard !closed, event.scope.runID == id else { return }
+        // Late callbacks from an earlier input on this same connection must not
+        // clear or authorize the current turn.
+        if let input = event.scope.inputID, input != inputID { return }
         do {
             switch event.kind {
             case .request(let request):
