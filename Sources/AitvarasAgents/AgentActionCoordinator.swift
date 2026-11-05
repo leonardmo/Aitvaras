@@ -76,7 +76,7 @@ public actor AgentActionCoordinator: AgentRun {
         case (.permission, .allow(updatedInput: nil)), (.permissions, .allow(updatedInput: nil)),
              (.plan, .allow(updatedInput: nil)): answer = response
         case (.questions(let questions), .answers(let answers)):
-            guard Set(questions.map(\.id)) == Set(answers.keys) else { throw AgentFailure.invalidRequest }
+            try AgentQuestionState.validate(answers, questions: questions)
             answer = response
         case (_, .deny):
             // Neither CLI has a question-denial payload. Unsupported closes it.
@@ -106,6 +106,13 @@ public actor AgentActionCoordinator: AgentRun {
     public func interrupt() async throws {
         guard !closed, inputID != nil else { throw AgentFailure.invalidTransition }
         interrupting = true
+        if pending.values.contains(where: { if case .plan = $0.kind { true } else { false } }) {
+            // A Codex plan review is between native turns. Denying it first
+            // would finish the local turn before Stop could interrupt it.
+            try await run.interrupt()
+            await denyPending()
+            return
+        }
         await denyPending()
         try await run.interrupt()
     }
@@ -130,6 +137,7 @@ public actor AgentActionCoordinator: AgentRun {
         if let input = event.scope.inputID, input != inputID { return }
         do {
             switch event.kind {
+            case .modeChanged(let mode): self.mode = mode
             case .request(let request):
                 guard request.scope == event.scope else { throw AgentFailure.invalidRequest }
                 try await handle(request)

@@ -192,6 +192,10 @@ public actor AgentSessionManager {
         if let input = event.scope.inputID, input != slot.inputID { return }
         do {
             switch event.kind {
+            case .modeChanged(let mode):
+                var session = slot.session; session.mode = mode
+                try persistence.saveAgentSession(session)
+                live[chatID]?.session = session
             case .sessionStarted(let native):
                 guard native.provider == slot.session.provider else { throw AgentFailure.invalidRequest }
                 var session = slot.session; session.sessionID = native

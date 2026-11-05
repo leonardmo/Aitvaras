@@ -171,15 +171,25 @@ extension JSONValue {
     var date: Date? { doubleValue.map { Date(timeIntervalSince1970: $0) } }
 }
 
-func agentQuestions(_ value: JSONValue, claude: Bool) -> [AgentQuestion] {
-    (value.arrayValue ?? []).compactMap { question in
+func agentQuestions(_ value: JSONValue, claude: Bool) throws -> [AgentQuestion] {
+    guard let values = value.arrayValue else { throw AgentFailure.invalidRequest }
+    let questions = try values.map { question in
         guard let prompt = question["question"]?.stringValue,
-              let id = claude ? prompt : question["id"]?.stringValue else { return nil }
-        return AgentQuestion(id: id, prompt: prompt, options: (question["options"]?.arrayValue ?? []).map {
-            AgentQuestion.Option(label: $0["label"]?.stringValue ?? "", description: $0["description"]?.stringValue ?? "")
-        }, allowsMultiple: question["multiSelect"]?.boolValue ?? false,
-           isSecret: question["isSecret"]?.boolValue ?? false)
+              let id = claude ? prompt : question["id"]?.stringValue else { throw AgentFailure.invalidRequest }
+        if let options = question["options"], options != .null, options.arrayValue == nil { throw AgentFailure.invalidRequest }
+        let options = try (question["options"]?.arrayValue ?? []).map { option in
+            guard let label = option["label"]?.stringValue, let description = option["description"]?.stringValue else {
+                throw AgentFailure.invalidRequest
+            }
+            return AgentQuestion.Option(label: label, description: description)
+        }
+        return AgentQuestion(id: id, prompt: prompt, options: options,
+            allowsMultiple: claude && question["multiSelect"]?.boolValue == true,
+            allowsFreeText: claude || options.isEmpty || question["isOther"]?.boolValue == true,
+            isSecret: question["isSecret"]?.boolValue ?? false)
     }
+    try AgentQuestionState.validateQuestions(questions)
+    return questions
 }
 
 let subscriptionCapabilities: Set<AgentCapability> = [.thinking, .tools, .approvals, .plans, .questions, .followups]

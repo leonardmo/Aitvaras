@@ -660,6 +660,36 @@ Navigate to another running chat while answering; verify only the originating
 request changes. Check Activity provenance and expiry on provider exit/restart.
 App compilation, real CLI behavior and these visual checks require the host.
 
+Plan and question cards (M3.3/M3.4) use the same scoped coordinator. Plans
+render Markdown with Approve and Keep planning. Claude's recorded
+`PostToolUse` for the approved `ExitPlanMode` reports `permission_mode: default`;
+only that acknowledgement changes the saved mode to Ask. Codex's completed
+native `plan` item creates a review card after its read-only turn; approval
+starts an implementation turn with Ask permissions, and `turn/start` must
+acknowledge it before the saved mode changes. Informational `turn/plan/updated`
+and ordinary assistant replies never authorize execution. The available Codex
+schema has no collaboration-mode field on `turn/start`; host verification must
+check that the installed CLI actually produces a native plan item in this path.
+Keep planning preserves Plan mode; Stop interrupts a pending review.
+
+Question cards show option buttons and a request-local draft. Every question
+requires an answer before Submit. Claude supports multiple selections and free
+text; Codex allows free text for `isOther` or a question without options, and
+preserves `isBlocking`. Secret free text uses a secure field. Replies are
+validated again at the coordinator and backend; malformed questions, unknown
+IDs, empty required answers, stale cards and duplicate replies are rejected.
+Cancel closes the native request with an unsupported response because neither
+protocol defines a question-denial payload.
+
+`AgentPlanTests` covers the recorded Claude acknowledgement and both fake
+executables for approve/reject, failed transitions, Stop and stale plans.
+`AgentQuestionTests` covers draft validation, schema flags, multiple questions,
+both reply formats, cancellation and late answers. On the host, build the app
+and check both cards with real providers: keyboard selection/Submit/Cancel,
+free text and multiple selections, minimum size, light/dark, chat switching,
+and a failed approval. Confirm no execution before approval and one continuation
+afterwards, with the composer mode and saved settings following acknowledgement.
+
 ## What an agent session should do
 
 For Claude Code (or any agent) working on this repo: Layers 1–2 after every

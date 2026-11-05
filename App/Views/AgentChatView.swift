@@ -7,7 +7,6 @@ struct AgentChatView: View {
     let chatID: UUID
     var canSend = true
     var workspaceError: String? = nil
-    @State private var answers: [String: String] = [:]
 
     @State private var atBottom = true
     @State private var bottomVisible = true
@@ -19,7 +18,7 @@ struct AgentChatView: View {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 18) {
                         ForEach(chat.state?.entries ?? []) { entry in
-                            AgentTranscriptView(entry: entry).id(entry.id)
+                            if !planCardShows(entry) { AgentTranscriptView(entry: entry).id(entry.id) }
                         }
                         ForEach(Array((chat.state?.pendingCards ?? []).enumerated()), id: \.element.identity) { index, request in
                             requestCard(request, index: index)
@@ -74,7 +73,6 @@ struct AgentChatView: View {
         .task(id: chatID) { chat.select(chatID) }
         .task { await chat.refreshStatus() }
         .task(id: "\(chatID).\(chat.provider.rawValue).\(chat.signingIn == nil)") { await chat.loadModels() }
-        .onChange(of: chatID) { answers = [:] }
     }
 
     private var composer: some View {
@@ -164,36 +162,29 @@ struct AgentChatView: View {
     }
 
     @ViewBuilder private func requestCard(_ request: AgentRequest, index: Int) -> some View {
-        if case .questions(let questions) = request.kind {
-            VStack(alignment: .leading, spacing: 8) {
-                ForEach(questions, id: \.id) { question in
-                    Text(question.prompt)
-                    if question.isSecret {
-                        SecureField("Answer", text: answer(question.id))
-                            .accessibilityIdentifier("chat.question.\(index).\(question.id)")
-                    } else {
-                        TextField("Answer", text: answer(question.id))
-                            .accessibilityIdentifier("chat.question.\(index).\(question.id)")
-                    }
-                }
-                Button("Submit") {
-                    let response = Dictionary(uniqueKeysWithValues: questions.map { ($0.id, [answers[$0.id] ?? ""]) })
-                    let owner = chatID
-                    Task { _ = await chat.respond(chatID: owner, to: request, with: .answers(response)) }
-                }.accessibilityIdentifier("chat.request.\(index).submit")
-                Button("Deny") {
-                    let owner = chatID
-                    Task { _ = await chat.respond(chatID: owner, to: request, with: .deny) }
-                }.accessibilityIdentifier("chat.request.\(index).deny")
-            }.padding(12).background(.quaternary, in: RoundedRectangle(cornerRadius: 10))
-        } else {
+        switch request.kind {
+        case .questions:
+            AgentQuestionCard(request: request, index: index) { [owner = chatID] response in
+                await chat.respond(chatID: owner, to: request, with: response)
+            }
+        case .plan:
+            AgentPlanCard(request: request, identifier: "chat.request.\(index)") { [owner = chatID] response in
+                await chat.respond(chatID: owner, to: request, with: response)
+            }
+        default:
             AgentApprovalCard(request: request, identifier: "chat.request.\(index)") { [owner = chatID] response in
                 await chat.respond(chatID: owner, to: request, with: response)
             }
         }
     }
-    private func answer(_ id: String) -> Binding<String> {
-        Binding(get: { answers[id] ?? "" }, set: { answers[id] = $0 })
+    private func planCardShows(_ entry: AgentTranscriptEntry) -> Bool {
+        (chat.state?.pendingCards ?? []).contains { request in
+            if case .plan = request.kind {
+                return entry.nativeMessageID != nil && entry.nativeMessageID == request.scope.itemID
+                    && entry.provider == request.scope.session?.provider
+            }
+            return false
+        }
     }
 
 }
