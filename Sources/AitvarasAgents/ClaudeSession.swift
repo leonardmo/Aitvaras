@@ -8,6 +8,8 @@ actor ClaudeRun: AgentRun {
     private let profile: String
     private var session: AgentSessionID?
     private var input: UUID?
+    private var queue: [UUID] = []
+    private var writing = false
     private var acknowledged = false
     private var interrupted = false
     private var assistantFailure: AgentFailure?
@@ -60,13 +62,31 @@ actor ClaudeRun: AgentRun {
         }
     }
     func send(_ value: AgentInput, willDeliver: @escaping @Sendable () async throws -> Void) async throws {
-        guard !closed, input == nil else { throw AgentFailure.invalidTransition }
+        guard !closed, input == nil, !writing else { throw AgentFailure.invalidTransition }
         input = value.id; acknowledged = false; interrupted = false; assistantFailure = nil; streamedThinking.removeAll(); streamTools.removeAll(); streamTexts.removeAll(); streamingMessageID = nil
         do { try await willDeliver() } catch { input = nil; throw error }
-        guard !closed else { throw AgentFailure.invalidTransition }
+        guard !closed, input == value.id, !interrupted else { throw AgentFailure.invalidTransition }
         emit(.delivery(.deliveryUnknown))
         try await wire.write(.object(["type": .string("user"), "message": .object([
             "role": .string("user"), "content": .string(value.text)])]))
+    }
+    func followup(_ value: AgentInput, willDeliver: @escaping @Sendable () async throws -> Void) async throws {
+        guard !closed, !interrupted, input != nil, !writing,
+              input != value.id, !queue.contains(value.id), queue.count < 32 else { throw AgentFailure.invalidTransition }
+        writing = true
+        defer { writing = false }
+        try await willDeliver()
+        guard !closed, !interrupted, input != nil else { throw AgentFailure.invalidTransition }
+        queue.append(value.id)
+        continuation.yield(.init(scope: .init(runID: id, session: session, inputID: value.id), kind: .delivery(.deliveryUnknown)))
+        try await wire.write(.object(["type": .string("user"), "uuid": .string(value.id.uuidString),
+            "message": .object(["role": .string("user"), "content": .string(value.text)])]))
+    }
+    private func activateNext() {
+        guard !interrupted, !queue.isEmpty else { return }
+        input = queue.removeFirst(); acknowledged = false; assistantFailure = nil
+        streamedThinking.removeAll(); streamTools.removeAll(); streamTexts.removeAll(); streamingMessageID = nil
+        emit(.inputActivated)
     }
     private func acknowledge() {
         if input != nil, !acknowledged { acknowledged = true; emit(.delivery(.acknowledged)) }
@@ -145,6 +165,7 @@ actor ClaudeRun: AgentRun {
                 ? .interrupted : assistantFailure.map { .failed($0) }
                     ?? (value["is_error"]?.boolValue == false ? .completed : .failed(.unknown))
             emit(.turnEnded(outcome)); input = nil; requests.removeAll(); modeState.cancel()
+            activateNext()
         default: emit(.unknown(name: value["type"]?.stringValue ?? "unknown", payload: value))
         }
     }
@@ -190,7 +211,7 @@ actor ClaudeRun: AgentRun {
     func interrupt() async throws {
         guard !closed, input != nil else { throw AgentFailure.invalidTransition }
         interrupted = true; requests.removeAll()
-        _ = try await wire.request("interrupt")
+        _ = try await wire.request("interrupt", timeout: .seconds(1))
     }
     func disconnected(_ error: AgentFailure) async {
         guard !closed else { return }
@@ -198,6 +219,10 @@ actor ClaudeRun: AgentRun {
         if input != nil { emit(.turnEnded(.failed(error))); input = nil }
         continuation.finish(throwing: error)
         Task { try? await wire.close() }
+    }
+    func abort() async {
+        closed = true; input = nil; queue.removeAll(); requests.removeAll(); continuation.finish()
+        try? await wire.close()
     }
     func shutdown() async throws {
         if !closed { closed = true; requests.removeAll(); continuation.finish(); input = nil }

@@ -127,6 +127,8 @@ public struct AgentEvent: Sendable, Equatable {
     public enum Kind: Sendable, Equatable {
         case sessionStarted(AgentSessionID)
         case delivery(AgentDeliveryState)
+        /// A queued Claude input becomes the output/approval owner.
+        case inputActivated
         case textDelta(String)
         case thinkingDelta(String)
         case thinkingCompleted(String)

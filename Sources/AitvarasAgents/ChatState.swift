@@ -50,6 +50,17 @@ public struct ChatState: Sendable, Equatable {
         }
     }
 
+    public mutating func appendFollowup(_ input: AgentInput, session: AgentChatSession) {
+        entries.append(.init(id: input.id, chatID: chatID, provider: session.provider,
+            kind: "user", text: input.text, payloadJSON: JSONValue.object([
+                "followup": .string(session.provider == .claude ? "queued" : "steering")
+            ]).jsonString, sessionID: session.id, position: entries.count))
+    }
+    public mutating func markFollowup(_ id: UUID, status: String) {
+        guard let index = entries.firstIndex(where: { $0.id == id }), entries[index].payloadJSON != nil else { return }
+        entries[index].payloadJSON = JSONValue.object(["followup": .string(status)]).jsonString
+    }
+
     /// Caller supplies IDs, keeping the reducer deterministic and testable.
     public mutating func reduce(_ event: AgentEvent, newEntryID: UUID) {
         switch event.kind {
@@ -111,6 +122,7 @@ public struct ChatState: Sendable, Equatable {
             }
         }
     }
+    mutating func awaitingQueuedInput() { isRunning = true; outcome = nil }
     public mutating func end(_ value: AgentTurnOutcome) {
         outcome = value; isRunning = false; pendingCards = []
     }

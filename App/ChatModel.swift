@@ -22,7 +22,8 @@ final class ChatModel {
     private var loginTask: Task<Void, Never>?
     private var loginToken: UUID?
     private var pendingExpiry: Task<Void, Never>?
-    private var sending: Set<UUID> = []
+    private var sending: [UUID: UUID] = [:]
+    private var stopping: Set<UUID> = []
     private var stoppedSends: Set<UUID> = []
     private var attempts: [UUID: (text: String, provider: AgentProvider, accountID: String?)] = [:]
     private var handledFailures: Set<UUID> = []
@@ -54,7 +55,12 @@ final class ChatModel {
             selection.draft = newValue
         }
     }
-    var isBusy: Bool { state?.isRunning == true || chatID.map { sending.contains($0) } == true }
+    var isBusy: Bool { state?.isRunning == true || chatID.map { sending[$0] != nil } == true }
+    var canSubmit: Bool {
+        guard let id = chatID else { return false }
+        return !stopping.contains(id) && sending[id] == nil && signingIn == nil
+            && (!isBusy || provider != .local)
+    }
     private var settingsKey: String { "\(chatID?.uuidString ?? "").\(provider.rawValue)" }
     var models: [AgentModel] { catalogs[provider] ?? [] }
     var selectedModel: AgentModel? { models.first { $0.id == model } }
@@ -178,20 +184,27 @@ final class ChatModel {
     }
 
     func send() async {
-        guard let id = chatID, !isBusy, signingIn == nil, var session = settings[settingsKey],
+        guard let id = chatID, canSubmit, var session = settings[settingsKey],
               !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         let text = draft, provider = provider, key = settingsKey
+        let followup = state?.isRunning == true
         let input = AgentInput(text: text)
-        invalidatePending(); sending.insert(id); error = nil; authProvider = nil
+        invalidatePending(); sending[id] = input.id; error = nil; authProvider = nil
         attempts[input.id] = (text, provider, statuses[provider]?.accountID)
         if handledFailures.count > 128 { handledFailures.removeAll() }
-        defer { sending.remove(id); stoppedSends.remove(id) }
+        defer { if sending[id] == input.id { sending.removeValue(forKey: id) }; stoppedSends.remove(input.id) }
         do {
             guard let chat = try stores.workspaceChat(id: id), chat.archivedAt == nil,
                   let project = try stores.workspaceProject(id: chat.projectID), project.isVisible else { throw AgentFailure.invalidRequest }
+            if followup {
+                try await manager.send(chatID: id, provider: provider, input: input)
+                attempts.removeValue(forKey: input.id)
+                selection.clearDraft(chatID: id, ifUnchanged: text)
+                return
+            }
             session.instructions = try stores.workspaceContextPacket(chatID: id).promptText
             session.sessionID = try stores.agentSession(chatID: id, provider: provider)?.sessionID
-            guard !stoppedSends.contains(id) else { return }
+            guard !stoppedSends.contains(input.id) else { return }
             if session.cwd == fallbackDirectory(id).path {
                 try FileManager.default.createDirectory(atPath: session.cwd, withIntermediateDirectories: true)
             } else {
@@ -200,12 +213,12 @@ final class ChatModel {
             }
             try await manager.configure(session)
             settings[key] = session
-            guard !stoppedSends.contains(id) else { return }
+            guard !stoppedSends.contains(input.id) else { return }
             // Starting the manager first guarantees auth failures have a journal.
             try await manager.send(chatID: id, provider: provider, input: input)
             if !handledFailures.contains(input.id) { selection.clearDraft(chatID: id, ifUnchanged: text) }
         } catch {
-            if chatID == id, !stoppedSends.contains(id) {
+            if chatID == id, !stoppedSends.contains(input.id) {
                 failed(inputID: input.id, failure: (error as? AgentFailure) ?? .unknown)
             }
         }
@@ -305,8 +318,12 @@ final class ChatModel {
                     // Login has finished. View changes and draft edits must no
                     // longer cancel the manager's now-owned delivery task.
                     self.loginToken = nil; self.loginTask = nil
-                    self.sending.insert(pending.session.chatID)
-                    defer { self.sending.remove(pending.session.chatID) }
+                    self.sending[pending.session.chatID] = pending.inputID
+                    defer {
+                        if self.sending[pending.session.chatID] == pending.inputID {
+                            self.sending.removeValue(forKey: pending.session.chatID)
+                        }
+                    }
                     // Retry shares the original ID; manager atomically claims it once.
                     try await self.manager.resendPrepared(turnID: pending.inputID)
                     if !self.handledFailures.contains(pending.inputID) {
@@ -344,13 +361,16 @@ final class ChatModel {
         catch { self.error = "The waiting message could not be cleared." }
     }
     func stop() async {
-        guard let id = chatID else { return }
-        if sending.contains(id) { stoppedSends.insert(id) }
+        guard let id = chatID, stopping.insert(id).inserted else { return }
+        defer { stopping.remove(id) }
+        let pending = sending[id]
+        if let pending { stoppedSends.insert(pending) }
         do { try await manager.stop(chatID: id) }
         catch { self.error = "The response could not be stopped." }
+        if sending[id] == pending { sending.removeValue(forKey: id) }
     }
     func shutdown() async throws {
-        cancelSignIn(); stoppedSends.formUnion(sending)
+        cancelSignIn(); stoppedSends.formUnion(sending.values)
         modelLoads.values.forEach { $0.task.cancel() }; modelLoads.removeAll()
         try await manager.shutdown()
         if let codex = backends[.codex] as? CodexBackend { try await codex.shutdown() }

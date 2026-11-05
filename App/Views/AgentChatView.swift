@@ -83,7 +83,7 @@ struct AgentChatView: View {
                 .accessibilityIdentifier("chat.composer.input")
                 .onKeyPress(.return, phases: .down) { press in
                     if press.modifiers.contains(.shift) { return .ignored }
-                    if !chat.isBusy && canSend { Task { await chat.send() } }
+                    if chat.canSubmit && canSend { Task { await chat.send() } }
                     return .handled
                 }
             HStack(spacing: 5) {
@@ -138,15 +138,14 @@ struct AgentChatView: View {
                 if let value = chat.providerLimits[chat.provider]?.compactMap(\.utilization).filter(\.isFinite).max() {
                     ChatGauge(value: value, title: "Usage", identifier: "chat.gauge.usage")
                 }
-                if chat.isBusy {
-                    Button { Task { await chat.stop() } } label: { Image(systemName: "stop.fill") }
-                        .accessibilityLabel("Stop").accessibilityIdentifier("chat.stop")
-                } else {
-                    Button { Task { await chat.send() } } label: { Image(systemName: "arrow.up") }
-                        .keyboardShortcut(.return, modifiers: .command)
-                        .disabled(!canSend || chat.signingIn != nil || chat.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                        .accessibilityLabel("Send").accessibilityIdentifier("chat.composer.send")
-                }
+                Button { Task { await chat.stop() } } label: { Image(systemName: "stop.fill") }
+                    .opacity(chat.isBusy ? 1 : 0).disabled(!chat.isBusy)
+                    .accessibilityHidden(!chat.isBusy)
+                    .accessibilityLabel("Stop").accessibilityIdentifier("chat.stop")
+                Button { Task { await chat.send() } } label: { Image(systemName: "arrow.up") }
+                    .keyboardShortcut(.return, modifiers: .command)
+                    .disabled(!canSend || !chat.canSubmit || chat.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .accessibilityLabel("Send").accessibilityIdentifier("chat.composer.send")
             }
             .controlSize(.small).menuStyle(.borderlessButton).fixedSize(horizontal: false, vertical: true)
         }

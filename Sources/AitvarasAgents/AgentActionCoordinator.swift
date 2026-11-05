@@ -26,6 +26,7 @@ public actor AgentActionCoordinator: AgentRun {
     private let policy: AutonomyPolicy
     private var mode: AgentMode
     private var inputID: UUID?
+    private var followups: Set<UUID> = []
     private var closed = false
     private var interrupting = false
     private var changingMode = false
@@ -61,9 +62,24 @@ public actor AgentActionCoordinator: AgentRun {
                 } catch { await self?.exited((error as? AgentFailure) ?? .unknown) }
             }
         }
-        inputID = input.id; interrupting = false
+        inputID = input.id; followups.removeAll(); interrupting = false
         do { try await run.send(input, willDeliver: willDeliver) }
         catch { if inputID == input.id { inputID = nil }; throw error }
+    }
+
+    public func followup(_ input: AgentInput, willDeliver: @escaping @Sendable () async throws -> Void) async throws {
+        guard !closed, !interrupting, !changingMode, inputID != nil,
+              inputID != input.id, followups.insert(input.id).inserted else { throw AgentFailure.invalidTransition }
+        do { try await run.followup(input, willDeliver: willDeliver) }
+        catch { followups.remove(input.id); throw error }
+    }
+    public func abort() async {
+        closed = true; inputID = nil; followups.removeAll()
+        reader?.cancel(); reader = nil
+        // Dispose the transport before audit/reply cleanup, which may be stalled.
+        await run.abort()
+        await denyPending()
+        continuation.finish()
     }
 
     /// A UI holds the full scoped request, not just a reusable native ID.
@@ -134,7 +150,17 @@ public actor AgentActionCoordinator: AgentRun {
         guard !closed, event.scope.runID == id else { return }
         // Late callbacks from an earlier input on this same connection must not
         // clear or authorize the current turn.
-        if let input = event.scope.inputID, input != inputID { return }
+        if case .inputActivated = event.kind {
+            guard let input = event.scope.inputID, followups.remove(input) != nil, !interrupting else { return }
+            inputID = input
+        }
+        if let input = event.scope.inputID, input != inputID {
+            guard followups.contains(input) else { return }
+            switch event.kind {
+            case .delivery, .message(_, "user", _): break
+            default: return
+            }
+        }
         do {
             switch event.kind {
             case .modeChanged(let mode): self.mode = mode
