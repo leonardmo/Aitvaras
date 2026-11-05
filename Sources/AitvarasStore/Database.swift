@@ -935,6 +935,25 @@ public final class AitvarasDatabase: Sendable {
                 t.column("contextJSON", .text).notNull()
             }
         }
+        m.registerMigration("v30-agent-followup-inputs") { db in
+            try db.alter(table: "agentTurn") { t in
+                t.add(column: "parentInputID", .text).references("agentTurn", onDelete: .restrict)
+            }
+            try db.execute(sql: """
+                DROP INDEX agentRunningTurn;
+                CREATE UNIQUE INDEX agentRunningTurn ON agentTurn(chatID)
+                    WHERE state = 'running' AND parentInputID IS NULL;
+                CREATE TRIGGER agentFollowupScope BEFORE INSERT ON agentTurn
+                WHEN NEW.parentInputID IS NOT NULL AND NOT EXISTS (
+                    SELECT 1 FROM agentTurn WHERE id = NEW.parentInputID
+                        AND chatID = NEW.chatID AND sessionID = NEW.sessionID AND state = 'running')
+                BEGIN SELECT RAISE(ABORT, 'Follow-up must belong to an active input'); END;
+                CREATE TRIGGER agentRootTurnExclusive BEFORE INSERT ON agentTurn
+                WHEN NEW.parentInputID IS NULL AND EXISTS (
+                    SELECT 1 FROM agentTurn WHERE chatID = NEW.chatID AND state = 'running')
+                BEGIN SELECT RAISE(ABORT, 'Chat already has an active input'); END;
+                """)
+        }
         return m
     }
 }

@@ -59,6 +59,8 @@ public struct AgentJournalTurn: Codable, Sendable, Equatable {
     public var id: UUID
     public var chatID: UUID
     public var sessionID: UUID
+    /// Follow-ups belong to an existing active input, never a second root turn.
+    public var parentInputID: UUID?
     public var prompt: String
     public var delivery: AgentDeliveryState
     public var state: AgentJournalState
@@ -66,7 +68,8 @@ public struct AgentJournalTurn: Codable, Sendable, Equatable {
     public var partialOutput: String
     public var startedAt: Date
     public var endedAt: Date?
-    public init(input: AgentInput, chatID: UUID, sessionID: UUID) {
+    public init(input: AgentInput, chatID: UUID, sessionID: UUID, parentInputID: UUID? = nil) {
+        self.parentInputID = parentInputID
         id = input.id; prompt = input.text; self.chatID = chatID; self.sessionID = sessionID
         delivery = .prepared; state = .running; resendCount = 0; partialOutput = ""; startedAt = .now
     }

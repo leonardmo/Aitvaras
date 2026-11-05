@@ -120,6 +120,19 @@ instructions; git worktree per chat; changes panel with commit and discard;
 several chats running in parallel and in the background; resume after restart;
 context and quota gauges; rename and archive.
 
+Follow-up delivery (M3.5): Claude receives additional `user` frames on stdin
+and queues them in submission order. Codex receives `turn/steer` with the active
+`expectedTurnId`; steering does not replace the output owner. Each input has its
+own durable delivery state. Send remains beside Stop, and queued inputs show
+“Queued” until activated. Busy rejections before delivery retain the active turn.
+
+Stop (M3.6) waits up to 1.4 seconds for a native turn end, then disposes an
+unresponsive transport with a bounded cleanup grace. Interrupted inputs keep
+partial output, delivery evidence and the native session identity. The next
+explicit Send resumes that session; queued/uncertain inputs are never replayed
+automatically. A forced Codex transport disposal also interrupts other runs on
+that app-server connection; an acknowledged Stop leaves them running.
+
 ## 6. Testing
 
 Each layer catches what the one below can't.

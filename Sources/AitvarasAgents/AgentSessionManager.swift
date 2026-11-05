@@ -14,6 +14,9 @@ public actor AgentSessionManager {
         var reader: Task<Void, Never>?
         var idle: Task<Void, Never>?
         var inputID: UUID?
+        var followups: [AgentInput] = []
+        var sendingFollowup = false
+        var stopping = false
     }
     private let persistence: any AgentSessionPersistence
     private let backend: BackendFactory
@@ -43,6 +46,11 @@ public actor AgentSessionManager {
     public func state(chatID: UUID) throws -> ChatState {
         if let state = states[chatID] { return state }
         var value = ChatState(chatID: chatID, entries: try persistence.agentEntries(chatID: chatID))
+        for entry in value.entries where entry.kind == "user" && entry.payloadJSON != nil {
+            if try persistence.agentTurn(id: entry.id)?.state == .interrupted {
+                value.markFollowup(entry.id, status: "interrupted")
+            }
+        }
         if let turn = try persistence.latestAgentTurn(chatID: chatID) {
             switch turn.state {
             case .interrupted: value.end(.interrupted)
@@ -88,7 +96,10 @@ public actor AgentSessionManager {
     /// Saving settings starts no process. A subsequent Send resumes with them.
     public func configure(_ session: AgentChatSession) async throws {
         guard !closing else { throw AgentSessionManagerError.shuttingDown }
-        guard live[session.chatID]?.inputID == nil else { throw AgentSessionManagerError.chatBusy }
+        guard live[session.chatID]?.inputID == nil, live[session.chatID]?.followups.isEmpty != false,
+              live[session.chatID]?.sendingFollowup != true, live[session.chatID]?.stopping != true else {
+            throw AgentSessionManagerError.chatBusy
+        }
         try persistence.saveAgentSession(session)
         if live[session.chatID]?.session == session { return }
         if let slot = live.removeValue(forKey: session.chatID) {
@@ -98,7 +109,45 @@ public actor AgentSessionManager {
     }
 
     public func send(chatID: UUID, provider: AgentProvider, input: AgentInput) async throws {
-        try await deliver(chatID: chatID, provider: provider, input: input, retry: false)
+        if live[chatID]?.inputID != nil {
+            try await followup(chatID: chatID, provider: provider, input: input)
+        } else {
+            try await deliver(chatID: chatID, provider: provider, input: input, retry: false)
+        }
+    }
+    private func followup(chatID: UUID, provider: AgentProvider, input: AgentInput) async throws {
+        guard !closing else { throw AgentSessionManagerError.shuttingDown }
+        guard let slot = live[chatID], slot.session.provider == provider,
+              let run = slot.coordinator, !slot.stopping, !slot.sendingFollowup,
+              provider != .local, slot.followups.count < 32,
+              try persistence.agentTurn(id: input.id) == nil else { throw AgentSessionManagerError.chatBusy }
+        // Reserve before yielding, and commit this input separately from the
+        // output owner. Failed/uncertain follow-ups are never silently resent.
+        live[chatID]?.sendingFollowup = true
+        defer { if live[chatID]?.token == slot.token { live[chatID]?.sendingFollowup = false } }
+        try persistence.prepareAgentTurn(.init(input: input, chatID: chatID, sessionID: slot.session.id,
+            parentInputID: slot.inputID))
+        live[chatID]?.followups.append(input)
+        states[chatID]?.appendFollowup(input, session: slot.session)
+        do {
+            try persistEntries(chatID); publish(chatID)
+            let persistence = persistence
+            try await run.followup(input) { try persistence.advanceAgentDelivery(id: input.id, to: .deliveryUnknown) }
+        } catch {
+            if let current = live[chatID], current.token == slot.token {
+                if try persistence.agentTurn(id: input.id)?.delivery == .prepared {
+                    // A busy provider or failed barrier has not taken this
+                    // input. Keep the active turn and its approval cards alive.
+                    try persistence.finishAgentTurn(id: input.id, state: .failed)
+                    live[chatID]?.followups.removeAll { $0.id == input.id }
+                    states[chatID]?.markFollowup(input.id, status: "notSent")
+                    try persistEntries(chatID); publish(chatID)
+                } else {
+                    try await retire(chatID, slot: current, outcome: .failed((error as? AgentFailure) ?? .unknown))
+                }
+            }
+            throw error
+        }
     }
     /// Caller explicitly chooses retry. Never called during startup or reconnect.
     public func resendPrepared(turnID: UUID) async throws {
@@ -120,7 +169,10 @@ public actor AgentSessionManager {
 
     private func deliver(chatID: UUID, provider: AgentProvider, input: AgentInput, retry: Bool) async throws {
         guard !closing else { throw AgentSessionManagerError.shuttingDown }
-        guard live[chatID]?.inputID == nil else { throw AgentSessionManagerError.chatBusy }
+        guard live[chatID]?.inputID == nil, live[chatID]?.followups.isEmpty != false,
+              live[chatID]?.sendingFollowup != true, live[chatID]?.stopping != true else {
+            throw AgentSessionManagerError.chatBusy
+        }
         guard let session = try persistence.agentSession(chatID: chatID, provider: provider) else {
             throw AgentSessionManagerError.missingSession
         }
@@ -189,7 +241,21 @@ public actor AgentSessionManager {
     private func receive(_ event: AgentEvent, chatID: UUID, token: UUID) async {
         guard let slot = live[chatID], slot.token == token, slot.coordinator?.id == event.scope.runID else { return }
         // Lifecycle events can precede Send. Turn events must match local input.
-        if let input = event.scope.inputID, input != slot.inputID { return }
+        if let input = event.scope.inputID, input != slot.inputID {
+            guard slot.followups.contains(where: { $0.id == input }) else { return }
+            switch event.kind {
+            case .delivery, .inputActivated, .message(_, "user", _): break
+            default: return
+            }
+        }
+        if slot.stopping {
+            // Keep identity and delivery evidence even if Stop races init.
+            // Queued activation/output cannot re-open stale approval cards.
+            switch event.kind {
+            case .turnEnded, .sessionStarted, .delivery: break
+            default: return
+            }
+        }
         do {
             switch event.kind {
             case .modeChanged(let mode):
@@ -201,12 +267,33 @@ public actor AgentSessionManager {
                 var session = slot.session; session.sessionID = native
                 try persistence.saveAgentSession(session)
                 live[chatID]?.session = session
+            case .message(let nativeID, "user", _) where event.scope.inputID != slot.inputID:
+                if let index = states[chatID]?.entries.firstIndex(where: { $0.id == event.scope.inputID }) {
+                    states[chatID]?.entries[index].nativeMessageID = nativeID
+                    try persistEntries(chatID)
+                }
+            case .inputActivated:
+                guard let id = event.scope.inputID, let input = slot.followups.first(where: { $0.id == id }) else { return }
+                live[chatID]?.inputID = id
+                live[chatID]?.followups.removeAll { $0.id == id }
+                states[chatID]?.begin(input, session: slot.session, outputID: UUID())
+                states[chatID]?.markFollowup(id, status: "sent")
             case .delivery(let delivery):
-                guard let input = slot.inputID, event.scope.inputID == input else { return }
+                guard let input = event.scope.inputID else { return }
                 try persistence.advanceAgentDelivery(id: input, to: delivery)
+                if delivery == .acknowledged, slot.session.provider == .codex {
+                    states[chatID]?.markFollowup(input, status: "steered")
+                    if live[chatID]?.inputID == nil, let outcome = states[chatID]?.outcome {
+                        try persistence.finishAgentTurn(id: input, state: Self.journalState(outcome))
+                    }
+                }
             default: break
             }
             let previous = states[chatID]?.entries ?? []
+            switch event.kind {
+            case .inputActivated, .delivery: try persistEntries(chatID)
+            default: break
+            }
             states[chatID]?.reduce(event, newEntryID: UUID())
             if states[chatID]?.entries != previous { try persistEntries(chatID, previous: previous) }
             if case .textDelta = event.kind, let input = slot.inputID {
@@ -214,9 +301,30 @@ public actor AgentSessionManager {
                 try persistence.saveAgentPartial(id: input, text: (turn?.partialOutput ?? "") + textDelta(event))
             }
             if case .turnEnded(let outcome) = event.kind, let input = slot.inputID, event.scope.inputID == input {
+                let outcome = slot.stopping ? AgentTurnOutcome.interrupted : outcome
+                if slot.stopping { states[chatID]?.end(.interrupted) }
                 try persistence.finishAgentTurn(id: input, state: Self.journalState(outcome))
                 live[chatID]?.inputID = nil
-                armIdle(chatID, token: token)
+                if slot.session.provider == .codex {
+                    for followup in slot.followups {
+                        // A steer response can follow a fast turn/completed.
+                        // Finish only after its RPC acknowledgement is handled.
+                        if try persistence.agentTurn(id: followup.id)?.delivery == .acknowledged {
+                            try persistence.finishAgentTurn(id: followup.id, state: Self.journalState(outcome))
+                        }
+                    }
+                }
+                if slot.session.provider == .claude, !slot.stopping, let next = slot.followups.first {
+                    live[chatID]?.inputID = next.id
+                    states[chatID]?.awaitingQueuedInput()
+                }
+                if slot.followups.isEmpty { armIdle(chatID, token: token) }
+            }
+            if live[chatID]?.inputID == nil, slot.session.provider == .codex {
+                live[chatID]?.followups.removeAll { followup in
+                    (try? persistence.agentTurn(id: followup.id)?.state) != .running
+                }
+                if live[chatID]?.followups.isEmpty == true { armIdle(chatID, token: token) }
             }
             // Hooks are forwarded, but only the coordinator's pending set makes cards.
             if let coordinator = slot.coordinator {
@@ -240,10 +348,16 @@ public actor AgentSessionManager {
     private func exited(_ chat: UUID, token: UUID, failure: AgentFailure) async {
         guard let slot = live[chat], slot.token == token else { return }
         live.removeValue(forKey: chat); slot.reader?.cancel(); slot.idle?.cancel()
+        for followup in slot.followups {
+            if (try? persistence.agentTurn(id: followup.id)?.state) == .running {
+                try? persistence.finishAgentTurn(id: followup.id, state: .interrupted)
+            }
+            states[chat]?.markFollowup(followup.id, status: "interrupted")
+        }
         if let input = slot.inputID {
             do { try persistence.finishAgentTurn(id: input, state: .interrupted) }
             catch { states[chat]?.end(.failed(.unknown)) }
-            states[chat]?.end(.failed(failure))
+            states[chat]?.end(slot.stopping ? .interrupted : .failed(failure))
         }
         states[chat]?.pendingCards = []; publish(chat)
         if let run = slot.coordinator { await Self.close(run, timeout: .seconds(2)) }
@@ -262,13 +376,52 @@ public actor AgentSessionManager {
         if let run = slot.coordinator { await Self.close(run, timeout: .seconds(2)) }
     }
     public func stop(chatID: UUID) async throws {
-        guard let slot = live[chatID], slot.inputID != nil else { return }
-        if let coordinator = slot.coordinator { try await coordinator.interrupt() }
-        else {
-            live.removeValue(forKey: chatID)
-            if let input = slot.inputID { try persistence.finishAgentTurn(id: input, state: .interrupted) }
-            states[chatID]?.end(.interrupted); publish(chatID)
+        guard let slot = live[chatID], !slot.stopping,
+              slot.inputID != nil || !slot.followups.isEmpty || slot.sendingFollowup else { return }
+        live[chatID]?.stopping = true
+        let clock = ContinuousClock(), deadline = clock.now + .milliseconds(1400)
+        let interrupt = Task { try? await slot.coordinator?.interrupt() }
+        // Do not use a task group: an uncooperative RPC/audit would keep its
+        // group alive beyond the deadline even after cancellation.
+        while clock.now < deadline, live[chatID]?.token == slot.token,
+              live[chatID]?.inputID != nil, slot.coordinator != nil {
+            try? await Task.sleep(for: .milliseconds(10))
         }
+        interrupt.cancel()
+        guard let current = live[chatID], current.token == slot.token else { return }
+        if current.inputID == nil, current.followups.isEmpty, !current.sendingFollowup {
+            live[chatID]?.stopping = false
+            states[chatID]?.end(.interrupted); publish(chatID)
+        } else {
+            try await retire(chatID, slot: current, outcome: .interrupted)
+        }
+    }
+    private func retire(_ chat: UUID, slot: Live, outcome: AgentTurnOutcome) async throws {
+        guard live[chat]?.token == slot.token else { return }
+        live.removeValue(forKey: chat); slot.reader?.cancel(); slot.idle?.cancel()
+        var storageFailed = false
+        for id in [slot.inputID].compactMap({ $0 }) + slot.followups.map(\.id) {
+            do {
+                if try persistence.agentTurn(id: id)?.state == .running {
+                    try persistence.finishAgentTurn(id: id, state: .interrupted)
+                }
+            } catch { storageFailed = true }
+            states[chat]?.markFollowup(id, status: "interrupted")
+        }
+        states[chat]?.end(outcome)
+        do { try persistEntries(chat) } catch { storageFailed = true }
+        publish(chat)
+        if let run = slot.coordinator {
+            let abort = Task { await run.abort() }
+            // Transport disposal has a small bounded grace; no detached run can
+            // regain ownership or deliver into the replacement generation.
+            let (stream, continuation) = AsyncStream<Void>.makeStream()
+            let cleanup = Task { await abort.value; continuation.yield(()); continuation.finish() }
+            let timer = Task { try? await Task.sleep(for: .milliseconds(300)); continuation.yield(()); continuation.finish() }
+            for await _ in stream { break }
+            cleanup.cancel(); timer.cancel()
+        }
+        if storageFailed { throw AgentSessionManagerError.persistence }
     }
     public func respond(chatID: UUID, to request: AgentRequest, with response: AgentResponse) async throws {
         guard let slot = live[chatID], let run = slot.coordinator else { throw AgentSessionManagerError.staleRun }
@@ -292,6 +445,14 @@ public actor AgentSessionManager {
         var storageFailed = false
         for (chat, slot) in slots {
             slot.reader?.cancel(); slot.idle?.cancel()
+            for followup in slot.followups {
+                do {
+                    if try persistence.agentTurn(id: followup.id)?.state == .running {
+                        try persistence.finishAgentTurn(id: followup.id, state: .interrupted)
+                    }
+                } catch { storageFailed = true }
+                states[chat]?.markFollowup(followup.id, status: "interrupted")
+            }
             if let input = slot.inputID {
                 do { try persistence.finishAgentTurn(id: input, state: .interrupted) }
                 catch { storageFailed = true }

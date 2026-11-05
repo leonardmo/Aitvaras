@@ -32,14 +32,30 @@ struct AgentTranscriptView: View {
             } else if entry.kind == "user" {
                 HStack {
                     Spacer(minLength: 30)
-                    Text(entry.text).textSelection(.enabled)
-                        .padding(12).background(.quaternary, in: RoundedRectangle(cornerRadius: 14))
+                    VStack(alignment: .trailing, spacing: 4) {
+                        Text(entry.text).textSelection(.enabled)
+                        if let status = followupLabel {
+                            Text(status).font(.caption).foregroundStyle(.secondary)
+                                .accessibilityIdentifier("chat.followup.\(entry.id)")
+                        }
+                    }
+                    .padding(12).background(.quaternary, in: RoundedRectangle(cornerRadius: 14))
                 }
             } else {
                 ChatMarkdown(text: entry.text).frame(maxWidth: .infinity, alignment: .leading)
             }
         }
         .accessibilityIdentifier(entry.kind == "handover" ? "chat.handover.\(entry.id)" : "chat.entry.\(entry.id)")
+    }
+    private var followupLabel: String? {
+        switch payload?["followup"]?.stringValue {
+        case "queued": "Queued"
+        case "steering": "Sending"
+        case "steered": "Steered"
+        case "interrupted": "Interrupted"
+        case "notSent": "Not sent"
+        default: nil
+        }
     }
     private var payload: JSONValue? { entry.payloadJSON.flatMap(JSONValue.parse) }
     private var title: String {

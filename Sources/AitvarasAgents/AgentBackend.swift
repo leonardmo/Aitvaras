@@ -106,10 +106,22 @@ public protocol AgentRun: Actor {
     /// Await this durable journal barrier before the first write of this input.
     /// A successful pipe write is still deliveryUnknown, not provider acknowledgement.
     func send(_ input: AgentInput, willDeliver: @escaping @Sendable () async throws -> Void) async throws
+    /// Claude queues on stdin; Codex steers the current native turn. The input
+    /// has its own durable delivery barrier without replacing the active scope.
+    func followup(_ input: AgentInput, willDeliver: @escaping @Sendable () async throws -> Void) async throws
+    /// Immediate transport disposal when a native interrupt does not finish.
+    func abort() async
     /// Implementations reject wrong generations, resolved IDs and expired requests.
     func respond(to request: AgentRequest, with response: AgentResponse) async throws
     func setMode(_ mode: AgentMode) async throws
     func interrupt() async throws
     /// Releases this run's process and outstanding requests, independent of views.
     func shutdown() async throws
+}
+
+extension AgentRun {
+    public func followup(_ input: AgentInput, willDeliver: @escaping @Sendable () async throws -> Void) async throws {
+        throw AgentFailure.unsupported
+    }
+    public func abort() async { try? await shutdown() }
 }

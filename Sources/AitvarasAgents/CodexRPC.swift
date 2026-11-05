@@ -11,6 +11,8 @@ actor CodexRun: AgentRun {
     private var mode: AgentMode
     private var input: UUID?
     private var turn: String?
+    private var userInputs: [AgentInput] = []
+    private var steering = false
     private var acknowledged = false
     private var closed = false
     private var requests: [AgentRequestID: AgentRequest] = [:]
@@ -44,10 +46,10 @@ actor CodexRun: AgentRun {
     }
     func send(_ value: AgentInput, willDeliver: @escaping @Sendable () async throws -> Void) async throws {
         guard !closed, input == nil else { throw AgentFailure.invalidTransition }
-        input = value.id; turn = nil; acknowledged = false; completedItems.removeAll(); items.removeAll()
+        input = value.id; userInputs = [value]; turn = nil; acknowledged = false; completedItems.removeAll(); items.removeAll()
         proposedPlan = nil; planRequestID = nil; executingApprovedPlan = false
         do { try await willDeliver() } catch { input = nil; throw error }
-        guard !closed else { throw AgentFailure.invalidTransition }
+        guard !closed, input == value.id else { throw AgentFailure.invalidTransition }
         emit(.delivery(.deliveryUnknown))
         do {
             try await startTurn(text: value.text, mode: mode)
@@ -55,6 +57,23 @@ actor CodexRun: AgentRun {
             if input == value.id { emit(.turnEnded(.failed((error as? AgentFailure) ?? .unknown))); input = nil; requests.removeAll() }
             throw error
         }
+    }
+    func followup(_ value: AgentInput, willDeliver: @escaping @Sendable () async throws -> Void) async throws {
+        guard !closed, input != nil, let turn, !completedTurns.contains(turn),
+              planRequestID == nil, !steering else { throw AgentFailure.invalidTransition }
+        steering = true
+        defer { steering = false }
+        try await willDeliver()
+        guard !closed, input != nil, self.turn == turn, !completedTurns.contains(turn) else { throw AgentFailure.invalidTransition }
+        let scope = AgentEventScope(runID: id, session: session, inputID: value.id, turnID: turn)
+        continuation.yield(.init(scope: scope, kind: .delivery(.deliveryUnknown)))
+        userInputs.append(value)
+        let result = try await wire.request("turn/steer", .object([
+            "threadId": .string(session.nativeID), "expectedTurnId": .string(turn),
+            "clientUserMessageId": .string(value.id.uuidString),
+            "input": .array([.object(["type": .string("text"), "text": .string(value.text)])])]))
+        guard !closed, result["turnId"]?.stringValue == turn else { throw AgentFailure.invalidTransition }
+        continuation.yield(.init(scope: scope, kind: .delivery(.acknowledged)))
     }
     private func startTurn(text: String, mode: AgentMode) async throws {
         let owner = input
@@ -160,7 +179,12 @@ actor CodexRun: AgentRun {
             emit(.message(id: nativeID, role: "assistant", text: text), item: nativeID)
         case "userMessage":
             let text = (item["content"]?.arrayValue ?? []).compactMap { $0["text"]?.stringValue }.joined(separator: "\n")
-            emit(.message(id: nativeID, role: "user", text: text), item: nativeID)
+            // Native user items may arrive for a steer while output remains
+            // scoped to the original turn. Bind only an exact submitted input.
+            guard let index = userInputs.firstIndex(where: { $0.id.uuidString == nativeID || $0.text == text }) else { return }
+            let owner = userInputs.remove(at: index)
+            continuation.yield(.init(scope: .init(runID: id, session: session, inputID: owner.id,
+                turnID: turn, itemID: nativeID), kind: .message(id: nativeID, role: "user", text: text)))
         case "reasoning":
             let summary = (item["summary"]?.arrayValue ?? []).compactMap { $0.stringValue ?? $0["text"]?.stringValue }.joined(separator: "\n")
             if !summary.isEmpty { emit(.thinkingCompleted(summary), item: nativeID) }
@@ -217,7 +241,7 @@ actor CodexRun: AgentRun {
             return
         }
         requests.removeAll()
-        _ = try await wire.request("turn/interrupt", .object(["threadId": .string(session.nativeID), "turnId": .string(turn)]))
+        _ = try await wire.request("turn/interrupt", .object(["threadId": .string(session.nativeID), "turnId": .string(turn)]), timeout: .seconds(1))
     }
     func resolved(_ requestID: AgentRequestID) {
         if requests.removeValue(forKey: requestID) != nil { emit(.requestResolved(requestID)) }
@@ -228,6 +252,11 @@ actor CodexRun: AgentRun {
         closed = true; requests.removeAll()
         if input != nil { emit(.turnEnded(.failed(error))); input = nil }
         continuation.finish(throwing: error)
+    }
+    func abort() async {
+        // One app-server hosts several threads. An unacknowledged interrupt
+        // leaves execution uncertain: dispose it, expiring every affected run.
+        try? await backend.shutdown()
     }
     func shutdown() async throws {
         guard !closed else { return }

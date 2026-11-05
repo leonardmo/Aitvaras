@@ -690,6 +690,33 @@ free text and multiple selections, minimum size, light/dark, chat switching,
 and a failed approval. Confirm no execution before approval and one continuation
 afterwards, with the composer mode and saved settings following acknowledgement.
 
+Follow-ups and Stop (M3.5/M3.6): Send and Stop remain adjacent during a turn;
+Return and Command-Return submit follow-ups. Claude writes them to native stdin
+in order and shows Queued on each pending message. Codex uses `turn/steer` with
+`expectedTurnId` and a local message ID; output stays with the original active
+turn. Every input has its own delivery barrier and journal row linked to the
+active input. Duplicate IDs, wrong providers and busy plan reviews cannot replace
+that turn. A rejection before delivery leaves its active approval card intact.
+
+Stop expires approval cards and waits at most 1.4 seconds for the native turn end.
+If that does not arrive, transport disposal has a further 300 ms grace. Partial
+output and native session IDs survive, queued inputs become interrupted, and the
+next explicit Send continues the same native session without replaying them.
+Codex shares one app-server: forced transport disposal interrupts all its runs;
+an acknowledged Stop affects only its own chat. `AgentFollowupTests`,
+`AgentInterruptTests` and `AgentTurnStoreTests` cover ordering, duplicate/scoped
+inputs, busy providers, failed barriers, fast completion, stale steer responses,
+Stop before delivery/during output/approval, absent acknowledgements/results,
+queued cancellation and continuation through real process pipes.
+
+Host verification: on both real providers, send two follow-ups during a long
+turn and verify native queue/steer behavior, delivery labels and output ownership.
+Stop during output and while an approval is pending; measure under two seconds,
+then Send and verify the same native session. Repeat with two background chats,
+a queued Claude input, and a provider that stops responding. Check Send/Stop and
+keyboard shortcuts at minimum size in light/dark, queued labels after restart,
+and that interrupted inputs are never resent without another explicit Send.
+
 ## What an agent session should do
 
 For Claude Code (or any agent) working on this repo: Layers 1–2 after every

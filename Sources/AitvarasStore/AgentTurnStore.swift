@@ -54,7 +54,8 @@ public struct AgentTurnStore: Sendable {
     public func claimResend(id: UUID) throws -> AgentJournalTurn {
         try db.queue.write { dbc in
             guard var turn = try AgentJournalTurn.fetchOne(dbc, key: id) else { throw AgentStoreError.missingTurn }
-            guard turn.delivery.canAutomaticallyResend, turn.resendCount == 0, turn.state != .running else {
+            guard try AgentJournalTurn.filter(Column("chatID") == turn.chatID && Column("state") == "running")
+                .fetchCount(dbc) == 0, turn.delivery.canAutomaticallyResend, turn.resendCount == 0, turn.state != .running else {
                 throw AgentFailure.invalidTransition
             }
             turn.resendCount = 1; turn.state = .running; turn.endedAt = nil
