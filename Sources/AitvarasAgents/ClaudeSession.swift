@@ -12,6 +12,7 @@ actor ClaudeRun: AgentRun {
     private var interrupted = false
     private var assistantFailure: AgentFailure?
     private var closed = false
+    private var modeState: AgentModeState
     private var requests: [AgentRequestID: (AgentRequest, JSONValue)] = [:]
     private var seenResults: Set<String> = []
     private var streamedThinking: Set<String> = []
@@ -19,7 +20,7 @@ actor ClaudeRun: AgentRun {
     private(set) var availableModels: [AgentModel] = []
 
     init(executable: URL, environment: [String: String], profile: String, configuration: AgentSessionConfiguration) {
-        self.profile = profile; session = configuration.resume
+        self.profile = profile; session = configuration.resume; modeState = AgentModeState(configuration.mode)
         var arguments = ["-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose",
                          "--include-partial-messages", "--permission-prompt-tool", "stdio", "--permission-mode",
                          configuration.mode.claudePermission]
@@ -94,11 +95,24 @@ actor ClaudeRun: AgentRun {
                     kind = .preToolUse(tool)
                 } else if raw["callback_id"]?.stringValue == "post", hookInput["hook_event_name"]?.stringValue == "PostToolUse" {
                     kind = .postToolUse(tool, output: hookInput["tool_response"] ?? .null)
+                    if tool.name == "ExitPlanMode", hookInput["permission_mode"]?.stringValue == "default",
+                       modeState.acknowledgePlan(itemID: raw["tool_use_id"]?.stringValue) {
+                        emit(.modeChanged(.ask))
+                    }
                 } else { try? await controlReply(requestID, payload: .null, error: true); return }
             } else if raw["subtype"]?.stringValue == "can_use_tool", !tool.name.isEmpty {
                 switch tool.name {
-                case "ExitPlanMode": kind = .plan(tool.input["plan"]?.stringValue ?? "")
-                case "AskUserQuestion": kind = .questions(agentQuestions(tool.input["questions"] ?? .null, claude: true))
+                case "ExitPlanMode":
+                    guard let plan = tool.input["plan"]?.stringValue,
+                          !plan.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                        try? await controlReply(requestID, payload: .null, error: true); return
+                    }
+                    kind = .plan(plan)
+                case "AskUserQuestion":
+                    guard let questions = try? agentQuestions(tool.input["questions"] ?? .null, claude: true) else {
+                        try? await controlReply(requestID, payload: .null, error: true); return
+                    }
+                    kind = .questions(questions)
                 default: kind = .permission(tool)
                 }
             } else { try? await controlReply(requestID, payload: .null, error: true); return }
@@ -107,7 +121,7 @@ actor ClaudeRun: AgentRun {
             requests[requestID] = (request, raw)
             emit(.request(request), item: request.scope.itemID)
         case "control_cancel_request":
-            if let requestID { requests.removeValue(forKey: requestID); emit(.requestResolved(requestID)) }
+            if let requestID { requests.removeValue(forKey: requestID); modeState.cancel(); emit(.requestResolved(requestID)) }
         case "stream_event":
             acknowledge()
             parseStream(value["event"] ?? .null)
@@ -130,7 +144,7 @@ actor ClaudeRun: AgentRun {
             let outcome: AgentTurnOutcome = (interrupted || aborted)
                 ? .interrupted : assistantFailure.map { .failed($0) }
                     ?? (value["is_error"]?.boolValue == false ? .completed : .failed(.unknown))
-            emit(.turnEnded(outcome)); input = nil; requests.removeAll()
+            emit(.turnEnded(outcome)); input = nil; requests.removeAll(); modeState.cancel()
         default: emit(.unknown(name: value["type"]?.stringValue ?? "unknown", payload: value))
         }
     }
@@ -150,8 +164,8 @@ actor ClaudeRun: AgentRun {
         case .deny where !isHook:
             payload = .object(["behavior": .string("deny"), "message": .string("Action denied")])
         case .answers(let answers) where !isHook:
-            guard case .questions(let questions) = request.kind,
-                  Set(answers.keys) == Set(questions.map(\.id)) else { throw AgentFailure.invalidRequest }
+            guard case .questions(let questions) = request.kind else { throw AgentFailure.invalidRequest }
+            try AgentQuestionState.validate(answers, questions: questions)
             var updated = raw["input"]?.objectValue ?? [:]
             updated["answers"] = .object(answers.mapValues { .string($0.joined(separator: ", ")) })
             payload = .object(["behavior": .string("allow"), "updatedInput": .object(updated)])
@@ -159,6 +173,7 @@ actor ClaudeRun: AgentRun {
         default: throw AgentFailure.invalidRequest
         }
         requests.removeValue(forKey: request.id)
+        if case .plan = request.kind, case .allow = response { modeState.approve(request) }
         try await controlReply(request.id, payload: payload, error: response == .unsupported)
     }
     private func controlReply(_ id: AgentRequestID, payload: JSONValue, error: Bool) async throws {
@@ -169,6 +184,8 @@ actor ClaudeRun: AgentRun {
     func setMode(_ mode: AgentMode) async throws {
         guard !closed, input == nil else { throw AgentFailure.invalidTransition }
         _ = try await wire.request("set_permission_mode", .object(["mode": .string(mode.claudePermission)]))
+        guard !closed else { throw AgentFailure.invalidTransition }
+        modeState.acknowledge(mode); emit(.modeChanged(mode))
     }
     func interrupt() async throws {
         guard !closed, input != nil else { throw AgentFailure.invalidTransition }

@@ -50,10 +50,12 @@ public struct AgentQuestion: Sendable, Equatable {
     public let prompt: String
     public let options: [Option]
     public let allowsMultiple: Bool
+    public let allowsFreeText: Bool
     public let isSecret: Bool
-    public init(id: String, prompt: String, options: [Option] = [], allowsMultiple: Bool = false, isSecret: Bool = false) {
+    public init(id: String, prompt: String, options: [Option] = [], allowsMultiple: Bool = false,
+                allowsFreeText: Bool = true, isSecret: Bool = false) {
         self.id = id; self.prompt = prompt; self.options = options
-        self.allowsMultiple = allowsMultiple; self.isSecret = isSecret
+        self.allowsMultiple = allowsMultiple; self.allowsFreeText = allowsFreeText; self.isSecret = isSecret
     }
 }
 
@@ -138,6 +140,8 @@ public struct AgentEvent: Sendable, Equatable {
         case fileChanged(path: String, diff: String)
         case request(AgentRequest)
         case requestResolved(AgentRequestID)
+        /// Emitted only after the provider acknowledges the new mode.
+        case modeChanged(AgentMode)
         /// Informational plan updates do not imply a request for execution.
         case planUpdated(JSONValue)
         case usage(AgentUsage)

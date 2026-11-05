@@ -18,6 +18,9 @@ actor CodexRun: AgentRun {
     private var completedTurns: Set<String> = []
     private var completedItems: Set<String> = []
     private var items: [String: JSONValue] = [:]
+    private var proposedPlan: (id: String, text: String)?
+    private var planRequestID: AgentRequestID?
+    private var executingApprovedPlan = false
 
     init(backend: CodexBackend, wire: AgentWire, session: AgentSessionID, configuration: AgentSessionConfiguration) {
         self.backend = backend; self.wire = wire; self.session = session; self.configuration = configuration; mode = configuration.mode
@@ -42,21 +45,32 @@ actor CodexRun: AgentRun {
     func send(_ value: AgentInput, willDeliver: @escaping @Sendable () async throws -> Void) async throws {
         guard !closed, input == nil else { throw AgentFailure.invalidTransition }
         input = value.id; turn = nil; acknowledged = false; completedItems.removeAll(); items.removeAll()
+        proposedPlan = nil; planRequestID = nil; executingApprovedPlan = false
         do { try await willDeliver() } catch { input = nil; throw error }
         guard !closed else { throw AgentFailure.invalidTransition }
-        var parameters: [String: JSONValue] = ["threadId": .string(session.nativeID),
-            "input": .array([.object(["type": .string("text"), "text": .string(value.text)])]),
-            "approvalPolicy": .string(mode.codexApproval),
-            "sandboxPolicy": .object(["type": .string(mode == .plan ? "readOnly" : "workspaceWrite")])]
-        if let effort = configuration.effort { parameters["effort"] = .string(effort) }
         emit(.delivery(.deliveryUnknown))
         do {
-            let result = try await wire.request("turn/start", .object(parameters))
-            if input == value.id { turn = result["turn"]?["id"]?.stringValue; acknowledge() }
+            try await startTurn(text: value.text, mode: mode)
         } catch {
             if input == value.id { emit(.turnEnded(.failed((error as? AgentFailure) ?? .unknown))); input = nil; requests.removeAll() }
             throw error
         }
+    }
+    private func startTurn(text: String, mode: AgentMode) async throws {
+        let owner = input
+        var parameters: [String: JSONValue] = ["threadId": .string(session.nativeID),
+            "input": .array([.object(["type": .string("text"), "text": .string(text)])]),
+            "approvalPolicy": .string(mode.codexApproval),
+            "sandboxPolicy": .object(["type": .string(mode == .plan ? "readOnly" : "workspaceWrite")])]
+        if let effort = configuration.effort { parameters["effort"] = .string(effort) }
+        let result = try await wire.request("turn/start", .object(parameters))
+        guard !closed, owner != nil, let native = result["turn"]?["id"]?.stringValue,
+              input == owner || (input == nil && completedTurns.contains(native)) else {
+            throw AgentFailure.invalidTransition
+        }
+        // A fast CLI can complete the turn before the RPC response is read.
+        if !completedTurns.contains(native) { turn = native }
+        self.mode = mode; emit(.modeChanged(mode)); acknowledge()
     }
     func receive(_ method: String, parameters p: JSONValue, requestID: AgentRequestID?) async {
         guard !closed else { return }
@@ -75,11 +89,16 @@ actor CodexRun: AgentRun {
                 if let item = p["itemId"]?.stringValue, let changes = items[item]?["changes"] { input["changes"] = changes }
                 kind = .permission(AgentTool(name: method == "item/commandExecution/requestApproval" ? "commandExecution" : "fileChange", input: .object(input)))
             case "item/permissions/requestApproval": kind = .permissions(p)
-            case "item/tool/requestUserInput": kind = .questions(agentQuestions(p["questions"] ?? .null, claude: false))
+            case "item/tool/requestUserInput":
+                guard let questions = try? agentQuestions(p["questions"] ?? .null, claude: false) else {
+                    try? await wire.writeResponse(id: requestID, result: nil, error: true); return
+                }
+                kind = .questions(questions)
             default: try? await wire.writeResponse(id: requestID, result: nil, error: true); return
             }
             turn = nativeTurn
-            let request = AgentRequest(id: requestID, scope: scope(item: p["itemId"]?.stringValue), kind: kind)
+            let request = AgentRequest(id: requestID, scope: scope(item: p["itemId"]?.stringValue), kind: kind,
+                                       isBlocking: p["isBlocking"]?.boolValue ?? true)
             requests[requestID] = request; emit(.request(request), item: request.scope.itemID)
             return
         }
@@ -115,6 +134,16 @@ actor CodexRun: AgentRun {
             let status = p["turn"]?["status"]?.stringValue
             let outcome: AgentTurnOutcome = status == "completed" ? .completed : status == "interrupted" ? .interrupted : .failed(.unknown)
             if let turn { completedTurns.insert(turn) }
+            if mode == .plan, !executingApprovedPlan, outcome == .completed, let plan = proposedPlan,
+               !plan.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                // A completed plan item is authoritative. Unlike turn/plan/updated,
+                // this local review request authorizes a separate execution turn.
+                let requestID = AgentRequestID.string("plan:\(turn ?? ""):\(plan.id)")
+                let request = AgentRequest(id: requestID, scope: scope(item: plan.id), kind: .plan(plan.text))
+                requests[requestID] = request; planRequestID = requestID
+                emit(.request(request), item: plan.id)
+                return
+            }
             emit(.turnEnded(outcome)); input = nil; requests.removeAll()
         default: emit(.unknown(name: method, payload: p), item: itemID)
         }
@@ -123,7 +152,12 @@ actor CodexRun: AgentRun {
         guard let nativeID = item["id"]?.stringValue, completedItems.insert(nativeID).inserted else { return }
         items.removeValue(forKey: nativeID)
         switch item["type"]?.stringValue {
-        case "agentMessage": emit(.message(id: nativeID, role: "assistant", text: item["text"]?.stringValue ?? ""), item: nativeID)
+        case "plan":
+            proposedPlan = (nativeID, item["text"]?.stringValue ?? "")
+            emit(.message(id: nativeID, role: "assistant", text: item["text"]?.stringValue ?? ""), item: nativeID)
+        case "agentMessage":
+            let text = item["text"]?.stringValue ?? ""
+            emit(.message(id: nativeID, role: "assistant", text: text), item: nativeID)
         case "userMessage":
             let text = (item["content"]?.arrayValue ?? []).compactMap { $0["text"]?.stringValue }.joined(separator: "\n")
             emit(.message(id: nativeID, role: "user", text: text), item: nativeID)
@@ -140,6 +174,20 @@ actor CodexRun: AgentRun {
     }
     func respond(to request: AgentRequest, with response: AgentResponse) async throws {
         guard !closed, request.scope.runID == id, requests[request.id] == request else { throw AgentFailure.invalidRequest }
+        if case .plan = request.kind, request.id == planRequestID {
+            guard response == .allow(updatedInput: nil) || response == .deny else { throw AgentFailure.invalidRequest }
+            requests.removeValue(forKey: request.id); planRequestID = nil
+            if response == .deny {
+                emit(.turnEnded(.completed)); input = nil
+            } else {
+                turn = nil; proposedPlan = nil; executingApprovedPlan = true
+                // Approval is the user's instruction to continue this journaled
+                // action; only the turn/start response acknowledges the new mode.
+                do { try await startTurn(text: "Implement the approved plan.", mode: .ask) }
+                catch { emit(.turnEnded(.failed((error as? AgentFailure) ?? .unknown))); input = nil; throw error }
+            }
+            return
+        }
         let result: JSONValue
         switch (request.kind, response) {
         case (.permission, .allow): result = .object(["decision": .string("accept")])
@@ -149,7 +197,7 @@ actor CodexRun: AgentRun {
         case (.permissions(let raw), .allow): result = .object(["permissions": raw["permissions"] ?? .object([:]), "scope": .string("turn")])
         case (.permissions, .deny): result = .object(["permissions": .object([:]), "scope": .string("turn")])
         case (.questions(let questions), .answers(let answers)):
-            guard Set(answers.keys) == Set(questions.map(\.id)) else { throw AgentFailure.invalidRequest }
+            try AgentQuestionState.validate(answers, questions: questions)
             result = .object(["answers": .object(answers.mapValues { .object(["answers": .array($0.map(JSONValue.string))]) })])
         case (_, .unsupported): result = .null
         default: throw AgentFailure.invalidRequest
@@ -163,6 +211,11 @@ actor CodexRun: AgentRun {
     }
     func interrupt() async throws {
         guard !closed, input != nil, let turn else { throw AgentFailure.invalidTransition }
+        if planRequestID != nil {
+            requests.removeAll(); planRequestID = nil
+            emit(.turnEnded(.interrupted)); input = nil
+            return
+        }
         requests.removeAll()
         _ = try await wire.request("turn/interrupt", .object(["threadId": .string(session.nativeID), "turnId": .string(turn)]))
     }

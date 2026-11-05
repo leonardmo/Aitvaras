@@ -16,6 +16,7 @@ final class ChatModel {
     private var settings: [String: AgentChatSession] = [:]
     private var approvalSubscription: Task<Void, Never>?
     private var respondingRequests: Set<String> = []
+    private var observedModes: [UUID: (input: UUID?, mode: AgentMode)] = [:]
     private(set) var approvalSuggestions: [AgentApprovalSuggestion] = []
     private var subscription: Task<Void, Never>?
     private var loginTask: Task<Void, Never>?
@@ -210,6 +211,14 @@ final class ChatModel {
         }
     }
     private func observe(_ state: ChatState) {
+        if let mode = state.acknowledgedMode, let provider = state.entries.last?.provider,
+           let chatID = self.chatID,
+           observedModes[chatID]?.input != state.inputID || observedModes[chatID]?.mode != mode {
+            observedModes[chatID] = (state.inputID, mode)
+            if state.isRunning || (try? stores.agentSession(chatID: chatID, provider: provider))?.mode == mode {
+                settings["\(chatID.uuidString).\(provider.rawValue)"]?.mode = mode
+            }
+        }
         if let provider = state.entries.last?.provider, !state.rateLimits.isEmpty { providerLimits[provider] = state.rateLimits }
         if case .failed(let failure) = state.outcome, let input = state.inputID { failed(inputID: input, failure: failure) }
         if !state.isRunning, let input = state.inputID, state.outcome == .completed { attempts.removeValue(forKey: input) }
@@ -354,9 +363,6 @@ final class ChatModel {
         guard respondingRequests.insert(request.identity).inserted else { return false }
         defer { respondingRequests.remove(request.identity) }
         do { try await manager.respond(chatID: chatID, to: request, with: response); return true }
-        catch {
-            if case .questions = request.kind, self.chatID == chatID { self.error = "This request is no longer available." }
-            return false
-        }
+        catch { return false }
     }
 }

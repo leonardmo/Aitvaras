@@ -23,6 +23,7 @@ public struct ChatState: Sendable, Equatable {
     public private(set) var outcome: AgentTurnOutcome?
     public private(set) var isRunning = false
     public private(set) var inputID: UUID?
+    public private(set) var acknowledgedMode: AgentMode?
     private var outputID: UUID?
     private var thinkingIDs: [String: UUID] = [:]
     private var textIDs: [String: UUID] = [:]
@@ -36,6 +37,7 @@ public struct ChatState: Sendable, Equatable {
     public mutating func begin(_ input: AgentInput, session: AgentChatSession, outputID: UUID,
                                context: ChatContextProjection? = nil) {
         inputID = input.id; self.outputID = outputID; provider = session.provider; sessionID = session.id
+        acknowledgedMode = session.mode
         streamingText = ""; thinking = ""; thinkingIDs = [:]; textIDs = [:]; toolEntryIDs = [:]
         tools = []; pendingCards = []; usage = nil; outcome = nil; isRunning = true
         if !entries.contains(where: { $0.id == input.id }) {
@@ -51,6 +53,9 @@ public struct ChatState: Sendable, Equatable {
     /// Caller supplies IDs, keeping the reducer deterministic and testable.
     public mutating func reduce(_ event: AgentEvent, newEntryID: UUID) {
         switch event.kind {
+        case .modeChanged(let mode):
+            guard event.scope.inputID == nil || event.scope.inputID == inputID else { return }
+            acknowledgedMode = mode
         case .rateLimits(let windows): rateLimits = windows
         case .usage(let value): usage = value
         case .sessionStarted: break
