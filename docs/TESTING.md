@@ -631,6 +631,35 @@ Send after login; its account cannot be proven unchanged.
 in-memory store, including cancellation, timeout, drift, failed persistence and
 duplicate completion. The sandbox package checks do not compile the app or verify real authentication, Liquid Glass or accessibility.
 
+Thinking and tool rows (M3.1) stay collapsed to one line by default. Expanding a
+row shows a scrollable detail area capped at 240 points. Each thinking item,
+tool input, partial argument preview and output retains at most 32 KiB of UTF-8
+text, with an explicit truncation marker. Streaming output accumulates per
+native item; final output replaces its preview. Complete thinking replaces its
+streamed text. `TranscriptReducerTests` replays both providers and checks
+interleaving, multi-block replies, stable identities and bounds.
+
+Native permission requests (M3.2) create one inline Allow/Deny card each and
+mark the originating chat with its needs-you dot. The command or file is
+visible without expanding JSON. Home attention and Chat Suggestions project
+the same live pending requests; either surface answers through the coordinator
+and cannot execute the action independently. Hooks alone never create cards.
+Cards expire after ten minutes, provider cancellation, turn end, Stop, exit or
+restart. Raw provider requests are not persisted as executable Suggestions;
+Activity keeps scoped provenance without raw arguments. `AgentApprovalTests`
+covers cross-chat replies, concurrent clicks, cancellation through fake
+executables, expiry, rejected replies, restart and failed durable audit writes.
+
+Host verification for M3.1/M3.2: with each real provider in an isolated profile,
+expand thinking and two interleaved tools while output streams, then collapse
+and scroll upward. Check stable rows, bounded details, keyboard expansion and
+Allow/Deny at minimum window size in light/dark appearances. Request a harmless
+file edit and command; Deny must prevent execution, Allow must execute once,
+and the pending card/dot must clear from transcript, Suggestions and Home.
+Navigate to another running chat while answering; verify only the originating
+request changes. Check Activity provenance and expiry on provider exit/restart.
+App compilation, real CLI behavior and these visual checks require the host.
+
 ## What an agent session should do
 
 For Claude Code (or any agent) working on this repo: Layers 1–2 after every

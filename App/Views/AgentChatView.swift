@@ -19,9 +19,9 @@ struct AgentChatView: View {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 18) {
                         ForEach(chat.state?.entries ?? []) { entry in
-                            transcriptEntry(entry).id(entry.id)
+                            AgentTranscriptView(entry: entry).id(entry.id)
                         }
-                        ForEach(Array((chat.state?.pendingCards ?? []).enumerated()), id: \.offset) { index, request in
+                        ForEach(Array((chat.state?.pendingCards ?? []).enumerated()), id: \.element.identity) { index, request in
                             requestCard(request, index: index)
                         }
                         Color.clear.frame(height: 1).id("chat.end")
@@ -42,6 +42,9 @@ struct AgentChatView: View {
                 }
                 .accessibilityIdentifier("chat.transcript")
                 .onChange(of: chat.state?.entries) {
+                    if atBottom { proxy.scrollTo("chat.end", anchor: .bottom) }
+                }
+                .onChange(of: chat.state?.pendingCards) {
                     if atBottom { proxy.scrollTo("chat.end", anchor: .bottom) }
                 }
                 .onChange(of: chatID) { atBottom = true; proxy.scrollTo("chat.end", anchor: .bottom) }
@@ -160,34 +163,9 @@ struct AgentChatView: View {
         switch chat.mode { case .ask: "Ask"; case .acceptEdits: "Accept edits"; case .plan: "Plan"; case .auto: "Auto" }
     }
 
-    @ViewBuilder private func transcriptEntry(_ entry: AgentTranscriptEntry) -> some View {
-        if entry.kind == "handover" || entry.kind == "thinking" || entry.kind == "tool" {
-            DisclosureGroup {
-                Text(entry.payloadJSON ?? entry.text).font(.caption.monospaced()).textSelection(.enabled)
-            } label: {
-                Text(entry.kind == "handover" ? "Context sent to \(entry.provider.rawValue.capitalized)"
-                     : entry.kind == "thinking" ? "Thinking" : entry.text.isEmpty ? "Tool" : entry.text)
-                    .lineLimit(1).font(.caption).foregroundStyle(.secondary)
-            }
-            .accessibilityIdentifier(entry.kind == "handover" ? "chat.handover.\(entry.id)" : "chat.entry.\(entry.id)")
-        } else if entry.kind == "user" {
-            HStack {
-                Spacer(minLength: 30)
-                Text(entry.text).textSelection(.enabled)
-                    .padding(12).background(.quaternary, in: RoundedRectangle(cornerRadius: 14))
-            }
-            .accessibilityIdentifier("chat.entry.\(entry.id)")
-        } else {
-            ChatMarkdown(text: entry.text)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .accessibilityIdentifier("chat.entry.\(entry.id)")
-        }
-    }
-
-    private func requestCard(_ request: AgentRequest, index: Int) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            switch request.kind {
-            case .questions(let questions):
+    @ViewBuilder private func requestCard(_ request: AgentRequest, index: Int) -> some View {
+        if case .questions(let questions) = request.kind {
+            VStack(alignment: .leading, spacing: 8) {
                 ForEach(questions, id: \.id) { question in
                     Text(question.prompt)
                     if question.isSecret {
@@ -200,46 +178,29 @@ struct AgentChatView: View {
                 }
                 Button("Submit") {
                     let response = Dictionary(uniqueKeysWithValues: questions.map { ($0.id, [answers[$0.id] ?? ""]) })
-                    Task { await chat.respond(to: request, with: .answers(response)) }
+                    let owner = chatID
+                    Task { _ = await chat.respond(chatID: owner, to: request, with: .answers(response)) }
                 }.accessibilityIdentifier("chat.request.\(index).submit")
-            default:
-                Text(requestTitle(request)).font(.headline)
-                if case .permission(let tool) = request.kind {
-                    DisclosureGroup("Details") {
-                        Text(tool.input.jsonString).font(.caption.monospaced()).textSelection(.enabled)
-                    }
-                } else if case .preToolUse(let tool) = request.kind {
-                    DisclosureGroup("Details") {
-                        Text(tool.input.jsonString).font(.caption.monospaced()).textSelection(.enabled)
-                    }
-                } else if case .permissions(let value) = request.kind {
-                    DisclosureGroup("Details") {
-                        Text(value.jsonString).font(.caption.monospaced()).textSelection(.enabled)
-                    }
-                }
-                Button("Allow") { Task { await chat.respond(to: request, with: .allow(updatedInput: nil)) } }
-                    .accessibilityIdentifier("chat.request.\(index).allow")
+                Button("Deny") {
+                    let owner = chatID
+                    Task { _ = await chat.respond(chatID: owner, to: request, with: .deny) }
+                }.accessibilityIdentifier("chat.request.\(index).deny")
+            }.padding(12).background(.quaternary, in: RoundedRectangle(cornerRadius: 10))
+        } else {
+            AgentApprovalCard(request: request, identifier: "chat.request.\(index)") { [owner = chatID] response in
+                await chat.respond(chatID: owner, to: request, with: response)
             }
-            Button("Deny") { Task { await chat.respond(to: request, with: .deny) } }
-                .accessibilityIdentifier("chat.request.\(index).deny")
-        }.padding(12).background(.quaternary, in: RoundedRectangle(cornerRadius: 10))
+        }
     }
     private func answer(_ id: String) -> Binding<String> {
         Binding(get: { answers[id] ?? "" }, set: { answers[id] = $0 })
     }
-    private func requestTitle(_ request: AgentRequest) -> String {
-        switch request.kind {
-        case .permission(let tool), .preToolUse(let tool): return "Allow \(tool.name)?"
-        case .permissions: return "Allow permissions?"
-        case .plan(let text): return text
-        default: return "Provider request"
-        }
-    }
+
 }
 
 /// Native text rendering, including readable fenced code and Markdown inline
 /// styles. Stable block indices keep incremental text in place while streaming.
-private struct ChatMarkdown: View {
+struct ChatMarkdown: View {
     let text: String
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {

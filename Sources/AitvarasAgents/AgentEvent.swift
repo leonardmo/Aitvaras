@@ -127,6 +127,9 @@ public struct AgentEvent: Sendable, Equatable {
         case delivery(AgentDeliveryState)
         case textDelta(String)
         case thinkingDelta(String)
+        case thinkingCompleted(String)
+        /// Partial Claude tool arguments, retained only as a bounded preview.
+        case toolInputDelta(String)
         /// Complete canonical message, distinct from partial streaming deltas.
         case message(id: String, role: String, text: String)
         case toolStarted(AgentTool)
@@ -134,6 +137,7 @@ public struct AgentEvent: Sendable, Equatable {
         case toolFinished(output: JSONValue, isError: Bool)
         case fileChanged(path: String, diff: String)
         case request(AgentRequest)
+        case requestResolved(AgentRequestID)
         /// Informational plan updates do not imply a request for execution.
         case planUpdated(JSONValue)
         case usage(AgentUsage)

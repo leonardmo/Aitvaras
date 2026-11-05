@@ -34,18 +34,22 @@ public actor AgentActionCoordinator: AgentRun {
     /// Includes audit writes in progress, so shutdown can deny those too.
     private var unresolved: [AgentRequestID: AgentRequest] = [:]
     private var pending: [AgentRequestID: AgentRequest] = [:]
+    private var pendingOrder: [AgentRequestID] = []
+    private var expiry: [AgentRequestID: Task<Void, Never>] = [:]
+    private let approvalTimeout: Duration
 
     /// The sink must durably save before returning. For Stores, pass
     /// `{ event in _ = try stores.record(event) }`; no schema changes required.
     /// Explicit user whitelist entries use `provider.<native tool name>`.
     public init(run: any AgentRun, mode: AgentMode, provenance: Provenance,
-                policy: AutonomyPolicy = AutonomyPolicy(), audit: @escaping Audit) {
+                policy: AutonomyPolicy = AutonomyPolicy(), approvalTimeout: Duration = .seconds(600), audit: @escaping Audit) {
         self.run = run; id = run.id; self.mode = mode
+        self.approvalTimeout = approvalTimeout
         self.provenance = provenance; self.policy = policy; self.audit = audit
         (events, continuation) = AsyncThrowingStream.makeStream(bufferingPolicy: .bufferingOldest(4096))
     }
 
-    deinit { reader?.cancel(); continuation.finish() }
+    deinit { reader?.cancel(); expiry.values.forEach { $0.cancel() }; continuation.finish() }
 
     public func send(_ input: AgentInput, willDeliver: @escaping @Sendable () async throws -> Void) async throws {
         guard !closed, !changingMode, inputID == nil else { throw AgentFailure.invalidTransition }
@@ -63,7 +67,7 @@ public actor AgentActionCoordinator: AgentRun {
     }
 
     /// A UI holds the full scoped request, not just a reusable native ID.
-    public func pendingRequests() -> [AgentRequest] { Array(pending.values) }
+    public func pendingRequests() -> [AgentRequest] { pendingOrder.compactMap { pending[$0] } }
 
     public func respond(to request: AgentRequest, with response: AgentResponse) async throws {
         guard !interrupting, isCurrent(request), pending[request.id] == request else { throw AgentFailure.invalidRequest }
@@ -81,9 +85,13 @@ public actor AgentActionCoordinator: AgentRun {
         }
         // Reserve before awaiting the audit sink: concurrent UI clicks cannot
         // both accept, and modified arguments cannot bypass classification.
-        pending.removeValue(forKey: request.id)
-        try await finish(request, response: answer,
-                         decision: response == .deny ? "denied" : "approved")
+        removePending(request.id)
+        do {
+            try await finish(request, response: answer, decision: response == .deny ? "denied" : "approved")
+        } catch {
+            await exited((error as? AgentFailure) ?? .unknown)
+            throw error
+        }
     }
 
     public func setMode(_ mode: AgentMode) async throws {
@@ -125,6 +133,11 @@ public actor AgentActionCoordinator: AgentRun {
             case .request(let request):
                 guard request.scope == event.scope else { throw AgentFailure.invalidRequest }
                 try await handle(request)
+            case .requestResolved(let id):
+                if let request = unresolved.removeValue(forKey: id) {
+                    removePending(id)
+                    try await record(scope: request.scope, decision: "expired by provider", kind: .confirmationDenied, request: request)
+                }
             case .toolStarted, .toolFinished, .fileChanged:
                 guard event.scope.inputID == inputID, inputID != nil else { throw AgentFailure.invalidRequest }
                 // Never persist raw arguments, command output, paths or diffs:
@@ -187,6 +200,27 @@ public actor AgentActionCoordinator: AgentRun {
                          kind: .suggestionOffered, request: request)
         guard isCurrent(request), unresolved[request.id] == request else { return }
         pending[request.id] = request
+        pendingOrder.append(request.id)
+        let timeout = approvalTimeout
+        expiry[request.id] = Task { [weak self] in
+            do { try await Task.sleep(for: timeout) } catch { return }
+            await self?.expire(request)
+        }
+    }
+
+    private func removePending(_ id: AgentRequestID) {
+        pending.removeValue(forKey: id); pendingOrder.removeAll { $0 == id }
+        expiry.removeValue(forKey: id)?.cancel()
+    }
+
+    private func expire(_ request: AgentRequest) async {
+        guard isCurrent(request), pending[request.id] == request else { return }
+        removePending(request.id)
+        do {
+            try await finish(request, response: denial(for: request), decision: "expired")
+            // Expiry also has to reach owners when the CLI emits no further output.
+            await receive(.init(scope: request.scope, kind: .requestResolved(request.id)))
+        } catch { await exited((error as? AgentFailure) ?? .unknown) }
     }
 
     private func finish(_ request: AgentRequest, response: AgentResponse, decision: String) async throws {
@@ -212,7 +246,8 @@ public actor AgentActionCoordinator: AgentRun {
 
     private func denyPending() async {
         let requests = Array(unresolved.values)
-        unresolved.removeAll(); pending.removeAll()
+        unresolved.removeAll(); pending.removeAll(); pendingOrder.removeAll()
+        expiry.values.forEach { $0.cancel() }; expiry.removeAll()
         for request in requests {
             try? await record(scope: request.scope, decision: "expired", kind: .confirmationDenied, request: request)
             try? await run.respond(to: request, with: denial(for: request))
