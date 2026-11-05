@@ -111,7 +111,7 @@ struct ChatView: View {
 
     private var chatContent: some View {
         VStack(spacing: 0) {
-            if model.selectedWorkspaceProjectID == nil, !model.selectedUnassignedVoiceHistory, !model.suggestions.isEmpty {
+            if model.selectedWorkspaceProjectID == nil, !model.selectedUnassignedVoiceHistory, (!model.suggestions.isEmpty || model.chatModel?.approvalSuggestions.isEmpty == false) {
                 suggestionBar
             }
             if let chat = model.selectedWorkspaceChat, model.messages.isEmpty || chat.archivedAt != nil {
@@ -250,6 +250,9 @@ struct ChatView: View {
     private var suggestionBar: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 10) {
+                if let chat = model.chatModel {
+                    AgentApprovalSuggestionsView(chat: chat).frame(width: 320)
+                }
                 ForEach(model.suggestions) { suggestion in
                     SuggestionCard(suggestion: suggestion)
                 }

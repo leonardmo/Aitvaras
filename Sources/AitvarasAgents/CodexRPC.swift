@@ -17,6 +17,7 @@ actor CodexRun: AgentRun {
     private var seenRequests: Set<AgentRequestID> = []
     private var completedTurns: Set<String> = []
     private var completedItems: Set<String> = []
+    private var items: [String: JSONValue] = [:]
 
     init(backend: CodexBackend, wire: AgentWire, session: AgentSessionID, configuration: AgentSessionConfiguration) {
         self.backend = backend; self.wire = wire; self.session = session; self.configuration = configuration; mode = configuration.mode
@@ -40,7 +41,7 @@ actor CodexRun: AgentRun {
     }
     func send(_ value: AgentInput, willDeliver: @escaping @Sendable () async throws -> Void) async throws {
         guard !closed, input == nil else { throw AgentFailure.invalidTransition }
-        input = value.id; turn = nil; acknowledged = false; completedItems.removeAll()
+        input = value.id; turn = nil; acknowledged = false; completedItems.removeAll(); items.removeAll()
         do { try await willDeliver() } catch { input = nil; throw error }
         guard !closed else { throw AgentFailure.invalidTransition }
         var parameters: [String: JSONValue] = ["threadId": .string(session.nativeID),
@@ -70,7 +71,9 @@ actor CodexRun: AgentRun {
             let kind: AgentRequest.Kind
             switch method {
             case "item/commandExecution/requestApproval", "item/fileChange/requestApproval":
-                kind = .permission(AgentTool(name: method == "item/commandExecution/requestApproval" ? "commandExecution" : "fileChange", input: p))
+                var input = p.objectValue ?? [:]
+                if let item = p["itemId"]?.stringValue, let changes = items[item]?["changes"] { input["changes"] = changes }
+                kind = .permission(AgentTool(name: method == "item/commandExecution/requestApproval" ? "commandExecution" : "fileChange", input: .object(input)))
             case "item/permissions/requestApproval": kind = .permissions(p)
             case "item/tool/requestUserInput": kind = .questions(agentQuestions(p["questions"] ?? .null, claude: false))
             default: try? await wire.writeResponse(id: requestID, result: nil, error: true); return
@@ -93,6 +96,7 @@ actor CodexRun: AgentRun {
         case "item/commandExecution/outputDelta", "item/fileChange/outputDelta": emit(.toolOutput(p["delta"] ?? .null), item: itemID)
         case "item/started":
             let item = p["item"] ?? .null
+            if let itemID { items[itemID] = item }
             if ["commandExecution", "fileChange", "mcpToolCall", "dynamicToolCall", "webSearch"].contains(item["type"]?.stringValue ?? "") {
                 emit(.toolStarted(AgentTool(name: item["type"]?.stringValue ?? "tool", input: item)), item: itemID)
             }
@@ -117,19 +121,21 @@ actor CodexRun: AgentRun {
     }
     private func complete(_ item: JSONValue) {
         guard let nativeID = item["id"]?.stringValue, completedItems.insert(nativeID).inserted else { return }
+        items.removeValue(forKey: nativeID)
         switch item["type"]?.stringValue {
         case "agentMessage": emit(.message(id: nativeID, role: "assistant", text: item["text"]?.stringValue ?? ""), item: nativeID)
         case "userMessage":
             let text = (item["content"]?.arrayValue ?? []).compactMap { $0["text"]?.stringValue }.joined(separator: "\n")
             emit(.message(id: nativeID, role: "user", text: text), item: nativeID)
         case "reasoning":
-            for block in item["summary"]?.arrayValue ?? [] { emit(.thinkingDelta(block.stringValue ?? block["text"]?.stringValue ?? ""), item: nativeID) }
+            let summary = (item["summary"]?.arrayValue ?? []).compactMap { $0.stringValue ?? $0["text"]?.stringValue }.joined(separator: "\n")
+            if !summary.isEmpty { emit(.thinkingCompleted(summary), item: nativeID) }
         case "fileChange":
             for change in item["changes"]?.arrayValue ?? [] {
                 emit(.fileChanged(path: change["path"]?.stringValue ?? "", diff: change["diff"]?.stringValue ?? ""), item: nativeID)
             }
             emit(.toolFinished(output: item, isError: item["status"]?.stringValue == "failed"), item: nativeID)
-        default: emit(.toolFinished(output: item, isError: item["status"]?.stringValue == "failed"), item: nativeID)
+        default: emit(.toolFinished(output: item["aggregatedOutput"] ?? item, isError: item["status"]?.stringValue == "failed"), item: nativeID)
         }
     }
     func respond(to request: AgentRequest, with response: AgentResponse) async throws {
@@ -137,7 +143,9 @@ actor CodexRun: AgentRun {
         let result: JSONValue
         switch (request.kind, response) {
         case (.permission, .allow): result = .object(["decision": .string("accept")])
-        case (.permission, .deny): result = .object(["decision": .string("decline")])
+        case (.permission(let tool), .deny):
+            let choices = tool.input["availableDecisions"]?.arrayValue?.compactMap(\.stringValue)
+            result = .object(["decision": .string(choices == nil || choices!.contains("decline") ? "decline" : "cancel")])
         case (.permissions(let raw), .allow): result = .object(["permissions": raw["permissions"] ?? .object([:]), "scope": .string("turn")])
         case (.permissions, .deny): result = .object(["permissions": .object([:]), "scope": .string("turn")])
         case (.questions(let questions), .answers(let answers)):
@@ -158,7 +166,9 @@ actor CodexRun: AgentRun {
         requests.removeAll()
         _ = try await wire.request("turn/interrupt", .object(["threadId": .string(session.nativeID), "turnId": .string(turn)]))
     }
-    func resolved(_ requestID: AgentRequestID) { requests.removeValue(forKey: requestID) }
+    func resolved(_ requestID: AgentRequestID) {
+        if requests.removeValue(forKey: requestID) != nil { emit(.requestResolved(requestID)) }
+    }
     func rateLimits(_ windows: [AgentRateLimitWindow]) { emit(.rateLimits(windows)) }
     func disconnected(_ error: AgentFailure) {
         guard !closed else { return }

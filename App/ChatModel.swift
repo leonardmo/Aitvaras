@@ -14,6 +14,9 @@ final class ChatModel {
     private let signInCoordinator: ProviderSignIn
     private var selection = ChatSelectionState()
     private var settings: [String: AgentChatSession] = [:]
+    private var approvalSubscription: Task<Void, Never>?
+    private var respondingRequests: Set<String> = []
+    private(set) var approvalSuggestions: [AgentApprovalSuggestion] = []
     private var subscription: Task<Void, Never>?
     private var loginTask: Task<Void, Never>?
     private var loginToken: UUID?
@@ -34,6 +37,12 @@ final class ChatModel {
     init(manager: AgentSessionManager, stores: Stores, backends: [AgentProvider: any AgentBackend]) {
         self.manager = manager; self.stores = stores; self.backends = backends
         signInCoordinator = ProviderSignIn(persistence: stores)
+        approvalSubscription = Task { [weak self, manager] in
+            for await suggestions in await manager.approvalUpdates() {
+                guard !Task.isCancelled, let self else { return }
+                if self.approvalSuggestions != suggestions { self.approvalSuggestions = suggestions }
+            }
+        }
     }
     var chatID: UUID? { selection.chatID }
     var provider: AgentProvider { selection.provider }
@@ -337,9 +346,17 @@ final class ChatModel {
         try await manager.shutdown()
         if let codex = backends[.codex] as? CodexBackend { try await codex.shutdown() }
     }
-    func respond(to request: AgentRequest, with response: AgentResponse) async {
-        guard let id = chatID else { return }
-        do { try await manager.respond(chatID: id, to: request, with: response) }
-        catch { self.error = "This request is no longer available." }
+    func approvalContext(_ suggestion: AgentApprovalSuggestion) -> String {
+        let title = (try? stores.workspaceChat(id: suggestion.chatID))?.title ?? "Chat"
+        return "\(title) · \(suggestion.request.scope.session?.provider.rawValue.capitalized ?? "Agent")"
+    }
+    func respond(chatID: UUID, to request: AgentRequest, with response: AgentResponse) async -> Bool {
+        guard respondingRequests.insert(request.identity).inserted else { return false }
+        defer { respondingRequests.remove(request.identity) }
+        do { try await manager.respond(chatID: chatID, to: request, with: response); return true }
+        catch {
+            if case .questions = request.kind, self.chatID == chatID { self.error = "This request is no longer available." }
+            return false
+        }
     }
 }

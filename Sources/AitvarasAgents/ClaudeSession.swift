@@ -60,7 +60,7 @@ actor ClaudeRun: AgentRun {
     }
     func send(_ value: AgentInput, willDeliver: @escaping @Sendable () async throws -> Void) async throws {
         guard !closed, input == nil else { throw AgentFailure.invalidTransition }
-        input = value.id; acknowledged = false; interrupted = false; assistantFailure = nil; streamedThinking.removeAll()
+        input = value.id; acknowledged = false; interrupted = false; assistantFailure = nil; streamedThinking.removeAll(); streamTools.removeAll(); streamTexts.removeAll(); streamingMessageID = nil
         do { try await willDeliver() } catch { input = nil; throw error }
         guard !closed else { throw AgentFailure.invalidTransition }
         emit(.delivery(.deliveryUnknown))
@@ -107,7 +107,7 @@ actor ClaudeRun: AgentRun {
             requests[requestID] = (request, raw)
             emit(.request(request), item: request.scope.itemID)
         case "control_cancel_request":
-            if let requestID { requests.removeValue(forKey: requestID) }
+            if let requestID { requests.removeValue(forKey: requestID); emit(.requestResolved(requestID)) }
         case "stream_event":
             acknowledge()
             parseStream(value["event"] ?? .null)
@@ -187,15 +187,40 @@ actor ClaudeRun: AgentRun {
         try await wire.close()
     }
 
-    private var streamingMessageID: String? = nil
+    private var streamingMessageID: String?
+    private var streamTools: [Int: String] = [:]
+    private var streamTexts: [Int: String] = [:]
     private func parseStream(_ event: JSONValue) {
-        if event["type"]?.stringValue == "message_start" { streamingMessageID = event["message"]?["id"]?.stringValue }
-        if event["type"]?.stringValue == "content_block_delta" {
+        let type = event["type"]?.stringValue
+        if type == "message_start" {
+            streamingMessageID = event["message"]?["id"]?.stringValue
+            streamTools.removeAll(); streamTexts.removeAll()
+        }
+        let index = event["index"]?.int ?? 0
+        if type == "content_block_start", let block = event["content_block"] {
+            if block["type"]?.stringValue == "tool_use", let id = block["id"]?.stringValue {
+                streamTools[index] = id
+                emit(.toolStarted(.init(name: block["name"]?.stringValue ?? "Tool", input: block["input"] ?? .null)), item: id)
+            }
+            if block["type"]?.stringValue == "text" {
+                if !streamTexts.isEmpty { emit(.textDelta("\n"), item: streamingMessageID) }
+                let text = block["text"]?.stringValue ?? ""
+                streamTexts[index] = text
+                if !text.isEmpty { emit(.textDelta(text), item: streamingMessageID) }
+            }
+        }
+        if type == "content_block_delta" {
             let delta = event["delta"] ?? .null
-            if let text = delta["text"]?.stringValue { emit(.textDelta(text), item: streamingMessageID) }
+            if let text = delta["text"]?.stringValue {
+                streamTexts[index, default: ""] += text
+                emit(.textDelta(text), item: streamingMessageID)
+            }
             if let thinking = delta["thinking"]?.stringValue {
                 if let streamingMessageID { streamedThinking.insert(streamingMessageID) }
                 emit(.thinkingDelta(thinking), item: streamingMessageID)
+            }
+            if let partial = delta["partial_json"]?.stringValue, let id = streamTools[index] {
+                emit(.toolInputDelta(partial), item: id)
             }
         }
     }
@@ -215,7 +240,9 @@ actor ClaudeRun: AgentRun {
             default: emit(.unknown(name: block["type"]?.stringValue ?? "content", payload: block), item: messageID)
             }
         }
-        if let messageID, !texts.isEmpty { emit(.message(id: messageID, role: message["role"]?.stringValue ?? "assistant", text: texts.joined(separator: "\n")), item: messageID) }
+        if let messageID, !texts.isEmpty { emit(.message(id: messageID, role: message["role"]?.stringValue ?? "assistant", text: messageID == streamingMessageID && !streamTexts.isEmpty
+            ? streamTexts.keys.sorted().compactMap { streamTexts[$0] }.joined(separator: "\n")
+            : texts.joined(separator: "\n")), item: messageID) }
     }
 }
 

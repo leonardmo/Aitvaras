@@ -36,6 +36,7 @@ struct TodayView: View {
 
     private var attentionCard: some View {
         HomeCard(title: "Needs your attention", icon: "hand.raised", tint: .orange) {
+            if let chat = model.chatModel { AgentApprovalSuggestionsView(chat: chat) }
             if let snapshot = model.todaySnapshot {
                 ForEach(snapshot.pendingSuggestions) { suggestion in
                     VStack(alignment: .leading, spacing: 6) {
@@ -80,7 +81,7 @@ struct TodayView: View {
                 Button("Review automatic work…") { reviewAutomaticWork = true }
             } else if attentionRuns.isEmpty && model.monitoringError == nil,
                       let snapshot = model.todaySnapshot,
-                      snapshot.pendingSuggestionCount == 0 && snapshot.heldNotificationCount == 0 {
+                      snapshot.pendingSuggestionCount == 0 && snapshot.heldNotificationCount == 0 && model.chatModel?.approvalSuggestions.isEmpty != false {
                 Text("Nothing needs your attention right now.").font(.callout).foregroundStyle(.secondary)
             } else if model.todaySnapshot == nil && model.stores == nil {
                 Text("Starting; attention items are not available yet.").font(.callout).foregroundStyle(.secondary)

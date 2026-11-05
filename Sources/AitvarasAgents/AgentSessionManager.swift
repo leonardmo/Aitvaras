@@ -23,6 +23,7 @@ public actor AgentSessionManager {
     private var states: [UUID: ChatState] = [:]
     private var subscribers: [UUID: [UUID: AsyncStream<ChatState>.Continuation]] = [:]
     private var closing = false
+    private var approvalSubscribers: [UUID: AsyncStream<[AgentApprovalSuggestion]>.Continuation] = [:]
 
     /// Startup recovery is synchronous and must finish before any backend starts.
     public init(persistence: any AgentSessionPersistence, idleTimeout: Duration = .seconds(600),
@@ -35,6 +36,7 @@ public actor AgentSessionManager {
             slot.reader?.cancel(); slot.idle?.cancel()
             if let coordinator = slot.coordinator { Task { try? await coordinator.shutdown() } }
         }
+        approvalSubscribers.values.forEach { $0.finish() }
         subscribers.values.forEach { $0.values.forEach { $0.finish() } }
     }
 
@@ -60,10 +62,27 @@ public actor AgentSessionManager {
         continuation.onTermination = { [weak self] _ in Task { await self?.detach(chatID, key: key) } }
         return stream
     }
+    /// Suggestions and inline cards are projections of the same live pending set.
+    public func approvalUpdates() -> AsyncStream<[AgentApprovalSuggestion]> {
+        let key = UUID()
+        let (stream, continuation) = AsyncStream<[AgentApprovalSuggestion]>.makeStream(bufferingPolicy: .bufferingNewest(1))
+        approvalSubscribers[key] = continuation
+        continuation.yield(approvalSuggestions())
+        continuation.onTermination = { [weak self] _ in Task { await self?.detachApprovals(key) } }
+        return stream
+    }
+    public func approvalSuggestions() -> [AgentApprovalSuggestion] {
+        states.keys.sorted { $0.uuidString < $1.uuidString }.flatMap { chat in
+            (states[chat]?.pendingCards ?? []).map { AgentApprovalSuggestion(chatID: chat, request: $0) }
+        }
+    }
+    private func detachApprovals(_ key: UUID) { approvalSubscribers.removeValue(forKey: key) }
     private func detach(_ chat: UUID, key: UUID) { subscribers[chat]?.removeValue(forKey: key) }
     private func publish(_ chat: UUID) {
         guard let state = states[chat] else { return }
         subscribers[chat]?.values.forEach { $0.yield(state) }
+        let approvals = approvalSuggestions()
+        approvalSubscribers.values.forEach { $0.yield(approvals) }
     }
 
     /// Saving settings starts no process. A subsequent Send resumes with them.
@@ -249,7 +268,12 @@ public actor AgentSessionManager {
     }
     public func respond(chatID: UUID, to request: AgentRequest, with response: AgentResponse) async throws {
         guard let slot = live[chatID], let run = slot.coordinator else { throw AgentSessionManagerError.staleRun }
-        try await run.respond(to: request, with: response)
+        do { try await run.respond(to: request, with: response) }
+        catch {
+            let pending = await run.pendingRequests()
+            if live[chatID]?.token == slot.token { states[chatID]?.pendingCards = pending; publish(chatID) }
+            throw error
+        }
         let pending = await run.pendingRequests()
         guard live[chatID]?.token == slot.token else { return }
         states[chatID]?.pendingCards = pending; publish(chatID)
