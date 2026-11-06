@@ -936,7 +936,8 @@ relying on self-drive coverage; preserve the artifacts to fix the adapter.
 The format is `{"steps":[{"action":"press","identifier":"chat.new"}]}`.
 Actions: `press` by identifier; `type` appends `text` to the composer;
 `waitFor` takes exactly one `identifier` or case-insensitive visible `text`,
-a `timeout` in seconds and optional `absent:true`; `screenshot` and `dumpTree`
+a `timeout` in seconds, optional `absent:true`, `within` subtree identifier and
+`caseSensitive:true`; `screenshot` and `dumpTree`
 take a safe artifact `name`. Every step accepts an optional settling `delay`.
 Results contain one index/action/status/reason entry per step and checkpoint
 atomically after each step; failures continue. Press uses in-process accessibility
@@ -947,15 +948,23 @@ Setup/output errors write `startup-error.txt` when possible. Missing results,
 startup errors or failed steps fail a run regardless of process exit status.
 Keep artifacts local: they can contain chat content.
 
-`UITests/self-drive/golden-path.json` keeps the XCUITest's prompts, identifiers
-and screenshot names. `AITVARAS_AGENT_TEST_PROVIDERS=real` explicitly enables
-real CLI subscription turns with personal integrations disabled. The existing
-Unassigned New Chat path may expose the legacy Local composer without provider
-controls in an empty profile; missing controls remain failures. Text waits retain
-the original limitation that matching text does not prove its author. Settings
-uses the in-window `gearshape` button and Providers tab instead of Command-comma.
-Native menu presses record unsupported failures; their named screenshots show
-the current content. The original XCUITest stays as the final check for native
+`UITests/self-drive/golden-path.json` uses transcript-scoped reply checks and
+case-sensitive catch-up checks. Prompts spell the expected word backwards or refer
+to the previous answer, so composer text cannot satisfy them.
+`AITVARAS_AGENT_TEST_PROVIDERS=real` enables real CLI subscription turns with
+personal integrations disabled. Set debug-only `AITVARAS_SELF_DRIVE_PROJECT` to an
+existing disposable folder: SelfDriver registers the project before the scenario,
+without creating chats. The scenario sends six chats, checks one-click switching,
+Show more and a real waiting-approval sidebar icon plus the Chat badge. `$project`
+and `$chat1`/`$chat2` resolve IDs observed during the scenario. Setup uses the
+in-window `gearshape` button and the visible AI providers card.
+
+`picker-probe.json` separately dumps the new composer's tree and attempts the
+project menu. Native menu presses report unsupported failures; they are excluded
+from the golden path rather than presented as successful interaction. The host
+must inspect the provider segments' identifiers and press effects and the project
+menu's real accessibility subtree. Use XCUITest for native menu selection.
+The original XCUITest stays as the final check for native
 menus, file panels, drag and drop, real focus and system-rendered screenshots.
 Self-drive covers in-process chat controls, bindings, turns, approvals and Stop
 only after the host gate passes. The supervisor must regenerate/build the App

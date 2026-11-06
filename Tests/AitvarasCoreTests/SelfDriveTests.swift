@@ -9,7 +9,7 @@ import AitvarasCore
         {"steps":[
           {"action":"press","identifier":"chat.new"},
           {"action":"type","text":"Hello 🐉\nsecond line"},
-          {"action":"waitFor","text":"Hello","timeout":0.1},
+          {"action":"waitFor","text":"Hello","timeout":0.1,"within":"chat.transcript","caseSensitive":true},
           {"action":"waitFor","identifier":"chat.request.1.allow","absent":true,"timeout":0},
           {"action":"screenshot","name":"01-launch","delay":3},
           {"action":"dumpTree","name":"01-launch-tree"}
@@ -18,6 +18,11 @@ import AitvarasCore
         #expect(scenario.steps.count == 6)
         #expect(scenario.steps[1].text == "Hello 🐉\nsecond line")
         #expect(scenario.steps[3].absent == true)
+        #expect(scenario.steps[2].within == "chat.transcript")
+        #expect(scenario.steps[2].caseSensitive == true)
+        #expect(SelfDriveText.matches("pelican", text: "PELICAN", caseSensitive: false))
+        #expect(!SelfDriveText.matches("pelican", text: "PELICAN", caseSensitive: true))
+        #expect(SelfDriveText.matches("PELICAN", text: "PELICAN", caseSensitive: true))
     }
 
     @Test(arguments: [
@@ -31,6 +36,8 @@ import AitvarasCore
         #"{"steps":[{"action":"screenshot","name":"../escape"}]}"#,
         #"{"steps":[{"action":"dumpTree","name":"/absolute"}]}"#,
         #"{"steps":[{"action":"dumpTree","name":".."}]}"#,
+        #"{"steps":[{"action":"waitFor","text":"x","within":""}]}"#,
+        #"{"steps":[{"action":"press","identifier":"x","within":"chat.transcript"}]}"#,
         "not json"
     ]) func rejectsMalformedScenarios(json: String) {
         #expect(throws: (any Error).self) { try SelfDriveScenario.parse(Data(json.utf8)) }
@@ -80,8 +87,14 @@ import AitvarasCore
         #expect(names == ["01-launch", "02-chat-empty", "03-new-chat", "04-claude-selected",
                           "05-claude-streaming", "06-claude-replied", "07-codex-selected", "08-codex-replied",
                           "09-approval-card", "10-after-approval", "11-running", "12-stopped", "13-local-selected",
-                          "14-menu-chat.model", "14-menu-chat.mode", "14-menu-chat.effort", "15-settings", "16-settings-providers"])
+                          "14-composer-controls", "15-settings", "16-settings-providers"])
+        let replies = scenario.steps.filter { $0.action == .waitFor && $0.text != nil }
+        #expect(replies.allSatisfy { $0.within == "chat.transcript" })
+        #expect(replies.filter { $0.text == "PELICAN" }.allSatisfy { $0.caseSensitive == true })
+        #expect(scenario.steps.contains { $0.identifier == "chat.project.$project.more" })
+        #expect(scenario.steps.contains { $0.identifier == "chat.sidebar.$chat1.status.needsYou" })
         _ = try SelfDriveScenario.parse(Data(contentsOf: root.appendingPathComponent("UITests/self-drive/probe.json")))
+        _ = try SelfDriveScenario.parse(Data(contentsOf: root.appendingPathComponent("UITests/self-drive/picker-probe.json")))
     }
 }
 #endif

@@ -7,8 +7,8 @@ import AitvarasAgents
 struct WorkspaceRailView: View {
     var initialRecent = false
     @Environment(AppModel.self) private var model
-    @State private var creatingChat: WorkspaceProject?
-    @State private var showingNewProject = false
+    @State private var expandedProjects: Set<UUID> = []
+    @State private var earlierExpanded = false
     @State private var showingProjectManager = false
     @State private var editingProject: WorkspaceProject?
     @State private var renamingChat: WorkspaceChat?
@@ -17,34 +17,40 @@ struct WorkspaceRailView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
+            Button("New Chat", systemImage: "square.and.pencil") { model.startNewAgentChat() }
+                .buttonStyle(.plain).padding(10)
+                .accessibilityIdentifier("chat.new.unassigned")
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
                     ForEach(model.workspaceProjects.filter(\.isVisible)) { project in
                         projectGroup(project)
                     }
-                    DisclosureGroup("Unassigned") {
-                        Button("New Chat", systemImage: "square.and.pencil") { model.newChat() }
-                            .accessibilityIdentifier("chat.new.unassigned")
-                        ForEach(model.unassignedChatConversations) { conversation in
-                            Button {
-                                model.openUnassignedConversation(conversation.id)
-                            } label: {
-                                Label(conversation.title, systemImage: conversation.title == "Voice" ? "waveform" : "bubble.left")
-                                    .lineLimit(1).frame(maxWidth: .infinity, alignment: .leading)
-                            }
-                            .accessibilityIdentifier("chat.sidebar.\(conversation.id)")
-                            .contextMenu {
-                                if conversation.title != "Voice" {
-                                    Button("Move to project…") { assigningConversation = conversation }
+                    if !model.unassignedChatConversations.isEmpty {
+                        VStack(alignment: .leading, spacing: 5) {
+                            Text("Earlier chats").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                            if earlierExpanded {
+                                ForEach(model.unassignedChatConversations) { conversation in
+                                    Button { model.openUnassignedConversation(conversation.id) } label: {
+                                        Label(conversation.title, systemImage: conversation.title == "Voice" ? "waveform" : "bubble.left")
+                                            .lineLimit(1).frame(maxWidth: .infinity, alignment: .leading)
+                                    }
+                                    .accessibilityIdentifier("chat.sidebar.\(conversation.id)")
+                                    .contextMenu {
+                                        if conversation.title != "Voice" {
+                                            Button("Move to project…") { assigningConversation = conversation }
+                                        }
+                                    }
                                 }
                             }
-                        }
-                    }.font(.callout).buttonStyle(.plain)
+                            Button(earlierExpanded ? "Show less" : "Show more") { earlierExpanded.toggle() }
+                                .accessibilityIdentifier("chat.earlier.more")
+                        }.font(.callout).buttonStyle(.plain)
+                    }
                 }.padding(10)
             }
             Divider()
             HStack {
-                Button("New project", systemImage: "folder.badge.plus") { showingNewProject = true }
+                Button("New project", systemImage: "folder.badge.plus") { model.chooseChatProjectFolder() }
                     .accessibilityIdentifier("chat.project.new")
                 Spacer()
                 Button("Refresh native chats", systemImage: model.chatModel?.nativeDiscoveryFailed == true ? "exclamationmark.circle" : "arrow.clockwise") {
@@ -60,18 +66,10 @@ struct WorkspaceRailView: View {
                 .menuStyle(.borderlessButton).fixedSize()
             }.buttonStyle(.borderless).labelStyle(.iconOnly).padding(10)
         }
-        .disabled(model.isWorkspaceSelectionBusy)
+        .disabled(model.isWorkspaceSelectionBusy || model.chatModel?.creatingChat == true)
         .task { model.refreshWorkspaces() }
-        .popover(item: $creatingChat) { project in
-            NewAgentChatView(project: project) { creatingChat = nil }
-        }
         .task(id: model.workspaceProjects.map { "\($0.id):\($0.updatedAt)" }.joined() + String(model.chatModel != nil)) {
             await refreshNativeChats()
-        }
-        .sheet(isPresented: $showingNewProject) {
-            WorkspaceProjectEditor { title, instructions, folders in
-                model.createWorkspaceProject(title: title, instructions: instructions, folderURLs: folders)
-            }
         }
         .sheet(item: $editingProject) { project in
             WorkspaceProjectEditor(project: project) { title, instructions, _ in
@@ -103,37 +101,44 @@ struct WorkspaceRailView: View {
 
     private func projectGroup(_ project: WorkspaceProject) -> some View {
         let all = model.workspaceSidebarChats.filter { $0.projectID == project.id }
-        let active = all.filter { $0.archivedAt == nil }.sorted {
-            if $0.kind != $1.kind { return $0.kind == .primary }
-            return $0.lastActivityAt > $1.lastActivityAt
-        }
-        let archived = all.filter { $0.archivedAt != nil }
+        let statuses = Dictionary(uniqueKeysWithValues: all.map { ($0.id, model.chatModel?.sidebarStatus($0.id) ?? .idle) })
+        let visible = ProjectChatVisibility.visible(all, statuses: statuses, selectedID: model.selectedWorkspaceChatID,
+                                                     expanded: expandedProjects.contains(project.id))
         return VStack(alignment: .leading, spacing: 5) {
             HStack {
                 Label(project.title, systemImage: "folder").font(.caption.weight(.semibold)).lineLimit(1)
+                if model.defaultChatProjectID == project.id {
+                    Image(systemName: "star.fill").font(.caption2)
+                        .accessibilityLabel("Default project")
+                }
                 Spacer(minLength: 0)
-                Button("New Chat", systemImage: "square.and.pencil") {
-                    creatingChat = project
+                Button("New Chat", systemImage: "plus") {
+                    model.startNewAgentChat(projectID: project.id)
                 }
                 .labelStyle(.iconOnly).buttonStyle(.borderless)
                 .accessibilityIdentifier("chat.new.\(project.id)")
             }
             .foregroundStyle(.secondary)
             .contextMenu {
+                Button(model.defaultChatProjectID == project.id ? "Remove as default" : "Set as default") {
+                    model.setDefaultChatProject(model.defaultChatProjectID == project.id ? nil : project.id)
+                }
                 Button("Edit project…") { editingProject = project }
                 Button("Hide project") { var updated = project; updated.isVisible = false; model.updateWorkspaceProject(updated) }
             }
-            ForEach(active) { chat in chatRow(chat) }
-            if !archived.isEmpty {
-                DisclosureGroup("Archived") { ForEach(archived) { chat in chatRow(chat) } }
-                    .font(.caption).foregroundStyle(.secondary)
-                    .accessibilityIdentifier("chat.archived.\(project.id)")
+            ForEach(visible) { chat in chatRow(chat) }
+            if all.count > visible.count || expandedProjects.contains(project.id) {
+                Button(expandedProjects.contains(project.id) ? "Show less" : "Show more") {
+                    if !expandedProjects.insert(project.id).inserted { expandedProjects.remove(project.id) }
+                }
+                .buttonStyle(.plain).font(.caption).foregroundStyle(.secondary)
+                .accessibilityIdentifier("chat.project.\(project.id).more")
             }
         }
     }
     private func chatRow(_ chat: WorkspaceChat) -> some View {
         SidebarChatRow(chat: chat, selected: model.selectedWorkspaceChatID == chat.id,
-                       manager: model.agentSessionManager, open: { model.openWorkspaceChat(chat.id) })
+                       status: model.chatModel?.sidebarStatus(chat.id) ?? .idle, open: { model.openWorkspaceChat(chat.id) })
         .contextMenu {
             Button("Rename") { newTitle = chat.title; renamingChat = chat }
                 .accessibilityIdentifier("chat.rename.\(chat.id)")
@@ -155,49 +160,50 @@ struct WorkspaceRailView: View {
 private struct SidebarChatRow: View {
     let chat: WorkspaceChat
     let selected: Bool
-    let manager: AgentSessionManager?
+    let status: ChatSidebarStatus
     let open: () -> Void
-    @State private var state: ChatState?
     var body: some View {
         Button(action: open) {
             HStack(spacing: 7) {
-                Circle().fill(statusColor).frame(width: 6, height: 6).accessibilityLabel(statusTitle)
-                    .accessibilityIdentifier("chat.status.\(chat.id)")
+                statusIcon
                 Text(chat.title).lineLimit(1)
                 Spacer(minLength: 0)
                 if chat.kind == .primary { Image(systemName: "pin.fill").font(.caption2).foregroundStyle(.secondary) }
             }
             .font(.callout).padding(.horizontal, 7).padding(.vertical, 6)
-            .background(selected ? Color.accentColor.opacity(0.14) : .clear, in: RoundedRectangle(cornerRadius: 7))
+            .background(selected ? Color.accentColor.opacity(0.18) : .clear, in: RoundedRectangle(cornerRadius: 7))
             .contentShape(Rectangle())
         }
-        .buttonStyle(.plain).help(statusTitle)
+        .buttonStyle(.plain)
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("chat.sidebar.\(chat.id)")
-        .accessibilityValue(statusTitle)
-        .task(id: manager.map { ObjectIdentifier($0) }) {
-            guard let manager else { return }
-            do {
-                for await value in try await manager.updates(chatID: chat.id) {
-                    guard !Task.isCancelled else { return }; state = value
+        .accessibilityLabel(chat.title)
+        .accessibilityAddTraits(selected ? [.isSelected] : [])
+    }
+    @ViewBuilder private var statusIcon: some View {
+        if status != .idle {
+            Group {
+                switch status {
+                case .running: ProgressView().controlSize(.mini).scaleEffect(0.65).frame(width: 12, height: 12)
+                case .needsYou: Image(systemName: "exclamationmark.bubble.fill").foregroundStyle(Color.accentColor)
+                case .finishedUnseen: Image(systemName: "circle.fill").font(.system(size: 7)).foregroundStyle(Color.accentColor)
+                case .failed: Image(systemName: "exclamationmark.circle").foregroundStyle(.red)
+                case .interrupted: Image(systemName: "pause.circle").foregroundStyle(.secondary)
+                case .idle: EmptyView()
                 }
-            } catch { state = nil }
+            }
+            .accessibilityLabel(statusLabel)
+            .accessibilityIdentifier("chat.sidebar.\(chat.id).status.\(status.rawValue)")
         }
     }
-    private var statusColor: Color {
-        switch ChatSidebarStatus(state) {
-        case .idle: .secondary
-        case .running: .green
-        case .needsYou, .interrupted: .orange
-        case .failed: .red
-        }
-    }
-    private var statusTitle: String {
-        switch ChatSidebarStatus(state) {
-        case .idle: "Idle"
+    private var statusLabel: String {
+        switch status {
+        case .idle: "Seen"
         case .running: "Running"
         case .needsYou: "Needs you"
-        case .interrupted: "Interrupted"
+        case .finishedUnseen: "Finished, not yet seen"
         case .failed: "Failed"
+        case .interrupted: "Interrupted"
         }
     }
 }
@@ -208,26 +214,29 @@ struct ChatDetailView: View {
     @Environment(AppModel.self) private var model
     @State private var importedHistory: WorkspaceSessionLink?
     @State private var showingDetails = false
-    @State private var creatingChat: WorkspaceProject?
 
     private var nativeLinks: [WorkspaceSessionLink] {
         model.selectedWorkspaceChatID.map { model.nativeSessionLinks(for: $0) } ?? []
     }
 
     var body: some View {
-        if let chatID = model.selectedWorkspaceChatID, let chatModel = model.chatModel {
+        if model.showingEarlierChat {
+            LocalChatView()
+        } else if let chatModel = model.chatModel {
+            let chatID = model.selectedWorkspaceChatID ?? chatModel.newChatID
             AgentChatView(chat: chatModel, chatID: chatID,
                           canSend: model.selectedWorkspaceChat?.archivedAt == nil,
                           workspaceError: model.workspaceMessage.map { _ in "Chat changes could not be saved." })
                 .navigationTitle(model.selectedWorkspaceChat?.title ?? "Chat")
                 .toolbar {
-                    Button("Chat details", systemImage: "info.circle") { showingDetails = true }
-                        .accessibilityIdentifier("chat.details")
-                    Button("New Chat", systemImage: "square.and.pencil") {
-                        creatingChat = model.workspaceProjects.first { $0.id == model.selectedWorkspaceChat?.projectID }
+                    if model.selectedWorkspaceChatID != nil {
+                        Button("Chat details", systemImage: "info.circle") { showingDetails = true }
+                            .accessibilityIdentifier("chat.details")
                     }
-                        .popover(item: $creatingChat) { project in NewAgentChatView(project: project) { creatingChat = nil } }
-                        .disabled(model.isWorkspaceSelectionBusy).accessibilityIdentifier("chat.new")
+                    Button("New Chat", systemImage: "square.and.pencil") {
+                        model.startNewAgentChat()
+                    }
+                    .disabled(model.isWorkspaceSelectionBusy).accessibilityIdentifier("chat.new")
                     if !nativeLinks.isEmpty {
                         Menu("Imported History", systemImage: "clock.arrow.circlepath") {
                             ForEach(nativeLinks) { link in
@@ -247,10 +256,8 @@ struct ChatDetailView: View {
                         NativeSessionSourceView(link: link)
                     }.padding().frame(width: 760, height: 600)
                 }
-        } else if model.selectedWorkspaceChatID != nil {
-            ProgressView().accessibilityLabel("Loading chat")
         } else {
-            LocalChatView()
+            ProgressView().accessibilityLabel("Loading chat")
         }
     }
 
@@ -487,44 +494,6 @@ private struct WorkspaceValidationMessage: View {
                 .foregroundStyle(.orange)
                 .textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
-        }
-    }
-}
-
-/// One small creation popover; isolation is optional and defaults off.
-private struct NewAgentChatView: View {
-    @Environment(AppModel.self) private var model
-    let project: WorkspaceProject
-    let dismiss: () -> Void
-    @State private var useWorktree = false
-    @State private var gitRepository = false
-    @State private var creating = false
-    @State private var failure: String?
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("New chat").font(.headline)
-            if gitRepository {
-                Toggle("Use worktree", isOn: $useWorktree).controlSize(.small)
-                    .accessibilityIdentifier("chat.new.worktree")
-            }
-            if let failure { Text(failure).font(.caption).foregroundStyle(.secondary) }
-            HStack {
-                Button("Cancel", action: dismiss).keyboardShortcut(.cancelAction)
-                Spacer()
-                if creating { ProgressView().controlSize(.mini) }
-                Button("Create") {
-                    creating = true
-                    Task {
-                        if await model.createAgentChat(projectID: project.id, worktree: useWorktree) { dismiss() }
-                        else { failure = "Chat could not be created. No fallback checkout was selected." }
-                        creating = false
-                    }
-                }.keyboardShortcut(.defaultAction).accessibilityIdentifier("chat.new.create")
-            }
-        }.padding(16).frame(width: 260).disabled(creating)
-        .task {
-            guard let folders = try? model.stores?.workspaceFolders(projectID: project.id), let first = folders.first else { return }
-            gitRepository = (try? await GitWorkspace().repository(at: URL(fileURLWithPath: first.path))) != nil
         }
     }
 }

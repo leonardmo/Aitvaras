@@ -56,7 +56,7 @@
     },
     {
       "action": "type",
-      "text": "Reply with only the word pelican."
+      "text": "Reply with only this word spelled backwards: nacilep"
     },
     {
       "action": "press",
@@ -70,7 +70,8 @@
     {
       "action": "waitFor",
       "text": "pelican",
-      "timeout": 90
+      "timeout": 90,
+      "within": "chat.transcript"
     },
     {
       "action": "screenshot",
@@ -97,7 +98,7 @@
     },
     {
       "action": "type",
-      "text": "Which bird did the previous assistant name? Reply with only that word, in capitals."
+      "text": "Which word did you just reply with? Reply with only that word, in capitals."
     },
     {
       "action": "press",
@@ -106,7 +107,9 @@
     {
       "action": "waitFor",
       "text": "PELICAN",
-      "timeout": 120
+      "timeout": 120,
+      "within": "chat.transcript",
+      "caseSensitive": true
     },
     {
       "action": "screenshot",
@@ -116,6 +119,64 @@
     {
       "action": "waitFor",
       "identifier": "chat.composer.input",
+      "timeout": 10
+    },
+    {
+      "action": "press",
+      "identifier": "chat.new.$project"
+    },
+    {
+      "action": "waitFor",
+      "text": "PELICAN",
+      "within": "chat.transcript",
+      "caseSensitive": true,
+      "timeout": 0,
+      "absent": true
+    },
+    {
+      "action": "type",
+      "text": "Reply with only this word spelled backwards: niugnep"
+    },
+    {
+      "action": "press",
+      "identifier": "chat.composer.send"
+    },
+    {
+      "action": "waitFor",
+      "text": "penguin",
+      "within": "chat.transcript",
+      "timeout": 120
+    },
+    {
+      "action": "press",
+      "identifier": "chat.sidebar.$chat1"
+    },
+    {
+      "action": "waitFor",
+      "text": "PELICAN",
+      "within": "chat.transcript",
+      "caseSensitive": true,
+      "timeout": 10
+    },
+    {
+      "action": "press",
+      "identifier": "chat.sidebar.$chat2"
+    },
+    {
+      "action": "waitFor",
+      "text": "penguin",
+      "within": "chat.transcript",
+      "timeout": 10
+    },
+    {
+      "action": "press",
+      "identifier": "chat.sidebar.$chat1"
+    },
+    {
+      "action": "waitFor",
+      "text": "PELICAN",
+      "within": "chat.transcript",
+      "caseSensitive": true,
       "timeout": 10
     },
     {
@@ -130,6 +191,16 @@
       "action": "waitFor",
       "identifier": "chat.request.0.allow",
       "timeout": 120
+    },
+    {
+      "action": "waitFor",
+      "identifier": "chat.sidebar.$chat1.status.needsYou",
+      "timeout": 10
+    },
+    {
+      "action": "waitFor",
+      "identifier": "chat.needsYou",
+      "timeout": 10
     },
     {
       "action": "screenshot",
@@ -187,6 +258,111 @@
     },
     {
       "action": "press",
+      "identifier": "chat.new.$project"
+    },
+    {
+      "action": "type",
+      "text": "Reply with only this word spelled backwards: elpmaxe"
+    },
+    {
+      "action": "press",
+      "identifier": "chat.composer.send"
+    },
+    {
+      "action": "waitFor",
+      "text": "example",
+      "within": "chat.transcript",
+      "timeout": 120
+    },
+    {
+      "action": "press",
+      "identifier": "chat.new.$project"
+    },
+    {
+      "action": "type",
+      "text": "Reply with only this word spelled backwards: elpmaxe"
+    },
+    {
+      "action": "press",
+      "identifier": "chat.composer.send"
+    },
+    {
+      "action": "waitFor",
+      "text": "example",
+      "within": "chat.transcript",
+      "timeout": 120
+    },
+    {
+      "action": "press",
+      "identifier": "chat.new.$project"
+    },
+    {
+      "action": "type",
+      "text": "Reply with only this word spelled backwards: elpmaxe"
+    },
+    {
+      "action": "press",
+      "identifier": "chat.composer.send"
+    },
+    {
+      "action": "waitFor",
+      "text": "example",
+      "within": "chat.transcript",
+      "timeout": 120
+    },
+    {
+      "action": "press",
+      "identifier": "chat.new.$project"
+    },
+    {
+      "action": "type",
+      "text": "Reply with only this word spelled backwards: elpmaxe"
+    },
+    {
+      "action": "press",
+      "identifier": "chat.composer.send"
+    },
+    {
+      "action": "waitFor",
+      "text": "example",
+      "within": "chat.transcript",
+      "timeout": 120
+    },
+    {
+      "action": "waitFor",
+      "identifier": "chat.project.$project.more",
+      "timeout": 10
+    },
+    {
+      "action": "press",
+      "identifier": "chat.project.$project.more"
+    },
+    {
+      "action": "waitFor",
+      "identifier": "chat.sidebar.$chat2",
+      "timeout": 10
+    },
+    {
+      "action": "press",
+      "identifier": "chat.sidebar.$chat2"
+    },
+    {
+      "action": "waitFor",
+      "text": "penguin",
+      "within": "chat.transcript",
+      "timeout": 10
+    },
+    {
+      "action": "press",
+      "identifier": "chat.project.$project.more"
+    },
+    {
+      "action": "waitFor",
+      "identifier": "chat.sidebar.$chat2",
+      "timeout": 10
+    },
+    {
+      "action": "press",
       "identifier": "chat.provider.local"
     },
     {
@@ -195,31 +371,12 @@
       "delay": 2
     },
     {
-      "action": "press",
-      "identifier": "chat.model"
-    },
-    {
       "action": "screenshot",
-      "name": "14-menu-chat.model",
-      "delay": 1
+      "name": "14-composer-controls"
     },
     {
-      "action": "press",
-      "identifier": "chat.mode"
-    },
-    {
-      "action": "screenshot",
-      "name": "14-menu-chat.mode",
-      "delay": 1
-    },
-    {
-      "action": "press",
-      "identifier": "chat.effort"
-    },
-    {
-      "action": "screenshot",
-      "name": "14-menu-chat.effort",
-      "delay": 1
+      "action": "dumpTree",
+      "name": "14-picker-tree"
     },
     {
       "action": "press",

@@ -19,9 +19,10 @@ final class ChatGoldenPathUITests: XCTestCase {
 
     private func shot(_ name: String) { E2EApp.screenshot(app, named: name, in: self) }
 
-    private func transcriptShows(_ text: String, timeout: TimeInterval) -> Bool {
-        let predicate = NSPredicate(format: "label CONTAINS[c] %@ OR value CONTAINS[c] %@", text, text)
-        return app.descendants(matching: .any).matching(predicate).firstMatch.waitForExistence(timeout: timeout)
+    private func transcriptShows(_ text: String, timeout: TimeInterval, caseSensitive: Bool = false) -> Bool {
+        let comparison = caseSensitive ? "CONTAINS" : "CONTAINS[c]"
+        let predicate = NSPredicate(format: "label \(comparison) %@ OR value \(comparison) %@", text, text)
+        return element("chat.transcript").descendants(matching: .any).matching(predicate).firstMatch.waitForExistence(timeout: timeout)
     }
 
     private func send(_ text: String) {
@@ -66,7 +67,7 @@ final class ChatGoldenPathUITests: XCTestCase {
         if element("chat.provider.claude").exists { element("chat.provider.claude").click() }
         sleep(2)
         shot("04-claude-selected")
-        send("Reply with only the word pelican.")
+        send("Reply with only this word spelled backwards: nacilep")
         sleep(2)
         shot("05-claude-streaming")
         XCTAssertTrue(transcriptShows("pelican", timeout: 90), "Claude reply")
@@ -78,8 +79,8 @@ final class ChatGoldenPathUITests: XCTestCase {
         if element("chat.provider.codex").exists { element("chat.provider.codex").click() }
         sleep(2)
         shot("07-codex-selected")
-        send("Which bird did the previous assistant name? Reply with only that word, in capitals.")
-        XCTAssertTrue(transcriptShows("PELICAN", timeout: 120), "Codex catch-up")
+        send("Which word did you just reply with? Reply with only that word, in capitals.")
+        XCTAssertTrue(transcriptShows("PELICAN", timeout: 120, caseSensitive: true), "Codex catch-up")
         sleep(3)
         shot("08-codex-replied")
 

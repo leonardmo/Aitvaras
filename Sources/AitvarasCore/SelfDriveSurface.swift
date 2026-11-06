@@ -35,9 +35,9 @@ import AppKit
     let window: NSWindow
     public init(window: NSWindow) { self.window = window }
 
-    func nodes() throws -> [SelfDriveNode] {
+    func nodes(root: NSObject? = nil) throws -> [SelfDriveNode] {
         window.contentView?.layoutSubtreeIfNeeded()
-        var pending: [Any] = [window]
+        var pending: [Any] = [root ?? window]
         var seen = Set<ObjectIdentifier>()
         var found: [SelfDriveNode] = []
         while let next = pending.popLast() {
@@ -60,7 +60,7 @@ import AppKit
         guard let element = try find(identifier) else { throw SelfDriveFailure("Identifier unavailable: \(identifier)") }
         guard element.enabled else { throw SelfDriveFailure("Control disabled: \(identifier)") }
         // AppKit menu tracking can depend on real focus and run a modal loop.
-        guard !["chat.model", "chat.mode", "chat.effort"].contains(identifier),
+        guard !["chat.model", "chat.mode", "chat.effort", "chat.project"].contains(identifier),
               !["AXPopUpButton", "AXMenuButton", "AXMenuItem"].contains(element.role ?? "") else {
             throw SelfDriveFailure("Native menu tracking requires XCUITest: \(identifier)")
         }
@@ -126,15 +126,22 @@ import AppKit
             let clock = ContinuousClock()
             let deadline = clock.now.advanced(by: .seconds(step.timeout ?? 10))
             repeat {
-                let matches = try nodes().contains { node in
+                let candidates: [SelfDriveNode]
+                let subtreeAvailable: Bool
+                if let within = step.within {
+                    let root = try find(within)
+                    subtreeAvailable = root != nil
+                    candidates = try root.map { try nodes(root: $0.object) } ?? []
+                } else { candidates = try nodes(); subtreeAvailable = true }
+                let matches = candidates.contains { node in
                     if let identifier = step.identifier { return node.identifier == identifier }
                     let text = step.text!
                     let frame = node.frame
                     guard frame.width > 0, frame.height > 0, window.frame.intersects(frame) else { return false }
                     return [node.label, node.title, node.value]
-                        .compactMap { $0 }.contains { $0.localizedCaseInsensitiveContains(text) }
+                        .compactMap { $0 }.contains { SelfDriveText.matches($0, text: text, caseSensitive: step.caseSensitive ?? false) }
                 }
-                if matches != (step.absent ?? false) { return "Condition observed in window accessibility tree" }
+                if subtreeAvailable && matches != (step.absent ?? false) { return "Condition observed in window accessibility tree" }
                 if clock.now >= deadline { break }
                 try await Task.sleep(for: .milliseconds(100))
             } while true

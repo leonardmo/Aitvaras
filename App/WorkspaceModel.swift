@@ -1,4 +1,5 @@
 import Foundation
+import AppKit
 import AitvarasCore
 import AitvarasStore
 import AitvarasAgents
@@ -6,6 +7,38 @@ import AitvarasAgents
 /// First workspace checkpoint: durable organization and isolated text-only
 /// project conversations. Registering a folder never grants a tool access.
 extension AppModel {
+    func startNewAgentChat(projectID: UUID? = nil) {
+        guard !isWorkspaceSelectionBusy else { return }
+        let project = try? stores?.newChatProjectID(requested: projectID)
+        showingEarlierChat = false
+        selectedWorkspaceChatID = nil; selectedWorkspaceProjectID = nil
+        chatModel?.prepareNew(projectID: project)
+        try? persistWorkspaceSelection(projectID: nil, chatID: nil)
+        workspaceMessage = nil
+        NotificationCenter.default.post(name: .init("aitvaras.openWorkspaceChat"), object: nil)
+    }
+
+    func chooseChatProjectFolder() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false; panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false; panel.prompt = "Add project"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        let preserveDraft = chatModel?.chatID == nil && !showingEarlierChat
+        let draft = preserveDraft ? chatModel?.draft : nil
+        let composition = preserveDraft ? chatModel?.composerSelection : nil
+        if createWorkspaceProject(title: url.lastPathComponent, instructions: "", folderURLs: [url]),
+           let projectID = selectedWorkspaceProjectID {
+            startNewAgentChat(projectID: projectID)
+            if let draft { chatModel?.draft = draft }
+            if let composition { chatModel?.composerSelection = composition }
+        }
+    }
+
+    func setDefaultChatProject(_ id: UUID?) {
+        do { try stores?.setDefaultChatProject(id); refreshWorkspaces() }
+        catch { workspaceMessage = "Default project could not be saved." }
+    }
+
     var selectedWorkspaceChat: WorkspaceChat? {
         workspaceChats.first { $0.id == selectedWorkspaceChatID }
     }
@@ -29,7 +62,7 @@ extension AppModel {
             _ = try stores.archiveExpiredWorkspaceChats(now: .now,
                 protectedChatIDs: Set([protectedID].compactMap { $0 }))
             let projects = try stores.workspaceProjects()
-            let unassigned = try stores.unassignedConversations()
+            let unassigned = try stores.unassignedConversations().filter { try stores.messageCount(in: $0.id) > 0 }
             let recent = try stores.recentWorkspaceChats(limit: 30)
             let chats = try selectedWorkspaceProjectID.map {
                 try stores.workspaceChats(projectID: $0, includeArchived: true)
@@ -37,6 +70,12 @@ extension AppModel {
             workspaceSidebarChats = try projects.filter(\.isVisible).flatMap {
                 try stores.workspaceChats(projectID: $0.id, includeArchived: true)
             }
+            defaultChatProjectID = try stores.defaultChatProjectID()
+            if let chatModel, chatModel.chatID == nil, let chosen = chatModel.newProjectID,
+               !projects.contains(where: { $0.id == chosen && $0.isVisible }) {
+                chatModel.newProjectID = try stores.newChatProjectID()
+            }
+            chatModel?.observeSidebar(workspaceSidebarChats)
             workspaceProjects = projects
             workspaceChats = chats
             unassignedChatConversations = unassigned
@@ -95,6 +134,7 @@ extension AppModel {
                 guard let project = try stores.workspaceProject(id: id), project.isVisible else {
                     throw WorkspaceSelectionError.unavailable
                 }
+                showingEarlierChat = false
                 let chats = try stores.workspaceChats(projectID: id)
                 if let first = chats.first(where: { $0.kind == .primary }) ?? chats.first {
                     try loadWorkspaceConversation(first.localConversationID,
@@ -103,13 +143,13 @@ extension AppModel {
                     try persistWorkspaceSelection(projectID: id, chatID: nil)
                     selectedWorkspaceProjectID = id
                     selectedWorkspaceChatID = nil
-                    chatModel?.select(nil)
+                    chatModel?.prepareNew(projectID: id)
                     chatConversationID = nil
                     messages = []
                     earlierChatMessagesAreHidden = false
                 }
             } else {
-                try loadUnassignedFallback()
+                startNewAgentChat()
             }
             workspaceMessage = nil
             refreshWorkspaces()
@@ -123,8 +163,11 @@ extension AppModel {
                   let project = try stores.workspaceProject(id: chat.projectID), project.isVisible else {
                 throw WorkspaceSelectionError.unavailable
             }
+            showingEarlierChat = false
             try loadWorkspaceConversation(chat.localConversationID,
                 projectID: chat.projectID, chatID: chat.id)
+            try stores.setValues(["chat.lastProject": chat.projectID.uuidString])
+            chatModel?.markChatOpened(chat.id)
             workspaceMessage = nil
             refreshWorkspaces()
         } catch { reportWorkspaceFailure("Chat could not be opened", error) }
@@ -136,6 +179,7 @@ extension AppModel {
             guard try stores.workspaceChat(forConversationID: id) == nil else {
                 throw WorkspaceSelectionError.unavailable
             }
+            showingEarlierChat = true
             try loadWorkspaceConversation(id, projectID: nil, chatID: nil)
             workspaceMessage = nil
             refreshWorkspaces()
@@ -167,7 +211,7 @@ extension AppModel {
             try stores.saveWorkspaceProject(safeProject)
             refreshWorkspaces()
             if !safeProject.isVisible, selectedWorkspaceProjectID == safeProject.id {
-                try loadUnassignedFallback()
+                startNewAgentChat()
                 refreshWorkspaces()
             }
             workspaceMessage = nil
@@ -187,21 +231,6 @@ extension AppModel {
         } catch { reportWorkspaceFailure("Chat could not be created", error); return false }
     }
 
-    func createAgentChat(projectID: UUID, worktree: Bool) async -> Bool {
-        guard allowWorkspaceSelection(), let stores, let chatModel else { return false }
-        if !worktree { return createWorkspaceChat(title: "New chat", kind: .temporary, purpose: "", projectID: projectID) }
-        do {
-            let chat = try stores.createWorkspaceChat(projectID: projectID, title: "New chat", kind: .temporary, requiresWorktree: true)
-            let folders = try stores.workspaceFolders(projectID: projectID).map { URL(fileURLWithPath: $0.path) }
-            _ = try await chatModel.gitActions.create(chatID: chat.id, projectID: projectID, folders: folders,
-                storage: AitvarasPaths.stateDirectory.appendingPathComponent("AgentWorktrees", isDirectory: true))
-            refreshWorkspaces(); openWorkspaceChat(chat.id)
-            return true
-        } catch {
-            // Creation's one inline error belongs to its popover.
-            workspaceMessage = nil; refreshWorkspaces(); return false
-        }
-    }
 
     @discardableResult
     func updateWorkspaceChat(_ chat: WorkspaceChat) -> Bool {
@@ -297,6 +326,8 @@ extension AppModel {
         selectedWorkspaceChatID = chatID
         messages = loaded
         earlierChatMessagesAreHidden = count > Self.visibleChatMessageLimit
+        // Warm the next project's rows before publishing the selected chat.
+        workspaceChats = try projectID.map { try stores.workspaceChats(projectID: $0, includeArchived: true) } ?? []
         chatModel?.select(chatID)
     }
 

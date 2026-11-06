@@ -239,8 +239,8 @@ struct CompanionView: View {
     }
 
     @ViewBuilder private var chat: some View {
-        if let id = model.selectedWorkspaceChatID, let chat = model.chatModel {
-            AgentChatView(chat: chat, chatID: id, canSend: model.selectedWorkspaceChat?.archivedAt == nil,
+        if !model.showingEarlierChat, let chat = model.chatModel {
+            AgentChatView(chat: chat, chatID: model.selectedWorkspaceChatID ?? chat.newChatID, canSend: model.selectedWorkspaceChat?.archivedAt == nil,
                           compact: true)
                 .accessibilityIdentifier("chat.companion")
         } else {

@@ -15,7 +15,7 @@ public struct SelfDriveScenario: Decodable, Sendable {
 public struct SelfDriveStep: Codable, Sendable {
     public enum Action: String, Codable, Sendable { case press, type, waitFor, screenshot, dumpTree }
     public let action: Action
-    public let identifier: String?
+    public var identifier: String?
     public let text: String?
     public let name: String?
     public let timeout: Double?
@@ -23,11 +23,18 @@ public struct SelfDriveStep: Codable, Sendable {
     public let delay: Double?
     /// Used for assertions such as "there is no second approval card".
     public let absent: Bool?
+    /// Restrict a wait to this accessibility subtree.
+    public var within: String?
+    public let caseSensitive: Bool?
 
     private func invalid(_ reason: String) -> SelfDriveFailure { .init(reason) }
     public func validate() throws {
         for value in [timeout, delay].compactMap({ $0 }) {
             guard value.isFinite, value >= 0, value <= 300 else { throw invalid("Invalid time interval") }
+        }
+        if let within, within.isEmpty { throw invalid("within must be a nonempty identifier") }
+        if (within != nil || caseSensitive != nil) && action != .waitFor {
+            throw invalid("within and caseSensitive apply only to waitFor")
         }
         switch action {
         case .press:
@@ -44,6 +51,12 @@ public struct SelfDriveStep: Codable, Sendable {
                 throw invalid("Artifact name must be a single safe filename")
             }
         }
+    }
+}
+
+public enum SelfDriveText {
+    public static func matches(_ value: String, text: String, caseSensitive: Bool) -> Bool {
+        caseSensitive ? value.contains(text) : value.localizedCaseInsensitiveContains(text)
     }
 }
 

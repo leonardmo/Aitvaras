@@ -27,6 +27,22 @@ import AitvarasAgents
         #expect(state.draft.isEmpty)
     }
 
+    @Test func unsavedDraftNeverLeaksIntoAnotherChatsComposer() {
+        var selection = ChatSelectionState()
+        selection.draft = "Unsent project draft"
+        selection.select(nil, provider: .claude)
+        #expect(selection.draft == "Unsent project draft")
+        let saved = UUID()
+        selection.select(saved, provider: .local)
+        #expect(selection.draft.isEmpty)
+        selection.draft = "Saved chat draft"
+        selection.select(nil, provider: .codex)
+        #expect(selection.draft == "Unsent project draft")
+        selection.draft = ""
+        selection.select(saved, provider: .local)
+        #expect(selection.draft == "Saved chat draft")
+    }
+
     @Test func originalMessageIdentitySurvivesWireEchoAndHandoverIsSeparate() throws {
         let chat = UUID(), output = UUID()
         let input = AgentInput(text: "original")

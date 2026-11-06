@@ -117,6 +117,8 @@ final class AppModel {
     var workspaceChats: [WorkspaceChat] = []
     var workspaceSidebarChats: [WorkspaceChat] = []
     var unassignedChatConversations: [Conversation] = []
+    var showingEarlierChat = false
+    var defaultChatProjectID: UUID?
     var selectedWorkspaceProjectID: UUID?
     var selectedWorkspaceChatID: UUID?
     var workspaceMessage: String?
@@ -452,7 +454,11 @@ final class AppModel {
         }
         agentSessionManager = manager
         chatModel = ChatModel(manager: manager, stores: stores, backends: available)
-        chatModel?.select(selectedWorkspaceChatID)
+        chatModel?.didCreateChat = { [weak self] id in self?.openWorkspaceChat(id) }
+        chatModel?.activityChanged = { [weak self] in self?.refreshWorkspaces() }
+        chatModel?.observeSidebar(workspaceSidebarChats)
+        if let selectedWorkspaceChatID { chatModel?.select(selectedWorkspaceChatID) }
+        else { chatModel?.prepareNew(projectID: try? stores.newChatProjectID()) }
     }
 
     private func localAgentReply(agentLoop: AgentLoop, configuration: AgentSessionConfiguration,
@@ -494,6 +500,7 @@ final class AppModel {
         if let chatID = selectedWorkspaceChatID {
             return chatModel?.submitText(trimmed, chatID: chatID) ?? false
         }
+        if !showingEarlierChat, let chatModel { return chatModel.submitNewText(trimmed) }
         guard !selectedUnassignedVoiceHistory else {
             workspaceMessage = "Saved voice history is read-only here. Start a new chat to continue."
             return false
@@ -670,27 +677,7 @@ final class AppModel {
         }
     }
 
-    func newChat() {
-        guard !isWorkspaceSelectionBusy else {
-            workspaceMessage = "Finish or stop the current conversation before creating another chat."
-            return
-        }
-        if selectedWorkspaceProjectID != nil {
-            createWorkspaceChat(title: "New chat", kind: .temporary, purpose: "")
-            return
-        }
-        guard let stores, let previousID = chatConversationID else { return }
-        do {
-            chatConversationID = try stores.rotatePersistentConversation(
-                forKey: Self.chatConversationKey, title: "Chat")
-            messages.removeAll()
-            earlierChatMessagesAreHidden = false
-            archiveStoredConversation(previousID)
-            refreshWorkspaces()
-        } catch {
-            presentError(title: "New chat could not be created", error: error)
-        }
-    }
+    func newChat() { startNewAgentChat() }
 
     /// Flush the ending conversation into memory (episode + durable facts)
     /// before it disappears — fire-and-forget, never blocks the UI.
