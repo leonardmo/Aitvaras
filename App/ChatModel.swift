@@ -559,9 +559,18 @@ final class ChatModel {
             })
         } catch {
             if !stoppedSends.contains(input.id) {
+                if (error as? AgentSessionManagerError) == .runningChatLimit {
+                    attempts.removeValue(forKey: input.id)
+                    if chatID == id {
+                        authProvider = nil
+                        self.error = AgentFailure.sendMessage(for: error, provider: provider)
+                    }
+                    return
+                }
                 let failure = (error as? AgentFailure) ?? .unknown
                 try? await manager.reportSendFailure(chatID: id, failure: failure)
                 if chatID == id { failed(inputID: input.id, failure: failure) }
+                if chatID == id { self.error = AgentFailure.sendMessage(for: error, provider: provider) }
             }
         }
     }
@@ -593,7 +602,7 @@ final class ChatModel {
         guard !handledFailures.contains(inputID), let attempt = attempts.removeValue(forKey: inputID) else { return }
         handledFailures.insert(inputID)
         authProvider = failure == .authRequired ? attempt.provider : nil
-        error = failureMessage(failure, provider: attempt.provider)
+        error = AgentFailure.sendMessage(for: failure, provider: attempt.provider)
         guard failure == .authRequired, let id = chatID, attempt.provider == provider else { return }
         do {
             guard let turn = try stores.agentTurn(id: inputID), turn.chatID == id, turn.delivery == .prepared, turn.resendCount == 0,
@@ -603,16 +612,6 @@ final class ChatModel {
             try stores.savePendingSend(pending)
             armPendingExpiry(pending)
         } catch { self.error = "Sign in to \(provider.rawValue.capitalized)" }
-    }
-    private func failureMessage(_ failure: AgentFailure, provider: AgentProvider) -> String {
-        switch failure {
-        case .authRequired: "Sign in to \(provider.rawValue.capitalized)"
-        case .offline: "You’re offline. Try again when connected."
-        case .quota: "Usage limit reached. Try again later."
-        case .notInstalled: "\(provider.rawValue.capitalized) is not installed."
-        case .unsupported: "This provider configuration is unavailable."
-        default: "Message could not be sent."
-        }
     }
     private func armPendingExpiry(_ pending: PendingSend) {
         pendingExpiry?.cancel()

@@ -38,6 +38,13 @@ subsequent sends. Reducer checks include stable canonical message IDs, tools,
 thinking, hook observations, usage, rate limits and outcomes. Snapshot streams
 coalesce updates; provider event streams remain lossless.
 
+Capacity regression tests cover four sequential completed chats,
+eight running turns (including approval waits), least-recently-used idle eviction,
+native-session resume after eviction, and preservation of running turns and
+pending approvals. Capacity rejection creates no failed turn or transcript entry.
+Composer error tests cover specific provider/session/history/project failures
+and the safe fallback for unknown diagnostics.
+
 Host acceptance for this foundation still needs a private database copy upgrade,
 a real force-quit during delivery, parallel real chats, idle resume, and application
 quit cancellation once the manager is wired into the UI. The package tests do not
@@ -667,6 +674,10 @@ and Sign in must fit above the window edge. Chat's dock must remain absent on an
 idle fresh profile and after a manual provider failure; start automatic work to
 check that the visible dock consumes height without covering the composer. Other
 tabs retain their dock and attention presentation.
+Verify readable composer messages (including sign-in, archived and interrupted)
+in both appearances. With no message, the card ends below its controls without
+an empty status row. Eight genuinely running chats show “8 chats are running.
+Stop one or wait.” inline on another Send, with no failed sidebar status.
 
 Settings → Providers has one row per provider: status icon, known usage gauge
 and Sign in (Local needs no login). Model choices come from the backend; effort
@@ -978,9 +989,14 @@ to a cheap model ID advertised by the installed CLI; only new Codex sessions use
 that choice. Codex steps run before the final Claude steps. Every Send checks
 that its text is absent within `chat.composer.input`; the shell step waits for its
 Allow card and then for the successful completed tool row in the transcript.
-The scenario sends six Codex chats plus a final Claude chat, checks one-click switching,
+The shell approval uses a fresh third chat and the explicit prompt “Use your shell
+tool to create an empty file named e2e-made.txt in the current folder.” Its
+needs-you sidebar status and Chat badge must appear before Allow. The final
+Claude step uses another new chat and expects “Sign in to Claude” plus `chat.signin`
+inside `chat.error`, rather than a reply from a signed-out provider.
+The scenario sends seven Codex chats plus a final Claude chat, checks one-click switching,
 Show more and a real waiting-approval sidebar icon plus the Chat badge. `$project`
-and `$chat1`/`$chat2` resolve IDs observed during the scenario. Setup uses the
+and `$chat1`/`$chat2`/`$chat3` resolve IDs observed during the scenario. Setup uses the
 in-window `gearshape` button and the visible AI providers card.
 
 `picker-probe.json` separately dumps the new composer's tree and attempts the

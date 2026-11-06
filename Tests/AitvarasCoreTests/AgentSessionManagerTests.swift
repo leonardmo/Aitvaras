@@ -5,6 +5,117 @@ import AitvarasStore
 @testable import AitvarasAgents
 
 @Suite struct AgentSessionManagerTests {
+    @Test func fourSequentialChatsAllSend() async throws {
+        let stores = try inMemoryStores()
+        let backend = ManagerTestBackend()
+        let manager = try AgentSessionManager(persistence: stores, backend: { _ in backend }, audit: { _ in })
+        let chats = try (0..<4).map { _ in try agentStoreChat(stores).0.id }
+        for chat in chats {
+            let input = AgentInput(text: "Finish this turn")
+            try await manager.send(chatID: chat, provider: .claude, input: input)
+            let run = try #require(await backend.runs.last)
+            await run.emit(.turnEnded(.completed), input: input.id)
+            try await waitManager { try await manager.state(chatID: chat).outcome == .completed }
+            #expect(try stores.agentTurn(id: input.id)?.state == .completed)
+        }
+        #expect(await backend.totalWrites() == 4)
+        try await manager.shutdown()
+    }
+
+    @Test func leastRecentlyUsedIdleRunIsEvictedAndResumesNativeSession() async throws {
+        let stores = try inMemoryStores()
+        let backend = ManagerTestBackend()
+        let manager = try AgentSessionManager(persistence: stores, backend: { _ in backend }, audit: { _ in })
+        let chats = try (0..<9).map { _ in try agentStoreChat(stores).0.id }
+        for (index, chat) in chats.prefix(8).enumerated() {
+            let input = AgentInput(text: "Finish this turn")
+            try await manager.send(chatID: chat, provider: .claude, input: input)
+            let run = try #require(await backend.runs.last)
+            let native = AgentSessionID(provider: .claude, profile: "default", nativeID: "fixture-\(index)")
+            await run.emit(.sessionStarted(native), input: input.id)
+            await run.emit(.turnEnded(.completed), input: input.id)
+            try await waitManager { try await manager.state(chatID: chat).outcome == .completed }
+        }
+        let runs = await backend.runs
+        let native = try #require(try stores.agentSession(chatID: chats[1], provider: .claude)?.sessionID)
+        // Reusing the oldest chat makes the second chat the eviction candidate.
+        let revisit = AgentInput(text: "One more turn")
+        try await manager.send(chatID: chats[0], provider: .claude, input: revisit)
+        await runs[0].emit(.turnEnded(.completed), input: revisit.id)
+        try await waitManager { try await manager.state(chatID: chats[0]).outcome == .completed }
+        #expect(await backend.runs.count == 8)
+        try await manager.send(chatID: chats[8], provider: .claude, input: .init(text: "New chat"))
+        #expect(await runs[1].isShutdown)
+        #expect(await !runs[0].isShutdown)
+        #expect(try await manager.state(chatID: chats[1]).outcome == .completed)
+        #expect(try stores.agentSession(chatID: chats[1], provider: .claude)?.sessionID == native)
+
+        try await manager.send(chatID: chats[1], provider: .claude, input: .init(text: "Resume"))
+        #expect(await backend.runs.count == 10)
+        #expect(await backend.configurations.last?.resume == native)
+        #expect(await runs[2].isShutdown)
+        #expect(try await manager.state(chatID: chats[8]).isRunning)
+        try await manager.shutdown()
+    }
+
+    @Test func capacityEvictsIdleRunButNeverOlderRunningChat() async throws {
+        let stores = try inMemoryStores()
+        let backend = ManagerTestBackend()
+        let manager = try AgentSessionManager(persistence: stores, backend: { _ in backend }, audit: { _ in })
+        let chats = try (0..<9).map { _ in try agentStoreChat(stores).0.id }
+        for (index, chat) in chats.prefix(8).enumerated() {
+            let input = AgentInput(text: "Turn")
+            try await manager.send(chatID: chat, provider: .claude, input: input)
+            if index > 0 {
+                let run = try #require(await backend.runs.last)
+                await run.emit(.turnEnded(.completed), input: input.id)
+                try await waitManager { try await manager.state(chatID: chat).outcome == .completed }
+            }
+        }
+        let runs = await backend.runs
+        try await manager.send(chatID: chats[8], provider: .claude, input: .init(text: "New chat"))
+        #expect(await !runs[0].isShutdown)
+        #expect(await runs[1].isShutdown)
+        #expect(try await manager.state(chatID: chats[0]).isRunning)
+        try await manager.shutdown()
+    }
+
+    @Test func approvalWaitingChatCountsTowardEightRunningChats() async throws {
+        let stores = try inMemoryStores()
+        let backend = ManagerTestBackend()
+        let manager = try AgentSessionManager(persistence: stores, backend: { _ in backend }, audit: { _ in })
+        let chats = try (0..<9).map { _ in try agentStoreChat(stores).0.id }
+        let first = AgentInput(text: "Wait for approval")
+        try await manager.send(chatID: chats[0], provider: .claude, input: first)
+        let run = try #require(await backend.runs.first)
+        let request = AgentRequest(id: .integer(1), scope: .init(runID: run.id, inputID: first.id),
+                                   kind: .permission(.init(name: "Bash", input: .null)))
+        await run.emit(.request(request), input: first.id)
+        try await waitManager { try await manager.state(chatID: chats[0]).pendingCards == [request] }
+        for chat in chats[1..<8] {
+            try await manager.send(chatID: chat, provider: .claude, input: .init(text: "Keep running"))
+        }
+        let rejected = AgentInput(text: "Ninth running chat")
+        await #expect(throws: AgentSessionManagerError.runningChatLimit) {
+            try await manager.send(chatID: chats[8], provider: .claude, input: rejected)
+        }
+        #expect(await backend.runs.count == 8)
+        #expect(await !run.isShutdown)
+        #expect(try await manager.state(chatID: chats[0]).pendingCards == [request])
+        #expect(try await manager.state(chatID: chats[0]).isRunning)
+        #expect(try await manager.state(chatID: chats[8]).outcome == nil)
+        #expect(try stores.agentTurn(id: rejected.id) == nil)
+        // Resolving one turn frees capacity even with the approval still pending.
+        let other = try #require(await backend.runs.last)
+        let input = try #require(await other.inputs.last)
+        await other.emit(.turnEnded(.completed), input: input.id)
+        try await waitManager { try await manager.state(chatID: chats[7]).outcome == .completed }
+        try await manager.send(chatID: chats[8], provider: .claude, input: rejected)
+        #expect(await other.isShutdown)
+        #expect(try await manager.state(chatID: chats[0]).pendingCards == [request])
+        try await manager.shutdown()
+    }
+
     @Test func activityStopUsesDurableInputAndIgnoresStaleClicks() async throws {
         let fixture = try BackendExecutableFixture(script: managerClaudeScript)
         defer { fixture.remove() }
@@ -47,7 +158,7 @@ import AitvarasStore
         let stores = try inMemoryStores()
         let backend = ClaudeBackend(executable: fixture.executable, environment: fixture.environment)
         let manager = try AgentSessionManager(persistence: stores, backend: { _ in backend }, audit: { _ = try stores.record($0) })
-        let chats = try (0..<4).map { _ in try agentStoreChat(stores, cwd: fixture.directory.path).0.id }
+        let chats = try (0..<10).map { _ in try agentStoreChat(stores, cwd: fixture.directory.path).0.id }
         // Merely attaching/detaching views must not create or dispose a process.
         let view = Task {
             for await _ in try await manager.updates(chatID: chats[0]) { if Task.isCancelled { break } }
@@ -69,11 +180,13 @@ import AitvarasStore
         try await waitManager { try await manager.state(chatID: chats[0]).outcome == .interrupted }
         #expect(try await manager.state(chatID: chats[1]).isRunning)
         #expect(try stores.agentTurn(id: second.id)?.state == .running)
-        try await manager.send(chatID: chats[2], provider: .claude, input: .init(text: "hold"))
-        await #expect(throws: AgentSessionManagerError.runningChatLimit) {
-            try await manager.send(chatID: chats[3], provider: .claude, input: .init(text: "hold"))
+        for chat in chats[2..<9] {
+            try await manager.send(chatID: chat, provider: .claude, input: .init(text: "hold"))
         }
-        #expect(try await manager.state(chatID: chats[3]).outcome == .failed(.invalidTransition))
+        await #expect(throws: AgentSessionManagerError.runningChatLimit) {
+            try await manager.send(chatID: chats[9], provider: .claude, input: .init(text: "hold"))
+        }
+        #expect(try await manager.state(chatID: chats[9]).outcome == nil)
         let sessionOne = try #require(try stores.agentSession(chatID: chats[0], provider: .claude)?.sessionID)
         let sessionTwo = try #require(try stores.agentSession(chatID: chats[1], provider: .claude)?.sessionID)
         #expect(sessionOne != sessionTwo)
@@ -439,6 +552,7 @@ private actor ManagerTestBackend: AgentBackend {
     func pauseNextStart() { pauseStart = true }
     func releaseStart() { startWaiter?.resume(); startWaiter = nil }
     private(set) var runs: [ManagerTestRun] = []
+    private(set) var configurations: [AgentSessionConfiguration] = []
     func setFailure(_ failure: Failure) { self.failure = failure }
     func setHungShutdown(_ value: Bool) { hungShutdown = value }
     func totalWrites() async -> Int { var count = 0; for run in runs { count += await run.writes }; return count }
@@ -451,6 +565,7 @@ private actor ManagerTestBackend: AgentBackend {
             pauseStart = false
             await withCheckedContinuation { startWaiter = $0 }
         }
+        configurations.append(configuration)
         let run = ManagerTestRun(failure: failure, hungShutdown: hungShutdown); runs.append(run); return run
     }
     func listSessions(folder: URL, cursor: String?) throws -> AgentPage<AgentSessionSummary> { throw AgentFailure.unsupported }
@@ -465,6 +580,7 @@ private actor ManagerTestRun: AgentRun {
     private let failure: ManagerTestBackend.Failure
     private let hungShutdown: Bool
     private var shutdownWaiter: CheckedContinuation<Void, Never>?
+    private(set) var isShutdown = false
     private(set) var writes = 0
     private(set) var inputs: [AgentInput] = []
     private(set) var responses: [AgentResponse] = []
@@ -484,6 +600,7 @@ private actor ManagerTestRun: AgentRun {
     func setMode(_ mode: AgentMode) {}
     func interrupt() {}
     func shutdown() async {
+        isShutdown = true
         if hungShutdown { await withCheckedContinuation { shutdownWaiter = $0 } }
         continuation.finish()
     }

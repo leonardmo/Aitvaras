@@ -336,6 +336,10 @@ approvals and item events, so the autonomy policy and activity log still hold.
 Pending permission, plan and question cards wait without an automatic timeout,
 matching the native CLIs. Answers, Stop, provider cancellation or resolution
 (including turn end), and process exit clear them through the audited lifecycle.
+Up to eight chats may have a turn in progress, including approval waits. Idle
+transports do not consume that allowance; at eight retained transports, a new
+chat evicts the least recently used idle one and resumes its durable native
+session on its next Send. Capacity refusal stays inline without failing the chat.
 
 The new chat path bounds each deterministic handover block, including labels, to
 16,000 UTF-8 bytes. It keeps the newest completed messages, orders them
