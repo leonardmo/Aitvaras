@@ -35,6 +35,10 @@ public enum AgentTranscriptContent {
         case .string(let text): return bounded(text)
         case .array(let values): return bounded(values.map(display).filter { !$0.isEmpty }.joined(separator: "\n"))
         case .object(let fields):
+            if fields["type"]?.stringValue == "commandExecution", let exitCode = fields["exitCode"]?.int {
+                let text = fields["aggregatedOutput"]?.stringValue ?? ""
+                return bounded("Exit code: \(exitCode)" + (text.isEmpty ? "" : "\n" + text))
+            }
             if let text = fields["aggregatedOutput"]?.stringValue { return bounded(text) }
             if fields["type"]?.stringValue == "text", let text = fields["text"]?.stringValue { return bounded(text) }
             let hidden: Set<String> = ["type", "id", "itemId", "threadId", "turnId", "startedAtMs", "completedAtMs", "status", "commandActions"]

@@ -1038,3 +1038,10 @@ expanding a tool retains its full command. Successful tool completion exposes
 `chat.tool.completed` before turn completion; errors do not advertise success.
 If a tool never reports completion, ending the turn closes its row as “Ended
 without a result”; it must not remain Running or advertise a successful completion.
+When Codex omits a started tool's completion, the backend first reads that turn
+with `thread/read` (`includeTurns: true`), allowing up to two seconds. Recovered
+terminal items complete their rows before the turn ends; command details retain
+the exit code and output, and non-zero exits show failure. Failed, missing or
+timed-out reads leave the row unconfirmed without failing the turn or disconnecting
+other chats. `TranscriptReducerTests` exercises recovery and these fallback paths
+through a fake app-server, including a late reply and a subsequent turn.

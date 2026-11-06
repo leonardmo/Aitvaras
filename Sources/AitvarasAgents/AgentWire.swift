@@ -48,7 +48,8 @@ actor AgentWire {
     }
 
     func request(_ method: String, _ parameters: JSONValue = .object([:]),
-                 id explicitID: AgentRequestID? = nil, timeout: Duration = .seconds(30)) async throws -> JSONValue {
+                 id explicitID: AgentRequestID? = nil, timeout: Duration = .seconds(30),
+                 failOnTimeout: Bool = true) async throws -> JSONValue {
         try Task.checkCancellation()
         if let failure { throw failure }
         guard pending.count < 64 else { throw AgentFailure.invalidTransition }
@@ -68,7 +69,7 @@ actor AgentWire {
                 pending[id] = continuation
                 timers[id] = Task { [weak self] in
                     do { try await Task.sleep(for: timeout) } catch { return }
-                    await self?.expire(id)
+                    await self?.expire(id, failOnTimeout: failOnTimeout)
                 }
                 Task { [weak self] in
                     do { try await self?.writePending(frame, id: id) }
@@ -107,8 +108,10 @@ actor AgentWire {
         timers.removeValue(forKey: id)?.cancel()
         pending.removeValue(forKey: id)?.resume(throwing: error)
     }
-    private func expire(_ id: AgentRequestID) async {
+    private func expire(_ id: AgentRequestID, failOnTimeout: Bool) async {
         guard pending[id] != nil else { return }
+        // Optional read-only recovery must not dispose a healthy transport.
+        if !failOnTimeout { reject(id, error: AgentFailure.offline); return }
         // A timed out state-changing call leaves the connection uncertain.
         await fail(.offline)
     }
