@@ -942,6 +942,9 @@ Legacy adapters and their diagnostic views remain until the M6.3 UI gate passes.
 
 ## Debug in-process chat self-drive
 
+On the host, `make ui` runs `scripts/run-self-drive.sh`. Screenshots land in
+`.build-e2e/self-drive/<scenario>`.
+
 Set `AITVARAS_SELF_DRIVE` to a scenario JSON file and
 `AITVARAS_SELF_DRIVE_OUTPUT` to a local artifact directory. Also set
 `AITVARAS_STATE_DIR` to a disposable profile and
@@ -990,8 +993,8 @@ without creating chats. Set optional debug-only `AITVARAS_SELF_DRIVE_CODEX_MODEL
 to a cheap model ID advertised by the installed CLI; only new Codex sessions use
 that choice. Codex steps run before the final Claude steps. Every Send checks
 that its text is absent within `chat.composer.input`; the shell step waits for its
-Allow card and then for the successful completed tool row in the transcript.
-An optional second Allow accommodates a provider's verification command. The
+Allow card and then for a completed or unconfirmed tool row in the transcript.
+Four optional wait/Allow pairs accommodate a provider's follow-up commands. The
 after-approval screenshot checks that Changes is still closed; the next step
 explicitly presses `chat.changes` so the running screenshot covers the narrow pane.
 The final signed-out screenshot checks that Changes is closed again.
@@ -1045,3 +1048,9 @@ the exit code and output, and non-zero exits show failure. Failed, missing or
 timed-out reads leave the row unconfirmed without failing the turn or disconnecting
 other chats. `TranscriptReducerTests` exercises recovery and these fallback paths
 through a fake app-server, including a late reply and a subsequent turn.
+
+During a turn, a later tool item or assistant message closes earlier tool rows
+without a result as unconfirmed, showing the plain command. Rows with pending
+approval stay unchanged. A later real result upgrades the same row to success or
+failure; progress alone never advertises success. `ChatStateTests` covers these
+transitions, pending approvals and late results.

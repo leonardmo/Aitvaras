@@ -66,6 +66,80 @@ import AitvarasAgents
         #expect(restored.entries == state.entries)
     }
 
+    @Test(arguments: [AgentProvider.claude, .codex], ["tool", "delta", "message"])
+    func laterWorkClosesEarlierToolsWithoutClaimingSuccess(provider: AgentProvider, progress: String) throws {
+        let chat = UUID(), run = UUID()
+        let input = AgentInput(text: "Run example commands")
+        let session = AgentChatSession(chatID: chat, provider: provider, cwd: "/tmp", model: "fixture")
+        var state = ChatState(chatID: chat)
+        state.begin(input, session: session, outputID: UUID())
+        func scope(_ item: String, inputID: UUID? = nil) -> AgentEventScope {
+            .init(runID: run, inputID: inputID ?? input.id, turnID: "turn", itemID: item)
+        }
+        let tool = AgentTool(name: "Bash", input: .object(["command": .string("touch example.txt")]))
+        state.reduce(.init(scope: scope("approved"), kind: .toolStarted(tool)), newEntryID: UUID())
+        let approvedRow = try #require(state.entries.last?.id)
+        state.pendingCards = [.init(id: .string("approval"), scope: scope("approved"), kind: .permission(tool))]
+        // Another tool starts while the first still awaits approval.
+        state.reduce(.init(scope: scope("pending"), kind: .toolStarted(tool)), newEntryID: UUID())
+        #expect(state.tools.allSatisfy { !$0.isFinished })
+        let pending = AgentRequest(id: .string("pending-approval"), scope: scope("pending"), kind: .permission(tool))
+        // The first approval was answered; only the second remains pending.
+        state.pendingCards = [pending]
+        state.reduce(.init(scope: scope("approved"), kind: .toolStarted(tool)), newEntryID: UUID())
+        #expect(state.tools.allSatisfy { !$0.isFinished })
+        state.reduce(.init(scope: scope("stale", inputID: UUID()), kind: .textDelta("stale")), newEntryID: UUID())
+        #expect(state.tools.allSatisfy { !$0.isFinished })
+
+        let kind: AgentEvent.Kind = progress == "tool" ? .toolStarted(tool)
+            : progress == "delta" ? .textDelta("Continuing")
+            : .message(id: "reply", role: "assistant", text: "Continuing")
+        state.reduce(.init(scope: scope("later"), kind: kind), newEntryID: UUID())
+        #expect(state.isRunning)
+        #expect(state.outcome == nil)
+        #expect(state.pendingCards == [pending])
+        #expect(state.tools.first?.isFinished == true)
+        #expect(state.tools.first?.completionUnconfirmed == true)
+        #expect(state.tools.first?.isError == false)
+        #expect(state.tools.first { $0.id == "pending" }?.isFinished == false)
+        if progress == "tool" { #expect(state.tools.last?.isFinished == false) }
+        let row = try #require(state.entries.first { $0.id == approvedRow })
+        let payload = try #require(row.payloadJSON.flatMap(JSONValue.parse))
+        #expect(payload["finished"] == .bool(true))
+        #expect(payload["completionUnconfirmed"] == .bool(true))
+        #expect(row.presentationIdentifier == "chat.tool.unconfirmed")
+        #expect(AgentActionPresentation.toolSummary(tool, finished: true, isError: false,
+            completionUnconfirmed: true, turnCompletedNormally: payload["turnCompletedNormally"]?.boolValue == true)
+            == "touch example.txt")
+        let restored = try JSONDecoder().decode(AgentTranscriptEntry.self, from: JSONEncoder().encode(row))
+        #expect(restored == row)
+
+        // Late streamed output remains available before the authoritative result.
+        state.reduce(.init(scope: scope("approved"), kind: .toolOutput(.string("late output"))), newEntryID: UUID())
+        #expect(state.tools.first?.output == .string("late output"))
+        state.reduce(.init(scope: scope("approved"), kind: .toolFinished(output: .null, isError: false)), newEntryID: UUID())
+        let confirmed = try #require(state.entries.first { $0.id == approvedRow })
+        #expect(confirmed.presentationIdentifier == "chat.tool.completed")
+        #expect(state.tools.first?.completionUnconfirmed == false)
+        #expect(state.tools.first?.output == .string("late output"))
+
+        state.pendingCards = []
+        state.reduce(.init(scope: scope("reply"), kind: .textDelta("Done")), newEntryID: UUID())
+        #expect(state.tools.first { $0.id == "pending" }?.completionUnconfirmed == true)
+        state.reduce(.init(scope: scope("pending"), kind: .toolFinished(output: .string("command failed"), isError: true)), newEntryID: UUID())
+        let failed = try #require(state.tools.first { $0.id == "pending" })
+        #expect(failed.isFinished)
+        #expect(failed.isError)
+        #expect(!failed.completionUnconfirmed)
+        let failedRow = try #require(state.entries.first { $0.payloadJSON.flatMap(JSONValue.parse)?["itemID"] == .string("pending") })
+        #expect(failedRow.presentationIdentifier != "chat.tool.completed")
+        #expect(failedRow.presentationIdentifier != "chat.tool.unconfirmed")
+        #expect(AgentActionPresentation.toolSummary(tool, finished: failed.isFinished, isError: failed.isError,
+            completionUnconfirmed: failed.completionUnconfirmed) == "Failed to run touch example.txt")
+        #expect(state.entries.first { $0.id == approvedRow } == confirmed)
+        #expect(state.entries.filter { $0.kind == "tool" }.count == (progress == "tool" ? 3 : 2))
+    }
+
     @Test func testProviderSeamRequiresIsolationAndLeavesLegacyGuardsIntact() {
         let disabled = ["AITVARAS_DISABLE_EXTERNAL_INTEGRATIONS": "1", "AITVARAS_UI_TEST_MODE": "1"]
         #expect(!AgentProviderLaunchPolicy.allowsProviders(environment: disabled, isolated: true))

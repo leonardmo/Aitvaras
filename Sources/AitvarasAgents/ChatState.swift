@@ -80,6 +80,7 @@ public struct ChatState: Sendable, Equatable {
             guard isRunning, event.scope.inputID == inputID, inputID != nil else { return }
             switch event.kind {
             case .textDelta(let text):
+                closeEarlierTools()
                 let key = event.scope.itemID ?? "text"
                 let id = textIDs[key] ?? outputID ?? newEntryID
                 if textIDs[key] == nil { textIDs[key] = id; outputID = nil }
@@ -96,6 +97,7 @@ public struct ChatState: Sendable, Equatable {
             case .thinkingCompleted(let text):
                 putThinking(text, item: event.scope.itemID, complete: true, newEntryID: newEntryID)
             case .message(let nativeID, let role, let text):
+                if role == "assistant" { closeEarlierTools() }
                 if let index = entries.firstIndex(where: { $0.sessionID == sessionID && $0.nativeMessageID == nativeID }) {
                     if role != "user" { entries[index].text = text }
                 } else if role == "user", let index = entries.firstIndex(where: { $0.id == inputID }) {
@@ -114,17 +116,19 @@ public struct ChatState: Sendable, Equatable {
                 }
                 if role == "assistant" { streamingText = "" }
             case .toolStarted(let tool):
-                let index = toolIndex(event.scope.itemID ?? "tool")
+                let itemID = event.scope.itemID ?? "tool"
+                closeEarlierTools(before: itemID)
+                let index = toolIndex(itemID)
                 tools[index].tool = AgentTool(name: tool.name, input: AgentTranscriptContent.bounded(tool.input))
                 putTool(index, newEntryID: newEntryID)
             case .toolInputDelta(let delta):
                 let index = toolIndex(event.scope.itemID ?? "tool")
-                guard !tools[index].isFinished else { return }
+                guard !tools[index].isFinished || tools[index].completionUnconfirmed else { return }
                 tools[index].partialInput = AgentTranscriptContent.append(delta, to: tools[index].partialInput)
                 putTool(index, newEntryID: newEntryID)
             case .toolOutput(let output):
                 let index = toolIndex(event.scope.itemID ?? "tool")
-                guard !tools[index].isFinished else { return }
+                guard !tools[index].isFinished || tools[index].completionUnconfirmed else { return }
                 if let text = output.stringValue {
                     tools[index].output = .string(AgentTranscriptContent.append(text, to: tools[index].output?.stringValue ?? ""))
                 } else { tools[index].output = AgentTranscriptContent.bounded(output) }
@@ -133,6 +137,8 @@ public struct ChatState: Sendable, Equatable {
                 let index = toolIndex(event.scope.itemID ?? "tool")
                 if output != .null { tools[index].output = AgentTranscriptContent.bounded(output) }
                 tools[index].isFinished = true
+                tools[index].completionUnconfirmed = false
+                tools[index].turnCompletedNormally = false
                 tools[index].isDenied = tools[index].isDenied || output["status"]?.stringValue == "declined"
                 tools[index].isError = error || tools[index].isDenied
                 putTool(index, newEntryID: newEntryID)
@@ -146,13 +152,25 @@ public struct ChatState: Sendable, Equatable {
         // A summary-only turn/completed need not repeat its tool items. Stop,
         // disconnect and missing item completions must still close their rows,
         // without inventing a successful command result.
-        for index in tools.indices where !tools[index].isFinished {
+        for index in tools.indices where !tools[index].isFinished || tools[index].completionUnconfirmed {
             tools[index].isFinished = true
             tools[index].completionUnconfirmed = true
             tools[index].turnCompletedNormally = value == .completed
             if let id = toolEntryIDs[tools[index].id] { putTool(index, newEntryID: id) }
         }
         outcome = value; isRunning = false; pendingCards = []
+    }
+    private mutating func closeEarlierTools(before itemID: String? = nil) {
+        // Later CLI work proves earlier tools stopped running, but does not
+        // prove success. Keep pending approvals and accept a real result later.
+        let end = itemID.flatMap { id in tools.firstIndex { $0.id == id } } ?? tools.endIndex
+        for index in tools.indices.prefix(end) where !tools[index].isFinished {
+            guard !pendingCards.contains(where: { $0.scope.itemID == tools[index].id }) else { continue }
+            tools[index].isFinished = true
+            tools[index].completionUnconfirmed = true
+            tools[index].turnCompletedNormally = true
+            if let id = toolEntryIDs[tools[index].id] { putTool(index, newEntryID: id) }
+        }
     }
     private mutating func putThinking(_ text: String, item: String?, complete: Bool, newEntryID: UUID) {
         let key = item ?? "thinking"

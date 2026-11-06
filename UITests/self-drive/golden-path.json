@@ -274,6 +274,42 @@
     },
     {
       "action": "waitFor",
+      "identifier": "chat.request.0.allow",
+      "timeout": 15,
+      "delay": 1,
+      "optional": true
+    },
+    {
+      "action": "press",
+      "identifier": "chat.request.0.allow",
+      "optional": true
+    },
+    {
+      "action": "waitFor",
+      "identifier": "chat.request.0.allow",
+      "timeout": 15,
+      "delay": 1,
+      "optional": true
+    },
+    {
+      "action": "press",
+      "identifier": "chat.request.0.allow",
+      "optional": true
+    },
+    {
+      "action": "waitFor",
+      "identifier": "chat.request.0.allow",
+      "timeout": 15,
+      "delay": 1,
+      "optional": true
+    },
+    {
+      "action": "press",
+      "identifier": "chat.request.0.allow",
+      "optional": true
+    },
+    {
+      "action": "waitFor",
       "anyOf": ["chat.tool.completed", "chat.tool.unconfirmed"],
       "within": "chat.transcript",
       "timeout": 120
