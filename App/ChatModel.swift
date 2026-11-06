@@ -10,6 +10,10 @@ import AitvarasStore
 final class ChatModel {
     let manager: AgentSessionManager
     private let stores: Stores
+    let gitActions: AgentGitActionCoordinator
+    private(set) var changes: ChangesState?
+    private(set) var gitBusy = false
+    private(set) var canDiscardChanges = false
     private let backends: [AgentProvider: any AgentBackend]
     private let signInCoordinator: ProviderSignIn
     private var selection = ChatSelectionState()
@@ -40,6 +44,7 @@ final class ChatModel {
     init(manager: AgentSessionManager, stores: Stores, backends: [AgentProvider: any AgentBackend]) {
         self.manager = manager; self.stores = stores; self.backends = backends
         signInCoordinator = ProviderSignIn(persistence: stores)
+        gitActions = AgentGitActionCoordinator(persistence: stores, audit: { _ = try stores.record($0) })
         approvalSubscription = Task { [weak self, manager] in
             for await suggestions in await manager.approvalUpdates() {
                 guard !Task.isCancelled, let self else { return }
@@ -117,7 +122,7 @@ final class ChatModel {
     var isBusy: Bool { state?.isRunning == true || chatID.map { sending[$0] != nil } == true }
     var canSubmit: Bool {
         guard let id = chatID else { return false }
-        return !stopping.contains(id) && sending[id] == nil && signingIn == nil
+        return !gitBusy && !stopping.contains(id) && sending[id] == nil && signingIn == nil
             && (!isBusy || provider != .local)
     }
     private var settingsKey: String { "\(chatID?.uuidString ?? "").\(provider.rawValue)" }
@@ -161,7 +166,7 @@ final class ChatModel {
         // View changes cancel a browser flow and invalidate its automatic send.
         if loginToken != nil { cancelSignIn() }
         if let pending = try? stores.pendingSend(), pending.session.chatID != id { invalidatePending() }
-        state = nil; error = nil; authProvider = nil
+        state = nil; error = nil; authProvider = nil; changes = nil; canDiscardChanges = false
         do {
             let saved = try id.flatMap { try stores.value(forKey: "agent.provider.\($0.uuidString)") }
             selection.select(id, provider: saved.flatMap(AgentProvider.init(rawValue:)) ?? .local)
@@ -205,14 +210,58 @@ final class ChatModel {
 
     private func loadSettings() throws {
         guard let id = chatID, let chat = try stores.workspaceChat(id: id) else { return }
-        let cwd = try stores.workspaceFolders(projectID: chat.projectID).first?.path ?? fallbackDirectory(id).path
+        let folders = try stores.workspaceFolders(projectID: chat.projectID).map { URL(fileURLWithPath: $0.path) }
+        let owned = try stores.agentWorktree(chatID: id)
+        if try stores.requiresAgentWorktree(chatID: id), owned == nil { throw AgentGitError.creationFailed }
+        let cwd = owned?.cwdPath ?? folders.first?.path ?? fallbackDirectory(id).path
         // Refresh identities while retaining unsent choices (which are saved immediately).
         settings[settingsKey] = try stores.agentSession(chatID: id, provider: provider)
             ?? AgentChatSession(chatID: id, provider: provider, cwd: cwd,
                                 model: provider == .local ? "local" : "default")
+        settings[settingsKey]?.cwd = cwd
+        settings[settingsKey]?.additionalRootsJSON = try owned?.additionalRootsJSON
+            ?? String(decoding: JSONEncoder().encode(folders.dropFirst().map(\.path)), as: UTF8.self)
     }
     private func fallbackDirectory(_ id: UUID) -> URL {
         AitvarasPaths.stateDirectory.appendingPathComponent("AgentChats/\(id.uuidString)", isDirectory: true)
+    }
+
+    func refreshChanges() async {
+        guard let owner = chatID, let directory = projectDirectory, !gitBusy else { return }
+        do {
+            let owned = try await gitActions.mapping(chatID: owner)
+            let value = try await gitActions.changes(in: directory)
+            guard chatID == owner, projectDirectory == directory else { return }
+            changes = value; canDiscardChanges = owned?.worktreePath == value.directory.path
+            if error == "Changes could not be refreshed." { error = nil }
+        } catch is CancellationError { return }
+        catch {
+            guard chatID == owner else { return }
+            // Keep the last review visible on a failed refresh; never mistake
+            // an unavailable git command for a clean checkout.
+            if changes != nil, self.error == nil { self.error = "Changes could not be refreshed." }
+            canDiscardChanges = false
+        }
+    }
+    func applyGitChanges(_ expected: ChangesState, owner: UUID, message: String?) async {
+        guard chatID == owner, !isBusy, !gitBusy else { return }
+        gitBusy = true
+        do {
+            if let message {
+                try await gitActions.commit(chatID: owner, expected: expected, message: message, confirmed: true)
+            } else {
+                try await gitActions.discard(chatID: owner, expected: expected, confirmed: true)
+            }
+            if chatID == owner { error = nil }
+        } catch {
+            if chatID == owner {
+                self.error = error as? AgentGitError == .staleChanges
+                    ? "Files changed. Review the refreshed diff and try again."
+                    : "Git operation failed. Review the files and try again."
+            }
+        }
+        gitBusy = false
+        await refreshChanges()
     }
 
     /// No browser or user message is initiated by opening Chat or Settings.
@@ -270,6 +319,8 @@ final class ChatModel {
                 clearComposer(chatID: id, provider: provider, sent: input)
                 return
             }
+            // Verification also rejects failed/incomplete creation after restart.
+            _ = try await gitActions.mapping(chatID: id)
             session.instructions = try stores.workspaceContextPacket(chatID: id).promptText
             session.sessionID = try stores.agentSession(chatID: id, provider: provider)?.sessionID
             guard !stoppedSends.contains(input.id) else { return }

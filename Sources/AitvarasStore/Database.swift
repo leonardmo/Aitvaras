@@ -954,6 +954,29 @@ public final class AitvarasDatabase: Sendable {
                 BEGIN SELECT RAISE(ABORT, 'Chat already has an active input'); END;
                 """)
         }
+        m.registerMigration("v31-agent-worktrees") { db in
+            try db.alter(table: "agentChatSession") { t in
+                t.add(column: "additionalRootsJSON", .text).notNull().defaults(to: "[]")
+            }
+            try db.create(table: "agentWorktree") { t in
+                t.primaryKey("chatID", .text).references("workspaceChat", onDelete: .restrict)
+                t.column("projectID", .text).notNull().references("workspaceProject", onDelete: .restrict)
+                t.column("repositoryPath", .text).notNull()
+                t.column("worktreePath", .text).notNull().unique()
+                t.column("cwdPath", .text).notNull()
+                t.column("branch", .text).notNull()
+                t.column("additionalRootsJSON", .text).notNull()
+                t.column("state", .text).notNull().check { ["creating", "ready", "failed"].contains($0) }
+            }
+            try db.execute(sql: """
+                CREATE TRIGGER agentWorktreeIdentity BEFORE UPDATE ON agentWorktree
+                WHEN OLD.chatID IS NOT NEW.chatID OR OLD.projectID IS NOT NEW.projectID
+                  OR OLD.repositoryPath IS NOT NEW.repositoryPath OR OLD.worktreePath IS NOT NEW.worktreePath
+                  OR OLD.cwdPath IS NOT NEW.cwdPath OR OLD.branch IS NOT NEW.branch OR OLD.additionalRootsJSON IS NOT NEW.additionalRootsJSON
+                  OR OLD.state != 'creating' OR NEW.state = 'creating'
+                BEGIN SELECT RAISE(ABORT, 'Worktree ownership is immutable'); END;
+                """)
+        }
         return m
     }
 }

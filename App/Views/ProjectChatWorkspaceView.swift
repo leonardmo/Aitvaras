@@ -7,6 +7,7 @@ import AitvarasAgents
 struct WorkspaceRailView: View {
     var initialRecent = false
     @Environment(AppModel.self) private var model
+    @State private var creatingChat: WorkspaceProject?
     @State private var showingNewProject = false
     @State private var showingProjectManager = false
     @State private var editingProject: WorkspaceProject?
@@ -57,6 +58,9 @@ struct WorkspaceRailView: View {
         }
         .disabled(model.isWorkspaceSelectionBusy)
         .task { model.refreshWorkspaces() }
+        .popover(item: $creatingChat) { project in
+            NewAgentChatView(project: project) { creatingChat = nil }
+        }
         .sheet(isPresented: $showingNativeImport) { NativeSessionImportView() }
         .sheet(isPresented: $showingNewProject) {
             WorkspaceProjectEditor { title, instructions, folders in
@@ -96,7 +100,7 @@ struct WorkspaceRailView: View {
                 Label(project.title, systemImage: "folder").font(.caption.weight(.semibold)).lineLimit(1)
                 Spacer(minLength: 0)
                 Button("New Chat", systemImage: "square.and.pencil") {
-                    model.createWorkspaceChat(title: "New chat", kind: .temporary, purpose: "", projectID: project.id)
+                    creatingChat = project
                 }
                 .labelStyle(.iconOnly).buttonStyle(.borderless)
                 .accessibilityIdentifier("chat.new.\(project.id)")
@@ -174,6 +178,7 @@ private struct SidebarChatRow: View {
 struct ChatDetailView: View {
     @Environment(AppModel.self) private var model
     @State private var importedHistory: WorkspaceSessionLink?
+    @State private var creatingChat: WorkspaceProject?
 
     private var nativeLinks: [WorkspaceSessionLink] {
         model.selectedWorkspaceChatID.map { model.nativeSessionLinks(for: $0) } ?? []
@@ -186,7 +191,10 @@ struct ChatDetailView: View {
                           workspaceError: model.workspaceMessage.map { _ in "Chat changes could not be saved." })
                 .navigationTitle(model.selectedWorkspaceChat?.title ?? "Chat")
                 .toolbar {
-                    Button("New Chat", systemImage: "square.and.pencil") { model.newChat() }
+                    Button("New Chat", systemImage: "square.and.pencil") {
+                        creatingChat = model.workspaceProjects.first { $0.id == model.selectedWorkspaceChat?.projectID }
+                    }
+                        .popover(item: $creatingChat) { project in NewAgentChatView(project: project) { creatingChat = nil } }
                         .disabled(model.isWorkspaceSelectionBusy).accessibilityIdentifier("chat.new")
                     if !nativeLinks.isEmpty {
                         Menu("Imported History", systemImage: "clock.arrow.circlepath") {
@@ -444,6 +452,44 @@ private struct WorkspaceValidationMessage: View {
                 .foregroundStyle(.orange)
                 .textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+}
+
+/// One small creation popover; isolation is optional and defaults off.
+private struct NewAgentChatView: View {
+    @Environment(AppModel.self) private var model
+    let project: WorkspaceProject
+    let dismiss: () -> Void
+    @State private var useWorktree = false
+    @State private var gitRepository = false
+    @State private var creating = false
+    @State private var failure: String?
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("New chat").font(.headline)
+            if gitRepository {
+                Toggle("Use worktree", isOn: $useWorktree).controlSize(.small)
+                    .accessibilityIdentifier("chat.new.worktree")
+            }
+            if let failure { Text(failure).font(.caption).foregroundStyle(.secondary) }
+            HStack {
+                Button("Cancel", action: dismiss).keyboardShortcut(.cancelAction)
+                Spacer()
+                if creating { ProgressView().controlSize(.mini) }
+                Button("Create") {
+                    creating = true
+                    Task {
+                        if await model.createAgentChat(projectID: project.id, worktree: useWorktree) { dismiss() }
+                        else { failure = "Chat could not be created. No fallback checkout was selected." }
+                        creating = false
+                    }
+                }.keyboardShortcut(.defaultAction).accessibilityIdentifier("chat.new.create")
+            }
+        }.padding(16).frame(width: 260).disabled(creating)
+        .task {
+            guard let folders = try? model.stores?.workspaceFolders(projectID: project.id), let first = folders.first else { return }
+            gitRepository = (try? await GitWorkspace().repository(at: URL(fileURLWithPath: first.path))) != nil
         }
     }
 }

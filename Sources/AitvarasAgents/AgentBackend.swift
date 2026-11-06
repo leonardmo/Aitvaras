@@ -49,15 +49,16 @@ public struct AgentModel: Sendable, Equatable {
 public struct AgentSessionConfiguration: Sendable {
     public let directory: URL
     public let resume: AgentSessionID?
+    public let additionalDirectories: [URL]
     public let model: String
     public let effort: String?
     public let mode: AgentMode
     public let instructions: String
 
     public init(directory: URL, resume: AgentSessionID? = nil, model: String,
-                effort: String? = nil, mode: AgentMode = .ask, instructions: String = "") {
+                effort: String? = nil, mode: AgentMode = .ask, instructions: String = "", additionalDirectories: [URL] = []) {
         self.directory = directory; self.resume = resume; self.model = model
-        self.effort = effort; self.mode = mode; self.instructions = instructions
+        self.effort = effort; self.mode = mode; self.instructions = instructions; self.additionalDirectories = additionalDirectories
     }
 }
 

@@ -1,6 +1,7 @@
 import Foundation
 import AitvarasCore
 import AitvarasStore
+import AitvarasAgents
 
 /// First workspace checkpoint: durable organization and isolated text-only
 /// project conversations. Registering a folder never grants a tool access.
@@ -181,6 +182,22 @@ extension AppModel {
             openWorkspaceChat(chat.id)
             return true
         } catch { reportWorkspaceFailure("Chat could not be created", error); return false }
+    }
+
+    func createAgentChat(projectID: UUID, worktree: Bool) async -> Bool {
+        guard allowWorkspaceSelection(), let stores, let chatModel else { return false }
+        if !worktree { return createWorkspaceChat(title: "New chat", kind: .temporary, purpose: "", projectID: projectID) }
+        do {
+            let chat = try stores.createWorkspaceChat(projectID: projectID, title: "New chat", kind: .temporary, requiresWorktree: true)
+            let folders = try stores.workspaceFolders(projectID: projectID).map { URL(fileURLWithPath: $0.path) }
+            _ = try await chatModel.gitActions.create(chatID: chat.id, projectID: projectID, folders: folders,
+                storage: AitvarasPaths.stateDirectory.appendingPathComponent("AgentWorktrees", isDirectory: true))
+            refreshWorkspaces(); openWorkspaceChat(chat.id)
+            return true
+        } catch {
+            // Creation's one inline error belongs to its popover.
+            workspaceMessage = nil; refreshWorkspaces(); return false
+        }
     }
 
     @discardableResult

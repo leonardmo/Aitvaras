@@ -120,6 +120,18 @@ instructions; git worktree per chat; changes panel with commit and discard;
 several chats running in parallel and in the background; resume after restart;
 context and quota gauges; rename and archive.
 
+Git (M3.9–M3.11): new-chat creation offers a small **Use worktree** toggle only
+for a git project, off by default. Ownership, primary cwd and additional folder
+mappings survive restart; failed creation blocks Send instead of using the original
+checkout. The right inspector appears for changed files and shows a file list,
+unified diff, commit message and Commit. The entered message goes directly to git,
+with normal hooks and no added attribution. Discard has one native confirmation
+and restores only the selected chat's verified owned worktree. It leaves the
+worktree, branch, ignored files and other checkouts in place. Ordinary checkouts
+support Commit; Discard is unavailable there. Binary/large files remain listed
+with an unavailable preview. Refresh and mutations reject command failures and
+stale snapshots. Worktree creation currently requires an existing HEAD commit.
+
 Composer inputs (M3.7/M3.8): drag, paste or the paperclip adds removable file
 chips. Selection snapshots the bytes; subsequent source edits do not change a
 Send or a safe sign-in retry. Up to eight files share a 512 KiB budget to fit

@@ -13,12 +13,27 @@ public struct AgentChatSession: Codable, Sendable, Equatable {
     public var effort: String?
     public var mode: AgentMode
     public var instructions: String
+    public var additionalRootsJSON: String = "[]"
 
     public init(id: UUID = UUID(), chatID: UUID, provider: AgentProvider, cwd: String,
                 model: String, effort: String? = nil, mode: AgentMode = .ask, instructions: String = "") {
         self.id = id; self.chatID = chatID; self.provider = provider; self.cwd = cwd
         self.model = model; self.effort = effort; self.mode = mode
         self.instructions = instructions
+    }
+    private enum CodingKeys: String, CodingKey {
+        case id, chatID, provider, host, profile, nativeID, cwd, model, effort, mode, instructions, additionalRootsJSON
+    }
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(UUID.self, forKey: .id); chatID = try c.decode(UUID.self, forKey: .chatID)
+        provider = try c.decode(AgentProvider.self, forKey: .provider)
+        host = try c.decodeIfPresent(String.self, forKey: .host); profile = try c.decodeIfPresent(String.self, forKey: .profile)
+        nativeID = try c.decodeIfPresent(String.self, forKey: .nativeID)
+        cwd = try c.decode(String.self, forKey: .cwd); model = try c.decode(String.self, forKey: .model)
+        effort = try c.decodeIfPresent(String.self, forKey: .effort); mode = try c.decode(AgentMode.self, forKey: .mode)
+        instructions = try c.decodeIfPresent(String.self, forKey: .instructions) ?? ""
+        additionalRootsJSON = try c.decodeIfPresent(String.self, forKey: .additionalRootsJSON) ?? "[]"
     }
     public var sessionID: AgentSessionID? {
         get {
@@ -29,7 +44,7 @@ public struct AgentChatSession: Codable, Sendable, Equatable {
     }
     public var configuration: AgentSessionConfiguration {
         .init(directory: URL(fileURLWithPath: cwd), resume: sessionID, model: model, effort: effort, mode: mode,
-              instructions: instructions)
+              instructions: instructions, additionalDirectories: (try? JSONDecoder().decode([String].self, from: Data(additionalRootsJSON.utf8)))?.map { URL(fileURLWithPath: $0) } ?? [])
     }
 }
 

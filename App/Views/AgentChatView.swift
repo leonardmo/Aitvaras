@@ -20,6 +20,22 @@ struct AgentChatView: View {
     @FocusState private var composerFocused: Bool
 
     var body: some View {
+        HSplitView {
+            transcript.frame(minWidth: 330)
+            if let changes = chat.changes, changes.hasChanges {
+                AgentChangesView(chat: chat, owner: chatID, changes: changes).id(chatID)
+            }
+        }
+        .task(id: chatID) {
+            chat.select(chatID)
+            while !Task.isCancelled {
+                await chat.refreshChanges()
+                do { try await Task.sleep(for: .seconds(2)) } catch { return }
+            }
+        }
+    }
+
+    private var transcript: some View {
         VStack(spacing: 0) {
             ScrollViewReader { proxy in
                 ScrollView {
@@ -126,14 +142,6 @@ struct AgentChatView: View {
                     return .handled
                 }
             HStack(spacing: 5) {
-                Button {
-                    guard let owner = chat.chatID else { return }
-                    attachmentTarget = (owner, chat.provider)
-                    showingCompletion = false; choosingAttachments = true
-                } label: { Image(systemName: "paperclip") }
-                    .disabled(!canSend || chat.provider == .local)
-                    .help("Attach files").accessibilityLabel("Attach files")
-                    .accessibilityIdentifier("chat.composer.attach")
                 Picker("Provider", selection: Binding(get: { chat.provider }, set: { chat.setProvider($0) })) {
                     ForEach([AgentProvider.claude, .codex, .local], id: \.self) { provider in
                         Text(provider.rawValue.capitalized).tag(provider)
@@ -165,6 +173,17 @@ struct AgentChatView: View {
                     .frame(minWidth: 32, maxWidth: 60)
                     .accessibilityIdentifier("chat.effort").disabled(chat.isBusy)
                 }
+            }
+            .controlSize(.small).menuStyle(.borderlessButton)
+            HStack(spacing: 5) {
+                Button {
+                    guard let owner = chat.chatID else { return }
+                    attachmentTarget = (owner, chat.provider)
+                    showingCompletion = false; choosingAttachments = true
+                } label: { Image(systemName: "paperclip") }
+                    .disabled(!canSend || chat.provider == .local)
+                    .help("Attach files").accessibilityLabel("Attach files")
+                    .accessibilityIdentifier("chat.composer.attach")
                 if chat.provider != .local {
                     Menu {
                         Picker("Mode", selection: $chat.mode) {
