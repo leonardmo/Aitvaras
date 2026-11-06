@@ -84,15 +84,33 @@ import AitvarasCore
         let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
         let scenario = try SelfDriveScenario.parse(Data(contentsOf: root.appendingPathComponent("UITests/self-drive/golden-path.json")))
         let names = scenario.steps.filter { $0.action == .screenshot }.compactMap(\.name)
-        #expect(names == ["01-launch", "02-chat-empty", "03-new-chat", "04-claude-selected",
-                          "05-claude-streaming", "06-claude-replied", "07-codex-selected", "08-codex-replied",
+        #expect(names == ["01-launch", "02-chat-empty", "03-new-chat", "04-codex-first-selected",
+                          "05-codex-first-streaming", "06-codex-first-replied", "07-codex-selected", "08-codex-replied",
                           "09-approval-card", "10-after-approval", "11-running", "12-stopped", "13-local-selected",
-                          "14-composer-controls", "15-settings", "16-settings-providers"])
-        let replies = scenario.steps.filter { $0.action == .waitFor && $0.text != nil }
-        #expect(replies.allSatisfy { $0.within == "chat.transcript" })
+                          "14-composer-controls", "15-settings", "16-settings-providers",
+                          "17-claude-send", "18-claude-replied"])
+        let replies = scenario.steps.filter { $0.action == .waitFor && $0.text != nil && $0.absent != true }
+        #expect(replies.allSatisfy { $0.within == "chat.transcript" || $0.within == "chat.tool.completed" })
         #expect(replies.filter { $0.text == "PELICAN" }.allSatisfy { $0.caseSensitive == true })
         #expect(scenario.steps.contains { $0.identifier == "chat.project.$project.more" })
         #expect(scenario.steps.contains { $0.identifier == "chat.sidebar.$chat1.status.needsYou" })
+        let claude = try #require(scenario.steps.firstIndex { $0.identifier == "chat.provider.claude" })
+        let approval = try #require(scenario.steps.firstIndex { $0.action == .press && $0.identifier == "chat.request.0.allow" })
+        #expect(approval < claude)
+        #expect(scenario.steps[..<approval].contains { $0.action == .waitFor && $0.identifier == "chat.request.0.allow" })
+        #expect(scenario.steps[(approval + 1)..<claude].contains {
+            $0.action == .waitFor && $0.identifier == "chat.tool.completed" && $0.within == "chat.transcript"
+        })
+        var lastTyped: String?
+        for (index, step) in scenario.steps.enumerated() {
+            if step.action == .type { lastTyped = step.text }
+            if step.action == .press, step.identifier == "chat.composer.send" {
+                let check = try #require(scenario.steps.dropFirst(index + 1).first)
+                #expect(check.action == .waitFor && check.absent == true)
+                #expect(check.within == "chat.composer.input" && check.text == lastTyped)
+            }
+        }
+        #expect(!scenario.steps[(claude + 1)...].contains { $0.identifier == "chat.provider.codex" })
         _ = try SelfDriveScenario.parse(Data(contentsOf: root.appendingPathComponent("UITests/self-drive/probe.json")))
         _ = try SelfDriveScenario.parse(Data(contentsOf: root.appendingPathComponent("UITests/self-drive/picker-probe.json")))
     }

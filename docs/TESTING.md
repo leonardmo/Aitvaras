@@ -622,9 +622,19 @@ to the respective subsystem, with the app installed normally:
 The Chat tab uses `ChatModel` and the application-owned `AgentSessionManager`
 for project chats. Opening or switching chats/providers sends no message;
 status checks and the authenticated backend model list never prompt or sign in.
-Send persists the exact wire input and bounded catch-up before delivery.
+Send persists the exact wire input and bounded catch-up before delivery. Its
+acceptance callback clears the original composer immediately after the journal and
+transcript are saved, before provider startup; auth failure never restores that
+text into the draft. Sign-in retries use the saved entry (including attachments).
+An unavailable native-history reader retains the canonical transcript without
+blocking Send; passive read failures do not create an inline alarm. Malformed or
+conflicting history still blocks a send that cannot safely reconcile it.
+`AgentSessionManagerTests` covers acceptance, auth failure/retry, preflight
+rejection/sidebar failure, and missing or unavailable native history.
+`ChatSettingsTests` sends after provider and chat switches using a cached catalog.
 Restart restores the transcript and provider choice; drafts remain per chat for the app lifetime. Model, effort
-and mode are saved when chosen. Existing unassigned chat, voice, shortcuts,
+and mode are saved when chosen; restored models and efforts are validated against
+the provider catalog on each selection and before Send. Existing unassigned chat, voice, shortcuts,
 capture targets and memory archiving keep their legacy paths. Legacy project
 history migration is still M5 work.
 
@@ -648,6 +658,15 @@ during streaming: new text must not pull the transcript back to the bottom.
 Projects list their chats directly, with primary chats pinned first and scoped
 running/needs-you/failed dots. Rename, pin, archive and restore from row menus.
 Project chats expose no context inspector, boundary review or setup flow.
+Review section 4 of `UNIFIED-CHAT-PLAN.md` in empty, streaming, approval, failed and
+signed-out states, in light/dark and at 800×500. The composer card and transcript
+must share a centred column; assistant text has no bubble. Check visible paperclip,
+worktree and Send/Stop symbols, ring-only gauges with tooltips, stationary control
+slots and keyboard access to the horizontal strip at minimum width. Inline errors
+and Sign in must fit above the window edge. Chat's dock must remain absent on an
+idle fresh profile and after a manual provider failure; start automatic work to
+check that the visible dock consumes height without covering the composer. Other
+tabs retain their dock and attention presentation.
 
 Settings → Providers has one row per provider: status icon, known usage gauge
 and Sign in (Local needs no login). Model choices come from the backend; effort
@@ -655,8 +674,8 @@ is hidden for models without it, and Local omits effort and mode. Unknown gauges
 are absent. In a signed-out temporary profile, Send must show one inline sign-in
 action. Verify the browser URL, Cancel, a five-minute timeout and successful
 completion followed by one automatic send. The maintainer must complete the
-real browser login once for each provider. Pending text survives cancellation
-and restart; opening Chat never initiates login. Only a journal entry still
+real browser login once for each provider. Accepted text stays in the transcript
+through cancellation and restart; opening Chat never initiates login. Only a journal entry still
 `prepared`, never `deliveryUnknown` or `acknowledged`, is eligible for retry.
 A single durable intent per profile is bounded to 64 KiB and five minutes;
 changing chat/provider, settings or the draft invalidates it. Native profile,
@@ -954,7 +973,12 @@ to the previous answer, so composer text cannot satisfy them.
 `AITVARAS_AGENT_TEST_PROVIDERS=real` enables real CLI subscription turns with
 personal integrations disabled. Set debug-only `AITVARAS_SELF_DRIVE_PROJECT` to an
 existing disposable folder: SelfDriver registers the project before the scenario,
-without creating chats. The scenario sends six chats, checks one-click switching,
+without creating chats. Set optional debug-only `AITVARAS_SELF_DRIVE_CODEX_MODEL`
+to a cheap model ID advertised by the installed CLI; only new Codex sessions use
+that choice. Codex steps run before the final Claude steps. Every Send checks
+that its text is absent within `chat.composer.input`; the shell step waits for its
+Allow card and then for the successful completed tool row in the transcript.
+The scenario sends six Codex chats plus a final Claude chat, checks one-click switching,
 Show more and a real waiting-approval sidebar icon plus the Chat badge. `$project`
 and `$chat1`/`$chat2` resolve IDs observed during the scenario. Setup uses the
 in-window `gearshape` button and the visible AI providers card.

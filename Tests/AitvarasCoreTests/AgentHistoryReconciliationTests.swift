@@ -259,6 +259,49 @@ done()
         try await manager.shutdown()
     }
 
+    @Test func freshCodexReplyAndSecondSendSurviveUnsupportedNativeHistory() async throws {
+        let fixture = try BackendExecutableFixture(script: #"""
+codex_init()
+count=0
+while True:
+    r=read(); method=r.get('method')
+    if method=='account/read': account(r)
+    elif method=='thread/start':
+        emit({'id':r['id'],'result':{'thread':{'id':'fresh-thread','modelProvider':'openai'}}})
+    elif method=='thread/read':
+        # The full-history reader deliberately refuses a paginated surface.
+        # That refusal must never prevent the next chat turn.
+        emit({'id':r['id'],'result':{'thread':{'id':'fresh-thread','historyMode':'paginated','turns':[]}}})
+    elif method=='turn/start':
+        count+=1
+        assert r['params']['input'][0]['text']=='Message '+str(count)
+        turn='turn-'+str(count)
+        items=[{'id':'user-'+str(count),'type':'userMessage','content':[{'type':'text','text':'Message '+str(count)}]},
+               {'id':'reply-'+str(count),'type':'agentMessage','text':'Answer '+str(count)}]
+        emit({'id':r['id'],'result':{'turn':{'id':turn}}})
+        for item in items: emit({'method':'item/completed','params':{'threadId':'fresh-thread','turnId':turn,'item':item}})
+        emit({'method':'turn/completed','params':{'threadId':'fresh-thread','turn':{'id':turn,'status':'completed','items':items}}})
+        if count==2: open('done','w').close()
+    else: fail('account/start/read/turn only',r)
+"""#)
+        defer { fixture.remove() }
+        let stores = try inMemoryStores()
+        let (chat, _) = try agentStoreChat(stores, provider: .codex, cwd: fixture.directory.path)
+        let backend = CodexBackend(executable: fixture.executable, environment: fixture.environment)
+        let manager = try AgentSessionManager(persistence: stores, backend: { _ in backend }, audit: { _ in })
+        try await manager.send(chatID: chat.id, provider: .codex, input: .init(text: "Message 1"))
+        try await waitAgentCondition { try await manager.state(chatID: chat.id).outcome == .completed }
+        let before = try stores.agentEntries(chatID: chat.id)
+        await #expect(throws: AgentFailure.unsupported) { try await manager.refreshNativeHistory(chatID: chat.id) }
+        #expect(try stores.agentEntries(chatID: chat.id) == before)
+        try await manager.send(chatID: chat.id, provider: .codex, input: .init(text: "Message 2"))
+        try await waitAgentCondition { try await manager.state(chatID: chat.id).outcome == .completed }
+        #expect(try stores.agentEntries(chatID: chat.id).filter { ["user", "assistant"].contains($0.kind) }.map(\.text)
+            == ["Message 1", "Answer 1", "Message 2", "Answer 2"])
+        try fixture.assertComplete()
+        try await manager.shutdown(); try await backend.shutdown()
+    }
+
     @Test func codexNativeOpenAndSendResumeWithoutDuplicatingStreamedItems() async throws {
         let fixture = try BackendExecutableFixture(script: #"""
 codex_init()

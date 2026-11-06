@@ -28,6 +28,44 @@ import AitvarasStore
         #expect(try stores.agentEntries(chatID: one.id).isEmpty)
     }
 
+    @Test func providerSwitchAndChatSwitchRestoreUsableModelsBeforeSend() async throws {
+        let stores = try inMemoryStores()
+        let (one, claude) = try agentStoreChat(stores)
+        let (two, _) = try agentStoreChat(stores)
+        let codexModels = [AgentModel(id: "codex-model", name: "Codex model", efforts: ["low"])]
+        let received = SettingsSendRecorder()
+        let backend = LocalBackend { configuration, _ in
+            await received.record(configuration.model)
+            return AsyncThrowingStream { $0.yield("Answer"); $0.finish() }
+        }
+        let manager = try AgentSessionManager(persistence: stores, backend: { _ in backend }, audit: { _ in })
+        var selection = ChatSelectionState()
+        selection.select(one.id, provider: .claude)
+        // Reproduce a provider switch with the other provider's saved ID.
+        var codex = AgentChatSession(chatID: one.id, provider: .codex, cwd: "/tmp", model: claude.model, effort: "high")
+        selection.select(one.id, provider: .codex)
+        codex = ChatSettings.restoring(codex, models: codexModels)
+        #expect(codex.model == "codex-model")
+        #expect(codex.effort == nil)
+        try await manager.configure(codex)
+        try await manager.send(chatID: one.id, provider: selection.provider, input: .init(text: "After provider switch"))
+        try await waitSettingsTurn(manager, chatID: one.id)
+        // Reload a stale/default selection after visiting another chat, using
+        // the already cached provider catalog rather than fetching it again.
+        selection.select(two.id, provider: .claude)
+        var saved = try #require(try stores.agentSession(chatID: one.id, provider: .codex))
+        saved.model = "default"; try stores.saveAgentSession(saved)
+        selection.select(one.id, provider: .codex)
+        let restored = ChatSettings.restoring(try #require(try stores.agentSession(chatID: one.id, provider: .codex)), models: codexModels)
+        try await manager.configure(restored)
+        try await manager.send(chatID: one.id, provider: selection.provider, input: .init(text: "After chat switch"))
+        try await waitSettingsTurn(manager, chatID: one.id)
+        #expect(await received.models == ["codex-model", "codex-model"])
+        #expect(ChatSettings.restoring(restored, models: []).model == "codex-model")
+        #expect(ChatSettings.restoring(saved, models: codexModels, automaticallySelect: false).model == "default")
+        try await manager.shutdown()
+    }
+
     @Test func modelChangeClearsUnsupportedEffortAndLocalHasNoMode() {
         var session = AgentChatSession(chatID: UUID(), provider: .claude, cwd: "/tmp", model: "old", effort: "high", mode: .plan)
         let plain = AgentModel(id: "plain", name: "Plain")
@@ -80,4 +118,16 @@ import AitvarasStore
         state.end(.failed(.offline))
         #expect(ChatSidebarStatus(state) == .failed)
     }
+}
+
+private actor SettingsSendRecorder {
+    private(set) var models: [String] = []
+    func record(_ model: String) { models.append(model) }
+}
+private func waitSettingsTurn(_ manager: AgentSessionManager, chatID: UUID) async throws {
+    for _ in 0..<200 {
+        if try await manager.state(chatID: chatID).outcome == .completed { return }
+        try await Task.sleep(for: .milliseconds(5))
+    }
+    throw AgentFailure.offline
 }

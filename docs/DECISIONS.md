@@ -349,7 +349,11 @@ a chat's refreshed sessions, keyed by native message identity (turn and item
 for Codex, persisted UUID for Claude). Streamed rows retain their display IDs;
 removed branch messages are retired from the projection, with prior observations
 and execution journals retained. Failed, partial or inconsistent reads keep the
-last projection. A second complete observation checks for changes during refresh;
+last projection. An unavailable native reader (including a newly created session
+not yet present in native storage or an unsupported full-history surface) does
+not block Send: it uses the retained canonical transcript. Identity conflicts,
+malformed history and persistence failures still fail closed. Passive refresh
+failures do not replace the inline send/sign-in error. A second complete observation checks for changes during refresh;
 it does not reserve the native session against another client. Changed native
 content evicts an idle run so the next Send resumes the updated native session.
 
@@ -420,3 +424,18 @@ sign-in action and safe retry. Setup includes a visible “AI providers” card
 (`settings.providers`) opening `AgentProviderSettingsView`. Section 4 of the unified
 chat plan still governs gauges, icons, flat menus and the absence of start buttons
 and checkboxes.
+
+Chat's composer and transcript share a centred column. The composer is one rounded
+card with input above a fixed control row: attach, project, provider, model, effort,
+mode; then reserved gauge slots and Send/Stop on the right. At narrow widths the
+left strip scrolls horizontally, keeping the action visible. Unsupported controls
+and unknown gauges reserve space without drawing empty controls. Accepted input
+leaves the composer as soon as its transcript entry and delivery journal are saved,
+including when provider startup subsequently requires sign-in. Sign-in retries
+restore that saved input, never the current draft. Restored chat/provider settings
+are checked against the cached provider catalog on selection and before Send.
+
+On Chat, the activity dock appears only while automatic work is actually running;
+manual chat/provider failures remain inline and do not add dock attention. Other
+tabs retain their activity presentation. The dock reserves real layout height so
+native split views cannot draw the composer or error actions underneath it.

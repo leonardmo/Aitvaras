@@ -141,7 +141,14 @@ From the maintainer's feedback; a violation fails review.
   chats” reader group, collapsed behind “Show more” and hidden when empty. Keep
   `LocalChatView`, voice and the companion.
 - Composer holds everything per-chat: provider switcher (Claude, Codex, Local),
-  model, effort, permission mode, gauges for context and usage.
+  model, effort, permission mode, gauges for context and usage. One rounded card
+  puts input above a fixed row: attach, project, provider, model, effort, mode on
+  the left; reserved gauge slots and Send/Stop on the right. The left strip scrolls
+  at narrow widths; the action stays visible. Transcript and card share a centred
+  maximum width. Assistant text has no bubble; gauges have no interior labels.
+- Chat shows the activity dock only while automatic work is running. Manual
+  provider/sign-in failures stay inline without increasing its attention count.
+  The dock consumes actual layout height, including with native split views.
 - Status is gauges and icons, not sentences. No walls of text. Sidebar icons reuse
   M3.12: animated running, prominent accent needs-you, filled dot for completed/unseen,
   failed, interrupted; idle/seen has none. Each has an accessibility label and
@@ -304,7 +311,12 @@ Disposable project, isolated app profile, real CLIs.
 
 The debug-only in-process self-driver accepts `AITVARAS_SELF_DRIVE_PROJECT` as an
 existing disposable folder. After isolated bootstrap it registers that project
-before running the scenario; it seeds no chats or approval states. The scenario
+before running the scenario; it seeds no chats or approval states. Debug-only
+`AITVARAS_SELF_DRIVE_CODEX_MODEL` selects the model for new Codex chats during
+that isolated run. Codex coverage runs before the final Claude steps so a signed-out
+Claude cannot delay it. Each Send checks that its text is absent from
+`chat.composer.input`; shell approval must appear and then produce a completed tool
+row in `chat.transcript`. The scenario
 creates its six chats through real Send. `$project` resolves to that project ID;
 `$chat1`, `$chat2`, etc. refer to chat IDs observed in selection order during the
 scenario, allowing assertions against real sidebar rows without fixed UUIDs.

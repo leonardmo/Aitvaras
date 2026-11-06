@@ -19,6 +19,17 @@ public enum ChatSettings {
         return result
     }
 
+    /// Catalogs are provider-scoped; validate every restored selection even
+    /// when discovery is cached. Empty catalogs preserve a signed-out choice.
+    public static func restoring(_ session: AgentChatSession, models: [AgentModel],
+                                 automaticallySelect: Bool = true) -> AgentChatSession {
+        if let model = models.first(where: { $0.id == session.model }) {
+            return selecting(model: model, in: session)
+        }
+        guard automaticallySelect, let first = models.first else { return session }
+        return selecting(model: first, in: session)
+    }
+
     public static func contextFraction(_ usage: AgentUsage?) -> Double? {
         guard let used = usage?.contextTokens, let limit = usage?.contextLimit, used >= 0, limit > 0 else { return nil }
         return min(1, Double(used) / Double(limit))

@@ -114,6 +114,29 @@ struct MainWindow: View {
         if let route = flags.first(where: { CommandLine.arguments.contains($0.0) }) { return route.1 }
         return AitvarasPreferences.current.string(forKey: "navigation.lastSelection").flatMap(SidebarItem.init(rawValue:)) ?? .today
     }
+    private var showActivityDock: Bool {
+        !chatSelected || model.currentActivityRuns.contains {
+            $0.trigger == .automatic && $0.state == .running
+        }
+    }
+    @ViewBuilder private var detailDock: some View {
+        if showActivityDock {
+            switch resolvedDockPlacement {
+            case .bottomDock:
+                ActivityDockView(placement: $activityDockPlacement, presentation: .bottomDock, excludesChatFailures: chatSelected)
+                    .padding(.horizontal, 12).padding(.bottom, 12).padding(.top, 10)
+            case .minimized:
+                HStack {
+                    Spacer(minLength: 0)
+                    ActivityDockView(placement: $activityDockPlacement, presentation: .minimized, excludesChatFailures: chatSelected)
+                        .frame(maxWidth: 360)
+                }
+                .padding(.horizontal, 12).padding(.bottom, 12).padding(.top, 10)
+            case .sidebarFooter:
+                EmptyView()
+            }
+        }
+    }
     var body: some View {
         // Keep the rail outside NSSplitView's retained divider allocation.
         // Otherwise a previous Chat width can survive in icon-only sections.
@@ -139,8 +162,8 @@ struct MainWindow: View {
                 .frame(maxHeight: .infinity, alignment: .top)
                 .frame(width: chatSelected ? 246 : 50)
                 .safeAreaInset(edge: .bottom, spacing: 0) {
-                    if resolvedDockPlacement == .sidebarFooter {
-                        ActivityDockView(placement: $activityDockPlacement, presentation: .sidebarFooter)
+                    if showActivityDock, resolvedDockPlacement == .sidebarFooter {
+                        ActivityDockView(placement: $activityDockPlacement, presentation: .sidebarFooter, excludesChatFailures: chatSelected)
                             .padding(8)
                     }
                 }
@@ -161,24 +184,12 @@ struct MainWindow: View {
                     Divider()
                 }
                 destination.frame(maxWidth: .infinity, maxHeight: .infinity)
+                // NSSplitView-backed chat content does not consume a SwiftUI
+                // safe-area inset. Reserve actual layout height for its dock.
+                if chatSelected { detailDock }
             }
-            // The dock belongs to the detail column: a window-level inset lets
-            // column content keep its full height and run underneath the bar.
             .safeAreaInset(edge: .bottom, spacing: 0) {
-                switch resolvedDockPlacement {
-                case .bottomDock:
-                    ActivityDockView(placement: $activityDockPlacement, presentation: .bottomDock)
-                        .padding(.horizontal, 12).padding(.bottom, 12).padding(.top, 10)
-                case .minimized:
-                    HStack {
-                        Spacer(minLength: 0)
-                        ActivityDockView(placement: $activityDockPlacement, presentation: .minimized)
-                            .frame(maxWidth: 360)
-                    }
-                    .padding(.horizontal, 12).padding(.bottom, 12).padding(.top, 10)
-                case .sidebarFooter:
-                    EmptyView()
-                }
+                if !chatSelected { detailDock }
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)

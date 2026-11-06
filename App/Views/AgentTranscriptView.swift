@@ -29,6 +29,7 @@ struct AgentTranscriptView: View {
                             Image(systemName: payload?["isError"]?.boolValue == true ? "exclamationmark.circle" : "terminal")
                         }
                         Text(title).lineLimit(1).truncationMode(.middle)
+
                     }.font(.caption).foregroundStyle(.secondary)
                 }
             } else if entry.kind == "user" {
@@ -56,7 +57,8 @@ struct AgentTranscriptView: View {
             }
         }
         .accessibilityElement(children: .contain)
-        .accessibilityIdentifier(entry.kind == "importedHistory" ? "chat.importedHistory.\(entry.id)"
+        .accessibilityIdentifier(entry.kind == "tool" && payload?["finished"]?.boolValue == true
+            && payload?["isError"]?.boolValue != true ? "chat.tool.completed" : entry.kind == "importedHistory" ? "chat.importedHistory.\(entry.id)"
             : entry.kind == "handover" ? "chat.handover.\(entry.id)" : "chat.entry.\(entry.id)")
     }
     private var importedHistory: some View {
@@ -100,7 +102,9 @@ struct AgentTranscriptView: View {
         let input = payload?["input"] ?? .null
         let action = AgentActionPresentation(tool: .init(name: entry.text, input: input))
         let detail = action.detail.components(separatedBy: .newlines).first ?? ""
-        return detail.isEmpty ? (entry.text.isEmpty ? "Tool" : entry.text) : "\(entry.text) · \(detail)"
+        let summary = detail.isEmpty ? (entry.text.isEmpty ? "Tool" : entry.text) : "\(entry.text) · \(detail)"
+        guard payload?["finished"]?.boolValue == true else { return summary }
+        return summary + (payload?["isError"]?.boolValue == true ? " · Failed" : " · Completed")
     }
     @ViewBuilder private var toolDetails: some View {
         let input = payload?["input"] ?? .null

@@ -42,11 +42,11 @@
     },
     {
       "action": "press",
-      "identifier": "chat.provider.claude"
+      "identifier": "chat.provider.codex"
     },
     {
       "action": "screenshot",
-      "name": "04-claude-selected",
+      "name": "04-codex-first-selected",
       "delay": 2
     },
     {
@@ -63,8 +63,15 @@
       "identifier": "chat.composer.send"
     },
     {
+      "action": "waitFor",
+      "text": "Reply with only this word spelled backwards: nacilep",
+      "within": "chat.composer.input",
+      "absent": true,
+      "timeout": 15
+    },
+    {
       "action": "screenshot",
-      "name": "05-claude-streaming",
+      "name": "05-codex-first-streaming",
       "delay": 2
     },
     {
@@ -75,12 +82,12 @@
     },
     {
       "action": "screenshot",
-      "name": "06-claude-replied",
+      "name": "06-codex-first-replied",
       "delay": 3
     },
     {
       "action": "dumpTree",
-      "name": "06-claude-tree"
+      "name": "06-codex-first-tree"
     },
     {
       "action": "press",
@@ -103,6 +110,13 @@
     {
       "action": "press",
       "identifier": "chat.composer.send"
+    },
+    {
+      "action": "waitFor",
+      "text": "Which word did you just reply with? Reply with only that word, in capitals.",
+      "within": "chat.composer.input",
+      "absent": true,
+      "timeout": 15
     },
     {
       "action": "waitFor",
@@ -140,6 +154,13 @@
     {
       "action": "press",
       "identifier": "chat.composer.send"
+    },
+    {
+      "action": "waitFor",
+      "text": "Reply with only this word spelled backwards: niugnep",
+      "within": "chat.composer.input",
+      "absent": true,
+      "timeout": 15
     },
     {
       "action": "waitFor",
@@ -189,6 +210,13 @@
     },
     {
       "action": "waitFor",
+      "text": "Run this exact shell command and nothing else: touch e2e-made.txt",
+      "within": "chat.composer.input",
+      "absent": true,
+      "timeout": 15
+    },
+    {
+      "action": "waitFor",
       "identifier": "chat.request.0.allow",
       "timeout": 120
     },
@@ -221,6 +249,18 @@
       "identifier": "chat.request.0.allow"
     },
     {
+      "action": "waitFor",
+      "identifier": "chat.tool.completed",
+      "within": "chat.transcript",
+      "timeout": 120
+    },
+    {
+      "action": "waitFor",
+      "text": "e2e-made.txt \u00b7 Completed",
+      "within": "chat.transcript",
+      "timeout": 10
+    },
+    {
       "action": "screenshot",
       "name": "10-after-approval",
       "delay": 15
@@ -237,6 +277,13 @@
     {
       "action": "press",
       "identifier": "chat.composer.send"
+    },
+    {
+      "action": "waitFor",
+      "text": "Write a 400 word story about a dragon.",
+      "within": "chat.composer.input",
+      "absent": true,
+      "timeout": 15
     },
     {
       "action": "waitFor",
@@ -270,21 +317,10 @@
     },
     {
       "action": "waitFor",
-      "text": "example",
-      "within": "chat.transcript",
-      "timeout": 120
-    },
-    {
-      "action": "press",
-      "identifier": "chat.new.$project"
-    },
-    {
-      "action": "type",
-      "text": "Reply with only this word spelled backwards: elpmaxe"
-    },
-    {
-      "action": "press",
-      "identifier": "chat.composer.send"
+      "text": "Reply with only this word spelled backwards: elpmaxe",
+      "within": "chat.composer.input",
+      "absent": true,
+      "timeout": 15
     },
     {
       "action": "waitFor",
@@ -306,6 +342,13 @@
     },
     {
       "action": "waitFor",
+      "text": "Reply with only this word spelled backwards: elpmaxe",
+      "within": "chat.composer.input",
+      "absent": true,
+      "timeout": 15
+    },
+    {
+      "action": "waitFor",
       "text": "example",
       "within": "chat.transcript",
       "timeout": 120
@@ -321,6 +364,38 @@
     {
       "action": "press",
       "identifier": "chat.composer.send"
+    },
+    {
+      "action": "waitFor",
+      "text": "Reply with only this word spelled backwards: elpmaxe",
+      "within": "chat.composer.input",
+      "absent": true,
+      "timeout": 15
+    },
+    {
+      "action": "waitFor",
+      "text": "example",
+      "within": "chat.transcript",
+      "timeout": 120
+    },
+    {
+      "action": "press",
+      "identifier": "chat.new.$project"
+    },
+    {
+      "action": "type",
+      "text": "Reply with only this word spelled backwards: elpmaxe"
+    },
+    {
+      "action": "press",
+      "identifier": "chat.composer.send"
+    },
+    {
+      "action": "waitFor",
+      "text": "Reply with only this word spelled backwards: elpmaxe",
+      "within": "chat.composer.input",
+      "absent": true,
+      "timeout": 15
     },
     {
       "action": "waitFor",
@@ -399,6 +474,52 @@
     {
       "action": "dumpTree",
       "name": "16-settings-tree"
+    },
+    {
+      "action": "press",
+      "identifier": "bubble.left.and.text.bubble.right"
+    },
+    {
+      "action": "press",
+      "identifier": "chat.new.$project"
+    },
+    {
+      "action": "press",
+      "identifier": "chat.provider.claude"
+    },
+    {
+      "action": "type",
+      "text": "Reply with only this word spelled backwards: nacilep"
+    },
+    {
+      "action": "press",
+      "identifier": "chat.composer.send"
+    },
+    {
+      "action": "waitFor",
+      "text": "Reply with only this word spelled backwards: nacilep",
+      "within": "chat.composer.input",
+      "absent": true,
+      "timeout": 15
+    },
+    {
+      "action": "screenshot",
+      "name": "17-claude-send",
+      "delay": 3
+    },
+    {
+      "action": "dumpTree",
+      "name": "17-claude-tree"
+    },
+    {
+      "action": "waitFor",
+      "text": "pelican",
+      "within": "chat.transcript",
+      "timeout": 90
+    },
+    {
+      "action": "screenshot",
+      "name": "18-claude-replied"
     }
   ]
 }
