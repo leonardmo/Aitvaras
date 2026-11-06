@@ -322,9 +322,11 @@ extension Stores {
 }
 
 extension Stores {
-    /// Compatibility bridge over the same legacy sources as the old chat. No
-    /// imports, captures, memories or other chats enter this projection.
-    static func agentTimeline(chatID: UUID, entries: [AgentTranscriptEntry], in db: Database) throws -> [AgentTranscriptEntry] {
+    /// Compatibility bridge over saved evidence only: no provider profile,
+    /// executable or credentials are needed. Imports are display-only groups;
+    /// context callers deliberately leave them out.
+    static func agentTimeline(chatID: UUID, entries: [AgentTranscriptEntry], includeImports: Bool = false,
+                              in db: Database) throws -> [AgentTranscriptEntry] {
         let local = try chatTimeline(chatID: chatID, limit: -1, completedOnly: false, in: db)
         let native = try nativeChatTimeline(chatID: chatID, in: db)
         let observed = try claudeObservedTimeline(chatID: chatID, in: db)
@@ -341,8 +343,31 @@ extension Stores {
             let id = digest.withUnsafeBytes { UUID(uuid: $0.loadUnaligned(as: uuid_t.self)) }
             let payload = JSONValue.object(["legacyID": .string(item.id),
                 "completed": .bool((item.state == nil || item.state == .completed) && !item.notDelivered),
+                "state": item.state.map { .string($0.rawValue) } ?? .null,
+                "notDelivered": .bool(item.notDelivered),
+                "failureReason": item.failureReason.map(JSONValue.string) ?? .null,
                 "sourceThread": .string(item.sourceThread ?? "")]).jsonString
             return .init(id: id, chatID: chatID, provider: provider, kind: item.role, text: item.text, payloadJSON: payload)
+        }
+        if includeImports {
+            let links = try WorkspaceSessionLink.filter(Column("chatID") == chatID)
+                .order(Column("id")).fetchAll(db)
+            let imports = try links.compactMap { link -> AgentTranscriptEntry? in
+                guard let provider = AgentProvider(rawValue: link.provider.rawValue) else { return nil }
+                let messages = try WorkspaceNativeMessage.filter(Column("sessionLinkID") == link.id)
+                    .order(Column("position"), Column("id")).fetchAll(db)
+                let payload = JSONValue.object([
+                    "legacyID": .string("import:\(link.id)"), "completed": .bool(false),
+                    "messages": .array(messages.map { message in .object([
+                        "id": .string(message.id.uuidString), "role": .string(message.role),
+                        "text": .string(message.text), "revision": .number(Double(message.revision)),
+                        "externalID": .string(message.externalID)
+                    ]) })
+                ]).jsonString
+                return .init(id: link.id, chatID: chatID, provider: provider, kind: "importedHistory",
+                             text: link.displayName, payloadJSON: payload)
+            }
+            result.insert(contentsOf: imports, at: 0)
         }
         result += entries
         for index in result.indices { result[index].position = index }

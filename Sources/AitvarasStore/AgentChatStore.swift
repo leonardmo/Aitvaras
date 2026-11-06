@@ -42,13 +42,15 @@ public struct AgentChatStore: Sendable {
             guard try WorkspaceChat.fetchOne(dbc, key: chatID) != nil else { throw AgentStoreError.missingChat }
             let entries = try AgentTranscriptEntry.filter(Column("chatID") == chatID)
                 .filter(Column("isActive") == true).order(Column("position")).fetchAll(dbc)
-            return try Stores.agentTimeline(chatID: chatID, entries: entries, in: dbc)
+            return try Stores.agentTimeline(chatID: chatID, entries: entries, includeImports: true, in: dbc)
         }
     }
 
     /// Allocate order transactionally. Repeat native messages update the same row.
     @discardableResult public func saveEntry(_ entry: AgentTranscriptEntry) throws -> AgentTranscriptEntry {
-        try db.queue.write { dbc in
+        // Derived legacy rows must never become a second persisted copy.
+        guard !entry.isLegacyProjection else { throw AgentStoreError.invalidValue }
+        return try db.queue.write { dbc in
             var value = entry
             guard try WorkspaceChat.fetchOne(dbc, key: value.chatID) != nil else { throw AgentStoreError.missingChat }
             if let sessionID = value.sessionID {

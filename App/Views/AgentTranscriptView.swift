@@ -8,7 +8,9 @@ struct AgentTranscriptView: View {
 
     var body: some View {
         Group {
-            if ["handover", "thinking", "tool"].contains(entry.kind) {
+            if entry.kind == "importedHistory" {
+                importedHistory
+            } else if ["handover", "thinking", "tool"].contains(entry.kind) {
                 DisclosureGroup(isExpanded: $expanded) {
                     ScrollView {
                         VStack(alignment: .leading, spacing: 10) {
@@ -51,7 +53,32 @@ struct AgentTranscriptView: View {
                 ChatMarkdown(text: entry.text).frame(maxWidth: .infinity, alignment: .leading)
             }
         }
-        .accessibilityIdentifier(entry.kind == "handover" ? "chat.handover.\(entry.id)" : "chat.entry.\(entry.id)")
+        .accessibilityIdentifier(entry.kind == "importedHistory" ? "chat.importedHistory.\(entry.id)"
+            : entry.kind == "handover" ? "chat.handover.\(entry.id)" : "chat.entry.\(entry.id)")
+    }
+    private var importedHistory: some View {
+        DisclosureGroup(isExpanded: $expanded) {
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 14) {
+                    Text("Read-only · not sent to providers")
+                        .font(.caption).foregroundStyle(.secondary)
+                    ForEach(entry.importedMessages) { message in
+                        if message.kind == "user" {
+                            Text(message.text).textSelection(.enabled)
+                                .padding(12).background(.quaternary, in: RoundedRectangle(cornerRadius: 14))
+                                .frame(maxWidth: .infinity, alignment: .trailing)
+                                .accessibilityIdentifier("chat.entry.\(message.id)")
+                        } else {
+                            ChatMarkdown(text: message.text).frame(maxWidth: .infinity, alignment: .leading)
+                                .accessibilityIdentifier("chat.entry.\(message.id)")
+                        }
+                    }
+                }.padding(.vertical, 6)
+            }.frame(maxHeight: 360)
+        } label: {
+            Label(entry.text, systemImage: "clock.arrow.circlepath")
+                .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+        }
     }
     private var followupLabel: String? {
         switch payload?["followup"]?.stringValue {
