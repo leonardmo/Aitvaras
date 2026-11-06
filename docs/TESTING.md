@@ -2,6 +2,24 @@
 
 ## Unified chat and provider controls
 
+Current app wiring is `ProjectChatWorkspaceView` → `AgentChatView`/`ChatModel`
+→ `AgentSessionManager` → direct CLI backends (D31/D32). New Chat is an unsaved,
+project-scoped composer; first Send creates the chat. Provider settings are in
+Setup → AI providers and the Providers tab. Earlier project-less conversations
+use the retained `LocalChatView`; the adapter checkpoints below are historical
+compatibility checks, not the current UI flow.
+
+**Acceptance still open:** Codex has run through the in-process UI driver, but
+the Claude path through this UI has never run live because its CLI login
+expired. Signed-out UI coverage and earlier direct-CLI recordings do not prove
+a live Claude reply, cross-provider catch-up or browser completion. The real
+Ollama Local gate has not run; AgentLoop remains the default. Old chat code is
+not yet removed: M6.3 waits for the owner's review. Native menus, file panels,
+drag and drop and real focus are covered only by XCUITest, which needs the
+owner's password; that gate remains open. Light/dark and minimum-size layout
+have not been checked in the real app; the matrix below still requires host
+execution and screenshot review.
+
 The direct CLI backends in `AitvarasAgents` have offline executable replay tests
 (`ClaudeBackendTests`, `CodexBackendTests`). Every sanitized recording under
 `Tests/AitvarasCoreTests/Fixtures/agents` is replayed through the real process
@@ -10,8 +28,9 @@ Claude content blocks and native IDs, subscription refusal, browser login,
 Codex thread multiplexing, mode changes, rate limits, stale approvals, exact
 integer/string request IDs, duplicate and late replies, disconnect/reconnect,
 malformed output and oversized lines. These tests neither launch installed
-providers nor send model prompts. Native history discovery remains unsupported
-until M5; the backends are not yet connected to the app.
+providers nor send model prompts. Native discovery and canonical history
+reconciliation are implemented and connected to the app; their coverage is
+described below, separately from live-provider acceptance.
 
 `AgentConformanceTests` exercises `AgentActionCoordinator` with both fake
 providers, including executable hook/approval replies and real Claude
@@ -47,19 +66,20 @@ and the safe fallback for unknown diagnostics.
 
 Host acceptance for this foundation still needs a private database copy upgrade,
 a real force-quit during delivery, parallel real chats, idle resume, and application
-quit cancellation once the manager is wired into the UI. The package tests do not
+quit cancellation through the wired UI. The package tests do not
 establish those UI or live-provider properties.
 
 Live acceptance still needs the official CLIs and an isolated synthetic project
 to verify subscription authentication, browser completion, native persistence,
 hook coverage and sandbox enforcement. Offline replay cannot establish those.
 
-One workspace chat now displays local and app-owned Codex/Claude messages in one
-bounded timeline. Backend thread IDs are internal, not another user-facing
-conversation selector. The chat-level Local/Codex/Claude segmented control has
-an adjacent settings gear; its single panel initially selects that backend and
-can switch tabs without changing the active provider. Claude uses the selected
-official subscription profile and must never silently route to another backend.
+One project chat displays Local, Codex and Claude entries in one canonical
+timeline. Native thread IDs are internal. The composer contains the provider,
+project, model, effort and permission controls; provider segments collapse into
+a menu at narrow widths. Setup's AI providers card opens the Providers page.
+Direct Chat uses the official default CLI login/store and never silently routes
+to another provider. Switching sends nothing; Send authorizes bounded catch-up
+under D31. The earlier adapter sharing-consent checks below remain legacy-only.
 
 The M4.1 Local candidate is opt-in with
 `AITVARAS_LOCAL_CHAT_BACKEND=codex-oss`; unset or `agent-loop` retains
@@ -80,9 +100,13 @@ accepts the pinned configuration, inspect inference locality, test real tool
 approval and denial, Stop, two Sends and provider switches, and measure total
 model memory against the budget. Stop Ollama and confirm Unavailable and no
 fallback; restart it and refresh status. Review light/dark and minimum-window
-states. Default adoption and M4.2 resource coordination remain host decisions.
+states. The real Ollama gate has not run. Default adoption and validation of
+resource coordination with voice/capture remain open host decisions.
 
-## Claude subscription adapter checkpoint
+## Legacy Claude subscription adapter checkpoint
+
+Historical adapter coverage retained until M6.3; superseded for current Chat
+by D31/D32 and [UNIFIED-CHAT-PLAN.md](UNIFIED-CHAT-PLAN.md).
 
 Run `node scripts/test-claude-interactive.mjs` for no-provider helper contracts,
 then package tests and an app build. `--claude-workspace-check --uishot <path>`
@@ -337,7 +361,10 @@ inside a native message, its record after acknowledgement, and that Aitvaras
 shows only the typed text. `--codex-ui-fixture --open-chat` renders a chat with
 a handover line. All use synthetic transports; no provider is contacted.
 
-## Native history checkpoint A2 (in progress)
+## Legacy native history checkpoint A2
+
+Historical adapter/import checkpoint. Current unified discovery and canonical
+reconciliation use `AitvarasAgents`; see the D30 and M5 coverage sections here.
 
 Read-only native Codex and Claude Code history: discovery, preview, reviewed
 import and separate read-only source panes. The reader suites drive synthetic
@@ -353,8 +380,9 @@ project.
 
 Live discovery against installed Codex and Claude Code and provider pagination
 over real histories remain separate from these synthetic checks. Reviewed
-folder/provider ceilings are covered by A2b below; enforced execution sandboxing
-and native trust review are not implemented yet.
+folder/provider ceilings are covered by A2b below. The execution/trust work was
+not part of this checkpoint; current direct Chat uses D31's action coordinator
+and native permissions, with the live gates listed above still open.
 
 ### Native import hardening
 
@@ -875,7 +903,8 @@ inline preview Retry with keyboard and VoiceOver in light/dark and at minimum
 window size. Compare existing saved evidence before/after discovery on a private
 DB copy. Real Claude persisted-file envelopes and installed Codex history
 responses require host conformance; the stream recordings alone do not prove
-those on-disk envelopes. Full external-history reconciliation belongs to M5.3.
+those on-disk envelopes. M5.3 canonical reconciliation is implemented; see
+`AgentHistoryReconciliationTests` in the D30 section for its offline coverage.
 
 ## What an agent session should do
 
@@ -938,7 +967,8 @@ Host checks in an isolated profile (package tests do not compile App):
   cancelling quit, send new input explicitly; old input and approvals must not
   replay. Run the existing capture synthetic checks and private DB-copy gate.
 
-Legacy adapters and their diagnostic views remain until the M6.3 UI gate passes.
+Legacy adapters and their diagnostic views are not yet removed. M6.3 waits for
+the owner's review; M6.1–M6.2 compatibility does not complete the cleanup gate.
 
 ## Debug in-process chat self-drive
 
@@ -953,6 +983,56 @@ Launch the Debug executable in the background without `open` or an activation
 request. Release builds exclude the driver and helpers. Self-drive bypasses the
 normal scene, companion and hotkeys, prohibits application activation and hosts
 MainWindow in a nonactivating panel at alpha zero with mouse events ignored.
+
+Optional debug-only window controls:
+
+- `AITVARAS_SELF_DRIVE_APPEARANCE=light` or `dark` sets only the driver window's
+  AppKit appearance, after bootstrap. Unset inherits the app/system appearance.
+- `AITVARAS_SELF_DRIVE_SIZE=WIDTHxHEIGHT` sets the content size in points,
+  defaulting to **1080 × 720**. The real normal-scene content minimum is
+  **800 × 500**, declared in `App/AitvarasApp.swift`; the driver uses the same
+  minimum. Malformed, non-finite or smaller dimensions and unknown appearance
+  values fail startup with `startup-error.txt` instead of silently substituting
+  another layout. Size excludes the native title bar.
+
+`UITests/self-drive/layout.json` opens Chat/new composer, sends one Codex
+message, verifies `pelican` inside `chat.transcript`, then uses a fresh chat for
+a signed-out Claude Send and waits for `Sign in to Claude` plus `chat.signin`
+inside `chat.error`. It captures five distinct `layout-*` PNGs: new composer,
+Codex reply, Claude sign-in row, Setup and Providers. It presses the Setup tab
+(`checklist`) explicitly before waiting for its AI providers card, then the
+Providers tab (`cpu`) before waiting for `settings.providers.page`.
+Codex must be signed in and Claude signed out; an unexpected Claude reply
+fails the sign-in checks. This scenario never initiates browser login or logout.
+At minimum width the provider switch is a native menu. The scenario briefly
+hides the sidebar with `sidebar.left` to expose the provider segments, selects
+through their real controls, then restores the sidebar before Send and every
+screenshot. This assumes a fresh profile with the sidebar initially visible;
+it does not establish native provider-menu interaction at minimum width.
+
+Run this **unverified** matrix on the host with a fresh disposable profile and
+project for each invocation (the runner supplies both). Use a separate artifact
+directory per run because the runner replaces its scenario output:
+
+```sh
+AITVARAS_SELF_DRIVE_APPEARANCE=light AITVARAS_SELF_DRIVE_SIZE=1080x720 scripts/run-self-drive.sh layout
+mv .build-e2e/self-drive/layout .build-e2e/self-drive/layout-light-default
+AITVARAS_SELF_DRIVE_APPEARANCE=dark AITVARAS_SELF_DRIVE_SIZE=1080x720 scripts/run-self-drive.sh layout
+mv .build-e2e/self-drive/layout .build-e2e/self-drive/layout-dark-default
+AITVARAS_SELF_DRIVE_APPEARANCE=light AITVARAS_SELF_DRIVE_SIZE=800x500 scripts/run-self-drive.sh layout
+mv .build-e2e/self-drive/layout .build-e2e/self-drive/layout-light-minimum
+AITVARAS_SELF_DRIVE_APPEARANCE=dark AITVARAS_SELF_DRIVE_SIZE=800x500 scripts/run-self-drive.sh layout
+mv .build-e2e/self-drive/layout .build-e2e/self-drive/layout-dark-minimum
+```
+
+Use fresh artifact destinations if repeating the matrix. Require every result
+to pass, then inspect all PNGs for clipped controls, sign-in contrast, text and
+background colors. Screenshot caching skips the native window background;
+`SelfDriveSurface` fills it with `windowBackgroundColor` resolved under the
+content view's effective appearance on every capture. Keep that drawing step
+for both light and dark. These cached content images do not prove native
+title-bar rendering or system interaction. The commands are a procedure, not
+a record of completed runs.
 
 **Host gate first:** run `UITests/self-drive/probe.json` without VoiceOver or
 Accessibility, Automation or Screen Recording grants. Inspect its results and
@@ -1018,6 +1098,8 @@ must inspect the provider segments' identifiers and press effects and the projec
 menu's real accessibility subtree. Use XCUITest for native menu selection.
 The original XCUITest stays as the final check for native
 menus, file panels, drag and drop, real focus and system-rendered screenshots.
+It is the only coverage for those interactions and needs the owner's password;
+the native-interaction gate has not passed.
 Self-drive covers in-process chat controls, bindings, turns, approvals and Stop
 only after the host gate passes. The supervisor must regenerate/build the App
 on the host; the recursive App source entry includes the new file without a

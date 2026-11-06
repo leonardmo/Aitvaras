@@ -6,6 +6,37 @@ most one click. Product intent comes from `docs/NEXT-WORKSPACE-PLAN.md`, D30, D3
 the maintainer's UI feedback. This document replaces the *technical* approach of
 `docs/CLAUDE-INTEGRATION.md` and `docs/CODEX-BIDIRECTIONAL-INTEGRATION.md`.
 
+## Current implementation and open gates
+
+The app now uses `AitvarasAgents` directly: `ChatModel` and `AgentChatView`,
+per-chat application-lifetime sessions, durable delivery/recovery, bounded
+provider catch-up, inline permissions/sign-in, native discovery/reconciliation,
+attachments/completions and owned git workspaces. The sidebar, unsaved new-chat
+composer and Setup provider page implement D32. Earlier project-less chats,
+voice, capture targets, project-memory isolation and the four restricted
+`CloudAgentService` features retain their compatibility paths.
+
+Implementation is not acceptance. These gates remain open:
+
+- **M6.3:** old chat code, adapters, helpers and diagnostics are not yet removed;
+  removal waits for the owner's review.
+- **Claude in this UI:** never run live because the CLI login expired. Offline
+  recordings and the signed-out sign-in row do not prove a Claude reply, live
+  catch-up or completed browser sign-in. Earlier direct-CLI recordings below
+  are protocol evidence, not unified-UI acceptance.
+- **Local:** the real Ollama gate has not run. AgentLoop remains the default;
+  the opt-in app-server/Ollama candidate still needs locality, tool reliability,
+  memory and voice/capture coexistence checks before adoption.
+- **Native interaction:** native menus, file panels, drag and drop and real
+  focus are covered only by XCUITest, which needs the owner's password. That
+  gate has not passed. Self-drive cannot substitute for it.
+- **Visual matrix:** light/dark and the real 800 × 500-point content minimum
+  have not been checked in the real app. `layout.json` supplies the repeatable
+  scenario; host execution and screenshot review remain required.
+
+Codex has run through the in-process UI driver. That is partial golden-path
+coverage, not completion of the Claude, Local, native-interaction or visual gates.
+
 ## 1. Why the last attempt failed
 
 Measured on 2026-11-04 with the installed CLIs:
@@ -25,8 +56,11 @@ Measured on 2026-11-04 with the installed CLIs:
    in Claude Code and Codex, so there is nothing to sync or link.
 2. **One backend protocol, one event stream, one UI.** Provider differences stop
    at the backend.
-3. **The provider's own permission system does the enforcing.** Aitvaras presents
-   its requests as inline cards and logs them; it doesn't build a second sandbox.
+3. **Keep native permissions and enforce Aitvaras's hard rules.** Every run is
+   wrapped by `AgentActionCoordinator`: Claude pre-tool hooks enforce denials
+   before execution; Codex uses its sandbox, permission requests and audited
+   item observations. Inline cards answer scoped requests; audit failure fails
+   closed. Native permissions alone do not replace the autonomy policy.
 4. **Real first.** Nothing counts as done until it has worked in the real app,
    through real clicks, against the real CLI.
 5. **Reuse what works.** `claude-workspace` has a tested process layer, stream
@@ -34,12 +68,12 @@ Measured on 2026-11-04 with the installed CLIs:
 
 ## 3. Architecture
 
-New SwiftPM target `AitvarasAgents` (actors, Swift 6 strict, no Node):
+The `AitvarasAgents` SwiftPM target (actors, Swift 6 strict, no Node):
 
 ```
-ChatView ─ ChatModel (@MainActor) ─ AgentSessionManager ─┬ ClaudeBackend  claude -p stream-json + control protocol
+AgentChatView ─ ChatModel (@MainActor) ─ AgentSessionManager ─┬ ClaudeBackend  claude -p stream-json + control protocol
                      │                                   ├ CodexBackend   codex app-server, stdio JSON-RPC
-                     │                                   └ LocalBackend   decided at gate M4
+                     │                                   └ LocalBackend   AgentLoop; opt-in Codex/Ollama candidate
                      └ transcript store, autonomy policy, activity log
 ```
 
@@ -63,8 +97,10 @@ ChatView ─ ChatModel (@MainActor) ─ AgentSessionManager ─┬ ClaudeBackend
 already logged in, there is no sign-in step at all. Otherwise a failed send, or
 the provider row in Settings, shows one button: Claude runs `claude auth login
 --claudeai`, Codex uses `account/login/start`. The browser opens, the app notices
-completion, and a message that certainly never left (`authRequired`, zero cost) is
-sent automatically. `auth status` is treated as a hint; a real send decides.
+completion. A bounded pending-send intent retries once only when its durable
+journal proves non-delivery and its chat, provider/account, model, attachments
+and original input still match. Zero cost does not prove non-delivery.
+`auth status` is treated as a hint; a real send decides.
 
 **Data.** Aitvaras keeps D30's single transcript per chat: additive tables for a
 chat's per-provider native session and normalized entries. Old tables are kept,
@@ -144,8 +180,9 @@ From the maintainer's feedback; a violation fails review.
   model, effort, permission mode, gauges for context and usage. One rounded card
   puts input above a fixed row: attach, project, provider, model, effort, mode on
   the left; reserved gauge slots and Send/Stop on the right. Provider segments
-  collapse to a menu at narrow widths; smaller panes wrap into compact rows without
-  clipping or scrolling controls. Send stays beside Stop whenever there is input.
+  collapse to a menu at narrow widths, then project becomes an icon menu, then
+  effort and mode become icon menus. Controls stay on one row without scrolling.
+  Send stays beside Stop whenever there is input.
   Changes stays closed until the toolbar count (`chat.changes`) is pressed.
   Transcript and card share a centred maximum width. Assistant text has no bubble;
   static gauges have a full track and a small percentage number.
@@ -250,7 +287,8 @@ Each layer catches what the one below can't.
 | **Backend conformance** | One scenario suite, parameterized over every backend: send, stream, tool approve and deny, stop, resume, two turns, failure typing. Fake in CI; real with `make live`. | Fake everywhere; live on host | Live at every gate and after CLI updates |
 | **Environment regression** | Live conformance launched from a launchd-style environment, plus a test that `USER` survives and denied variables don't. | Host | Every gate |
 | **Sign-in** | With temporary `CLAUDE_CONFIG_DIR` and `CODEX_HOME`: signed-out detection, login start yields a valid browser URL, cancel. Real browser completion once, by the maintainer. | Host | M2, M6 |
-| **Real-app E2E** | New XCUITest target: launches the real app with an isolated profile, real clicks and typing, **real window screenshots**. Fake CLIs for determinism, real ones for the golden path. | Host | Every UI task |
+| **In-process self-drive** | Debug nonactivating window, real Chat bindings, Codex turns, approvals, Stop and signed-out Claude row; cached content screenshots. `layout.json` adds appearance/size review. | Host | UI tasks; cannot prove native interaction |
+| **Real-app E2E** | XCUITest target: isolated profile, real clicks/typing and system-rendered window screenshots. Sole coverage for native menus, file panels, drag/drop and real focus; blocked on the owner's password. | Host | Required UI gate, still open |
 | **Visual review** | Supervisor reads real screenshots against section 4 for a state matrix: empty, long, streaming, approval, error, signed out, light, dark, minimum size. | Supervisor | Every UI gate |
 | **Golden path** | The acceptance script in section 8. | Host | M2 onward; before delivery |
 | **Migration** | Open a copy of the real DB with the new build, check old chats. The copy never leaves the machine or enters git. | Host | M5, M6 |
@@ -266,7 +304,8 @@ the worker's report.
 
 ## 7. Milestones
 
-Each ends in a gate the supervisor runs. Work isn't presented until its gate passes.
+These are delivery goals, not a list of passed gates. The current status and
+unproven checks are listed at the top; M6.3 remains deferred for owner review.
 
 | | Delivers | Gate |
 |---|---|---|
@@ -318,9 +357,10 @@ before running the scenario; it seeds no chats or approval states. Debug-only
 `AITVARAS_SELF_DRIVE_CODEX_MODEL` selects the model for new Codex chats during
 that isolated run. Codex coverage runs before the final Claude steps so a signed-out
 Claude cannot delay it. Each Send checks that its text is absent from
-`chat.composer.input`; shell approval must appear and then produce a completed tool
-row in `chat.transcript`. The scenario
-creates its six chats through real Send. `$project` resolves to that project ID;
+`chat.composer.input`; shell approval must appear and then produce a completed
+or unconfirmed tool row in `chat.transcript`. The current self-drive scenario
+creates seven Codex chats and one signed-out Claude chat through real Send.
+`$project` resolves to that project ID;
 `$chat1`, `$chat2`, etc. refer to chat IDs observed in selection order during the
 scenario, allowing assertions against real sidebar rows without fixed UUIDs.
 `waitFor.within` bounds traversal to the named accessibility subtree and
@@ -335,6 +375,19 @@ presses. If they do not, the smallest honest alternative is an XCUITest click on
 the actual segment/menu item, followed by the same transcript assertion. Never
 replace an unsuccessful press with a direct model mutation.
 
+`UITests/self-drive/layout.json` is the smaller visual matrix scenario: new
+composer, one Codex reply (the same transcript-scoped `pelican` check), signed-out
+Claude sign-in row, Setup and Providers. Debug-only
+`AITVARAS_SELF_DRIVE_APPEARANCE=light|dark` overrides only the driver window;
+`AITVARAS_SELF_DRIVE_SIZE=WIDTHxHEIGHT` sets its content size in points. The
+normal app minimum is **800 × 500**, from `AitvarasApp`; default **1080 × 720**.
+Run all four appearance/size combinations with separate local artifact directories
+and fresh isolated profiles. The scenario expects Codex signed in and Claude
+signed out; it does not start browser sign-in. See [TESTING.md](TESTING.md) for
+host commands. Provider selection briefly hides the sidebar to expose segments,
+then restores it before every screenshot; native menu interaction stays unproven.
+No matrix execution or visual pass is implied by the fixture.
+
 ## 9. Running Codex
 
 The harness in `.claude/skills/supervise` on branch `codex/unified-chat`: small
@@ -348,11 +401,11 @@ installed app isn't replaced without asking, and never during a recording.
 
 | Risk | Mitigation |
 |---|---|
-| Codex CLI 0.166 alpha can omit an approved command’s result from both `item/completed` and history while completing the turn normally. | Reconcile available items with turn-filtered `thread/items/list`; when still unknown, show the plain command and normal tool icon (`chat.tool.unconfirmed`). Only interrupted, failed or disconnected turns say “Ended without a result”; known denials stay denied. |
+| Codex can omit an approved command's result while completing the turn normally. | Read the current turn through `thread/read` with `includeTurns: true`, bounded to two seconds. Recovered items finish their rows; missing, failed or timed-out reads show “Ended without a result” (`chat.tool.unconfirmed`) without advertising success or failing another chat. Later progress also closes earlier non-pending rows as unconfirmed; a late result upgrades the same row. |
 | CLI protocols change (`app-server` is labelled experimental; the control protocol is the SDK's). | Unknown events kept and ignored; recordings and schema check flag drift; `make live` after CLI updates. Failures appear as typed errors. |
 | Anthropic's docs bar third-party developers from offering claude.ai login or limits in their products without approval. | Aitvaras holds no login: it runs the official CLI for its owner. Treat this as personal use, and revisit before distributing builds. No "Claude Code" branding in the UI. |
 | Parallel use of one session in two clients. | Separate chats are fine. Aitvaras only holds a session during a turn and re-reads after; it doesn't claim a lock. |
-| XCUITest needs a one-time macOS permission. | Supervisor asks once, at M0. |
+| XCUITest needs the owner's password. | Native menus, file panels, drag/drop and real focus remain an owner-assisted gate; in-process self-drive cannot prove them. |
 | A local model may be too weak for agent work. | Gate at M4 with a defined fallback. |
 | Usage limits stretch the calendar time. | Automatic waits. Time is hard to predict until M1 shows the burn rate. |
 
@@ -362,6 +415,9 @@ Codex reviewed this plan against the code; the supervisor then checked the open
 questions against the real CLIs. These override earlier sections where they differ.
 
 **Verified on real CLIs** (recordings in `Tests/AitvarasCoreTests/Fixtures/agents/`):
+
+These pre-UI protocol checks do not establish a live Claude turn through the
+current UI; that path remains blocked by expired CLI login.
 
 - **Claude, hard rule on side effects:** `initialize` can register `PreToolUse` and
   `PostToolUse` hook callbacks. They fire before every tool, also when `can_use_tool`

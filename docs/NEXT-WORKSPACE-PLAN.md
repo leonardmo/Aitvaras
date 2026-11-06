@@ -1,5 +1,12 @@
 # Structured AI workspace: implementation checkpoints
 
+**Chat implementation superseded by [UNIFIED-CHAT-PLAN.md](UNIFIED-CHAT-PLAN.md)
+and D31/D32.** Its current-status section governs direct CLI sessions, new-chat
+and project navigation, permissions, native discovery and verification gaps.
+The adapter/link/consent milestones below are historical; old code remains
+pending M6.3 owner review. Capture, evidence and future knowledge/supervision
+work below retain their own scope.
+
 Accepted direction, October 2026. This document refines
 [WORK-HUB-PLAN.md](WORK-HUB-PLAN.md), preserving its privacy, evidence,
 observability and private/public repository boundaries. A checklist item is not

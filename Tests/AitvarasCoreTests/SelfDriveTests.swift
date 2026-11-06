@@ -184,5 +184,44 @@ import AitvarasCore
         _ = try SelfDriveScenario.parse(Data(contentsOf: root.appendingPathComponent("UITests/self-drive/probe.json")))
         _ = try SelfDriveScenario.parse(Data(contentsOf: root.appendingPathComponent("UITests/self-drive/picker-probe.json")))
     }
+
+    @Test func layoutScenarioChecksRepliesAndSignInBeforeScreenshots() throws {
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        let scenario = try SelfDriveScenario.parse(Data(contentsOf: root.appendingPathComponent("UITests/self-drive/layout.json")))
+        let golden = try SelfDriveScenario.parse(Data(contentsOf: root.appendingPathComponent("UITests/self-drive/golden-path.json")))
+        let names = scenario.steps.filter { $0.action == .screenshot }.compactMap(\.name)
+        #expect(names.count == 5 && Set(names).count == names.count)
+        #expect(Set(names).isDisjoint(with: golden.steps.compactMap(\.name)))
+        let reply = try #require(scenario.steps.firstIndex { $0.action == .waitFor && $0.text == "pelican" })
+        let goldenReply = try #require(golden.steps.first { $0.action == .waitFor && $0.text == "pelican" })
+        #expect(scenario.steps[reply].within == goldenReply.within)
+        #expect(scenario.steps[reply].timeout == goldenReply.timeout)
+        #expect(scenario.steps[reply + 1].name == "layout-02-codex-reply")
+        let signIn = try #require(scenario.steps.firstIndex { $0.action == .waitFor && $0.identifier == "chat.signin" })
+        #expect(scenario.steps[signIn].within == "chat.error")
+        #expect(scenario.steps[signIn - 1].text == "Sign in to Claude")
+        #expect(scenario.steps[signIn - 1].within == "chat.error")
+        #expect(scenario.steps[signIn + 1].name == "layout-03-claude-signin")
+        #expect(reply < signIn)
+        var typed: String?
+        var sidebarVisible = true
+        for (index, step) in scenario.steps.enumerated() {
+            if step.action == .press, step.identifier == "sidebar.left" { sidebarVisible.toggle() }
+            if step.action == .screenshot { #expect(sidebarVisible) }
+            if step.action == .press, let identifier = step.identifier,
+               ["chat.provider.codex", "chat.provider.claude"].contains(identifier) {
+                #expect(!sidebarVisible)
+            }
+            if step.action == .type { typed = step.text }
+            if step.action == .press, step.identifier == "chat.composer.send" {
+                let check = try #require(scenario.steps.dropFirst(index + 1).first)
+                #expect(check.action == .waitFor && check.absent == true)
+                #expect(check.text == typed && check.within == "chat.composer.input")
+            }
+        }
+        #expect(scenario.steps.contains { $0.action == .press && $0.identifier == "checklist" })
+        #expect(scenario.steps.contains { $0.action == .waitFor && $0.identifier == "settings.providers.page" })
+        #expect(!scenario.steps.contains { $0.optional == true || $0.identifier == "chat.signin" && $0.action == .press })
+    }
 }
 #endif

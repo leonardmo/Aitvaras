@@ -44,8 +44,26 @@ import AitvarasCore
                 throw SelfDriveFailure("Missing scenario path")
             }
             let scenario = try SelfDriveScenario.parse(Data(contentsOf: URL(fileURLWithPath: path)))
-            let window = SelfDriveWindow(contentRect: NSRect(x: 0, y: 0, width: 1080, height: 720),
+            var size = NSSize(width: 1080, height: 720)
+            if let rawSize = env["AITVARAS_SELF_DRIVE_SIZE"] {
+                let parts = rawSize.split(separator: "x", omittingEmptySubsequences: false)
+                // Match the normal scene's content minimum in AitvarasApp.
+                guard parts.count == 2, let width = Double(parts[0]), let height = Double(parts[1]),
+                      width.isFinite, height.isFinite, width >= 800, height >= 500 else {
+                    throw SelfDriveFailure("AITVARAS_SELF_DRIVE_SIZE requires WIDTHxHEIGHT, at least 800x500 points")
+                }
+                size = NSSize(width: width, height: height)
+            }
+            var appearance: NSAppearance?
+            if let rawAppearance = env["AITVARAS_SELF_DRIVE_APPEARANCE"] {
+                guard rawAppearance == "light" || rawAppearance == "dark" else {
+                    throw SelfDriveFailure("AITVARAS_SELF_DRIVE_APPEARANCE requires light or dark")
+                }
+                appearance = NSAppearance(named: rawAppearance == "light" ? .aqua : .darkAqua)
+            }
+            let window = SelfDriveWindow(contentRect: NSRect(origin: .zero, size: size),
                                          styleMask: [.titled, .nonactivatingPanel], backing: .buffered, defer: false)
+            window.contentMinSize = NSSize(width: 800, height: 500)
             window.alphaValue = 0
             window.ignoresMouseEvents = true
             window.hidesOnDeactivate = false
@@ -53,6 +71,10 @@ import AitvarasCore
             window.contentView = NSHostingView(rootView: MainWindow().environment(AppModel.shared))
             window.orderFront(nil) // Never makeKey, activate or orderFrontRegardless.
             await AppModel.shared.bootstrapIfNeeded()
+            // Bootstrap applies the profile preference to existing windows first.
+            // Only this driver's window gets the explicit test override.
+            if let appearance { window.appearance = appearance }
+            window.setContentSize(size)
             if let model = env["AITVARAS_SELF_DRIVE_CODEX_MODEL"]?.trimmingCharacters(in: .whitespacesAndNewlines), !model.isEmpty {
                 AppModel.shared.chatModel?.selfDriveCodexModel = model
             }

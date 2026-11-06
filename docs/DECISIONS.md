@@ -94,7 +94,7 @@ and Codex runs ephemerally in a workspace-write sandbox. A successful process
 with denied Claude operations is treated as failure. Delegated tasks remain
 `confirmable` because they consume quota and may modify the selected workspace.
 
-All CLI-backed features now share one provider-neutral boundary and the
+The four non-chat CLI-backed features share one provider-neutral boundary and the
 versioned Aitvaras Cloud Agent Policy. Delegation, nightly memory, connector
 creation and routine review each have an independent Local/Automatic/Claude/
 Codex setting. Automatic mode validates the task result and tries Codex if
@@ -105,6 +105,12 @@ Selections are resolved when a new call starts, so changes take effect without
 restarting the app. Turning routine review on immediately checks unreviewed
 existing candidates. Usage UI exposes monthly totals and recent history for
 each feature.
+
+Interactive project Chat instead uses the direct `AitvarasAgents` backends
+and `AgentSessionManager` (D31/D32). It does not use `CloudAgentService`'s
+restricted feature calls. Those four non-chat features retain the isolation,
+selection and accounting rules here; native chat configuration is not enabled
+for them.
 
 Tool access follows the job: confirmed delegation receives its selected
 workspace because editing is the point. Nightly memory and routine review gain
@@ -279,6 +285,11 @@ run.
 
 ## D30 — One chat transcript; backends catch up on Send ✅ (2026-10-26)
 
+The original adapter contract below remains relevant to legacy readers. D31
+amends consent and the context limit for the current unified Chat: provider
+selection plus Send authorizes catch-up, bounded to 16,000 UTF-8 bytes. New
+chats use normalized sessions and entries; legacy evidence stays readable.
+
 A workspace chat is one conversation, whichever engine answers. Aitvaras owns
 its canonical transcript: local messages, Aitvaras-only Codex turns and linked
 native Codex items (Claude later) form one timeline, and every entry records
@@ -319,6 +330,18 @@ replaces the earlier Aitvaras-only rule that started a fresh Codex thread
 whenever the latest message was local: the thread is now kept and caught up.
 
 ## D31 — Chats drive the official CLIs directly 🚧 (2026-11-04)
+
+**Implementation and acceptance:** the unified UI is connected to the direct
+backends, durable journal, native discovery/reconciliation and action coordinator.
+Codex has run through the in-process UI driver. The Claude path through this UI
+has never run live because its CLI login expired; the visible signed-out row and
+offline recordings do not prove a Claude reply, catch-up or browser completion.
+The real Ollama Local gate has not run, so AgentLoop remains the default.
+Old chat adapters, models, helpers and diagnostics are not yet removed: M6.3
+waits for the owner's review. Native menus, file panels, drag and drop and real
+focus are covered only by the XCUITest, which needs the owner's password and
+has not passed that gate. Light/dark and the 800 × 500-point minimum content
+layout also require real-app screenshot review; adding a scenario is not proof.
 
 Replaces the adapter approach in `CLAUDE-INTEGRATION.md` and
 `CODEX-BIDIRECTIONAL-INTEGRATION.md`; plan in `UNIFIED-CHAT-PLAN.md`. Chat runs
@@ -433,8 +456,9 @@ Chat's composer and transcript share a centred column. The composer is one round
 card with input above a fixed control row: attach, project, provider, model, effort,
 mode; then reserved gauge slots and Send/Stop on the right. Send remains beside
 Stop whenever there is input, using the existing follow-up delivery. At narrow
-widths the provider segments collapse to a menu; smaller panes wrap controls into
-compact rows so every control stays visible without scrolling. Changes opens only
+widths the provider segments collapse to a menu, then the project becomes an
+icon menu, then effort and mode become icon menus. Controls stay on one row
+without scrolling. Changes opens only
 from the toolbar's changed-file count (`chat.changes`), never automatically.
 Gauges use a static full track and a small percentage number. Unsupported controls
 and unknown gauges reserve space without drawing empty controls. Accepted input

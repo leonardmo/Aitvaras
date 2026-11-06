@@ -3,10 +3,14 @@
 ## Layout
 
 ```
-Aitvaras.xcodeproj            — app target (SwiftUI, RealityKit character, windows)
+Aitvaras.xcodeproj            — app target (SwiftUI, SceneKit character, windows)
 Package.swift              — AitvarasKit: everything testable without the app
   Sources/
-    AitvarasCore/             — domain types, agent loop, activity log, memory
+    AitvarasCore/             — domain types, shared reducers, activity and memory contracts
+    AitvarasAgents/           — direct CLI backends, per-chat sessions, policy/audit,
+                             native history, git workspaces and Local adapter
+    AitvarasStore/            — GRDB records, migrations, chat journal and projections
+    AitvarasAgent/            — AgentLoop, connector dispatch, memory pipelines
     AitvarasEngines/          — InferenceEngine impls: MLX, Ollama, AppleFM  (added in M1)
     AitvarasVoice/            — STT (SpeechAnalyzer), TTS engines, conversation loop (M2)
     AitvarasConnectors/       — Mail, Calendar, Reminders, Moodle, Homelab,
@@ -19,7 +23,7 @@ Package.swift              — AitvarasKit: everything testable without the app
 ```
                     ┌──────────────────────────────────────────┐
                     │                App (SwiftUI)              │
-                    │  CompanionWindow (RealityKit character)   │
+                    │  CompanionWindow (SceneKit character)     │
                     │  MainWindow (chat, activity, settings)    │
                     └───────▲──────────────────────▲───────────┘
                             │ state                │ transcript/audio
@@ -46,6 +50,13 @@ Package.swift              — AitvarasKit: everything testable without the app
 
 ## Key mechanics
 
+- **Chat UI**: `MainWindow` opens `ProjectChatWorkspaceView`, whose
+  `AgentChatView` and `ChatModel` share one composer/transcript across Local,
+  Codex and Claude. New Chat is an unsaved composer; first Send creates a
+  project-owned chat. The flat project picker, optional default project,
+  sidebar status/read receipts and Setup → AI providers follow D32. Earlier
+  project-less conversations remain in `LocalChatView`. Normal scene content
+  has an 800 × 500-point minimum (`AitvarasApp`), with 1080 × 720 as default.
 - **AgentCore** runs the tool-use loop: user/voice/event input → context assembly (RAG retrieve + memories + activity) → model streams → typed tool calls into ConnectorHub → results back into the loop. Model choice per step: 4B/AppleFM for routing & triage, 30B for reasoning & conversation.
 - **Connectors** expose *typed* tools with declared risk levels (`read` / `reversibleWrite` / `confirmable`). AgentCore enforces D13 autonomy rules centrally; a connector can never bypass confirmation.
 - **Direct chat actions** use `AitvarasAgents.AgentActionCoordinator`, an
@@ -73,8 +84,10 @@ Package.swift              — AitvarasKit: everything testable without the app
   lifetime actor with independent per-chat runs, each wrapped by
   `AgentActionCoordinator`. Sends start/resume lazily; views subscribe to bounded
   per-chat `AsyncStream<ChatState>` snapshots and can detach without stopping work.
-  Starting and live processes share a three-chat limit. Idle runs close after ten
-  minutes; Stop is scoped to one chat. Shutdown detaches generations before bounded
+  Up to eight chats can run, including approval waits. At eight retained
+  transports, a new chat evicts the least recently used idle run and later
+  resumes its saved native session. Idle runs close after ten minutes; Stop
+  is scoped to one chat. Shutdown detaches generations before bounded
   cleanup and permits a new Send if application quit is cancelled.
   `ChatState` reduces normalized events into transcript, streaming text, thinking,
   tools, usage, rate limits and outcome. Cards come exclusively from the
@@ -96,9 +109,12 @@ Package.swift              — AitvarasKit: everything testable without the app
   to a provider watermark. Local reads bounded completed context on every Send
   through a tool-free injected `AgentLoop` adapter.
   Existing workspace project/chat/conversation identities and legacy execution
-  tables, triggers and readers remain intact. Unassigned chat, voice, shortcuts,
-  capture and memory archiving retain their existing paths; legacy project
-  transcript migration remains separate work.
+  tables, triggers and readers remain intact. Legacy text projects into the
+  unified transcript without adopting old native identities or rewriting source
+  rows; imported evidence remains collapsed and read-only, outside catch-up.
+  Earlier project-less chat, voice, shortcuts, capture and memory archiving
+  retain their existing paths. M6.3 removal of obsolete chat code waits for the
+  owner's review; compatibility does not mean that removal is complete.
   The companion's project-chat panel shares `AgentChatView`, `ChatModel` and
   its retained drafts with the main window. Durable workspace selection drives
   the companion even when the main window is closed; only that selected chat
@@ -115,8 +131,15 @@ Package.swift              — AitvarasKit: everything testable without the app
   transaction check; normalized provider entries do not enter global learning.
   Nightly consolidation also excludes project git and current/legacy provider
   action audits while retaining them in Activity.
-- **CloudAgentService** is the single provider-neutral boundary for optional
-  Claude Code and Codex CLI use. Authentication is checked before each call;
+- **Local project chat** defaults to the tool-free `LocalBackend` AgentLoop
+  adapter. The opt-in `AITVARAS_LOCAL_CHAT_BACKEND=codex-oss` candidate pins
+  app-server to loopback Ollama, requires an explicitly selected installed
+  model, validates provider/model evidence and has no cloud fallback. Each Send
+  uses a fresh ephemeral thread and completed context. The real Ollama gate
+  has not run; tool reliability, locality, memory and voice/capture coexistence
+  remain unproven on that path.
+- **CloudAgentService** is the provider-neutral boundary for the four optional
+  non-chat CLI features, separate from direct project Chat. Authentication is checked before each call;
   prompts travel over stdin in a sanitized environment and always begin with
   the same versioned Aitvaras policy. Personal MCP servers, hooks, skills and
   CLI configuration are disabled. For non-delegation tasks Claude's tools are
@@ -195,7 +218,7 @@ Package.swift              — AitvarasKit: everything testable without the app
   trigger, arguments, risk or activation fields.
 - **Trusted senders** are local routing rules, never an instruction or authentication boundary. External-origin turns have no Memory/RAG/history/read tools; ConnectorHub permits only confirmation-gated `calendar.create_event` and `reminders.create_reminder`. See [MESSAGE-TRUST.md](MESSAGE-TRUST.md).
 - **VoicePipeline**: AVAudioEngine voice-processing I/O (echo cancellation) → SpeechAnalyzer streaming partials → end-of-turn VAD → agent streams → sentence-chunked TTS with barge-in cancellation.
-- **Character states** (idle / listening / thinking / speaking, plus mood accents) are driven by a small state machine observing AgentCore + VoicePipeline; RealityKit animations subscribe to it.
+- **Character states** (idle / listening / thinking / speaking, plus mood accents) are driven by a small state machine observing AgentCore + VoicePipeline; SceneKit animations subscribe to it.
 - **Concurrency**: Swift 6 strict concurrency; engines and connectors are actors; UI observes via `@Observable` models.
 
 ### Native chat discovery
@@ -221,9 +244,25 @@ folders contribute chats to one project. Discovery preserves local titles,
 archive state, settings, conversations and all legacy evidence tables.
 
 The sidebar discovers native chats automatically and offers one refresh icon.
-Opening a newly discovered chat shows a read-only native text preview; Send
-resumes its saved native identity and cwd. Preview is transient: atomic history
-reconciliation and handover across external continuations remain separate
-operations. The compatibility `NativeBackendSessionReader` supplies saved-source
+Opening a chat refreshes a complete native branch into the canonical projection;
+Send resumes its saved native identity and cwd. Reconciliation preserves streamed
+display IDs and retires superseded branch rows while retaining observations and
+journals. Failed/partial/inconsistent reads keep the prior projection; identity
+conflicts and malformed history fail closed. Unavailable readers can use retained
+context without blocking Send. A second observation detects changes during
+refresh but does not lock another native client out. Acknowledged handover
+receipts bind source identities and digests; corrections travel on the next Send.
+The compatibility `NativeBackendSessionReader` supplies saved-source
 views using the same backends and launch policy as Chat. Fake Claude launches
 use a history directory inside the isolated test profile.
+
+### Acceptance still open
+
+The Codex in-process UI path has run; Claude through this UI has never run live
+because its CLI login expired. Its signed-out row and replay tests do not prove
+a live reply or provider-switch catch-up. Native menus, file panels, drag and
+drop and real focus are covered only by XCUITest, which needs the owner's
+password; that gate remains open. Self-drive caches content inside a nonactivating
+window and cannot establish those interactions. Light/dark and minimum-size
+screenshots still need host execution and review. See [TESTING.md](TESTING.md)
+for the layout matrix and remaining live gates; M6.3 is awaiting owner review.
