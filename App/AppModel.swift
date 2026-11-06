@@ -71,7 +71,7 @@ final class AppModel {
     private(set) var agentLoop: AgentLoop?
     private(set) var agentSessionManager: AgentSessionManager?
     private(set) var chatModel: ChatModel?
-    private var localAgentReplyActive = false
+    private(set) var localAgentReplyActive = false
     private(set) var voice: ConversationController?
     private(set) var neuralTTS: NeuralTTS?
     private(set) var integrations: IntegrationCoordinator?
@@ -164,7 +164,8 @@ final class AppModel {
             }
         }
         if isRoutingTypedTurn { return .idle }
-        return isResponding ? .thinking : .idle
+        let selectedChatRunning = selectedWorkspaceChatID.map { chatModel?.state?.chatID == $0 && chatModel?.state?.isRunning == true } ?? false
+        return (selectedWorkspaceChatID == nil ? isResponding : selectedChatRunning) ? .thinking : .idle
     }
     var mouthLevel: Float { voiceSnapshot.mouthLevel }
 
@@ -265,9 +266,10 @@ final class AppModel {
             activityReporter = reporter
             monitoringFailureHandled = false
             reporter.recoverInterruptedRuns()
-            try codexWorkspace.configure(stores: stores, reporter: reporter)
-            try claudeWorkspace.configure(stores: stores, reporter: reporter)
-            try codexNativeWorkspace.configure(stores: stores, reporter: reporter)
+            // Recover saved legacy evidence without initializing retired owners.
+            _ = try stores.reconcileUnfinishedWorkspaceFrontierTurns()
+            _ = try stores.reconcileUnfinishedWorkspaceClaudeTurns()
+            _ = try stores.reconcileUnfinishedWorkspaceCodexNativeOperations()
             backgroundPolicy = try stores.backgroundWorkPolicy()
             startupID = reporter.begin(ActivityRun(
                 category: .startup, trigger: .startup, title: "Starting Aitvaras",
@@ -450,6 +452,7 @@ final class AppModel {
         }
         agentSessionManager = manager
         chatModel = ChatModel(manager: manager, stores: stores, backends: available)
+        chatModel?.select(selectedWorkspaceChatID)
     }
 
     private func localAgentReply(agentLoop: AgentLoop, configuration: AgentSessionConfiguration,
@@ -463,8 +466,10 @@ final class AppModel {
                 defer { self?.localAgentReplyActive = false }
                 // A nonnil project context preserves the existing tool-free,
                 // no-shared-memory project path. Catch-up is already in input.
-                let stream = await agentLoop.run(history: [], userMessage: input.text,
-                    referenceID: input.id.uuidString, projectTextContext: configuration.instructions)
+                let stream = await ActivityTaskContext.$runID.withValue(input.id) {
+                    await agentLoop.run(history: [], userMessage: input.text,
+                        referenceID: input.id.uuidString, projectTextContext: configuration.instructions)
+                }
                 for await update in stream {
                     if Task.isCancelled { break }
                     switch update {
@@ -486,6 +491,9 @@ final class AppModel {
     func send(_ text: String) -> Bool {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return false }
+        if let chatID = selectedWorkspaceChatID {
+            return chatModel?.submitText(trimmed, chatID: chatID) ?? false
+        }
         guard !selectedUnassignedVoiceHistory else {
             workspaceMessage = "Saved voice history is read-only here. Start a new chat to continue."
             return false
@@ -500,7 +508,7 @@ final class AppModel {
                 message: "Keep chat messages under \(AgentLoop.maximumUserMessageCharacters.formatted()) characters. Add long documents or code folders in Knowledge so Aitvaras can retrieve only the relevant parts.")
             return false
         }
-        guard !isResponding, let agentLoop,
+        guard !isResponding, !localAgentReplyActive, !microphoneInUseByVoice, let agentLoop,
               let stores, let conversationID = chatConversationID else { return false }
         let projectContext: String?
         do {
@@ -585,7 +593,7 @@ final class AppModel {
             }
             self.isRoutingTypedTurn = false
             let stream = await agentLoop.run(history: history, userMessage: trimmed,
-                referenceID: selectedWorkspaceChatID?.uuidString ?? conversationID.uuidString,
+                referenceID: turnID.uuidString,
                 projectTextContext: projectContext)
             for await update in stream {
                 guard !Task.isCancelled, self.currentTurnID == turnID else { break }
@@ -602,6 +610,8 @@ final class AppModel {
         }
         return true
     }
+
+    var localChatActivityReference: String? { currentTurnID?.uuidString }
 
     func cancelTurn() {
         currentTurn?.cancel()
@@ -730,8 +740,8 @@ final class AppModel {
             workspaceMessage = "Project voice conversations are not connected yet. Use text here, or switch to Unassigned for the existing voice mode."
             return
         }
-        guard voiceEnabled || !captureRefinement.isProcessing else {
-            presentError(title: "Local transcription is running", message: "Finish or stop the second pass before starting a voice conversation.")
+        guard voiceEnabled || (!captureRefinement.isProcessing && !localAgentReplyActive && !isResponding) else {
+            presentError(title: "Local inference is busy", message: "Finish or stop the local response or second pass before starting voice.")
             return
         }
         guard !voiceTransitioning, let voice else { return }
@@ -763,6 +773,7 @@ final class AppModel {
             workspaceMessage = "Project voice conversations are not connected yet. Use text here, or switch to Unassigned for the existing voice mode."
             return
         }
+        guard !localAgentReplyActive, !isResponding, !captureRefinement.isProcessing else { return }
         guard capture?.microphoneInUse != true else {
             presentError(title: "Microphone is in use", message: "Stop the microphone capture before starting a voice conversation.")
             return
@@ -1052,7 +1063,8 @@ final class AppModel {
 
     /// Typed prompt from the companion — answered with her voice.
     func askCompanion(_ text: String) {
-        guard let voice else { return }
+        guard selectedWorkspaceProjectID == nil, !localAgentReplyActive, !isResponding,
+              !captureRefinement.isProcessing, let voice else { return }
         Task { await voice.submitTyped(text) }
     }
 

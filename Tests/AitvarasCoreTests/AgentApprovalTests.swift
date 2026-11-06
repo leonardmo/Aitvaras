@@ -5,6 +5,31 @@ import AitvarasStore
 @testable import AitvarasAgents
 
 @Suite struct AgentApprovalTests {
+    @Test func managedApprovalAuditBelongsToDurableActivityAndExpiresOnStop() async throws {
+        let stores = try inMemoryStores()
+        let chat = try agentStoreChat(stores).0.id
+        let backend = ApprovalBackend(provider: .claude)
+        let manager = try AgentSessionManager(persistence: stores, backend: { _ in backend }, audit: { _ = try stores.record($0) })
+        let input = AgentInput(text: "test")
+        try await manager.send(chatID: chat, provider: .claude, input: input)
+        let run = try #require(await backend.runs.first)
+        let request = await run.offer()
+        try await approvalWait { await manager.approvalSuggestions().count == 1 }
+        let offered = try #require(try stores.activityEvents(runID: input.id).first)
+        #expect(offered.kind == .suggestionOffered)
+        #expect(offered.runID == input.id)
+        #expect(try stores.activityRun(id: input.id)?.referenceID == chat.uuidString)
+        #expect(try await manager.stop(activityRunID: input.id))
+        #expect(await manager.approvalSuggestions().isEmpty)
+        #expect(try await manager.state(chatID: chat).pendingCards.isEmpty)
+        await #expect(throws: (any Error).self) {
+            try await manager.respond(chatID: chat, to: request, with: .allow(updatedInput: nil))
+        }
+        #expect(await run.responses == [.deny])
+        #expect(try stores.activityEvents(runID: input.id).contains { $0.kind == .confirmationDenied })
+        try await manager.shutdown()
+    }
+
     @Test(arguments: [AgentProvider.claude, .codex])
     func suggestionsAndInlineCardsShareScopeAndReserveConcurrentReplies(provider: AgentProvider) async throws {
         let stores = try inMemoryStores()

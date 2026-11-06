@@ -864,3 +864,42 @@ collapsed imported sources in Chat, and inspect saved-source details. Check both
 appearances and keyboard expansion at minimum window size. Confirm unavailable
 old provider profiles do not block saved reads. Keep the copy and screenshots
 local; package tests do not compile the App target or verify this visual gate.
+
+
+## Companion, Activity and capture compatibility (M6.1–M6.2)
+
+`AgentSessionManagerTests` drives fake CLI processes to verify Activity Stop by
+input identity with two chats running, including a stale click after continuation.
+`AgentTurnStoreTests` covers atomic Activity/journal failure, recovery and the
+single explicit resend identity. `AgentApprovalTests` checks that provider audits
+appear under that input's Activity row and Stop expires its Suggestions and cards.
+`CommandRoutineTests` checks both typed and voice shortcuts with provenance.
+
+`WorkspaceScopeTests` runs managed Local through AgentLoop with fake inference,
+including a fabricated tool request. It checks that captures and shared facts
+never reach the prompt, tools never execute, capture targets survive rename and
+archive, and global archiving/recovery never learns from the managed chat.
+`WorkspacePolicyTests` and `UnifiedChatMigrationTests` retain the existing
+capture-target, scope-failure and upgrade checks. `ConsolidatorTests` excludes
+project git and current/legacy provider audits from nightly personal-memory evidence.
+
+Host checks in an isolated profile (package tests do not compile App):
+
+- Open a project chat in the companion with the main window closed. Check its
+  shared transcript, draft, provider controls, approvals and Stop. Collapse and
+  reopen while streaming; switch chats and confirm only the selected chat drives
+  the thinking animation. Review narrow layout, keyboard focus and both appearances.
+- Run two provider chats, switch to another chat, and Stop one from Activity.
+  The other must keep running. Stop a managed Local turn from Activity too.
+- In Unassigned, check typed and voice shortcuts, microphone/typed speech,
+  barge-in and saved voice history. Project voice remains unavailable; a hotkey
+  or typed speech action must not send project text to global voice history.
+  Local replies, voice and capture second-pass inference must respect contention.
+- Open Chat Details → Captures, reopen a saved capture, and use its Open Chat
+  control while another provider chat runs. Include an archived target. Opening
+  must retain target IDs and must not attach or send the transcript.
+- Check capture checkpoint/final-save retry and failed quit cancellation. After
+  cancelling quit, send new input explicitly; old input and approvals must not
+  replay. Run the existing capture synthetic checks and private DB-copy gate.
+
+Legacy adapters and their diagnostic views remain until the M6.3 UI gate passes.

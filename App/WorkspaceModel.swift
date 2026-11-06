@@ -11,7 +11,7 @@ extension AppModel {
     }
 
     var selectedChatConversationID: UUID? { chatConversationID }
-    var isWorkspaceSelectionBusy: Bool { isResponding || microphoneInUseByVoice || codexWorkspace.isBusy || codexNativeWorkspace.isBusy || claudeWorkspace.isBusy }
+    var isWorkspaceSelectionBusy: Bool { isResponding || microphoneInUseByVoice }
     var selectedUnassignedVoiceHistory: Bool {
         selectedWorkspaceProjectID == nil && unassignedChatConversations.contains {
             $0.id == chatConversationID && $0.title == "Voice"
@@ -66,6 +66,7 @@ extension AppModel {
                       let project = try stores.workspaceProject(id: id), project.isVisible {
                 selectedWorkspaceProjectID = id
                 selectedWorkspaceChatID = nil
+                chatModel?.select(nil)
                 chatConversationID = nil
                 messages = []
                 earlierChatMessagesAreHidden = false
@@ -80,6 +81,7 @@ extension AppModel {
             chatConversationID = nil
             selectedWorkspaceProjectID = nil
             selectedWorkspaceChatID = nil
+            chatModel?.select(nil)
             messages = []
             workspaceMessage = "Workspace restoration needs a retry. No conversation was deleted or sent."
         }
@@ -101,6 +103,7 @@ extension AppModel {
                     try persistWorkspaceSelection(projectID: id, chatID: nil)
                     selectedWorkspaceProjectID = id
                     selectedWorkspaceChatID = nil
+                    chatModel?.select(nil)
                     chatConversationID = nil
                     messages = []
                     earlierChatMessagesAreHidden = false
@@ -294,6 +297,7 @@ extension AppModel {
         selectedWorkspaceChatID = chatID
         messages = loaded
         earlierChatMessagesAreHidden = count > Self.visibleChatMessageLimit
+        chatModel?.select(chatID)
     }
 
     private func reportWorkspaceFailure(_ title: String, _ error: Error) {

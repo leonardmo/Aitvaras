@@ -3,6 +3,7 @@ import GRDB
 import Testing
 import AitvarasCore
 import AitvarasStore
+import AitvarasAgents
 @testable import AitvarasAgent
 
 private actor WorkspaceScopeEngine: InferenceEngine {
@@ -91,6 +92,78 @@ private actor WorkspaceArchiveGate: InferenceEngine {
 }
 
 @Suite struct WorkspaceScopeTests {
+    @Test(arguments: [true, false])
+    func managedLocalChatRetainsCaptureOwnershipAndNeverLearnsGlobally(fabricatedTool: Bool) async throws {
+        let stores = try inMemoryStores()
+        let project = try stores.createWorkspaceProject(title: "Example project", instructions: "PROJECT_RULES")
+        let chat = try stores.createWorkspaceChat(projectID: project.id, title: "Capture target")
+        let other = try stores.createWorkspaceChat(projectID: project.id, title: "Other chat")
+        let capture = CaptureRecord(startedAt: Date(timeIntervalSince1970: 1_000),
+            endedAt: Date(timeIntervalSince1970: 1_060), title: "Example capture",
+            scope: "Microphone", audio: "mic", consentConfirmed: true, transcript: "CAPTURE_CANARY")
+        try stores.saveCaptureRecord(capture, workspaceChatID: chat.id)
+        let target = try #require(try stores.workspaceCaptureTarget(recordID: capture.id))
+        try stores.saveFact(MemoryFact(text: "SHARED_FACT_CANARY", kind: .biography, source: .userStated))
+        let engine = WorkspaceScopeEngine(emitsTool: fabricatedTool)
+        let retriever = WorkspaceScopeRetriever()
+        let connector = WorkspaceScopeConnector()
+        let hub = ConnectorHub(stores: stores)
+        await hub.register(connector)
+        let loop = AgentLoop(router: EngineRouter(ranked: [engine]), hub: hub, stores: stores, retriever: retriever)
+        let backend = LocalBackend { configuration, input in
+            AsyncThrowingStream { continuation in
+                let task = Task {
+                    for await update in await loop.run(history: [], userMessage: input.text,
+                        projectTextContext: configuration.instructions) {
+                        switch update {
+                        case .textDelta(let text): continuation.yield(text)
+                        case .failed: continuation.finish(throwing: AgentFailure.invalidRequest); return
+                        default: break
+                        }
+                    }
+                    continuation.finish()
+                }
+                continuation.onTermination = { _ in task.cancel() }
+            }
+        }
+        let manager = try AgentSessionManager(persistence: stores, backend: { _ in backend }, audit: { _ = try stores.record($0) })
+        let session = AgentChatSession(chatID: chat.id, provider: .local, cwd: "/tmp", model: "local",
+            instructions: try stores.workspaceContextPacket(chatID: chat.id).promptText)
+        try await manager.configure(session)
+        let input = AgentInput(text: "THIS_CHAT_REQUEST")
+        try await manager.send(chatID: chat.id, provider: .local, input: input)
+        for _ in 0..<400 {
+            if try await manager.state(chatID: chat.id).outcome != nil { break }
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        #expect(try await manager.state(chatID: chat.id).outcome == (fabricatedTool ? .failed(.invalidRequest) : .completed))
+        let request = await engine.snapshot()
+        let text = request.messages.map(\.content).joined(separator: "\n")
+        #expect(text.contains("PROJECT_RULES") && text.contains("THIS_CHAT_REQUEST"))
+        #expect(!text.contains("SHARED_FACT_CANARY") && !text.contains("CAPTURE_CANARY"))
+        #expect(request.tools.isEmpty)
+        #expect(await retriever.callCount() == 0)
+        #expect(await connector.counts().executions == 0)
+        try await manager.rename(chatID: chat.id, title: "Renamed chat")
+        try await manager.setArchived(chatID: chat.id, archived: true)
+        try await manager.shutdown()
+        #expect(try stores.workspaceCaptureTarget(recordID: capture.id) == target)
+        #expect(try stores.workspaceChat(id: target.chatID)?.localConversationID == chat.localConversationID)
+        #expect(try stores.workspaceCaptures(chatID: target.chatID) == [capture])
+        #expect(try stores.workspaceCaptures(chatID: other.id).isEmpty)
+        let archiver = ConversationArchiver(router: EngineRouter(ranked: [engine]), stores: stores)
+        #expect(try await !archiver.archiveStoredConversation(id: chat.localConversationID).archived)
+        #expect(try await archiver.retryStoredConversations(excluding: []) == 0)
+        #expect(await engine.snapshot().calls == 1)
+        #expect(try stores.allFacts().map(\.text) == ["SHARED_FACT_CANARY"])
+        #expect(try stores.recentActivity().isEmpty)
+        #expect(try stores.commandObservations().isEmpty)
+        for provider in [AgentProvider.local, .claude, .codex] {
+            let context = try stores.agentContext(session: .init(chatID: chat.id, provider: provider, cwd: "/tmp", model: "fixture"))
+            #expect(context?.text.contains("CAPTURE_CANARY") != true)
+        }
+    }
+
     @Test(arguments: [true, false])
     func projectTurnUsesOnlySuppliedTextAndNoSharedContext(withFact: Bool) async throws {
         let stores = try inMemoryStores()

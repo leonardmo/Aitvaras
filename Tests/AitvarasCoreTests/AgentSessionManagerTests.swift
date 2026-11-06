@@ -5,6 +5,42 @@ import AitvarasStore
 @testable import AitvarasAgents
 
 @Suite struct AgentSessionManagerTests {
+    @Test func activityStopUsesDurableInputAndIgnoresStaleClicks() async throws {
+        let fixture = try BackendExecutableFixture(script: managerClaudeScript)
+        defer { fixture.remove() }
+        let stores = try inMemoryStores()
+        let raw = ClaudeBackend(executable: fixture.executable, environment: fixture.environment)
+        let backend = AgentHistoryTestBackend(raw, stores: stores)
+        let manager = try AgentSessionManager(persistence: stores, backend: { _ in backend }, audit: { _ = try stores.record($0) })
+        let first = try agentStoreChat(stores, cwd: fixture.directory.path).0.id
+        let second = try agentStoreChat(stores, cwd: fixture.directory.path).0.id
+        let one = AgentInput(text: "hold"), two = AgentInput(text: "hold")
+        try await manager.send(chatID: first, provider: .claude, input: one)
+        try await manager.send(chatID: second, provider: .claude, input: two)
+        try await waitManager {
+            let one = try await manager.state(chatID: first)
+            let two = try await manager.state(chatID: second)
+            return one.streamingText == "partial" && two.streamingText == "partial"
+        }
+        let runs = try stores.currentActivityRuns().filter { $0.category == .chat }
+        #expect(Set(runs.map(\.id)) == [one.id, two.id])
+        #expect(runs.first { $0.id == one.id }?.referenceID == first.uuidString)
+        #expect(runs.first { $0.id == two.id }?.referenceID == second.uuidString)
+        #expect(try await !manager.stop(activityRunID: UUID()))
+        #expect(try await manager.stop(activityRunID: one.id))
+        #expect(try stores.activityRun(id: one.id)?.state == .interrupted)
+        #expect(try await manager.state(chatID: second).isRunning)
+        #expect(try stores.activityRun(id: two.id)?.state == .running)
+        let next = AgentInput(text: "hold again")
+        try await manager.send(chatID: first, provider: .claude, input: next)
+        #expect(try await !manager.stop(activityRunID: one.id))
+        #expect(try await manager.state(chatID: first).isRunning)
+        try await manager.shutdown()
+        #expect(try stores.activityRun(id: next.id)?.state == .interrupted)
+        #expect(try stores.activityRun(id: two.id)?.state == .interrupted)
+        #expect(try stores.currentActivityRuns().isEmpty)
+    }
+
     @Test func twoExecutableChatsDetachStopAndCap() async throws {
         let fixture = try BackendExecutableFixture(script: managerClaudeScript)
         defer { fixture.remove() }

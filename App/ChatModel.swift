@@ -28,6 +28,7 @@ final class ChatModel {
     private var pendingExpiry: Task<Void, Never>?
     private var sending: [UUID: UUID] = [:]
     private var stopping: Set<UUID> = []
+    private var submittedText: Set<UUID> = []
     private var stoppedSends: Set<UUID> = []
     private var attempts: [UUID: (input: AgentInput, provider: AgentProvider, accountID: String?)] = [:]
     private var composerSelections = AgentComposerSelections()
@@ -159,7 +160,7 @@ final class ChatModel {
     var isBusy: Bool { state?.isRunning == true || chatID.map { sending[$0] != nil || refreshingHistory.contains($0) } == true }
     var canSubmit: Bool {
         guard let id = chatID else { return false }
-        return !terminating && !gitBusy && !refreshingHistory.contains(id) && !stopping.contains(id) && sending[id] == nil && signingIn == nil
+        return !terminating && !gitBusy && !refreshingHistory.contains(id) && !stopping.contains(id) && sending[id] == nil && !submittedText.contains(id) && signingIn == nil
             && (!isBusy || provider != .local)
     }
     private var settingsKey: String { "\(chatID?.uuidString ?? "").\(provider.rawValue)" }
@@ -341,6 +342,23 @@ final class ChatModel {
                   let session = settings[settingsKey], !values.contains(where: { $0.id == session.model }) else { return }
             saveSettings(ChatSettings.selecting(model: first, in: session))
         } catch { /* A real Send supplies the actionable failure. */ }
+    }
+
+    /// Compatibility entry point for typed actions outside the main composer.
+    /// The draft stays owned by its chat if navigation wins the scheduling race.
+    func submitText(_ text: String, chatID id: UUID) -> Bool {
+        guard chatID == id, canSubmit,
+              let chat = try? stores.workspaceChat(id: id), chat.archivedAt == nil,
+              let project = try? stores.workspaceProject(id: chat.projectID), project.isVisible else { return false }
+        draft = text
+        submittedText.insert(id)
+        Task { [weak self] in
+            guard let self else { return }
+            self.submittedText.remove(id)
+            guard self.chatID == id, self.draft == text else { return }
+            await self.send()
+        }
+        return true
     }
 
     func send() async {
