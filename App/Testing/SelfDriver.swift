@@ -12,6 +12,15 @@ import AitvarasCore
     /// plus a nonactivating panel prevents even an accidental key-window request.
     static func prepareLaunch() {
         NSApp.setActivationPolicy(.prohibited)
+        // SwiftUI builds its accessibility tree only once an assistive client asks for it.
+        // This asks from inside, for this process alone, with no system permission.
+        NSApp.accessibilitySetValue(true, forAttribute: NSAccessibility.Attribute(rawValue: "AXEnhancedUserInterface"))
+    }
+
+    /// Normal delegate shutdown runs first, but a test run must always end.
+    private static func finish() {
+        Task.detached { try? await Task.sleep(for: .seconds(10)); exit(0) }
+        NSApp.terminate(nil)
     }
 
     static func run() async {
@@ -49,7 +58,7 @@ import AitvarasCore
                 if let delay = step.delay { try await Task.sleep(for: .seconds(delay)) }
                 return try await surface.perform(step, directory: directory)
             }, checkpoint: save)
-            NSApp.terminate(nil)
+            finish()
             // Normal delegate shutdown remains responsible for provider cleanup.
             if results.contains(where: { $0.status == "failed" }) {
                 FileHandle.standardError.write(Data("Self-drive completed with failed steps; inspect results.json\n".utf8))
@@ -62,7 +71,7 @@ import AitvarasCore
             }
             try? Data(error.localizedDescription.utf8).write(to: directory.appendingPathComponent("startup-error.txt"))
             FileHandle.standardError.write(Data("Self-drive setup failed; inspect startup-error.txt\n".utf8))
-            NSApp.terminate(nil)
+            finish()
         }
     }
 }
