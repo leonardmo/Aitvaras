@@ -991,8 +991,11 @@ to a cheap model ID advertised by the installed CLI; only new Codex sessions use
 that choice. Codex steps run before the final Claude steps. Every Send checks
 that its text is absent within `chat.composer.input`; the shell step waits for its
 Allow card and then for the successful completed tool row in the transcript.
-An optional second Allow accommodates a provider's verification command. The panel
-screenshot explicitly presses `chat.changes`. Providers navigation presses the
+An optional second Allow accommodates a provider's verification command. The
+after-approval screenshot checks that Changes is still closed; the next step
+explicitly presses `chat.changes` so the running screenshot covers the narrow pane.
+The final signed-out screenshot checks that Changes is closed again.
+Providers navigation presses the
 native `cpu` tab and waits for `settings.providers.page`; `settings.providers`
 remains the Setup card button, not a press target for the page container.
 The shell approval uses a fresh third chat and the explicit prompt “Use your shell
@@ -1022,7 +1025,10 @@ For chat layout review, check light and dark appearances with Changes closed and
 open, resize to the minimum width, and type while running or waiting for approval.
 Stop must have a visible square, Sign in must have contrast, Allow must be prominent,
 and Send must appear beside Stop with input. The provider menu must replace the
-segments before controls wrap; model, effort and mode remain visible. Changes must
+segments first, then project becomes an icon menu, then effort and mode become
+icon menus. The controls stay on one row, including at minimum width with Changes
+open and both Stop and Send visible. The project menu stays plain at every width;
+its compact menu includes the new-chat worktree toggle. Changes must
 stay closed until requested, with file statuses and diff together at the top and
 Commit/Discard at the bottom. A new empty file reads “Empty file”; Commit remains
 disabled for a blank message. Signed-in providers show no Sign in action. Usage
@@ -1030,3 +1036,5 @@ and context rings show a static full track and percentage, including low values.
 Tool summaries use Running/Ran and Reading/Read, Editing/Edited, Writing/Wrote;
 expanding a tool retains its full command. Successful tool completion exposes
 `chat.tool.completed` before turn completion; errors do not advertise success.
+If a tool never reports completion, ending the turn closes its row as “Ended
+without a result”; it must not remain Running or advertise a successful completion.

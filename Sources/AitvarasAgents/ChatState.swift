@@ -7,6 +7,7 @@ public struct AgentToolState: Sendable, Equatable {
     public var partialInput = ""
     public var isFinished = false
     public var isError = false
+    public var completionUnconfirmed = false
 }
 
 /// Value-only reduction. Requests in the event stream are observations, never
@@ -138,6 +139,14 @@ public struct ChatState: Sendable, Equatable {
     }
     mutating func awaitingQueuedInput() { isRunning = true; outcome = nil }
     public mutating func end(_ value: AgentTurnOutcome) {
+        // A summary-only turn/completed need not repeat its tool items. Stop,
+        // disconnect and missing item completions must still close their rows,
+        // without inventing a successful command result.
+        for index in tools.indices where !tools[index].isFinished {
+            tools[index].isFinished = true
+            tools[index].completionUnconfirmed = true
+            if let id = toolEntryIDs[tools[index].id] { putTool(index, newEntryID: id) }
+        }
         outcome = value; isRunning = false; pendingCards = []
     }
     private mutating func putThinking(_ text: String, item: String?, complete: Bool, newEntryID: UUID) {
@@ -161,7 +170,8 @@ public struct ChatState: Sendable, Equatable {
         if let entry = entries.firstIndex(where: { $0.id == id }) {
             entries[entry].payloadJSON = JSONValue.object([
                 "itemID": .string(tool.id), "input": tool.tool?.input ?? .null,
-                "partialInput": .string(tool.partialInput), "output": tool.output ?? .null, "finished": .bool(tool.isFinished), "isError": .bool(tool.isError)
+                "partialInput": .string(tool.partialInput), "output": tool.output ?? .null, "finished": .bool(tool.isFinished), "isError": .bool(tool.isError),
+                "completionUnconfirmed": .bool(tool.completionUnconfirmed)
             ]).jsonString
         }
     }

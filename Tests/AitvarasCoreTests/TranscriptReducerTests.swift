@@ -1,8 +1,94 @@
 import Foundation
 import Testing
+import AitvarasStore
 @testable import AitvarasAgents
 
 @Suite struct TranscriptReducerTests {
+    @Test(arguments: [true, false])
+    func recordedAskCommandCompletionSurvivesManagerPersistence(completionDelivered: Bool) async throws {
+        let fixture: BackendExecutableFixture
+        if completionDelivered {
+            fixture = try BackendExecutableFixture(provider: "codex", name: "write-ask")
+        } else {
+            // Fault injection: keep the real approval and summary-only turn end,
+            // but lose the command's item/completed notification.
+            let url = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+                .appendingPathComponent("Fixtures/agents/codex/write-ask.jsonl")
+            let recording = try String(contentsOf: url, encoding: .utf8).split(separator: "\n").filter { line in
+                let frame = JSONValue.parse(String(line))
+                return !(frame?["method"]?.stringValue == "item/completed"
+                    && frame?["params"]?["item"]?["type"]?.stringValue == "commandExecution")
+            }.joined(separator: "\n")
+            fixture = try BackendExecutableFixture(script: "recording = base64.b64decode('\(Data(recording.utf8).base64EncodedString())').decode()\n"
+                + BackendExecutableFixture.replay)
+        }
+        defer { fixture.remove() }
+        let stores = try inMemoryStores()
+        let (chat, original) = try agentStoreChat(stores, provider: .codex, cwd: fixture.directory.path)
+        var session = original
+        session.model = "gpt-6-luna"
+        try stores.saveAgentSession(session)
+        let backend = CodexBackend(executable: fixture.executable, environment: fixture.environment)
+        let manager = try AgentSessionManager(persistence: stores, backend: { _ in backend },
+            audit: { _ = try stores.record($0) })
+        let updates = try await manager.updates(chatID: chat.id)
+        try await manager.send(chatID: chat.id, provider: .codex,
+            input: .init(text: try fixture.prompt(provider: "codex", name: "write-ask")))
+        var rowID: UUID?
+        var approved = false
+        var completedBeforeEnd = false
+        for await state in updates {
+            if let row = state.entries.first(where: { $0.kind == "tool" }) {
+                if rowID == nil { rowID = row.id }
+                #expect(row.id == rowID)
+                if row.presentationIdentifier == "chat.tool.completed" && state.isRunning {
+                    completedBeforeEnd = true
+                }
+            }
+            if !approved, let request = state.pendingCards.first {
+                approved = true
+                try await manager.respond(chatID: chat.id, to: request, with: .allow(updatedInput: nil))
+            }
+            if state.outcome != nil { break }
+        }
+        #expect(approved)
+        #expect(completedBeforeEnd == completionDelivered)
+        let saved = try #require(stores.agentEntries(chatID: chat.id).first { $0.id == rowID })
+        #expect((saved.presentationIdentifier == "chat.tool.completed") == completionDelivered)
+        let payload = try #require(saved.payloadJSON.flatMap(JSONValue.parse))
+        #expect(payload["finished"] == .bool(true))
+        #expect(AgentActionPresentation.toolSummary(.init(name: saved.text, input: payload["input"] ?? .null),
+            finished: payload["finished"]?.boolValue == true, isError: payload["isError"]?.boolValue == true,
+            completionUnconfirmed: payload["completionUnconfirmed"]?.boolValue == true)
+            == (completionDelivered ? "Ran printf 'hi' > a.txt && echo marker > out.txt"
+                : "Ended without a result: printf 'hi' > a.txt && echo marker > out.txt"))
+        try await Task.sleep(for: .milliseconds(20))
+        try fixture.assertComplete()
+        try await manager.shutdown()
+        try await backend.shutdown()
+    }
+
+    @Test(arguments: [AgentTurnOutcome.completed, .interrupted, .failed(.unknown)])
+    func endedTurnsNeverLeaveRunningToolRows(outcome: AgentTurnOutcome) throws {
+        var fixture = TranscriptFixture()
+        fixture.emit(.toolStarted(.init(name: "commandExecution", input: .object(["command": .string("touch example.txt")]))), item: "shell")
+        let rowID = try #require(fixture.state.entries.last?.id)
+        fixture.emit(.turnEnded(outcome), item: "turn")
+        let row = try #require(fixture.state.entries.first { $0.id == rowID })
+        let payload = try #require(row.payloadJSON.flatMap(JSONValue.parse))
+        #expect(payload["finished"] == .bool(true))
+        #expect(AgentActionPresentation.toolSummary(.init(name: row.text, input: payload["input"] ?? .null),
+            finished: true, isError: false, completionUnconfirmed: payload["completionUnconfirmed"]?.boolValue == true)
+            == "Ended without a result: touch example.txt")
+        // Turn completion alone is not proof of a successful shell command.
+        #expect(row.presentationIdentifier != "chat.tool.completed")
+        #expect(fixture.state.tools.allSatisfy { $0.isFinished })
+        let endedEntries = fixture.state.entries
+        fixture.state.begin(.init(text: "Next turn"), session: .init(chatID: fixture.state.chatID,
+            provider: .codex, cwd: "/tmp", model: "test"), outputID: UUID())
+        #expect(Array(fixture.state.entries.prefix(endedEntries.count)) == endedEntries)
+    }
+
     @Test func interleavedToolsAccumulateOutputAndKeepIdentity() throws {
         var fixture = TranscriptFixture()
         fixture.emit(.toolStarted(.init(name: "Bash", input: .object(["command": .string("echo first")]))), item: "one")

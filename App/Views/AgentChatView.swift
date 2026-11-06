@@ -125,10 +125,15 @@ struct AgentChatView: View {
                                 Button("Cancel") { chat.cancelSignIn() }
                                     .accessibilityIdentifier("chat.signin.cancel")
                             } else if let provider = chat.authProvider {
-                                Button("Sign in") { chat.signIn(provider) }
-                                    .buttonStyle(.borderedProminent).tint(Color.accentColor)
-                                    .foregroundStyle(Color.white)
-                                    .accessibilityIdentifier("chat.signin")
+                                Button { chat.signIn(provider) } label: {
+                                    Text("Sign in")
+                                        .foregroundStyle(colorScheme == .dark ? Color.black : Color.white)
+                                        .padding(.horizontal, 10).padding(.vertical, 5)
+                                        .background(colorScheme == .dark ? Color.white : Color.black,
+                                                    in: RoundedRectangle(cornerRadius: 6))
+                                }
+                                .buttonStyle(.plain)
+                                .accessibilityIdentifier("chat.signin")
                             }
                         } else if !canSend {
                             Image(systemName: "archivebox")
@@ -207,19 +212,10 @@ struct AgentChatView: View {
                     return .handled
                 }
             ViewThatFits(in: .horizontal) {
-                composerBar(compactProvider: false)
-                composerBar(compactProvider: true)
-                // Keep every control visible when a split pane leaves too little
-                // room for one row. No controls live in a scrolling strip.
-                VStack(alignment: .leading, spacing: 6) {
-                    ViewThatFits(in: .horizontal) {
-                        HStack(spacing: 6) { projectControls; providerControl(compact: true) }
-                            .fixedSize(horizontal: true, vertical: false)
-                        VStack(alignment: .leading, spacing: 6) { projectControls; providerControl(compact: true) }
-                    }
-                    modelControls
-                    HStack { attachButton; Spacer(minLength: 0); composerActions }
-                }
+                composerBar(compactProvider: false, compactProject: false, compactDetails: false)
+                composerBar(compactProvider: true, compactProject: false, compactDetails: false)
+                composerBar(compactProvider: true, compactProject: true, compactDetails: false)
+                composerBar(compactProvider: true, compactProject: true, compactDetails: true)
             }
         }
         .onDrop(of: [.fileURL, .png, .jpeg, .tiff], isTargeted: nil, perform: receiveAttachments)
@@ -232,29 +228,29 @@ struct AgentChatView: View {
         .onChange(of: chat.provider) { showingCompletion = false; completion = nil }
         .onChange(of: showingCompletion) { if !showingCompletion { composerFocused = true } }
     }
-    private func composerBar(compactProvider: Bool) -> some View {
-        HStack(spacing: 10) {
-            HStack(spacing: 6) {
-                attachButton
-                projectControls
-                providerControl(compact: compactProvider)
-                modelControls
-            }.fixedSize(horizontal: true, vertical: false)
+    private func composerBar(compactProvider: Bool, compactProject: Bool, compactDetails: Bool) -> some View {
+        HStack(spacing: compactDetails ? 2 : 10) {
+            HStack(spacing: compactDetails ? 2 : 6) {
+                attachButton(narrow: compactDetails)
+                projectControls(iconOnly: compactProject, narrow: compactDetails)
+                providerControl(compact: compactProvider, narrow: compactDetails)
+                modelControls(iconOnly: compactDetails)
+            }.fixedSize(horizontal: !compactDetails, vertical: false)
             Spacer(minLength: 0)
-            composerActions
+            composerActions(narrow: compactDetails)
         }
         .controlSize(.small).menuStyle(.borderlessButton)
     }
 
-    private var composerActions: some View {
-        HStack(spacing: 8) {
-            gaugeSlot(contextValue, title: "Context", identifier: "chat.gauge.context")
-            gaugeSlot(usageValue, title: "Usage", identifier: "chat.gauge.usage")
+    private func composerActions(narrow: Bool) -> some View {
+        HStack(spacing: narrow ? 2 : 8) {
+            gaugeSlot(contextValue, title: "Context", identifier: "chat.gauge.context", narrow: narrow)
+            gaugeSlot(usageValue, title: "Usage", identifier: "chat.gauge.usage", narrow: narrow)
             if chat.state?.isRunning == true {
                 Button { Task { await chat.stop() } } label: {
                     Image(systemName: "stop.fill").font(.system(size: 13, weight: .semibold))
                         .foregroundStyle(colorScheme == .dark ? Color.black : Color.white)
-                        .frame(width: 30, height: 30)
+                        .frame(width: narrow ? 24 : 30, height: narrow ? 24 : 30)
                         .background(colorScheme == .dark ? Color.white : Color.black, in: Circle())
                 }
                 .buttonStyle(.plain)
@@ -264,7 +260,7 @@ struct AgentChatView: View {
                 Button { Task { await chat.send() } } label: {
                     Image(systemName: "arrow.up").font(.system(size: 16, weight: .semibold))
                         .foregroundStyle(sendEnabled ? Color.white : Color.secondary)
-                        .frame(width: 30, height: 30)
+                        .frame(width: narrow ? 24 : 30, height: narrow ? 24 : 30)
                         .background(sendEnabled ? Color.accentColor : Color.secondary.opacity(0.16), in: Circle())
                 }
                 .buttonStyle(.plain)
@@ -275,7 +271,7 @@ struct AgentChatView: View {
         }.fixedSize()
     }
 
-    private var projectControls: some View {
+    private func projectControls(iconOnly: Bool, narrow: Bool) -> some View {
         HStack(spacing: 3) {
             Menu {
                 ForEach(model.workspaceProjects.filter(\.isVisible)) { project in
@@ -286,32 +282,44 @@ struct AgentChatView: View {
                 }
                 Divider()
                 Button("Add project…") { model.chooseChatProjectFolder() }
+                if iconOnly, chat.chatID == nil, gitProject {
+                    Toggle("Use worktree", isOn: $chat.useWorktree)
+                        .disabled(chat.creatingChat)
+                        .accessibilityIdentifier("chat.new.worktree")
+                }
             } label: {
                 HStack(spacing: 4) {
-                    if chat.useWorktree { Image(systemName: "arrow.triangle.branch") }
-                    Text(projectTitle).lineLimit(1)
+                    if iconOnly { Image(systemName: chat.useWorktree ? "arrow.triangle.branch" : "folder") }
+                    else {
+                        if chat.useWorktree { Image(systemName: "arrow.triangle.branch") }
+                        Text(projectTitle).lineLimit(1)
+                    }
                 }
             }
-            .frame(width: 100).help(projectTitle)
+            .menuStyle(.borderlessButton).buttonStyle(.plain)
+            .menuIndicator(iconOnly ? .hidden : .visible)
+            .frame(width: iconOnly ? (narrow ? 18 : 28) : 100).help(projectTitle)
             .accessibilityLabel("Project").accessibilityValue(projectTitle)
             .accessibilityIdentifier("chat.project")
             .disabled(chat.chatID != nil || chat.creatingChat)
-            Button { chat.useWorktree.toggle() } label: {
-                Image(systemName: "arrow.triangle.branch")
-                    .font(.system(size: 13, weight: .medium)).frame(width: 24, height: 26)
+            if !iconOnly {
+                Button { chat.useWorktree.toggle() } label: {
+                    Image(systemName: "arrow.triangle.branch")
+                        .font(.system(size: 13, weight: .medium)).frame(width: 24, height: 26)
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(chat.useWorktree ? Color.accentColor : Color.secondary)
+                .background(chat.useWorktree ? Color.accentColor.opacity(0.14) : .clear, in: RoundedRectangle(cornerRadius: 5))
+                .help("Use worktree").accessibilityLabel("Use worktree")
+                .accessibilityValue(chat.useWorktree ? "On" : "Off")
+                .accessibilityIdentifier("chat.new.worktree")
+                .opacity(chat.chatID == nil && gitProject ? 1 : 0)
+                .disabled(chat.chatID != nil || !gitProject || chat.creatingChat)
+                .accessibilityHidden(chat.chatID != nil || !gitProject)
             }
-            .buttonStyle(.plain)
-            .foregroundStyle(chat.useWorktree ? Color.accentColor : Color.secondary)
-            .background(chat.useWorktree ? Color.accentColor.opacity(0.14) : .clear, in: RoundedRectangle(cornerRadius: 5))
-            .help("Use worktree").accessibilityLabel("Use worktree")
-            .accessibilityValue(chat.useWorktree ? "On" : "Off")
-            .accessibilityIdentifier("chat.new.worktree")
-            .opacity(chat.chatID == nil && gitProject ? 1 : 0)
-            .disabled(chat.chatID != nil || !gitProject || chat.creatingChat)
-            .accessibilityHidden(chat.chatID != nil || !gitProject)
-        }.frame(width: 127)
+        }.frame(width: iconOnly ? (narrow ? 18 : 28) : 127)
     }
-    @ViewBuilder private func providerControl(compact: Bool) -> some View {
+    @ViewBuilder private func providerControl(compact: Bool, narrow: Bool) -> some View {
         if compact {
             Menu {
                 ForEach([AgentProvider.claude, .codex, .local], id: \.self) { provider in
@@ -321,7 +329,9 @@ struct AgentChatView: View {
                     }.accessibilityIdentifier("chat.provider.\(provider.rawValue)")
                 }
             } label: { Text(chat.provider.rawValue.capitalized).lineLimit(1) }
-            .frame(width: 76)
+            .frame(width: narrow ? 36 : 76)
+            .menuIndicator(narrow ? .hidden : .visible)
+            .help(chat.provider.rawValue.capitalized)
             .accessibilityIdentifier("chat.provider")
             .accessibilityLabel("Provider").accessibilityValue(chat.provider.rawValue.capitalized)
             .disabled(chat.isBusy || chat.creatingChat)
@@ -339,8 +349,8 @@ struct AgentChatView: View {
             .disabled(chat.isBusy || chat.creatingChat)
         }
     }
-    private var modelControls: some View {
-        HStack(spacing: 6) {
+    private func modelControls(iconOnly: Bool) -> some View {
+        HStack(spacing: iconOnly ? 2 : 6) {
             Menu {
                 Picker("Model", selection: $chat.model) {
                     ForEach(chat.models, id: \.id) { Text($0.name).tag($0.id) }
@@ -348,7 +358,10 @@ struct AgentChatView: View {
             } label: {
                 Text(chat.selectedModel?.name ?? (chat.model == "default" ? "Default" : chat.model)).lineLimit(1)
             }
-            .frame(width: 100)
+            .frame(minWidth: iconOnly ? 20 : 100, idealWidth: 100, maxWidth: 100)
+            .menuIndicator(iconOnly ? .hidden : .visible)
+            .help(chat.selectedModel?.name ?? chat.model)
+            .accessibilityLabel("Model").accessibilityValue(chat.selectedModel?.name ?? chat.model)
             .accessibilityIdentifier("chat.model")
             .disabled(chat.isBusy || chat.creatingChat || chat.models.isEmpty)
             Group {
@@ -358,11 +371,17 @@ struct AgentChatView: View {
                             Text("Default").tag("")
                             ForEach(model.efforts, id: \.self) { Text($0.capitalized).tag($0) }
                         }.pickerStyle(.inline)
-                    } label: { Text(chat.effort.isEmpty ? "Effort" : chat.effort.capitalized).lineLimit(1) }
+                    } label: {
+                        if iconOnly { Image(systemName: "brain") }
+                        else { Text(chat.effort.isEmpty ? "Effort" : chat.effort.capitalized).lineLimit(1) }
+                    }
+                    .menuIndicator(iconOnly ? .hidden : .visible)
                     .frame(maxWidth: .infinity)
+                    .help("Effort: \(chat.effort.isEmpty ? "Default" : chat.effort.capitalized)")
+                    .accessibilityLabel("Effort").accessibilityValue(chat.effort.isEmpty ? "Default" : chat.effort.capitalized)
                     .accessibilityIdentifier("chat.effort").disabled(chat.isBusy || chat.creatingChat)
                 } else { Color.clear.frame(height: 16).accessibilityHidden(true) }
-            }.frame(width: 54)
+            }.frame(width: iconOnly ? 18 : 54)
             Group {
                 if chat.provider != .local || chat.statuses[.local]?.capabilities.contains(.approvals) == true {
                     Menu {
@@ -372,11 +391,17 @@ struct AgentChatView: View {
                             Text("Plan").tag(AgentMode.plan)
                             Text("Auto").tag(AgentMode.auto)
                         }.pickerStyle(.inline)
-                    } label: { Text(modeTitle).lineLimit(1) }
+                    } label: {
+                        if iconOnly { Image(systemName: modeSymbol) }
+                        else { Text(modeTitle).lineLimit(1) }
+                    }
+                    .menuIndicator(iconOnly ? .hidden : .visible)
                     .frame(maxWidth: .infinity)
+                    .help("Mode: \(modeTitle)")
+                    .accessibilityLabel("Mode").accessibilityValue(modeTitle)
                     .accessibilityIdentifier("chat.mode").disabled(chat.isBusy || chat.creatingChat)
                 } else { Color.clear.frame(height: 16).accessibilityHidden(true) }
-            }.frame(width: 64)
+            }.frame(width: iconOnly ? 18 : 64)
         }
         .controlSize(.small).menuStyle(.borderlessButton)
     }
@@ -388,19 +413,19 @@ struct AgentChatView: View {
     private var usageValue: Double? {
         chat.providerLimits[chat.provider]?.compactMap(\.utilization).filter(\.isFinite).max()
     }
-    private func gaugeSlot(_ value: Double?, title: String, identifier: String) -> some View {
+    private func gaugeSlot(_ value: Double?, title: String, identifier: String, narrow: Bool) -> some View {
         Group {
             if let value { ChatGauge(value: value, title: title, identifier: identifier) }
             else { Color.clear.accessibilityHidden(true) }
-        }.frame(width: 26, height: 26)
+        }.frame(width: narrow ? 22 : 26, height: 26)
     }
-    private var attachButton: some View {
+    private func attachButton(narrow: Bool) -> some View {
         Button {
             attachmentTarget = (chat.composerOwnerID, chat.provider)
             showingCompletion = false; choosingAttachments = true
         } label: {
             Image(systemName: "paperclip").font(.system(size: 15, weight: .medium))
-                .frame(width: 28, height: 28)
+                .frame(width: narrow ? 18 : 28, height: 28)
         }
         .buttonStyle(.plain).foregroundStyle(.primary)
         .disabled(!canSend || chat.provider == .local)
@@ -455,6 +480,14 @@ struct AgentChatView: View {
     }
     private var modeTitle: String {
         switch chat.mode { case .ask: "Ask"; case .acceptEdits: "Accept edits"; case .plan: "Plan"; case .auto: "Auto" }
+    }
+    private var modeSymbol: String {
+        switch chat.mode {
+        case .ask: "hand.raised"
+        case .acceptEdits: "pencil"
+        case .plan: "list.bullet.clipboard"
+        case .auto: "bolt"
+        }
     }
 
     @ViewBuilder private func requestCard(_ request: AgentRequest, index: Int) -> some View {
@@ -533,6 +566,7 @@ struct ChatMarkdown: View {
 }
 
 struct ChatGauge: View {
+    @Environment(\.colorScheme) private var colorScheme
     let value: Double
     let title: String
     let identifier: String
@@ -544,8 +578,8 @@ struct ChatGauge: View {
                 .rotationEffect(.degrees(-90))
             Text("\(Int(min(1, max(0, value)) * 100))")
                 .font(.system(size: 8, weight: .medium, design: .rounded)).monospacedDigit()
-                .foregroundStyle(.primary)
-        }.frame(width: 22, height: 22).padding(2)
+                .foregroundStyle(colorScheme == .dark ? Color(white: 0.92) : Color(white: 0.12))
+        }.frame(width: 22, height: 22)
             .transaction { $0.animation = nil }
             .accessibilityElement(children: .ignore)
             .help("\(title): \(Int(min(1, max(0, value)) * 100))%")
