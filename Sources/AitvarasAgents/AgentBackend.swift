@@ -80,8 +80,11 @@ public struct AgentSessionSummary: Sendable, Equatable {
     public let id: AgentSessionID
     public let title: String
     public let directory: URL
-    public init(id: AgentSessionID, title: String, directory: URL) {
+    public let sourceVersion: String?
+    public let archived: Bool?
+    public init(id: AgentSessionID, title: String, directory: URL, sourceVersion: String? = nil, archived: Bool? = nil) {
         self.id = id; self.title = title; self.directory = directory
+        self.sourceVersion = sourceVersion; self.archived = archived
     }
 }
 
@@ -105,10 +108,16 @@ public protocol AgentBackend: Actor {
     /// Starts or resumes a session without sending a user message.
     func start(_ configuration: AgentSessionConfiguration) async throws -> any AgentRun
     func listSessions(folder: URL, cursor: String?) async throws -> AgentPage<AgentSessionSummary>
+    /// nil folder lists the native store; Claude has no archive flag.
+    func nativeSessions(folder: URL?, cursor: String?, archived: Bool) async throws -> AgentPage<AgentSessionSummary>
     func readHistory(session: AgentSessionID, cursor: String?) async throws -> AgentPage<AgentEvent>
 }
 
 extension AgentBackend {
+    public func nativeSessions(folder: URL?, cursor: String?, archived: Bool) async throws -> AgentPage<AgentSessionSummary> {
+        guard let folder, !archived else { throw AgentFailure.unsupported }
+        return try await listSessions(folder: folder, cursor: cursor)
+    }
     public func commands(directory: URL) async throws -> [AgentCommand] { throw AgentFailure.unsupported }
     public func files(query: String, directory: URL) async throws -> [AgentFileMention] { throw AgentFailure.unsupported }
 }

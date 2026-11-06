@@ -192,4 +192,4 @@ func agentQuestions(_ value: JSONValue, claude: Bool) throws -> [AgentQuestion] 
     return questions
 }
 
-let subscriptionCapabilities: Set<AgentCapability> = [.thinking, .tools, .approvals, .plans, .questions, .followups]
+let subscriptionCapabilities: Set<AgentCapability> = [.thinking, .tools, .approvals, .plans, .questions, .followups, .history]

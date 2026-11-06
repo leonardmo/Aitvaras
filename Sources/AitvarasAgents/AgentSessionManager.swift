@@ -503,3 +503,56 @@ public actor AgentSessionManager {
         cleanup.cancel(); timer.cancel()
     }
 }
+
+extension AgentSessionManager {
+    /// Discovery starts no run and sends no prompt. Read every page before
+    /// committing mappings, so a failed CLI never leaves half a discovery.
+    public func discoverNativeSessions(provider: AgentProvider) async throws -> [UUID] {
+        guard !closing else { throw AgentSessionManagerError.shuttingDown }
+        guard provider != .local, let store = persistence as? any AgentNativeSessionPersistence else { throw AgentFailure.unsupported }
+        let reader = try backend(provider)
+        var sessions: [AgentSessionSummary] = [], cursor: String?, cursors = Set<String>()
+        repeat {
+            try Task.checkCancellation()
+            let page = try await reader.nativeSessions(folder: nil, cursor: cursor, archived: false)
+            guard page.items.allSatisfy({ $0.id.provider == provider }) else { throw AgentNativeHistoryError.identityConflict }
+            sessions += page.items
+            guard sessions.count <= 100_000 else { throw AgentNativeHistoryError.tooLarge }
+            cursor = page.nextCursor
+            if let cursor, !cursors.insert(cursor).inserted { throw AgentNativeHistoryError.invalidCursor }
+            guard cursors.count <= 2_000 else { throw AgentNativeHistoryError.tooLarge }
+        } while cursor != nil
+        try Task.checkCancellation()
+        guard !closing else { throw AgentSessionManagerError.shuttingDown }
+        return try store.discoverAgentNativeSessions(sessions)
+    }
+}
+
+extension AgentSessionManager {
+    /// Read-only initial preview. Atomic transcript reconciliation is a separate
+    /// operation; previewing never changes entries, turn journals or evidence.
+    public func nativeHistoryPreview(chatID: UUID, provider: AgentProvider) async throws -> [AgentTranscriptEntry] {
+        guard !closing else { throw AgentSessionManagerError.shuttingDown }
+        guard provider != .local else { throw AgentFailure.unsupported }
+        guard let session = try persistence.agentSession(chatID: chatID, provider: provider), let nativeID = session.sessionID else { return [] }
+        let backend = try backend(provider)
+        var entries: [AgentTranscriptEntry] = [], cursor: String?, cursors = Set<String>()
+        repeat {
+            try Task.checkCancellation()
+            let page = try await backend.readHistory(session: nativeID, cursor: cursor)
+            for event in page.items {
+                guard event.scope.session == nativeID else { throw AgentNativeHistoryError.identityConflict }
+                if case .message(let id, let role, let text) = event.kind {
+                    entries.append(.init(chatID: chatID, provider: provider, kind: role, text: text,
+                                         sessionID: session.id, nativeMessageID: id, position: entries.count))
+                }
+            }
+            guard entries.count <= 100_000 else { throw AgentNativeHistoryError.tooLarge }
+            cursor = page.nextCursor
+            if let cursor, !cursors.insert(cursor).inserted { throw AgentNativeHistoryError.invalidCursor }
+            guard cursors.count <= 2_000 else { throw AgentNativeHistoryError.tooLarge }
+        } while cursor != nil
+        try Task.checkCancellation()
+        return entries
+    }
+}

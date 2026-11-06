@@ -782,6 +782,29 @@ confirm Send works again. Check keyboard and VoiceOver access to rename,
 archive/restore and status at minimum window size in light/dark; confirm no
 streaming layout jumps. Native rename/archive propagation is not claimed.
 
+Native history discovery (M5.1/M5.2): `AgentNativeHistoryTests` exercises
+Claude JSONL with recorded message content in synthetic persisted envelopes,
+version labels, unknown records/blocks, pagination, corrupt/truncated files,
+missing directories and wrong profiles. Fake Codex executables assert read-only
+`thread/list`/`thread/read` requests, native archive filters and cursors, unknown
+items, unavailable executables, malformed results and unsupported partial
+history. `AgentNativeIdentityTests` covers repeated discovery, provider/profile/
+host collisions, symlink aliases, nested and ambiguous roots, folder boundaries,
+worktree ownership, atomic failure and preservation of existing chats/settings
+and legacy evidence. Manager discovery must read every page before mapping and
+must never start a run.
+
+Host verification: build the app, use an isolated app profile and disposable
+native sessions, and verify that sessions from every registered project folder
+appear once without a link/import step. Check aliases, overlapping roots and
+owned worktrees, restart discovery, read a preview and Send on both providers;
+confirm native identity and cwd remain the same. Verify the sidebar refresh and
+inline preview Retry with keyboard and VoiceOver in light/dark and at minimum
+window size. Compare existing saved evidence before/after discovery on a private
+DB copy. Real Claude persisted-file envelopes and installed Codex history
+responses require host conformance; the stream recordings alone do not prove
+those on-disk envelopes. Full external-history reconciliation belongs to M5.3.
+
 ## What an agent session should do
 
 For Claude Code (or any agent) working on this repo: Layers 1–2 after every

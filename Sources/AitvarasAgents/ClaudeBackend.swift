@@ -101,6 +101,18 @@ public actor ClaudeBackend: AgentBackend {
         do { try await run.initialize(); return run }
         catch { try? await run.shutdown(); throw error }
     }
-    public func listSessions(folder: URL, cursor: String?) throws -> AgentPage<AgentSessionSummary> { throw AgentFailure.unsupported }
-    public func readHistory(session: AgentSessionID, cursor: String?) throws -> AgentPage<AgentEvent> { throw AgentFailure.unsupported }
+    private var historyReader: ClaudeNativeHistory {
+        let root = environment["CLAUDE_CONFIG_DIR"].map { URL(fileURLWithPath: $0) }
+            ?? URL(fileURLWithPath: environment["HOME"] ?? NSHomeDirectory()).appendingPathComponent(".claude")
+        return ClaudeNativeHistory(projectsDirectory: root.appendingPathComponent("projects"), profile: profile)
+    }
+    public func listSessions(folder: URL, cursor: String?) throws -> AgentPage<AgentSessionSummary> {
+        try historyReader.list(folder: folder, cursor: cursor)
+    }
+    public func nativeSessions(folder: URL?, cursor: String?, archived: Bool) throws -> AgentPage<AgentSessionSummary> {
+        try historyReader.list(folder: folder, cursor: cursor, archived: archived)
+    }
+    public func readHistory(session: AgentSessionID, cursor: String?) throws -> AgentPage<AgentEvent> {
+        try historyReader.history(session: session, cursor: cursor)
+    }
 }

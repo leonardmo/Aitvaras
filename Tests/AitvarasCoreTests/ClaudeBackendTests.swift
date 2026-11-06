@@ -146,14 +146,26 @@ done()
         }
     }
 
-    @Test func statusModelsAndUnsupportedHistory() async throws {
+    @Test func statusModelsAndNativeHistory() async throws {
         let fixture = try BackendExecutableFixture(script: "claude_init()\ndone()")
         defer { fixture.remove() }
-        let backend = ClaudeBackend(executable: fixture.executable, environment: fixture.environment)
-        #expect(try await backend.status().authentication == .subscription)
+        let history = try NativeHistoryFixture()
+        defer { history.remove() }
+        try history.write(records: [history.record("user", text: "Example question")])
+        let backend = ClaudeBackend(executable: fixture.executable, environment: fixture.environment,
+                                    overrides: ["CLAUDE_CONFIG_DIR": history.root.path])
+        let status = try await backend.status()
+        #expect(status.authentication == .subscription)
+        #expect(status.capabilities.contains(.history))
         #expect(try await backend.models() == [AgentModel(id: "test-model", name: "test-model")])
-        await #expect(throws: AgentFailure.unsupported) { _ = try await backend.listSessions(folder: fixture.directory, cursor: nil) }
-        await #expect(throws: AgentFailure.unsupported) { _ = try await backend.readHistory(session: .init(provider: .claude, profile: "default", nativeID: "test"), cursor: nil) }
+        let sessions = try await backend.listSessions(folder: history.root, cursor: nil)
+        #expect(sessions.items.map(\.id) == [history.session])
+        #expect(try await backend.readHistory(session: history.session, cursor: nil).items.map(\.kind)
+            == [.message(id: "user", role: "user", text: "Example question")])
+        await #expect(throws: AgentFailure.invalidRequest) {
+            _ = try await backend.readHistory(session: .init(provider: .claude, profile: "default", nativeID: "test"), cursor: nil)
+        }
+        await #expect(throws: AgentFailure.unsupported) { _ = try await backend.nativeSessions(folder: nil, cursor: nil, archived: true) }
     }
     @Test(arguments: ["api-key", "endpoint", "signed-out", "no-plan"])
     func refusesNonSubscriptionBeforeSession(scenario: String) async throws {

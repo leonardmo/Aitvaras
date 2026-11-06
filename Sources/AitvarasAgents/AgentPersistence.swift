@@ -112,3 +112,8 @@ public protocol AgentSessionPersistence: Sendable {
     func agentContext(session: AgentChatSession) throws -> ChatContextProjection?
     func agentHandover(turnID: UUID) throws -> ChatContextProjection?
 }
+
+public protocol AgentNativeSessionPersistence: Sendable {
+    /// Atomically map metadata only; never writes legacy evidence or transcript.
+    func discoverAgentNativeSessions(_ sessions: [AgentSessionSummary]) throws -> [UUID]
+}
