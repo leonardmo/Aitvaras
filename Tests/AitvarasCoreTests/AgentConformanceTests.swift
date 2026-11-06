@@ -105,7 +105,7 @@ done()
     }
 
     @Test(arguments: [AgentProvider.claude, .codex], ["shutdown", "exit", "turn", "interrupt"])
-    func pendingExpires(provider: AgentProvider, reason: String) async throws {
+    func pendingIsDeniedWhenRunEndsOrStops(provider: AgentProvider, reason: String) async throws {
         let fixture = try ActionFixture(provider: provider)
         try await fixture.coordinator.send(fixture.input, willDeliver: {})
         let request = await fixture.run.request(.permission(.init(name: "Write", input: .null)))
@@ -122,6 +122,10 @@ done()
         }
         #expect(await fixture.run.executions == 0)
         #expect(await fixture.coordinator.pendingRequests().isEmpty)
+        #expect(await fixture.run.responses == [.deny])
+        let audit = await fixture.audit.events
+        #expect(audit.count == 2)
+        #expect(audit.contains { $0.kind == .confirmationDenied })
         try await fixture.coordinator.shutdown()
     }
 

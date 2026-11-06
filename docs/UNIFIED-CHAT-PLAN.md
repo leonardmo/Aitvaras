@@ -149,7 +149,9 @@ belong to the application. Sidebar dots distinguish running, needs-you, failed
 and interrupted chats. Rename and archive edit the shared chat's local metadata,
 preserving every provider session and transcript. Archive does not stop active
 work or expire approvals; Stop and replies remain available, and new messages
-require Restore. Running chats cannot expire automatically. Send and turn end
+require Restore. Running chats cannot expire automatically. Pending permission,
+plan and question cards wait without a timeout until answered, stopped, resolved
+or cancelled by the provider, or cleared on process exit. Send and turn end
 update activity ordering without unarchiving a chat. Quit journals active and
 queued inputs as interrupted before disposing runs; startup recovers crash
 leftovers without sending. The next explicit Send resumes the saved native

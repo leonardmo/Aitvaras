@@ -5,7 +5,7 @@ import AitvarasStore
 @testable import AitvarasAgents
 
 @Suite struct AgentApprovalTests {
-    @Test func managedApprovalAuditBelongsToDurableActivityAndExpiresOnStop() async throws {
+    @Test func managedApprovalAuditBelongsToDurableActivityAndDeniesOnStop() async throws {
         let stores = try inMemoryStores()
         let chat = try agentStoreChat(stores).0.id
         let backend = ApprovalBackend(provider: .claude)
@@ -80,18 +80,60 @@ import AitvarasStore
         try await manager.shutdown()
     }
 
-    @Test(arguments: ["timeout", "provider-cancel", "restart", "reply-rejected"])
-    func pendingExpiresAndCannotBeApprovedAgain(reason: String) async throws {
+    @Test(arguments: [AgentProvider.claude, .codex], ["permission", "permissions", "plan", "questions"])
+    func unansweredCardsStayPendingUntilAnsweredOrStopped(provider: AgentProvider, kind: String) async throws {
+        for stop in [false, true] {
+            let stores = try inMemoryStores()
+            let run = ApprovalRun(provider: provider)
+            let coordinator = AgentActionCoordinator(run: run, mode: .ask, provenance: .init(chatID: UUID())) {
+                _ = try stores.record($0)
+            }
+            try await coordinator.send(.init(text: "test"), willDeliver: {})
+            let requestKind: AgentRequest.Kind = switch kind {
+            case "permission": .permission(.init(name: "Bash", input: .object(["command": .string("echo example")])))
+            case "permissions": .permissions(.object([:]))
+            case "plan": .plan("Create an example file")
+            default: .questions([.init(id: "q", prompt: "Choose a name")])
+            }
+            let request = await run.offer(requestKind)
+            try await approvalWait { await coordinator.pendingRequests() == [request] }
+            // The former expiry test injected a 60 ms timeout. Wait beyond
+            // that deadline without adding a ten-minute delay to this suite.
+            try await Task.sleep(for: .milliseconds(120))
+            #expect(await coordinator.pendingRequests() == [request])
+            #expect(await run.responses.isEmpty)
+            #expect(try stores.recentActivity(limit: 10).map(\.kind) == [.suggestionOffered])
+
+            let response: AgentResponse
+            if stop {
+                try await coordinator.interrupt()
+                response = kind == "questions" ? .unsupported : .deny
+            } else {
+                response = kind == "questions" ? .answers(["q": ["Example"]]) : .allow(updatedInput: nil)
+                try await coordinator.respond(to: request, with: response)
+            }
+            #expect(await coordinator.pendingRequests().isEmpty)
+            #expect(await run.responses == [response])
+            let audit = try stores.recentActivity(limit: 10)
+            #expect(audit.count == 2)
+            #expect(audit.contains { $0.kind == (stop ? .confirmationDenied : .toolExecuted) })
+            await #expect(throws: AgentFailure.invalidRequest) {
+                try await coordinator.respond(to: request, with: .deny)
+            }
+            try await coordinator.shutdown()
+        }
+    }
+
+    @Test(arguments: ["provider-cancel", "restart", "reply-rejected"])
+    func resolvedCardsCannotBeApprovedAgain(reason: String) async throws {
         let stores = try inMemoryStores()
         let run = ApprovalRun(provider: .claude)
         let input = AgentInput(text: "test")
-        let coordinator = AgentActionCoordinator(run: run, mode: .ask, provenance: .init(chatID: UUID()),
-            approvalTimeout: reason == "timeout" ? .milliseconds(60) : .seconds(600)) { _ = try stores.record($0) }
+        let coordinator = AgentActionCoordinator(run: run, mode: .ask, provenance: .init(chatID: UUID())) { _ = try stores.record($0) }
         try await coordinator.send(input, willDeliver: {})
         let request = await run.offer()
         try await approvalWait { await coordinator.pendingRequests().count == 1 }
         switch reason {
-        case "timeout": try await approvalWait { await coordinator.pendingRequests().isEmpty }
         case "provider-cancel": await run.resolve(request)
         case "restart": try await coordinator.shutdown()
         default:
@@ -104,6 +146,10 @@ import AitvarasStore
         await #expect(throws: AgentFailure.invalidRequest) { try await coordinator.respond(to: request, with: .allow(updatedInput: nil)) }
         if reason == "provider-cancel" { #expect(await run.responses.isEmpty) }
         else if reason != "reply-rejected" { try await approvalWait { await run.responses == [.deny] } }
+        try await approvalWait { try stores.recentActivity(limit: 10).count == 2 }
+        let audit = try stores.recentActivity(limit: 10)
+        #expect(audit.count == 2)
+        #expect(audit.contains { $0.kind == (reason == "reply-rejected" ? .toolExecuted : .confirmationDenied) })
         if reason == "restart" {
             let fresh = AgentActionCoordinator(run: ApprovalRun(provider: .claude), mode: .ask,
                 provenance: .init(chatID: UUID())) { _ in }
@@ -257,10 +303,10 @@ private actor ApprovalRun: AgentRun {
     func send(_ input: AgentInput, willDeliver: @escaping @Sendable () async throws -> Void) async throws {
         try await willDeliver(); self.input = input.id
     }
-    func offer() -> AgentRequest {
+    func offer(_ kind: AgentRequest.Kind = .permission(.init(name: "Bash",
+        input: .object(["command": .string("echo example")])))) -> AgentRequest {
         let scope = AgentEventScope(runID: id, session: .init(provider: provider, profile: "test", nativeID: "session-test"), inputID: input, turnID: "turn-test", itemID: "tool-test")
-        let request = AgentRequest(id: .integer(1), scope: scope,
-            kind: .permission(.init(name: "Bash", input: .object(["command": .string("echo example")]))))
+        let request = AgentRequest(id: .integer(1), scope: scope, kind: kind)
         continuation.yield(.init(scope: scope, kind: .request(request)))
         return request
     }

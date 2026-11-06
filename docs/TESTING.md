@@ -680,11 +680,14 @@ mark the originating chat with its needs-you dot. The command or file is
 visible without expanding JSON. Home attention and Chat Suggestions project
 the same live pending requests; either surface answers through the coordinator
 and cannot execute the action independently. Hooks alone never create cards.
-Cards expire after ten minutes, provider cancellation, turn end, Stop, exit or
-restart. Raw provider requests are not persisted as executable Suggestions;
-Activity keeps scoped provenance without raw arguments. `AgentApprovalTests`
+Permission, plan and question cards have no automatic timeout. They stay pending
+until answered, cancelled or resolved by the provider (including turn end),
+denied by Stop, or cleared on exit or restart. Raw provider requests are not
+persisted as executable Suggestions; Activity keeps scoped provenance without
+raw arguments. `AgentApprovalTests`
 covers cross-chat replies, concurrent clicks, cancellation through fake
-executables, expiry, rejected replies, restart and failed durable audit writes.
+executables, waiting past the former accelerated expiry deadline, Stop, rejected
+replies, restart and failed durable audit writes.
 
 Host verification for M3.1/M3.2: with each real provider in an isolated profile,
 expand thinking and two interleaved tools while output streams, then collapse
@@ -692,6 +695,8 @@ and scroll upward. Check stable rows, bounded details, keyboard expansion and
 Allow/Deny at minimum window size in light/dark appearances. Request a harmless
 file edit and command; Deny must prevent execution, Allow must execute once,
 and the pending card/dot must clear from transcript, Suggestions and Home.
+Leave a permission, plan or question card unanswered for more than ten minutes;
+it must remain actionable, and Stop must still deny it and record the ending.
 Navigate to another running chat while answering; verify only the originating
 request changes. Check Activity provenance and expiry on provider exit/restart.
 App compilation, real CLI behavior and these visual checks require the host.
@@ -734,7 +739,8 @@ turn. Every input has its own delivery barrier and journal row linked to the
 active input. Duplicate IDs, wrong providers and busy plan reviews cannot replace
 that turn. A rejection before delivery leaves its active approval card intact.
 
-Stop expires approval cards and waits at most 1.4 seconds for the native turn end.
+Stop denies pending approval cards and waits at most 1.4 seconds for the native
+turn end.
 If that does not arrive, transport disposal has a further 300 ms grace. Partial
 output and native session IDs survive, queued inputs become interrupted, and the
 next explicit Send continues the same native session without replaying them.
