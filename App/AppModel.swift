@@ -423,7 +423,9 @@ final class AppModel {
         }.value
         let isolated = AitvarasPaths.isIsolated
         let claude = ClaudeBackend(executable: AgentProviderLaunchPolicy.executable(.claude,
-            environment: inherited, isolated: isolated), environment: environment)
+            environment: inherited, isolated: isolated), environment: environment,
+            overrides: isolated && inherited["AITVARAS_FAKE_CLAUDE"] != nil
+                ? ["CLAUDE_CONFIG_DIR": AitvarasPaths.stateDirectory.appendingPathComponent("FakeProviders/claude").path] : [:])
         let codex = CodexBackend(executable: AgentProviderLaunchPolicy.executable(.codex,
             environment: inherited, isolated: isolated), environment: environment)
         let local = LocalBackend { [weak self] configuration, input in
@@ -436,6 +438,9 @@ final class AppModel {
             guard let backend = available[provider] else { throw AgentFailure.offline }
             return backend
         }, audit: { _ = try stores.record($0) })
+        nativeWorkspace.readerFactory = { provider in
+            NativeBackendSessionReader(provider: provider, backend: available[provider == .claude ? .claude : .codex])
+        }
         agentSessionManager = manager
         chatModel = ChatModel(manager: manager, stores: stores, backends: available)
     }

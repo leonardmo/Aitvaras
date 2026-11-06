@@ -14,7 +14,6 @@ struct WorkspaceRailView: View {
     @State private var renamingChat: WorkspaceChat?
     @State private var newTitle = ""
     @State private var assigningConversation: Conversation?
-    @State private var showingNativeImport = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -48,9 +47,14 @@ struct WorkspaceRailView: View {
                 Button("New project", systemImage: "folder.badge.plus") { showingNewProject = true }
                     .accessibilityIdentifier("chat.project.new")
                 Spacer()
+                Button("Refresh native chats", systemImage: model.chatModel?.nativeDiscoveryFailed == true ? "exclamationmark.circle" : "arrow.clockwise") {
+                    Task { await refreshNativeChats() }
+                }
+                .disabled(model.chatModel?.discoveringNativeSessions == true)
+                .help(model.chatModel?.nativeDiscoveryError ?? "Refresh native chats")
+                .accessibilityIdentifier("chat.native.refresh")
                 Menu {
                     Button("Manage projects…") { showingProjectManager = true }
-                    Button("Import native chats…") { showingNativeImport = true }
                 } label: { Image(systemName: "ellipsis") }
                 .accessibilityLabel("Projects").accessibilityIdentifier("chat.projects.menu")
                 .menuStyle(.borderlessButton).fixedSize()
@@ -61,7 +65,9 @@ struct WorkspaceRailView: View {
         .popover(item: $creatingChat) { project in
             NewAgentChatView(project: project) { creatingChat = nil }
         }
-        .sheet(isPresented: $showingNativeImport) { NativeSessionImportView() }
+        .task(id: model.workspaceProjects.map { "\($0.id):\($0.updatedAt)" }.joined() + String(model.chatModel != nil)) {
+            await refreshNativeChats()
+        }
         .sheet(isPresented: $showingNewProject) {
             WorkspaceProjectEditor { title, instructions, folders in
                 model.createWorkspaceProject(title: title, instructions: instructions, folderURLs: folders)
@@ -87,6 +93,12 @@ struct WorkspaceRailView: View {
             Button("Cancel", role: .cancel) { renamingChat = nil }
                 .accessibilityIdentifier("chat.rename.cancel")
         }
+    }
+
+    private func refreshNativeChats() async {
+        guard !model.workspaceProjects.isEmpty, let chat = model.chatModel else { return }
+        await chat.discoverNativeSessions()
+        model.refreshWorkspaces()
     }
 
     private func projectGroup(_ project: WorkspaceProject) -> some View {

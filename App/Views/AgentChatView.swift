@@ -41,7 +41,7 @@ struct AgentChatView: View {
             ScrollViewReader { proxy in
                 ScrollView {
                     VStack(alignment: .leading, spacing: 18) {
-                        ForEach(chat.state?.entries ?? []) { entry in
+                        ForEach(chat.displayEntries) { entry in
                             if !planCardShows(entry) { AgentTranscriptView(entry: entry).id(entry.id) }
                         }
                         ForEach(Array((chat.state?.pendingCards ?? []).enumerated()), id: \.element.identity) { index, request in
@@ -64,7 +64,7 @@ struct AgentChatView: View {
                     if phase == .idle && bottomVisible { atBottom = true }
                 }
                 .accessibilityIdentifier("chat.transcript")
-                .onChange(of: chat.state?.entries) {
+                .onChange(of: chat.displayEntries) {
                     if atBottom { proxy.scrollTo("chat.end", anchor: .bottom) }
                 }
                 .onChange(of: chat.state?.pendingCards) {
@@ -78,6 +78,10 @@ struct AgentChatView: View {
                 HStack(spacing: 8) {
                     if let error = chat.error ?? workspaceError ?? outcomeError {
                         Text(error).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                        if chat.nativePreviewFailed {
+                            Button("Retry") { Task { await chat.refreshNativePreview() } }
+                                .accessibilityIdentifier("chat.native.preview.retry")
+                        }
                         Spacer(minLength: 0)
                         if chat.signingIn != nil {
                             ProgressView().controlSize(.mini)

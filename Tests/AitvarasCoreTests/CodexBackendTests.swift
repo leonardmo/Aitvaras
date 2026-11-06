@@ -191,10 +191,10 @@ emit({'id':r['id'],'result':{'turn':{'id':'turn-test'}}})
         try await backend.shutdown()
     }
 
-    @Test func accountLoginModelsRateLimitsAndUnsupportedHistory() async throws {
+    @Test func accountLoginModelsRateLimitsAndNativeHistory() async throws {
         let fixture = try BackendExecutableFixture(script: #"""
 codex_init()
-for _ in range(5):
+for _ in range(7):
     r=read()
     if r['method']=='account/read': account(r)
     elif r['method']=='account/login/start':
@@ -205,19 +205,33 @@ for _ in range(5):
     elif r['method']=='model/list':
         if r['params'].get('cursor')=='next': emit({'id':r['id'],'result':{'data':[],'nextCursor':None}})
         else: emit({'id':r['id'],'result':{'data':[{'model':'test-model','displayName':'Test','supportedReasoningEfforts':[{'reasoningEffort':'high'}]}],'nextCursor':'next'}})
+    elif r['method']=='thread/list':
+        assert r['params']['archived']==False
+        emit({'id':r['id'],'result':{'data':[{'id':'native','cwd':root,'modelProvider':'openai','preview':'Example'}],'nextCursor':None}})
+    elif r['method']=='thread/read':
+        assert r['params']=={'threadId':'native','includeTurns':True}
+        emit({'id':r['id'],'result':{'thread':{'id':'native','turns':[{'id':'turn','items':[{'id':'reply','type':'agentMessage','text':'Example reply'}]}]}}})
     elif r['method']=='account/rateLimits/read':
         emit({'id':r['id'],'result':{'rateLimits':{'limitId':'codex','primary':{'usedPercent':25,'windowDurationMins':300,'resetsAt':2000000000},'secondary':None}}})
 done()
 """#)
         defer { fixture.remove() }
         let backend = CodexBackend(executable: fixture.executable, environment: fixture.environment)
-        #expect(try await backend.status().authentication == .subscription)
+        let status = try await backend.status()
+        #expect(status.authentication == .subscription)
+        #expect(status.capabilities.contains(.history))
         try await backend.signIn { url in #expect(url.absoluteString == "https://example.invalid/login") }
         #expect(try await backend.models() == [AgentModel(id: "test-model", name: "Test", efforts: ["high"])])
         let windows = try await backend.rateLimits()
         #expect(windows == [.init(id: "codex.primary", utilization: 0.25, duration: 18000, resetsAt: Date(timeIntervalSince1970: 2_000_000_000))])
-        await #expect(throws: AgentFailure.unsupported) { _ = try await backend.listSessions(folder: fixture.directory, cursor: nil) }
-        await #expect(throws: AgentFailure.unsupported) { _ = try await backend.readHistory(session: .init(provider: .codex, profile: "default", nativeID: "test"), cursor: nil) }
+        let sessions = try await backend.listSessions(folder: fixture.directory, cursor: nil)
+        let native = AgentSessionID(provider: .codex, profile: "default", nativeID: "native")
+        #expect(sessions.items.map(\.id) == [native])
+        #expect(try await backend.readHistory(session: native, cursor: nil).items.map(\.kind)
+            == [.message(id: "reply", role: "assistant", text: "Example reply")])
+        await #expect(throws: AgentFailure.invalidRequest) {
+            _ = try await backend.readHistory(session: .init(provider: .codex, profile: "other", nativeID: "native"), cursor: nil)
+        }
         try await Task.sleep(for: .milliseconds(20)); try fixture.assertComplete()
         try await backend.shutdown()
     }

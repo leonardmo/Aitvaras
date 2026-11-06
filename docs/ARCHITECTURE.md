@@ -181,3 +181,33 @@ Package.swift              — AitvarasKit: everything testable without the app
 - **VoicePipeline**: AVAudioEngine voice-processing I/O (echo cancellation) → SpeechAnalyzer streaming partials → end-of-turn VAD → agent streams → sentence-chunked TTS with barge-in cancellation.
 - **Character states** (idle / listening / thinking / speaking, plus mood accents) are driven by a small state machine observing AgentCore + VoicePipeline; RealityKit animations subscribe to it.
 - **Concurrency**: Swift 6 strict concurrency; engines and connectors are actors; UI observes via `@Observable` models.
+
+### Native chat discovery
+
+`AitvarasAgents` reads Claude Code's local `projects/*/<session>.jsonl`
+files directly (format label: 2.1.300), tolerating unknown records and content
+blocks. Codex discovery uses `thread/list`; text previews use `thread/read`
+with full legacy turns. Neither reader needs Node or an SDK. Claude archive
+status is unavailable; Codex supports active and archived lists. Malformed,
+truncated, oversized or unsupported partial histories fail without claiming
+complete coverage. Claude files are limited to 32 MiB each; Codex paginated
+history modes are explicitly unsupported by this full-history reader. Previews
+project user/assistant text, excluding tool-only and auxiliary records. Local
+preview cursors bind offsets to the query and snapshot.
+
+`AgentNativeSessionStore` maps metadata through the existing normalized session
+identity key (provider, host, profile, native ID), in one transaction after all
+list pages succeed. Canonical folder aliases share a project; the most specific
+registered root wins for nested roots, and durable worktree ownership wins over
+folder matching. Equal roots in different projects, changed ownership and
+conflicting worktree sessions fail without reassignment. Multiple registered
+folders contribute chats to one project. Discovery preserves local titles,
+archive state, settings, conversations and all legacy evidence tables.
+
+The sidebar discovers native chats automatically and offers one refresh icon.
+Opening a newly discovered chat shows a read-only native text preview; Send
+resumes its saved native identity and cwd. Preview is transient: atomic history
+reconciliation and handover across external continuations remain separate
+operations. The compatibility `NativeBackendSessionReader` supplies saved-source
+views using the same backends and launch policy as Chat. Fake Claude launches
+use a history directory inside the isolated test profile.

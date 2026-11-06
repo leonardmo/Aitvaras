@@ -1,6 +1,7 @@
 import Foundation
 import Observation
 import AitvarasCore
+import AitvarasAgents
 import AitvarasConnectors
 import AitvarasStore
 
@@ -66,9 +67,14 @@ final class NativeWorkspaceModel {
     var savedLimits: [UUID: Int] = [:]
 
     nonisolated static func reader(for provider: NativeSessionProvider) -> any NativeSessionReader {
+        let environment = ProcessInfo.processInfo.environment
+        let agent: AgentProvider = provider == .claude ? .claude : .codex
+        guard AgentProviderLaunchPolicy.allows(agent, environment: environment, isolated: AitvarasPaths.isIsolated) else {
+            return NativeBackendSessionReader(provider: provider, backend: nil)
+        }
         switch provider {
-        case .codex: CodexSessionReader()
-        case .claude: ClaudeSessionReader()
+        case .codex: return NativeBackendSessionReader(provider: .codex, backend: CodexBackend())
+        case .claude: return NativeBackendSessionReader(provider: .claude, backend: ClaudeBackend())
         }
     }
 

@@ -140,8 +140,12 @@ public actor CodexBackend: AgentBackend {
         await run.started()
         return run
     }
-    public func listSessions(folder: URL, cursor: String?) throws -> AgentPage<AgentSessionSummary> { throw AgentFailure.unsupported }
-    public func readHistory(session: AgentSessionID, cursor: String?) throws -> AgentPage<AgentEvent> { throw AgentFailure.unsupported }
+    func nativeSessionID(_ id: String) -> AgentSessionID { .init(provider: .codex, profile: profile, nativeID: id) }
+    func validateNativeSession(_ session: AgentSessionID) throws {
+        guard session.provider == .codex, session.profile == profile, session.host == "local", !session.nativeID.isEmpty else {
+            throw AgentFailure.invalidRequest
+        }
+    }
 
     func rpc(_ method: String, _ parameters: JSONValue = .object([:])) async throws -> JSONValue {
         try await connection().request(method, parameters)

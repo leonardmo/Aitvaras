@@ -33,6 +33,46 @@ final class ChatModel {
     private var composerSelections = AgentComposerSelections()
     private var handledFailures: Set<UUID> = []
     private(set) var state: ChatState?
+    private var nativePreview: [AgentTranscriptEntry] = []
+    private var previewTask: Task<Void, Never>?
+    private(set) var discoveringNativeSessions = false
+    private(set) var nativeDiscoveryError: String?
+    var nativeDiscoveryFailed: Bool { nativeDiscoveryError != nil }
+    var displayEntries: [AgentTranscriptEntry] {
+        let entries = state?.entries ?? []
+        func key(_ entry: AgentTranscriptEntry) -> String {
+            "\(entry.sessionID?.uuidString ?? ""):\(entry.nativeMessageID ?? "")"
+        }
+        let saved = Set(entries.filter { $0.nativeMessageID != nil }.map(key))
+        return nativePreview.filter { !saved.contains(key($0)) } + entries
+    }
+    func refreshNativePreview() async {
+        guard let id = chatID, provider != .local else { return }
+        do {
+            let entries = try await manager.nativeHistoryPreview(chatID: id, provider: provider)
+            guard !Task.isCancelled, chatID == id else { return }
+            nativePreview = entries
+            if error == "Native history could not be read." { error = nil }
+        } catch {
+            guard !Task.isCancelled, chatID == id else { return }
+            self.error = "Native history could not be read."
+        }
+    }
+    var nativePreviewFailed: Bool { error == "Native history could not be read." }
+    func discoverNativeSessions() async {
+        guard !terminating, !discoveringNativeSessions else { return }
+        discoveringNativeSessions = true; nativeDiscoveryError = nil
+        defer { discoveringNativeSessions = false }
+        for provider in [AgentProvider.claude, .codex] where backends[provider] != nil {
+            do { _ = try await manager.discoverNativeSessions(provider: provider) }
+            catch is CancellationError { return }
+            catch AgentFailure.notInstalled { continue }
+            catch AgentNativeHistoryError.identityConflict {
+                nativeDiscoveryError = "Native chat ownership conflicts with project folders or worktrees. Check project folders, then refresh."
+            }
+            catch { nativeDiscoveryError = "Native history could not be refreshed. Retry." }
+        }
+    }
     private var terminating = false
     private(set) var error: String?
     private(set) var authProvider: AgentProvider?
@@ -164,6 +204,7 @@ final class ChatModel {
     func select(_ id: UUID?) {
         guard id != chatID else { return }
         subscription?.cancel()
+        previewTask?.cancel(); nativePreview = []
         // View changes cancel a browser flow and invalidate its automatic send.
         if loginToken != nil { cancelSignIn() }
         if let pending = try? stores.pendingSend(), pending.session.chatID != id { invalidatePending() }
@@ -187,6 +228,14 @@ final class ChatModel {
                 } else { try stores.savePendingSend(nil) }
             }
             guard let id else { return }
+            // Existing normalized transcripts use their own history path. A
+            // newly discovered chat gets a read-only native preview immediately.
+            if try stores.agentEntries(chatID: id).isEmpty, provider != .local {
+                previewTask = Task { [weak self] in
+                    guard let self else { return }
+                    await self.refreshNativePreview()
+                }
+            }
             subscription = Task { [weak self, manager] in
                 do {
                     for await state in try await manager.updates(chatID: id) {
@@ -219,9 +268,12 @@ final class ChatModel {
         settings[settingsKey] = try stores.agentSession(chatID: id, provider: provider)
             ?? AgentChatSession(chatID: id, provider: provider, cwd: cwd,
                                 model: provider == .local ? "local" : "default")
-        settings[settingsKey]?.cwd = cwd
+        if settings[settingsKey]?.sessionID == nil { settings[settingsKey]?.cwd = cwd }
+        let primary = URL(fileURLWithPath: settings[settingsKey]?.cwd ?? cwd).resolvingSymlinksInPath().standardizedFileURL.path
         settings[settingsKey]?.additionalRootsJSON = try owned?.additionalRootsJSON
-            ?? String(decoding: JSONEncoder().encode(folders.dropFirst().map(\.path)), as: UTF8.self)
+            ?? String(decoding: JSONEncoder().encode(folders.filter {
+                $0.resolvingSymlinksInPath().standardizedFileURL.path != primary
+            }.map(\.path)), as: UTF8.self)
     }
     private func fallbackDirectory(_ id: UUID) -> URL {
         AitvarasPaths.stateDirectory.appendingPathComponent("AgentChats/\(id.uuidString)", isDirectory: true)
@@ -506,6 +558,7 @@ final class ChatModel {
     }
     func shutdown() async throws {
         terminating = true
+        previewTask?.cancel()
         cancelSignIn(); stoppedSends.formUnion(sending.values)
         modelLoads.values.forEach { $0.task.cancel() }; modelLoads.removeAll()
         try await manager.shutdown()
