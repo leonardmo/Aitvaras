@@ -1,42 +1,71 @@
 #if DEBUG
 import AppKit
 
+/// SwiftUI's private accessibility nodes answer the NSAccessibility selectors but do
+/// not formally conform to the protocol, so a cast would silently drop them.
+@MainActor struct SelfDriveNode {
+    let object: NSObject
+    private func read(_ key: String) -> Any? {
+        object.responds(to: NSSelectorFromString(key)) ? object.value(forKey: key) : nil
+    }
+    var children: [Any] { read("accessibilityChildren") as? [Any] ?? [] }
+    var identifier: String? { read("accessibilityIdentifier") as? String }
+    var label: String? { read("accessibilityLabel") as? String }
+    var title: String? { read("accessibilityTitle") as? String }
+    var value: String? { read("accessibilityValue") as? String }
+    var role: String? { (read("accessibilityRole") as? NSAccessibility.Role)?.rawValue ?? read("accessibilityRole") as? String }
+    var hidden: Bool { (read("isAccessibilityHidden") as? NSNumber)?.boolValue ?? false }
+    var enabled: Bool { (read("isAccessibilityEnabled") as? NSNumber)?.boolValue ?? true }
+    var frame: NSRect { (read("accessibilityFrame") as? NSValue)?.rectValue ?? .zero }
+    func pressAction() -> Bool {
+        let selector = NSSelectorFromString("accessibilityPerformPress")
+        guard object.responds(to: selector) else { return false }
+        typealias Press = @convention(c) (AnyObject, Selector) -> Bool
+        return unsafeBitCast(object.method(for: selector), to: Press.self)(object, selector)
+    }
+    func set(value: String) {
+        let selector = NSSelectorFromString("setAccessibilityValue:")
+        if object.responds(to: selector) { object.perform(selector, with: value) }
+    }
+}
+
 /// Kept independent of launch/bootstrap so a host probe can exercise just the
 /// accessibility tree, local press dispatch and composer editing.
 @MainActor public final class SelfDriveSurface {
     let window: NSWindow
     public init(window: NSWindow) { self.window = window }
 
-    func nodes() throws -> [any NSAccessibilityProtocol] {
+    func nodes() throws -> [SelfDriveNode] {
         window.contentView?.layoutSubtreeIfNeeded()
         var pending: [Any] = [window]
         var seen = Set<ObjectIdentifier>()
-        var found: [any NSAccessibilityProtocol] = []
-        while let object = pending.popLast() {
-            guard let node = object as? any NSAccessibilityProtocol else { continue }
-            guard seen.insert(ObjectIdentifier(node)).inserted else { continue }
-            guard !node.isAccessibilityHidden() else { continue }
+        var found: [SelfDriveNode] = []
+        while let next = pending.popLast() {
+            guard let object = next as? NSObject else { continue }
+            guard seen.insert(ObjectIdentifier(object)).inserted else { continue }
+            let node = SelfDriveNode(object: object)
+            guard !node.hidden else { continue }
             guard seen.count <= 20_000 else { throw SelfDriveFailure("Accessibility tree exceeds node limit") }
             found.append(node)
-            pending.append(contentsOf: node.accessibilityChildren() ?? [])
+            pending.append(contentsOf: node.children)
         }
         return found
     }
 
-    func find(_ identifier: String) throws -> (any NSAccessibilityProtocol)? {
-        try nodes().first { $0.accessibilityIdentifier() == identifier }
+    func find(_ identifier: String) throws -> SelfDriveNode? {
+        try nodes().first { $0.identifier == identifier }
     }
 
     func press(_ identifier: String) throws -> String {
         guard let element = try find(identifier) else { throw SelfDriveFailure("Identifier unavailable: \(identifier)") }
-        guard element.isAccessibilityEnabled() else { throw SelfDriveFailure("Control disabled: \(identifier)") }
+        guard element.enabled else { throw SelfDriveFailure("Control disabled: \(identifier)") }
         // AppKit menu tracking can depend on real focus and run a modal loop.
         guard !["chat.model", "chat.mode", "chat.effort"].contains(identifier),
-              ![NSAccessibility.Role.popUpButton, .menuButton, .menuItem].contains(element.accessibilityRole()) else {
+              !["AXPopUpButton", "AXMenuButton", "AXMenuItem"].contains(element.role ?? "") else {
             throw SelfDriveFailure("Native menu tracking requires XCUITest: \(identifier)")
         }
-        if element.accessibilityPerformPress() { return "accessibilityPerformPress accepted" }
-        let frame = element.accessibilityFrame()
+        if element.pressAction() { return "accessibilityPerformPress accepted" }
+        let frame = element.frame
         let point = window.convertPoint(fromScreen: NSPoint(x: frame.midX, y: frame.midY))
         guard frame.width > 0, frame.height > 0,
               let content = window.contentView,
@@ -55,16 +84,32 @@ import AppKit
     }
 
     func type(_ text: String) throws -> String {
-        guard let input = try find("chat.composer.input"), input.isAccessibilityEnabled() else {
+        guard let input = try find("chat.composer.input"), input.enabled else {
             throw SelfDriveFailure("Enabled composer unavailable")
         }
-        // AX setters act on the in-process text control without key focus.
-        let previous = input.accessibilityValue() as? String ?? ""
-        input.setAccessibilityValue(previous + text)
-        guard input.accessibilityValue() as? String == previous + text else {
-            throw SelfDriveFailure("Composer did not accept the accessibility value without focus")
+        // The accessibility setter changes the field but skips SwiftUI's binding, so the
+        // text goes through the field's own editor. A non-key window can still hold a
+        // first responder, which leaves the person's keyboard focus alone.
+        let frame = input.frame
+        func editable(in view: NSView) -> NSView? {
+            for child in view.subviews {
+                if let found = editable(in: child) { return found }
+            }
+            guard view is NSTextView || (view as? NSTextField)?.isEditable == true else { return nil }
+            let onScreen = window.convertToScreen(view.convert(view.bounds, to: nil))
+            return onScreen.intersects(frame) ? view : nil
         }
-        return "Composer accessibility value updated; Send/waitFor verifies binding"
+        guard let content = window.contentView, let field = editable(in: content) else {
+            throw SelfDriveFailure("No editable view behind the composer")
+        }
+        guard window.makeFirstResponder(field) else { throw SelfDriveFailure("Composer refused first responder") }
+        let editor = (field as? NSTextView) ?? (field as? NSTextField)?.currentEditor() as? NSTextView
+        guard let editor else { throw SelfDriveFailure("Composer has no field editor") }
+        editor.insertText(text, replacementRange: NSRange(location: editor.string.utf16.count, length: 0))
+        guard (input.value ?? "").contains(text) else {
+            throw SelfDriveFailure("Composer did not show the typed text")
+        }
+        return "Inserted through the field editor"
     }
 
     public func perform(_ step: SelfDriveStep, directory: URL) async throws -> String {
@@ -82,11 +127,11 @@ import AppKit
             let deadline = clock.now.advanced(by: .seconds(step.timeout ?? 10))
             repeat {
                 let matches = try nodes().contains { node in
-                    if let identifier = step.identifier { return node.accessibilityIdentifier() == identifier }
+                    if let identifier = step.identifier { return node.identifier == identifier }
                     let text = step.text!
-                    let frame = node.accessibilityFrame()
+                    let frame = node.frame
                     guard frame.width > 0, frame.height > 0, window.frame.intersects(frame) else { return false }
-                    return [node.accessibilityLabel(), node.accessibilityTitle(), node.accessibilityValue() as? String]
+                    return [node.label, node.title, node.value]
                         .compactMap { $0 }.contains { $0.localizedCaseInsensitiveContains(text) }
                 }
                 if matches != (step.absent ?? false) { return "Condition observed in window accessibility tree" }
@@ -97,6 +142,11 @@ import AppKit
         case .screenshot:
             guard let content = window.contentView else { throw SelfDriveFailure("Missing content view") }
             content.layoutSubtreeIfNeeded()
+            // cacheDisplay skips the window's own background, which SwiftUI text assumes.
+            content.wantsLayer = true
+            content.effectiveAppearance.performAsCurrentDrawingAppearance {
+                content.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
+            }
             guard let bitmap = content.bitmapImageRepForCachingDisplay(in: content.bounds) else {
                 throw SelfDriveFailure("Could not allocate content bitmap")
             }
@@ -108,7 +158,7 @@ import AppKit
             return "Cached window content view"
         case .dumpTree:
             let tree = try nodes().enumerated().map { index, node in
-                "\(index) role=\(node.accessibilityRole()?.rawValue ?? "") id=\(node.accessibilityIdentifier() ?? "") label=\(node.accessibilityLabel() ?? "") value=\(String(describing: node.accessibilityValue())) frame=\(node.accessibilityFrame())"
+                "\(index) role=\(node.role ?? "") id=\(node.identifier ?? "") label=\(node.label ?? "") value=\(node.value ?? "nil") frame=\(node.frame)"
             }.joined(separator: "\n")
             try Data(tree.utf8).write(to: directory.appendingPathComponent(step.name! + ".txt"), options: .atomic)
             return "Wrote window accessibility tree"

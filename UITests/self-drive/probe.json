@@ -16,16 +16,25 @@
     },
     {
       "action": "type",
-      "text": "Self-drive probe 🐉"
+      "text": "Self-drive probe \ud83d\udc09"
     },
     {
       "action": "waitFor",
-      "text": "Self-drive probe 🐉",
+      "text": "Self-drive probe \ud83d\udc09",
       "timeout": 5
     },
     {
       "action": "screenshot",
       "name": "probe-composer"
+    },
+    {
+      "action": "press",
+      "identifier": "chat.composer.send"
+    },
+    {
+      "action": "screenshot",
+      "name": "probe-sent",
+      "delay": 3
     },
     {
       "action": "dumpTree",

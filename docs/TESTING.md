@@ -927,7 +927,10 @@ trees for identifier discovery, a successful press, and a typed composer value
 observed by the text wait. Check `probe-composer.png` for rendered content.
 Independently watch another app retain keyboard focus and the pointer stay still
 through launch and termination; no permission or password prompt may appear.
-Package tests do not prove these runtime assumptions. A failed probe blocks
+The driver sets `AXEnhancedUserInterface` on its own application object, which makes
+SwiftUI build its accessibility tree inside this process; it reads SwiftUI's nodes by
+selector because they do not formally adopt the protocol. Screenshots draw the window
+background themselves. Package tests do not prove these runtime assumptions. A failed probe blocks
 relying on self-drive coverage; preserve the artifacts to fix the adapter.
 
 The format is `{"steps":[{"action":"press","identifier":"chat.new"}]}`.
@@ -937,8 +940,8 @@ a `timeout` in seconds and optional `absent:true`; `screenshot` and `dumpTree`
 take a safe artifact `name`. Every step accepts an optional settling `delay`.
 Results contain one index/action/status/reason entry per step and checkpoint
 atomically after each step; failures continue. Press uses in-process accessibility
-then window-local mouse events; a later wait must verify its effect. Typing uses
-the accessibility value setter; Send must verify the SwiftUI binding. PNGs cache
+then window-local mouse events; a later wait must verify its effect. Typing goes through the
+field's own editor, because the accessibility setter skips the SwiftUI binding. PNGs cache
 the content view, and dumps walk only the window's accessibility children.
 Setup/output errors write `startup-error.txt` when possible. Missing results,
 startup errors or failed steps fail a run regardless of process exit status.
