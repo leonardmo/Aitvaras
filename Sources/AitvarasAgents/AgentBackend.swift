@@ -20,7 +20,7 @@ public struct AgentSessionID: Hashable, Codable, Sendable {
 
 public struct AgentStatus: Sendable, Equatable {
     /// Unsupported includes API-key and third-party endpoint configurations.
-    public enum Authentication: Sendable { case subscription, local, signedOut, unsupported }
+    public enum Authentication: Sendable { case subscription, local, signedOut, unsupported, unavailable }
     public let installed: Bool
     public let authentication: Authentication
     public let capabilities: Set<AgentCapability>

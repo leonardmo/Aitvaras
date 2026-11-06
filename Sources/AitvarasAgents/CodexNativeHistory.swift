@@ -5,6 +5,7 @@ extension CodexBackend {
         try await nativeSessions(folder: folder, cursor: cursor, archived: false)
     }
     public func nativeSessions(folder: URL?, cursor: String?, archived: Bool) async throws -> AgentPage<AgentSessionSummary> {
+        try requireNativeHistory()
         var parameters: [String: JSONValue] = ["limit": .number(50), "archived": .bool(archived),
             "sortKey": .string("updated_at"), "modelProviders": .array([.string("openai")])]
         if let cursor { parameters["cursor"] = .string(cursor) }

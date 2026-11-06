@@ -54,6 +54,27 @@ an adjacent settings gear; its single panel initially selects that backend and
 can switch tabs without changing the active provider. Claude uses the selected
 official subscription profile and must never silently route to another backend.
 
+The M4.1 Local candidate is opt-in with
+`AITVARAS_LOCAL_CHAT_BACKEND=codex-oss`; unset or `agent-loop` retains
+LocalBackend. `CodexOSSConfigurationTests` checks exact app-server arguments,
+loopback/proxy restrictions, explicit installed-model selection, metadata-only
+discovery, unavailable service, missing executable, cloud/remote model refusal,
+provider/model mismatch before prompt delivery, unsupported actions and no
+fallback after turn failure. Codex tool/approval/interrupt recordings are
+replayed with a synthetic Ollama provider/model selection; they are not live
+Ollama recordings. A real Store/manager test verifies fresh ephemeral Local
+threads and completed context on each Send. No test loads a model.
+
+The host M4 gate must build the app, use a fresh isolated profile and a synthetic
+project, enable the candidate switch and select Local with an installed local
+model. If connectors are disabled, `AITVARAS_AGENT_TEST_PROVIDERS=real` is still
+required to permit this explicit provider test. Verify the installed app-server
+accepts the pinned configuration, inspect inference locality, test real tool
+approval and denial, Stop, two Sends and provider switches, and measure total
+model memory against the budget. Stop Ollama and confirm Unavailable and no
+fallback; restart it and refresh status. Review light/dark and minimum-window
+states. Default adoption and M4.2 resource coordination remain host decisions.
+
 ## Claude subscription adapter checkpoint
 
 Run `node scripts/test-claude-interactive.mjs` for no-provider helper contracts,

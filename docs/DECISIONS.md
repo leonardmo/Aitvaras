@@ -366,3 +366,13 @@ Commit and confirmed Discard pass the autonomy policy and metadata-only activity
 audit. Discard clears reviewed changes only inside the selected owned worktree;
 it never force-removes a worktree or branch. Ordinary checkouts allow explicit
 Commit, with the user's message and native git hooks, without added attribution.
+
+Local chat continues to use the AgentLoop adapter by default. The explicit
+`AITVARAS_LOCAL_CHAT_BACKEND=codex-oss` switch enables an M4 candidate using
+`codex app-server` pinned to Ollama on loopback, with no subscription or cloud
+fallback. It discovers installed model metadata without loading weights and
+fails closed for missing service, implicit/cloud models or mismatched provider
+evidence. Local remains stateless: each Send starts a fresh ephemeral thread
+with completed chat context. The candidate advertises only its implemented
+capabilities; the host gate decides tool reliability, locality and memory
+before any default changes.

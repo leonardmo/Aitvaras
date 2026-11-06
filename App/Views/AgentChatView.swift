@@ -206,7 +206,7 @@ struct AgentChatView: View {
                     .disabled(!canSend || chat.provider == .local)
                     .help("Attach files").accessibilityLabel("Attach files")
                     .accessibilityIdentifier("chat.composer.attach")
-                if chat.provider != .local {
+                if chat.provider != .local || chat.statuses[.local]?.capabilities.contains(.approvals) == true {
                     Menu {
                         Picker("Mode", selection: $chat.mode) {
                             Text("Ask").tag(AgentMode.ask)
@@ -418,6 +418,7 @@ struct AgentProviderSettingsView: View {
     private func statusLabel(_ provider: AgentProvider) -> String {
         guard let status = chat.statuses[provider] else { return "Unknown" }
         if !status.installed { return "Not installed" }
+        if status.authentication == .unavailable { return "Unavailable" }
         return status.authentication == .subscription || status.authentication == .local ? "Ready" : "Signed out"
     }
 }

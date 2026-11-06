@@ -85,11 +85,26 @@ user becomes an inline card, a `Suggestion` and activity-log entries with
 provenance (`read`, `reversibleWrite`, `confirmable`). Keeps D20, the Keychain
 rule and no API-key fallback.
 
-**Local models.** Gate at M4: `codex --oss --local-provider ollama` would give
-local models the same tools, approvals and event stream. If the installed local
-model can't do tools acceptably there, wrap the existing `AgentLoop` as
-`LocalBackend` with whatever actions it supports, and show unsupported ones as
-unavailable.
+**Local models.** LocalBackend (the existing AgentLoop adapter) remains the
+default until the host M4 gate passes. `AITVARAS_LOCAL_CHAT_BACKEND=codex-oss`
+explicitly selects the candidate for Local; unset or `agent-loop` keeps the
+default. Unknown values fail startup. It launches `codex app-server` with
+`-c model_provider='"ollama"'`, `-c local_provider='"ollama"'`,
+`-c model_providers.ollama.base_url='"http://127.0.0.1:11434/v1"'` and
+`-c model_providers.ollama.requires_openai_auth=false`. These config overrides
+are the app-server equivalent of the interactive CLI's OSS selection.
+
+Status/model discovery reads only Ollama's local `/api/tags`; it never loads or
+pulls a model. Missing service or no eligible models reports unavailable.
+The model menu requires an explicit choice. Send requires an installed,
+explicitly named model, excludes cloud/remote models, and validates the server's
+model/provider before releasing input. There
+is no subscription login, implicit default model or cloud fallback on this path.
+The candidate uses ephemeral threads with Local's completed context on every
+Send; native history/resume, follow-ups, attachments, commands, file completion
+and reasoning-effort selection remain unsupported. Tools, approvals, thinking,
+plans and questions reuse the Codex protocol and action coordinator. The host
+gate must still establish actual tool reliability, locality and memory use.
 
 ## 4. UI rules (acceptance criteria)
 
