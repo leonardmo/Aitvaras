@@ -183,19 +183,32 @@ actor CodexRun: AgentRun {
     }
     private func reconcileTools(_ unfinished: Set<String>, turn nativeTurn: String, owner: UUID,
                                 outcome: AgentTurnOutcome) async {
-        let result = try? await wire.request("thread/read", .object([
-            "threadId": .string(session.nativeID), "includeTurns": .bool(true)]),
-            timeout: .seconds(2), failOnTimeout: false)
-        guard !closed, input == owner, turn == nativeTurn else { return }
-        if result?["thread"]?["id"]?.stringValue == session.nativeID,
-           let recovered = result?["thread"]?["turns"]?.arrayValue?.first(where: { $0["id"]?.stringValue == nativeTurn }) {
-            for item in recovered["items"]?.arrayValue ?? [] {
-                guard let id = item["id"]?.stringValue, unfinished.contains(id),
+        let deadline = ContinuousClock.now.advanced(by: .seconds(2))
+        var cursor: String?
+        var cursors = Set<String>()
+        // The CLI deprecates full-history hydration. Read only this turn's
+        // paginated items, retaining the same bounded, best-effort recovery.
+        for _ in 0..<32 {
+            let remaining = deadline - ContinuousClock.now
+            guard remaining > .zero else { break }
+            var parameters: [String: JSONValue] = ["threadId": .string(session.nativeID),
+                "turnId": .string(nativeTurn), "limit": .number(100)]
+            if let cursor { parameters["cursor"] = .string(cursor) }
+            let result = try? await wire.request("thread/items/list", .object(parameters),
+                timeout: remaining, failOnTimeout: false)
+            guard !closed, input == owner, turn == nativeTurn else { return }
+            guard let entries = result?["data"]?.arrayValue else { break }
+            for entry in entries where entry["turnId"]?.stringValue == nativeTurn {
+                guard let item = entry["item"], let id = item["id"]?.stringValue, unfinished.contains(id),
                       item["type"]?.stringValue == items[id]?["type"]?.stringValue,
                       item["type"]?.stringValue == "webSearch"
                         || ["completed", "failed", "declined"].contains(item["status"]?.stringValue ?? "") else { continue }
                 complete(item)
             }
+            guard unfinished.contains(where: { items[$0] != nil }),
+                  let next = result?["nextCursor"]?.stringValue, !next.isEmpty,
+                  cursors.insert(next).inserted else { break }
+            cursor = next
         }
         endTurn(outcome)
     }
@@ -242,11 +255,11 @@ actor CodexRun: AgentRun {
             for change in item["changes"]?.arrayValue ?? [] {
                 emit(.fileChanged(path: change["path"]?.stringValue ?? "", diff: change["diff"]?.stringValue ?? ""), item: nativeID)
             }
-            emit(.toolFinished(output: item, isError: item["status"]?.stringValue == "failed"), item: nativeID)
+            emit(.toolFinished(output: item, isError: ["failed", "declined"].contains(item["status"]?.stringValue ?? "")), item: nativeID)
         case "commandExecution":
-            let failed = item["status"]?.stringValue == "failed" || (item["exitCode"]?.int.map { $0 != 0 } ?? false)
+            let failed = ["failed", "declined"].contains(item["status"]?.stringValue ?? "") || (item["exitCode"]?.int.map { $0 != 0 } ?? false)
             emit(.toolFinished(output: item, isError: failed), item: nativeID)
-        default: emit(.toolFinished(output: item["aggregatedOutput"] ?? item, isError: item["status"]?.stringValue == "failed"), item: nativeID)
+        default: emit(.toolFinished(output: item["aggregatedOutput"] ?? item, isError: ["failed", "declined"].contains(item["status"]?.stringValue ?? "")), item: nativeID)
         }
     }
     func respond(to request: AgentRequest, with response: AgentResponse) async throws {
@@ -281,6 +294,12 @@ actor CodexRun: AgentRun {
         default: throw AgentFailure.invalidRequest
         }
         requests.removeValue(forKey: request.id)
+        if case .permission(let tool) = request.kind, response == .deny, let item = request.scope.itemID {
+            // Publish the known denial before the CLI can end the turn, even
+            // when it never reports the command's result (or start).
+            if items[item] == nil { emit(.toolStarted(tool), item: item) }
+            emit(.toolFinished(output: .object(["status": .string("declined")]), isError: true), item: item)
+        }
         try await wire.writeResponse(id: request.id, result: result, error: response == .unsupported)
     }
     func setMode(_ mode: AgentMode) throws {

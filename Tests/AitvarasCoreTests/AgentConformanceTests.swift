@@ -50,7 +50,9 @@ done()
             if case .turnEnded(let value) = event.kind { outcome = value; break }
         }
         #expect(outcome == .completed)
-        #expect(await audit.events.count == (provider == .claude ? 3 : 2))
+        // A denied Codex request also publishes its tool row and known denial,
+        // even when the CLI never reports that item's start or result.
+        #expect(await audit.events.count == (provider == .claude ? 3 : approve ? 2 : 4))
         try await Task.sleep(for: .milliseconds(20))
         try fixture.assertComplete()
         try await coordinator.shutdown()

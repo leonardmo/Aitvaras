@@ -8,6 +8,8 @@ public struct AgentToolState: Sendable, Equatable {
     public var isFinished = false
     public var isError = false
     public var completionUnconfirmed = false
+    public var turnCompletedNormally = false
+    public var isDenied = false
 }
 
 /// Value-only reduction. Requests in the event stream are observations, never
@@ -130,7 +132,9 @@ public struct ChatState: Sendable, Equatable {
             case .toolFinished(let output, let error):
                 let index = toolIndex(event.scope.itemID ?? "tool")
                 if output != .null { tools[index].output = AgentTranscriptContent.bounded(output) }
-                tools[index].isFinished = true; tools[index].isError = error
+                tools[index].isFinished = true
+                tools[index].isDenied = tools[index].isDenied || output["status"]?.stringValue == "declined"
+                tools[index].isError = error || tools[index].isDenied
                 putTool(index, newEntryID: newEntryID)
             case .turnEnded(let value): end(value)
             default: break
@@ -145,6 +149,7 @@ public struct ChatState: Sendable, Equatable {
         for index in tools.indices where !tools[index].isFinished {
             tools[index].isFinished = true
             tools[index].completionUnconfirmed = true
+            tools[index].turnCompletedNormally = value == .completed
             if let id = toolEntryIDs[tools[index].id] { putTool(index, newEntryID: id) }
         }
         outcome = value; isRunning = false; pendingCards = []
@@ -171,7 +176,8 @@ public struct ChatState: Sendable, Equatable {
             entries[entry].payloadJSON = JSONValue.object([
                 "itemID": .string(tool.id), "input": tool.tool?.input ?? .null,
                 "partialInput": .string(tool.partialInput), "output": tool.output ?? .null, "finished": .bool(tool.isFinished), "isError": .bool(tool.isError),
-                "completionUnconfirmed": .bool(tool.completionUnconfirmed)
+                "completionUnconfirmed": .bool(tool.completionUnconfirmed),
+                "turnCompletedNormally": .bool(tool.turnCompletedNormally), "isDenied": .bool(tool.isDenied)
             ]).jsonString
         }
     }

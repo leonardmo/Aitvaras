@@ -133,7 +133,7 @@ import AppKit
                     candidates = try root.map { try nodes(root: $0.object) } ?? []
                 } else { candidates = try nodes(); subtreeAvailable = true }
                 let matches = candidates.contains { node in
-                    if let identifier = step.identifier { return node.identifier == identifier }
+                    if step.identifier != nil || step.anyOf != nil { return step.matchesIdentifier(node.identifier) }
                     let text = step.text!
                     let frame = node.frame
                     guard frame.width > 0, frame.height > 0, window.frame.intersects(frame) else { return false }
@@ -144,7 +144,8 @@ import AppKit
                 if clock.now >= deadline { break }
                 try await Task.sleep(for: .milliseconds(100))
             } while true
-            throw SelfDriveFailure("Timed out waiting for \(step.identifier ?? step.text!) (absent: \(step.absent ?? false))")
+            let target = step.identifier ?? step.text ?? step.anyOf!.joined(separator: " or ")
+            throw SelfDriveFailure("Timed out waiting for \(target) (absent: \(step.absent ?? false))")
         case .screenshot:
             guard let content = window.contentView else { throw SelfDriveFailure("Missing content view") }
             content.layoutSubtreeIfNeeded()

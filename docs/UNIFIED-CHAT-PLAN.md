@@ -344,10 +344,11 @@ never bought. If a task fails review three times, the supervisor changes the
 approach or does it directly. One PR at the end; the maintainer merges. The
 installed app isn't replaced without asking, and never during a recording.
 
-## 10. Risks
+## 10. Risks and known limits
 
 | Risk | Mitigation |
 |---|---|
+| Codex CLI 0.166 alpha can omit an approved command’s result from both `item/completed` and history while completing the turn normally. | Reconcile available items with turn-filtered `thread/items/list`; when still unknown, show the plain command and normal tool icon (`chat.tool.unconfirmed`). Only interrupted, failed or disconnected turns say “Ended without a result”; known denials stay denied. |
 | CLI protocols change (`app-server` is labelled experimental; the control protocol is the SDK's). | Unknown events kept and ignored; recordings and schema check flag drift; `make live` after CLI updates. Failures appear as typed errors. |
 | Anthropic's docs bar third-party developers from offering claude.ai login or limits in their products without approval. | Aitvaras holds no login: it runs the official CLI for its owner. Treat this as personal use, and revisit before distributing builds. No "Claude Code" branding in the UI. |
 | Parallel use of one session in two clients. | Separate chats are fine. Aitvaras only holds a session during a turn and re-reads after; it doesn't claim a lock. |

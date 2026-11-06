@@ -4,7 +4,7 @@ import AitvarasStore
 @testable import AitvarasAgents
 
 @Suite struct TranscriptReducerTests {
-    @Test(arguments: ["completed", "nonzero", "failure", "disconnect", "missing", "wrong-turn", "in-progress", "malformed", "timeout"])
+    @Test(arguments: ["completed", "nonzero", "failure", "disconnect", "missing", "wrong-turn", "in-progress", "malformed", "timeout", "paginated", "repeated-cursor", "wrong-type", "declined"])
     func missingCodexToolCompletionReconcilesBeforeTurnEnd(scenario: String) async throws {
         let fixture = try BackendExecutableFixture(script: "scenario = '\(scenario)'\n" + #"""
 codex_init()
@@ -22,22 +22,31 @@ message={'id':'reply','type':'agentMessage','text':'Done'}
 terminal={'threadId':'thread-test','turn':{'id':'turn-test','status':'completed','items':[message]}}
 emit({'method':'turn/completed','params':terminal})
 r=read()
-assert r['method']=='thread/read'
-assert r['params']=={'threadId':'thread-test','includeTurns':True}
+assert r['method']=='thread/items/list'
+assert r['params']=={'threadId':'thread-test','turnId':'turn-test','limit':100}
 if scenario=='disconnect':
     open('done','w').close()
     sys.exit(7)
 finished=dict(item,status='completed',aggregatedOutput='example',exitCode=7 if scenario=='nonzero' else 0,durationMs=12)
-result={'thread':{'id':'thread-test','turns':[
-    {'id':'older-turn','items':[dict(finished,aggregatedOutput='wrong turn')]},
-    {'id':'turn-test','items':[finished,finished,dict(finished,id='unstarted'),message]}]}}
+entries=[{'turnId':'older-turn','item':dict(finished,aggregatedOutput='wrong turn')},
+         {'turnId':'turn-test','item':finished}, {'turnId':'turn-test','item':finished},
+         {'turnId':'turn-test','item':dict(finished,id='unstarted')}, {'turnId':'turn-test','item':message}]
+result={'data':entries,'nextCursor':None}
 if scenario=='failure':
     emit({'id':r['id'],'error':{'code':-32603,'message':'History unavailable'}})
 elif scenario!='timeout':
-    if scenario=='missing': result['thread']['turns'][1]['items']=[]
-    elif scenario=='wrong-turn': result['thread']['turns'].pop()
+    if scenario=='missing': result['data']=[]
+    elif scenario=='wrong-turn': result['data']=entries[:1]
     elif scenario=='in-progress': finished['status']='inProgress'
     elif scenario=='malformed': finished.pop('status')
+    elif scenario=='wrong-type': finished['type']='fileChange'
+    elif scenario=='declined': finished['status']='declined'
+    if scenario in ['paginated','repeated-cursor']:
+        emit({'id':r['id'],'result':{'data':entries[:1],'nextCursor':'page-2'}})
+        r=read()
+        assert r['method']=='thread/items/list'
+        assert r['params']=={'threadId':'thread-test','turnId':'turn-test','limit':100,'cursor':'page-2'}
+        if scenario=='repeated-cursor': result={'data':[],'nextCursor':'page-2'}
     emit({'id':r['id'],'result':result})
 # A duplicate turn end cannot launch another read or finish twice.
 emit({'method':'turn/completed','params':terminal})
@@ -74,7 +83,9 @@ done()
                 #expect(event.scope.turnID == "turn-test")
             }
         }
-        let confirmed = scenario == "completed" || scenario == "nonzero"
+        let confirmed = ["completed", "nonzero", "paginated", "declined"].contains(scenario)
+        let denied = scenario == "declined"
+        let isError = scenario == "nonzero" || denied
         #expect(events.last?.kind == .turnEnded(.completed))
         #expect(state.outcome == .completed)
         #expect(!state.isRunning)
@@ -85,18 +96,22 @@ done()
         let payload = try #require(row.payloadJSON.flatMap(JSONValue.parse))
         #expect(payload["finished"] == .bool(true))
         #expect(payload["completionUnconfirmed"] == .bool(!confirmed))
-        #expect(payload["isError"] == .bool(scenario == "nonzero"))
+        #expect(payload["isError"] == .bool(isError))
+        #expect(payload["isDenied"] == .bool(denied))
         let summary = AgentActionPresentation.toolSummary(.init(name: row.text, input: payload["input"] ?? .null),
-            finished: true, isError: scenario == "nonzero", completionUnconfirmed: !confirmed)
-        #expect(summary == (scenario == "nonzero" ? "Failed to run printf example"
-            : confirmed ? "Ran printf example" : "Ended without a result: printf example"))
+            finished: true, isError: isError, completionUnconfirmed: !confirmed,
+            turnCompletedNormally: payload["turnCompletedNormally"]?.boolValue == true, isDenied: denied)
+        #expect(summary == (denied ? "Denied: printf example" : scenario == "nonzero" ? "Failed to run printf example"
+            : confirmed ? "Ran printf example" : "printf example"))
         if confirmed {
             #expect(payload["output"]?["exitCode"] == .number(scenario == "nonzero" ? 7 : 0))
             #expect(payload["output"]?["durationMs"] == .number(12))
             #expect(AgentTranscriptContent.display(payload["output"] ?? .null)
                 == "Exit code: \(scenario == "nonzero" ? 7 : 0)\nexample")
         }
-        #expect((row.presentationIdentifier == "chat.tool.completed") == (scenario == "completed"))
+        #expect((row.presentationIdentifier == "chat.tool.completed") == (confirmed && !isError))
+        #expect((row.presentationIdentifier == "chat.tool.unconfirmed") == !confirmed)
+        #expect(row.toolPresentationIcon == (denied ? "hand.raised" : !confirmed ? "terminal" : isError ? "exclamationmark.circle" : "checkmark.circle"))
         if scenario != "disconnect" {
             // Recovery failure, including timeout, must leave the shared wire usable.
             try await run.send(.init(text: "Next turn"), willDeliver: {})
@@ -104,6 +119,56 @@ done()
             #expect(next.last?.kind == .turnEnded(.completed))
             #expect(!next.contains { if case .toolFinished = $0.kind { true } else { false } })
         }
+        try await Task.sleep(for: .milliseconds(20))
+        try fixture.assertComplete()
+        try await run.shutdown()
+        try await backend.shutdown()
+    }
+
+    @Test(arguments: [false, true])
+    func knownCodexDenialSurvivesMissingOrConflictingResult(reportsResult: Bool) async throws {
+        let fixture = try BackendExecutableFixture(script: "reports_result = \(reportsResult ? "True" : "False")\n" + #"""
+codex_init()
+start_thread()
+r=read()
+assert r['method']=='turn/start'
+emit({'id':r['id'],'result':{'turn':{'id':'turn-test'}}})
+item={'id':'command-test','type':'commandExecution','command':'touch example.txt','status':'inProgress'}
+p={'threadId':'thread-test','turnId':'turn-test','itemId':item['id']}
+emit({'method':'item/started','params':dict(p,item=item)})
+emit({'id':'approval-test','method':'item/commandExecution/requestApproval','params':dict(p,command=item['command'],cwd=root)})
+assert read()=={'id':'approval-test','result':{'decision':'decline'}}
+if reports_result:
+    emit({'method':'item/completed','params':dict(p,item=dict(item,status='completed',exitCode=0))})
+emit({'method':'turn/completed','params':{'threadId':'thread-test','turn':{'id':'turn-test','status':'completed','items':[]}}})
+if not reports_result:
+    r=read()
+    assert r['method']=='thread/items/list'
+    emit({'id':r['id'],'result':{'data':[],'nextCursor':None}})
+done()
+"""#)
+        defer { fixture.remove() }
+        let backend = CodexBackend(executable: fixture.executable, environment: fixture.environment)
+        let session = AgentChatSession(chatID: UUID(), provider: .codex, cwd: fixture.directory.path, model: "test")
+        let raw = try await backend.start(session.configuration)
+        let run = AgentActionCoordinator(run: raw, mode: .ask, provenance: .init(chatID: session.chatID), audit: { _ in })
+        let input = AgentInput(text: "Example command")
+        var state = ChatState(chatID: session.chatID)
+        state.begin(input, session: session, outputID: UUID())
+        try await run.send(input, willDeliver: {})
+        for event in try await collectTurn(run, answer: { _ in .deny }) { state.reduce(event, newEntryID: UUID()) }
+        let row = try #require(state.entries.first { $0.kind == "tool" })
+        let payload = try #require(row.payloadJSON.flatMap(JSONValue.parse))
+        #expect(state.outcome == .completed)
+        #expect(state.entries.filter { $0.kind == "tool" }.count == 1)
+        #expect(payload["isDenied"] == .bool(true))
+        #expect(payload["isError"] == .bool(true))
+        #expect(row.toolPresentationIcon == "hand.raised")
+        #expect(row.presentationIdentifier == "chat.entry.\(row.id)")
+        #expect(AgentActionPresentation.toolSummary(.init(name: row.text, input: payload["input"] ?? .null),
+            finished: true, isError: true, isDenied: payload["isDenied"]?.boolValue == true) == "Denied: touch example.txt")
+        let restored = try JSONDecoder().decode(AgentTranscriptEntry.self, from: JSONEncoder().encode(row))
+        #expect(restored == row)
         try await Task.sleep(for: .milliseconds(20))
         try fixture.assertComplete()
         try await run.shutdown()
@@ -160,21 +225,23 @@ done()
         #expect(approved)
         #expect(completedBeforeEnd == completionDelivered)
         let saved = try #require(stores.agentEntries(chatID: chat.id).first { $0.id == rowID })
-        #expect((saved.presentationIdentifier == "chat.tool.completed") == completionDelivered)
+        #expect(saved.presentationIdentifier == (completionDelivered ? "chat.tool.completed" : "chat.tool.unconfirmed"))
+        #expect(saved.toolPresentationIcon == (completionDelivered ? "checkmark.circle" : "terminal"))
         let payload = try #require(saved.payloadJSON.flatMap(JSONValue.parse))
         #expect(payload["finished"] == .bool(true))
         #expect(AgentActionPresentation.toolSummary(.init(name: saved.text, input: payload["input"] ?? .null),
             finished: payload["finished"]?.boolValue == true, isError: payload["isError"]?.boolValue == true,
-            completionUnconfirmed: payload["completionUnconfirmed"]?.boolValue == true)
+            completionUnconfirmed: payload["completionUnconfirmed"]?.boolValue == true,
+            turnCompletedNormally: payload["turnCompletedNormally"]?.boolValue == true)
             == (completionDelivered ? "Ran printf 'hi' > a.txt && echo marker > out.txt"
-                : "Ended without a result: printf 'hi' > a.txt && echo marker > out.txt"))
+                : "printf 'hi' > a.txt && echo marker > out.txt"))
         try await Task.sleep(for: .milliseconds(20))
         try fixture.assertComplete()
         try await manager.shutdown()
         try await backend.shutdown()
     }
 
-    @Test(arguments: [AgentTurnOutcome.completed, .interrupted, .failed(.unknown)])
+    @Test(arguments: [AgentTurnOutcome.completed, .interrupted, .failed(.unknown), .failed(.crashed(exitCode: 7))])
     func endedTurnsNeverLeaveRunningToolRows(outcome: AgentTurnOutcome) throws {
         var fixture = TranscriptFixture()
         fixture.emit(.toolStarted(.init(name: "commandExecution", input: .object(["command": .string("touch example.txt")]))), item: "shell")
@@ -184,8 +251,13 @@ done()
         let payload = try #require(row.payloadJSON.flatMap(JSONValue.parse))
         #expect(payload["finished"] == .bool(true))
         #expect(AgentActionPresentation.toolSummary(.init(name: row.text, input: payload["input"] ?? .null),
-            finished: true, isError: false, completionUnconfirmed: payload["completionUnconfirmed"]?.boolValue == true)
-            == "Ended without a result: touch example.txt")
+            finished: true, isError: false, completionUnconfirmed: payload["completionUnconfirmed"]?.boolValue == true,
+            turnCompletedNormally: payload["turnCompletedNormally"]?.boolValue == true)
+            == (outcome == .completed ? "touch example.txt" : "Ended without a result: touch example.txt"))
+        #expect(row.toolPresentationIcon == (outcome == .completed ? "terminal" : "questionmark.circle"))
+        #expect(row.presentationIdentifier == "chat.tool.unconfirmed")
+        let restored = try JSONDecoder().decode(AgentTranscriptEntry.self, from: JSONEncoder().encode(row))
+        #expect(restored == row)
         // Turn completion alone is not proof of a successful shell command.
         #expect(row.presentationIdentifier != "chat.tool.completed")
         #expect(fixture.state.tools.allSatisfy { $0.isFinished })

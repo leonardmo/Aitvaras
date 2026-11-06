@@ -25,6 +25,18 @@ import AitvarasCore
         #expect(SelfDriveText.matches("PELICAN", text: "PELICAN", caseSensitive: true))
     }
 
+    @Test(arguments: ["chat.tool.completed", "chat.tool.unconfirmed"])
+    func waitsForEitherToolOutcome(identifier: String) throws {
+        let scenario = try SelfDriveScenario.parse(Data(#"{"steps":[{"action":"waitFor","anyOf":["chat.tool.completed","chat.tool.unconfirmed"],"timeout":0,"within":"chat.transcript"}]}"#.utf8))
+        let step = try #require(scenario.steps.first)
+        #expect(step.matchesIdentifier(identifier))
+        #expect(!step.matchesIdentifier("chat.entry.running"))
+        #expect(!step.matchesIdentifier(nil))
+        let restored = try JSONDecoder().decode(SelfDriveStep.self, from: JSONEncoder().encode(step))
+        #expect(restored.anyOf == step.anyOf)
+        #expect(restored.matchesIdentifier(identifier))
+    }
+
     @Test(arguments: [
         #"{"steps":[{"action":"unknown"}]}"#,
         #"{"steps":[{"action":"press"}]}"#,
@@ -38,6 +50,12 @@ import AitvarasCore
         #"{"steps":[{"action":"dumpTree","name":".."}]}"#,
         #"{"steps":[{"action":"waitFor","text":"x","within":""}]}"#,
         #"{"steps":[{"action":"press","identifier":"x","within":"chat.transcript"}]}"#,
+        #"{"steps":[{"action":"waitFor","anyOf":[]}]}"#,
+        #"{"steps":[{"action":"waitFor","anyOf":[""]}]}"#,
+        #"{"steps":[{"action":"waitFor","anyOf":["x","x"]}]}"#,
+        #"{"steps":[{"action":"waitFor","anyOf":["x"],"identifier":"y"}]}"#,
+        #"{"steps":[{"action":"waitFor","anyOf":["x"],"text":"y"}]}"#,
+        #"{"steps":[{"action":"press","anyOf":["x"],"identifier":"y"}]}"#,
         "not json"
     ]) func rejectsMalformedScenarios(json: String) {
         #expect(throws: (any Error).self) { try SelfDriveScenario.parse(Data(json.utf8)) }
@@ -133,7 +151,7 @@ import AitvarasCore
         #expect(approval < claude)
         #expect(scenario.steps[..<approval].contains { $0.action == .waitFor && $0.identifier == "chat.request.0.allow" })
         #expect(scenario.steps[(approval + 1)..<claude].contains {
-            $0.action == .waitFor && $0.identifier == "chat.tool.completed" && $0.within == "chat.transcript"
+            $0.action == .waitFor && $0.anyOf == ["chat.tool.completed", "chat.tool.unconfirmed"] && $0.within == "chat.transcript"
         })
         let shell = try #require(scenario.steps.firstIndex {
             $0.action == .type && $0.text == "Use your shell tool to create an empty file named e2e-made.txt in the current folder."

@@ -274,7 +274,7 @@
     },
     {
       "action": "waitFor",
-      "identifier": "chat.tool.completed",
+      "anyOf": ["chat.tool.completed", "chat.tool.unconfirmed"],
       "within": "chat.transcript",
       "timeout": 120
     },

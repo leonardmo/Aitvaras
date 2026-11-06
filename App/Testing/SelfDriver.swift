@@ -85,6 +85,7 @@ import AitvarasCore
                 var resolved = step
                 resolved.identifier = try resolve(step.identifier)
                 resolved.within = try resolve(step.within)
+                resolved.anyOf = try step.anyOf?.map { try resolve($0)! }
                 let result = try await surface.perform(resolved, directory: directory)
                 if let id = AppModel.shared.selectedWorkspaceChatID, !chats.contains(id) { chats.append(id) }
                 return result
