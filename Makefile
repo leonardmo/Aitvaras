@@ -7,7 +7,7 @@ XCODE_FLAGS := -project Aitvaras.xcodeproj -scheme Aitvaras \
 NODE_TESTS := scripts/test-claude-interactive.mjs scripts/check-codex-interactive.mjs \
 	scripts/check-codex-native.mjs scripts/check-codex-shared-runtime.mjs
 
-.PHONY: help setup test node-test project app e2e live release privacy commits check smoke install clean
+.PHONY: help setup test node-test project app e2e ui live release privacy commits check smoke install clean
 
 help: ## List targets
 	@grep -E '^[a-z-]+:.*## ' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-10s %s\n", $$1, $$2}'
@@ -41,6 +41,11 @@ app: project ## Debug app build into .build-xcode
 # away from a running installed app. Screenshots land in .build-e2e/screenshots.
 e2e: project ## Real-app UI tests with an isolated profile and bundle id
 	scripts/run-e2e.sh $(E2E_FILTER)
+
+# The same real app and real CLIs, driven from inside its own process: no permission,
+# no password, and the mouse and keyboard stay yours.
+ui: ## Real-app chat scenario with no system permission
+	scripts/run-self-drive.sh $(UI_SCENARIO)
 
 # Real CLIs on the real login. Runs from a launchd-style environment on purpose,
 # because a GUI app gets none of the shell's variables. Spends a little usage.
