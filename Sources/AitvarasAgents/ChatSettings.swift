@@ -17,11 +17,12 @@ public enum ChatSettings {
 }
 
 public enum ChatSidebarStatus: Sendable {
-    case idle, running, needsYou, failed
+    case idle, running, needsYou, interrupted, failed
     public init(_ state: ChatState?) {
         if state?.pendingCards.isEmpty == false { self = .needsYou }
         else if state?.isRunning == true { self = .running }
         else if case .failed = state?.outcome { self = .failed }
+        else if case .interrupted = state?.outcome { self = .interrupted }
         else { self = .idle }
     }
 }

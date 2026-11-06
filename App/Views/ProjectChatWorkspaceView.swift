@@ -77,14 +77,15 @@ struct WorkspaceRailView: View {
         .sheet(item: $assigningConversation) { WorkspaceConversationAssignmentEditor(conversation: $0) }
         .alert("Rename chat", isPresented: Binding(get: { renamingChat != nil }, set: { if !$0 { renamingChat = nil } })) {
             TextField("Title", text: $newTitle)
+                .accessibilityIdentifier("chat.rename.title")
             Button("Save") {
-                if var chat = renamingChat {
-                    chat.title = newTitle.trimmingCharacters(in: .whitespacesAndNewlines)
-                    if !chat.title.isEmpty { model.updateWorkspaceChat(chat) }
-                }
+                if let chat = renamingChat { model.renameWorkspaceChat(chat.id, title: newTitle) }
                 renamingChat = nil
             }
+            .disabled(newTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            .accessibilityIdentifier("chat.rename.save")
             Button("Cancel", role: .cancel) { renamingChat = nil }
+                .accessibilityIdentifier("chat.rename.cancel")
         }
     }
 
@@ -114,6 +115,7 @@ struct WorkspaceRailView: View {
             if !archived.isEmpty {
                 DisclosureGroup("Archived") { ForEach(archived) { chat in chatRow(chat) } }
                     .font(.caption).foregroundStyle(.secondary)
+                    .accessibilityIdentifier("chat.archived.\(project.id)")
             }
         }
     }
@@ -122,6 +124,7 @@ struct WorkspaceRailView: View {
                        manager: model.agentSessionManager, open: { model.openWorkspaceChat(chat.id) })
         .contextMenu {
             Button("Rename") { newTitle = chat.title; renamingChat = chat }
+                .accessibilityIdentifier("chat.rename.\(chat.id)")
             Button(chat.kind == .primary ? "Unpin" : "Pin") {
                 var updated = chat; updated.kind = chat.kind == .primary ? .temporary : .primary
                 model.updateWorkspaceChat(updated)
@@ -129,6 +132,7 @@ struct WorkspaceRailView: View {
             Button(chat.archivedAt == nil ? "Archive" : "Restore") {
                 model.setWorkspaceChatArchived(chat.id, archived: chat.archivedAt == nil)
             }
+            .accessibilityIdentifier("chat.\(chat.archivedAt == nil ? "archive" : "restore").\(chat.id)")
         }
     }
     static func chipLabel(_ title: String, limit: Int = 14) -> String {
@@ -146,6 +150,7 @@ private struct SidebarChatRow: View {
         Button(action: open) {
             HStack(spacing: 7) {
                 Circle().fill(statusColor).frame(width: 6, height: 6).accessibilityLabel(statusTitle)
+                    .accessibilityIdentifier("chat.status.\(chat.id)")
                 Text(chat.title).lineLimit(1)
                 Spacer(minLength: 0)
                 if chat.kind == .primary { Image(systemName: "pin.fill").font(.caption2).foregroundStyle(.secondary) }
@@ -156,7 +161,8 @@ private struct SidebarChatRow: View {
         }
         .buttonStyle(.plain).help(statusTitle)
         .accessibilityIdentifier("chat.sidebar.\(chat.id)")
-        .task(id: chat.id) {
+        .accessibilityValue(statusTitle)
+        .task(id: manager.map { ObjectIdentifier($0) }) {
             guard let manager else { return }
             do {
                 for await value in try await manager.updates(chatID: chat.id) {
@@ -166,10 +172,21 @@ private struct SidebarChatRow: View {
         }
     }
     private var statusColor: Color {
-        switch ChatSidebarStatus(state) { case .idle: .secondary; case .running: .green; case .needsYou: .orange; case .failed: .red }
+        switch ChatSidebarStatus(state) {
+        case .idle: .secondary
+        case .running: .green
+        case .needsYou, .interrupted: .orange
+        case .failed: .red
+        }
     }
     private var statusTitle: String {
-        switch ChatSidebarStatus(state) { case .idle: "Idle"; case .running: "Running"; case .needsYou: "Needs you"; case .failed: "Failed" }
+        switch ChatSidebarStatus(state) {
+        case .idle: "Idle"
+        case .running: "Running"
+        case .needsYou: "Needs you"
+        case .interrupted: "Interrupted"
+        case .failed: "Failed"
+        }
     }
 }
 

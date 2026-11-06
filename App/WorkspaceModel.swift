@@ -229,12 +229,25 @@ extension AppModel {
     }
 
     func setWorkspaceChatArchived(_ id: UUID, archived: Bool) {
-        guard allowWorkspaceSelection(), let stores else { return }
-        do {
-            try stores.setWorkspaceChatArchived(id: id, archived: archived, now: .now)
-            workspaceMessage = nil
-            refreshWorkspaces()
-        } catch { reportWorkspaceFailure("Chat archive status was not changed", error) }
+        guard let agentSessionManager else { return }
+        Task {
+            do {
+                try await agentSessionManager.setArchived(chatID: id, archived: archived)
+                workspaceMessage = nil
+                refreshWorkspaces()
+            } catch { reportWorkspaceFailure("Chat archive status was not changed", error) }
+        }
+    }
+
+    func renameWorkspaceChat(_ id: UUID, title: String) {
+        guard let agentSessionManager else { return }
+        Task {
+            do {
+                try await agentSessionManager.rename(chatID: id, title: title)
+                workspaceMessage = nil
+                refreshWorkspaces()
+            } catch { reportWorkspaceFailure("Chat title was not saved", error) }
+        }
     }
 
     private func allowWorkspaceSelection() -> Bool {

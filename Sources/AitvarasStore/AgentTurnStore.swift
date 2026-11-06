@@ -22,6 +22,7 @@ public struct AgentTurnStore: Sendable {
         try db.queue.write { dbc in
             try turn.insert(dbc)
             if let context { try AgentHandoverRecord(context: context, turnID: turn.id).insert(dbc) }
+            try Self.touchChat(turn.chatID, at: turn.startedAt, in: dbc)
         }
     }
     private func change(_ id: UUID, _ body: (inout AgentJournalTurn) throws -> Void) throws {
@@ -45,10 +46,19 @@ public struct AgentTurnStore: Sendable {
     }
     public func finish(id: UUID, state: AgentJournalState) throws {
         guard state != .running else { throw AgentFailure.invalidTransition }
-        try change(id) { turn in
+        try db.queue.write { dbc in
+            guard var turn = try AgentJournalTurn.fetchOne(dbc, key: id) else { throw AgentStoreError.missingTurn }
             guard turn.state == .running || turn.state == state else { throw AgentFailure.invalidTransition }
-            turn.state = state; turn.endedAt = turn.endedAt ?? .now
+            let endedAt = turn.endedAt ?? .now
+            turn.state = state; turn.endedAt = endedAt
+            try turn.update(dbc)
+            try Self.touchChat(turn.chatID, at: endedAt, in: dbc)
         }
+    }
+    private static func touchChat(_ id: UUID, at date: Date, in dbc: Database) throws {
+        guard var chat = try WorkspaceChat.fetchOne(dbc, key: id) else { throw AgentStoreError.missingChat }
+        chat.lastActivityAt = max(chat.lastActivityAt, date)
+        try chat.update(dbc)
     }
     /// Explicit retry only; recovery itself never sends or claims a retry.
     public func claimResend(id: UUID) throws -> AgentJournalTurn {

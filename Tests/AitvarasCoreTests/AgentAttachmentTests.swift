@@ -144,6 +144,9 @@ done()
         #expect(handover.text.contains("Read"))
         #expect(!handover.text.contains("selected"))
         #expect(!handover.text.contains("notes.txt"))
+        // The result is emitted before the executable writes its completion
+        // marker. Wait for that separate boundary without relaxing the check.
+        try await waitAgentCondition { FileManager.default.fileExists(atPath: fixture.directory.appendingPathComponent("done").path) }
         try fixture.assertComplete()
         try await manager.shutdown()
     }
