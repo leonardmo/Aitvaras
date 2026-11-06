@@ -390,6 +390,8 @@ Release app builds. The following app diagnostics require both an isolated
   download. The input is a diagnostic fixture, not a live-audio persistence path.
 - `--avatar-efficiency-check /tmp/avatar-check.json`: count actual rendered
   frames across active, idle, hidden, occluded and sleep-state transitions.
+  `scripts/check-avatar-renderer.sh` runs the same check in a minimal host with
+  no engines or user state (`docs/character/dragon-runtime/README.md`).
 
 The capture stop/save and synthetic speech checks passed in the Release build.
 Cached native screenshots can misrepresent glass and layer-backed controls;
