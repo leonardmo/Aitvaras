@@ -23,6 +23,8 @@ public struct SelfDriveStep: Codable, Sendable {
     public let delay: Double?
     /// Used for assertions such as "there is no second approval card".
     public let absent: Bool?
+    /// A failed optional step is recorded as skipped and does not fail the run.
+    public let optional: Bool?
     /// Restrict a wait to this accessibility subtree.
     public var within: String?
     public let caseSensitive: Bool?
@@ -90,7 +92,7 @@ public struct SelfDriveResult: Codable, Sendable {
                                          status: "passed", reason: try await perform(step))
             } catch {
                 result = SelfDriveResult(index: index, action: step.action.rawValue,
-                                         status: "failed", reason: error.localizedDescription)
+                                         status: step.optional == true ? "skipped" : "failed", reason: error.localizedDescription)
             }
             results.append(result)
             try checkpoint(results)

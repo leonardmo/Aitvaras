@@ -13,6 +13,20 @@ public struct AgentFileChange: Identifiable, Sendable, Equatable {
     public let diff: String
     public let diffUnavailable: Bool
     public var isUntracked: Bool { status == "??" }
+    public var statusLabel: String {
+        if isUntracked || status.contains("A") { return "New" }
+        if status.contains("D") { return "Deleted" }
+        if status.contains("R") { return "Renamed" }
+        return "Modified"
+    }
+    public var statusSymbol: String {
+        switch statusLabel {
+        case "New": "plus.circle"
+        case "Deleted": "minus.circle"
+        case "Renamed": "arrow.right.circle"
+        default: "pencil.circle"
+        }
+    }
 }
 
 public struct ChangesState: Sendable, Equatable {

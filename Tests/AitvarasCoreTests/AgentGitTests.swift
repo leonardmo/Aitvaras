@@ -88,6 +88,23 @@ private struct GitFixture {
 }
 
 @Suite struct AgentChangesTests {
+    @Test func newFilesHaveReadableStatusAndEmptyPreview() async throws {
+        let f = try GitFixture(); defer { f.remove() }; try await f.initialize()
+        try f.write("", "empty.txt")
+        try f.write("hello\n", "new file.txt")
+        try f.write("changed\n", "file.txt")
+        let changes = try await f.git.changes(in: f.root)
+        let empty = try #require(changes.files.first { $0.path == "empty.txt" })
+        #expect(empty.diff == "Empty file")
+        #expect(empty.statusLabel == "New")
+        #expect(empty.statusSymbol == "plus.circle")
+        let new = try #require(changes.files.first { $0.path == "new file.txt" })
+        #expect(new.diff.hasPrefix("--- /dev/null\n+++ b/new file.txt\n"))
+        #expect(changes.files.first { $0.path == "file.txt" }?.statusLabel == "Modified")
+        try FileManager.default.removeItem(at: f.root.appendingPathComponent("file.txt"))
+        #expect(try await f.git.changes(in: f.root).files.first { $0.path == "file.txt" }?.statusLabel == "Deleted")
+    }
+
     @Test func stagedUntrackedDeletedRenamedAndUnusualNames() async throws {
         let f = try GitFixture(); defer { f.remove() }; try await f.initialize()
         try f.write("second", "delete.txt")

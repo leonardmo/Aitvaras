@@ -121,8 +121,8 @@ gate must still establish actual tool reliability, locality and memory use.
 From the maintainer's feedback; a violation fails review.
 
 - Layout as in the Codex and Claude Code apps: sidebar with projects and chats
-  (status dot per chat), transcript in the centre, changes panel on the right that
-  appears only when there are changes.
+  (status dot per chat), transcript in the centre, Changes on the right opened
+  only from the toolbar's changed-file count.
 - Chat with no selection and New Chat open the empty unified transcript and ready
   composer immediately. First Send creates the chat; there is no creation dialog.
 - The flat project menu (`chat.project`) sits beside the provider/model controls.
@@ -143,9 +143,12 @@ From the maintainer's feedback; a violation fails review.
 - Composer holds everything per-chat: provider switcher (Claude, Codex, Local),
   model, effort, permission mode, gauges for context and usage. One rounded card
   puts input above a fixed row: attach, project, provider, model, effort, mode on
-  the left; reserved gauge slots and Send/Stop on the right. The left strip scrolls
-  at narrow widths; the action stays visible. Transcript and card share a centred
-  maximum width. Assistant text has no bubble; gauges have no interior labels.
+  the left; reserved gauge slots and Send/Stop on the right. Provider segments
+  collapse to a menu at narrow widths; smaller panes wrap into compact rows without
+  clipping or scrolling controls. Send stays beside Stop whenever there is input.
+  Changes stays closed until the toolbar count (`chat.changes`) is pressed.
+  Transcript and card share a centred maximum width. Assistant text has no bubble;
+  static gauges have a full track and a small percentage number.
 - Chat shows the activity dock only while automatic work is running. Manual
   provider/sign-in failures stay inline without increasing its attention count.
   The dock consumes actual layout height, including with native split views.

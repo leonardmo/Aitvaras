@@ -431,8 +431,12 @@ and checkboxes.
 
 Chat's composer and transcript share a centred column. The composer is one rounded
 card with input above a fixed control row: attach, project, provider, model, effort,
-mode; then reserved gauge slots and Send/Stop on the right. At narrow widths the
-left strip scrolls horizontally, keeping the action visible. Unsupported controls
+mode; then reserved gauge slots and Send/Stop on the right. Send remains beside
+Stop whenever there is input, using the existing follow-up delivery. At narrow
+widths the provider segments collapse to a menu; smaller panes wrap controls into
+compact rows so every control stays visible without scrolling. Changes opens only
+from the toolbar's changed-file count (`chat.changes`), never automatically.
+Gauges use a static full track and a small percentage number. Unsupported controls
 and unknown gauges reserve space without drawing empty controls. Accepted input
 leaves the composer as soon as its transcript entry and delivery journal are saved,
 including when provider startup subsequently requires sign-in. Sign-in retries

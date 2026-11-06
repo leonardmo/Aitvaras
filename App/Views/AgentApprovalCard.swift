@@ -25,6 +25,8 @@ struct AgentApprovalCard: View {
             }
             HStack {
                 Button("Allow") { answer(.allow(updatedInput: nil)) }
+                    .buttonStyle(.borderedProminent).tint(Color.accentColor)
+                    .foregroundStyle(Color.white)
                     .accessibilityIdentifier("\(identifier).allow")
                 Button("Deny") { answer(.deny) }
                     .accessibilityIdentifier("\(identifier).deny")

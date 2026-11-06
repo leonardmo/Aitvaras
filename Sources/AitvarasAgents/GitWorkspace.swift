@@ -81,7 +81,7 @@ public actor GitWorkspace {
                        let text = String(data: try Data(contentsOf: url), encoding: .utf8), !text.contains("\0") {
                         var lines = text.isEmpty ? [] : text.components(separatedBy: "\n")
                         if text.hasSuffix("\n") { lines.removeLast() }
-                        diff = "--- /dev/null\n+++ \(String(reflecting: "b/" + path))\n"
+                        diff = text.isEmpty ? "Empty file" : "--- /dev/null\n+++ b/\(path)\n"
                         if !lines.isEmpty {
                             diff += "@@ -0,0 +1,\(lines.count) @@\n" + lines.map { "+" + $0 }.joined(separator: "\n")
                             if !text.hasSuffix("\n") { diff += "\n\\ No newline at end of file" }
