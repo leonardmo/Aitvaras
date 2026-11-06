@@ -128,4 +128,18 @@ extension AgentTranscriptEntry {
     public var isLegacyProjection: Bool {
         payloadJSON.flatMap(JSONValue.parse)?["legacyID"]?.stringValue != nil
     }
+
+    /// Imported evidence keeps its original row IDs, separate from executable
+    /// sessions and completed chat context. The group starts collapsed in Chat.
+    public var importedMessages: [AgentTranscriptEntry] {
+        guard kind == "importedHistory" else { return [] }
+        return (payloadJSON.flatMap(JSONValue.parse)?["messages"]?.arrayValue ?? []).compactMap { message in
+            guard let id = message["id"]?.stringValue.flatMap(UUID.init(uuidString:)),
+                  let role = message["role"]?.stringValue, ["user", "assistant"].contains(role),
+                  let text = message["text"]?.stringValue else { return nil }
+            return .init(id: id, chatID: chatID, provider: provider, kind: role, text: text,
+                payloadJSON: JSONValue.object(["legacyID": .string("import:\(id)"), "completed": .bool(false),
+                    "revision": message["revision"] ?? .null, "externalID": message["externalID"] ?? .null]).jsonString)
+        }
+    }
 }

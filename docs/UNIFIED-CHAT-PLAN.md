@@ -73,6 +73,15 @@ catch-up block from D30. Interrupted turns are marked as such, and the next Send
 resumes the native session. Only a message that certainly wasn't delivered is ever
 resent automatically.
 
+Legacy read compatibility (M5.5) projects saved local, owned and linked evidence
+without rewriting source rows or adopting their session identities. Separate
+provider profiles need not exist to read saved text; credentials are never moved.
+Imported snapshots appear as collapsed read-only groups in the transcript, with
+their original message IDs and current revisions. They remain excluded from
+provider catch-up. Existing import controls retain access to saved-source details.
+Project conversation ownership and capture targets remain unchanged, including
+the guard against extracting project chats into global memory.
+
 **Projects.** A project is a set of folders with instructions and a default
 permission mode. A folder also used in Claude Code or Codex is the same project
 automatically, with no link step. Native sessions for that folder appear in the

@@ -849,3 +849,18 @@ launch the app against the default profile; never store test tokens in the
 Keychain. The demo persona is fictional on purpose; assertions in agent-run
 live tests should reference it (Alex/Example University/homelab), which doubles as a
 guard that the real profile was not loaded.
+
+## Unified chat legacy compatibility (M5.5)
+
+`UnifiedChatMigrationTests` reconstructs a populated pre-unified v27 database,
+opens it through the current migrations twice and compares legacy rows, IDs,
+revisions, conversation ownership and capture targets. It also covers saved reads
+with a missing separate provider profile/executable, imports beyond one page,
+read-only projections, uncertain outcomes, archive reads and context/memory scope
+guards. No test opens credentials or migrates provider profiles.
+
+Host gate: migrate a local private DB copy, check owned and linked text plus
+collapsed imported sources in Chat, and inspect saved-source details. Check both
+appearances and keyboard expansion at minimum window size. Confirm unavailable
+old provider profiles do not block saved reads. Keep the copy and screenshots
+local; package tests do not compile the App target or verify this visual gate.
