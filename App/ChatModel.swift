@@ -183,7 +183,8 @@ final class ChatModel {
     var mode: AgentMode {
         get { settings[settingsKey]?.mode ?? .ask }
         set {
-            guard !isBusy, provider != .local, var session = settings[settingsKey] else { return }
+            guard !isBusy, provider != .local || statuses[provider]?.capabilities.contains(.approvals) == true,
+                  var session = settings[settingsKey] else { return }
             session.mode = newValue; saveSettings(session)
         }
     }
@@ -333,6 +334,9 @@ final class ChatModel {
             let values = try await load.task.value
             guard modelLoads[provider]?.token == load.token, !values.isEmpty else { return }
             catalogs[provider] = values
+            // The OSS candidate requires the user to choose an installed tag;
+            // viewing Local must not silently select the first model.
+            if provider == .local, backends[provider] is CodexBackend { return }
             guard self.provider == provider, !isBusy, signingIn == nil, let first = values.first,
                   let session = settings[settingsKey], !values.contains(where: { $0.id == session.model }) else { return }
             saveSettings(ChatSettings.selecting(model: first, in: session))
@@ -342,6 +346,9 @@ final class ChatModel {
     func send() async {
         guard let id = chatID, canSubmit, var session = settings[settingsKey],
               hasInput else { return }
+        if provider == .local, backends[provider] is CodexBackend, selectedModel == nil {
+            error = "Choose an installed local model."; return
+        }
         let text = draft, provider = provider, key = settingsKey
         let followup = state?.isRunning == true
         let composition = composerSelection
@@ -555,7 +562,7 @@ final class ChatModel {
         cancelSignIn(); stoppedSends.formUnion(sending.values)
         modelLoads.values.forEach { $0.task.cancel() }; modelLoads.removeAll()
         try await manager.shutdown()
-        if let codex = backends[.codex] as? CodexBackend { try await codex.shutdown() }
+        for case let codex as CodexBackend in backends.values { try await codex.shutdown() }
     }
     func resumeAfterCancelledTermination() { terminating = false }
     func approvalContext(_ suggestion: AgentApprovalSuggestion) -> String {

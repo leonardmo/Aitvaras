@@ -212,9 +212,12 @@ public actor AgentSessionManager {
         }
         // Reserve this chat and capacity before any await, including startup.
         let old = live[chatID]
-        let token = old?.session == session ? old!.token : UUID()
+        let token = provider != .local && old?.session == session ? old!.token : UUID()
         old?.idle?.cancel()
-        let reusable = old?.session == session ? old?.coordinator : nil
+        // Local consumes the complete completed context on every Send. Start a
+        // fresh run so an experimental thread-backed Local implementation never
+        // receives that same history twice in a retained native thread.
+        let reusable = provider != .local && old?.session == session ? old?.coordinator : nil
         live[chatID] = Live(token: token, session: session, coordinator: reusable, inputID: input.id)
         do {
             if retry { _ = try persistence.claimAgentResend(id: input.id) }

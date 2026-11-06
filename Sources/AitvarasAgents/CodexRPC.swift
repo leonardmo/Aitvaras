@@ -60,6 +60,7 @@ actor CodexRun: AgentRun {
         }
     }
     func followup(_ value: AgentInput, willDeliver: @escaping @Sendable () async throws -> Void) async throws {
+        guard session.provider != .local else { throw AgentFailure.unsupported }
         guard !closed, input != nil, let turn, !completedTurns.contains(turn),
               planRequestID == nil, !steering else { throw AgentFailure.invalidTransition }
         let content = try contentForDelivery(value)
@@ -78,6 +79,7 @@ actor CodexRun: AgentRun {
         continuation.yield(.init(scope: scope, kind: .delivery(.acknowledged)))
     }
     private func contentForDelivery(_ value: AgentInput) throws -> JSONValue {
+        if session.provider == .local { try value.validateComposerInput(provider: .local) }
         let content = try value.codexContent()
         guard content.jsonString.utf8.count + 4096 <= StreamingProcess.maximumLineBytes else { throw AgentAttachmentError.tooLarge }
         return content
