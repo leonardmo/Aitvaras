@@ -105,6 +105,14 @@ public actor CodexBackend: AgentBackend {
         let result = try await rpc("account/rateLimits/read")
         return codexRateLimits(result)
     }
+    public func commands(directory: URL) async throws -> [AgentCommand] {
+        try AgentCommandCatalog.codex(await rpc("skills/list", .object([
+            "cwds": .array([.string(directory.path)]), "forceReload": .bool(false)])), directory: directory)
+    }
+    public func files(query: String, directory: URL) async throws -> [AgentFileMention] {
+        try AgentFileMention.codex(await rpc("fuzzyFileSearch", .object([
+            "query": .string(query), "roots": .array([.string(directory.path)])])), directory: directory)
+    }
     public func start(_ configuration: AgentSessionConfiguration) async throws -> any AgentRun {
         let authentication = try await status().authentication
         guard authentication == .subscription else {

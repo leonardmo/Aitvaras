@@ -37,6 +37,7 @@ private actor LocalRun: AgentRun {
     }
     func send(_ input: AgentInput, willDeliver: @escaping @Sendable () async throws -> Void) async throws {
         guard !closed, inputID == nil else { throw AgentFailure.invalidTransition }
+        try input.validateComposerInput(provider: .local)
         inputID = input.id
         do { try await willDeliver() }
         catch { if inputID == input.id { inputID = nil }; throw error }

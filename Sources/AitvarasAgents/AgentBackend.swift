@@ -65,7 +65,14 @@ public struct AgentInput: Sendable, Equatable {
     /// Local durable message identity, retained across a provably safe retry.
     public let id: UUID
     public let text: String
-    public init(id: UUID = UUID(), text: String) { self.id = id; self.text = text }
+    public let attachments: [AgentAttachment]
+    public let mentions: [AgentFileMention]
+    public let command: AgentCommand?
+    public init(id: UUID = UUID(), text: String, attachments: [AgentAttachment] = [],
+                mentions: [AgentFileMention] = [], command: AgentCommand? = nil) {
+        self.id = id; self.text = text; self.attachments = attachments
+        self.mentions = mentions; self.command = command
+    }
 }
 
 public struct AgentSessionSummary: Sendable, Equatable {
@@ -92,10 +99,17 @@ public protocol AgentBackend: Actor {
     /// Browser URLs are transient, never transcript or Activity content.
     func signIn(onBrowserURL: @escaping @Sendable (URL) async -> Void) async throws
     func models() async throws -> [AgentModel]
+    func commands(directory: URL) async throws -> [AgentCommand]
+    func files(query: String, directory: URL) async throws -> [AgentFileMention]
     /// Starts or resumes a session without sending a user message.
     func start(_ configuration: AgentSessionConfiguration) async throws -> any AgentRun
     func listSessions(folder: URL, cursor: String?) async throws -> AgentPage<AgentSessionSummary>
     func readHistory(session: AgentSessionID, cursor: String?) async throws -> AgentPage<AgentEvent>
+}
+
+extension AgentBackend {
+    public func commands(directory: URL) async throws -> [AgentCommand] { throw AgentFailure.unsupported }
+    public func files(query: String, directory: URL) async throws -> [AgentFileMention] { throw AgentFailure.unsupported }
 }
 
 public protocol AgentRun: Actor {

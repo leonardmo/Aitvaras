@@ -25,7 +25,8 @@ final class ChatModel {
     private var sending: [UUID: UUID] = [:]
     private var stopping: Set<UUID> = []
     private var stoppedSends: Set<UUID> = []
-    private var attempts: [UUID: (text: String, provider: AgentProvider, accountID: String?)] = [:]
+    private var attempts: [UUID: (input: AgentInput, provider: AgentProvider, accountID: String?)] = [:]
+    private var composerSelections = AgentComposerSelections()
     private var handledFailures: Set<UUID> = []
     private(set) var state: ChatState?
     private(set) var error: String?
@@ -54,6 +55,64 @@ final class ChatModel {
             if newValue != selection.draft { invalidatePending() }
             selection.draft = newValue
         }
+    }
+    var composerSelection: AgentComposerSelection {
+        get { chatID.map { composerSelections[$0, provider] } ?? .init() }
+        set {
+            guard let id = chatID else { return }
+            invalidatePending(); composerSelections[id, provider] = newValue
+        }
+    }
+    var hasInput: Bool { !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !composerSelection.attachments.isEmpty }
+    var projectDirectory: URL? { settings[settingsKey].map { URL(fileURLWithPath: $0.cwd, isDirectory: true) } }
+
+    func attach(_ url: URL, chatID: UUID, provider: AgentProvider) async {
+        let access = url.startAccessingSecurityScopedResource()
+        defer { if access { url.stopAccessingSecurityScopedResource() } }
+        let task = Task.detached { try AgentAttachment.read(url) }
+        do {
+            let file = try await withTaskCancellationHandler { try await task.value } onCancel: { task.cancel() }
+            try addAttachment(file, chatID: chatID, provider: provider)
+        } catch { attachmentFailed(error, chatID: chatID, provider: provider) }
+    }
+    func attach(data: Data, name: String, chatID: UUID, provider: AgentProvider) {
+        do { try addAttachment(AgentAttachment(name: name, data: data), chatID: chatID, provider: provider) }
+        catch { attachmentFailed(error, chatID: chatID, provider: provider) }
+    }
+    func attachmentLoadFailed(chatID: UUID, provider: AgentProvider) {
+        attachmentFailed(AgentAttachmentError.missingFile, chatID: chatID, provider: provider)
+    }
+    private func addAttachment(_ file: AgentAttachment, chatID: UUID, provider: AgentProvider) throws {
+        guard provider != .local else { throw AgentFailure.unsupported }
+        if provider == .codex, file.kind == .pdf { throw AgentAttachmentError.unsupportedType }
+        var value = composerSelections[chatID, provider]
+        try value.add(file)
+        composerSelections[chatID, provider] = value
+        if self.chatID == chatID, self.provider == provider { invalidatePending(); error = nil }
+    }
+    private func attachmentFailed(_ failure: Error, chatID: UUID, provider: AgentProvider) {
+        guard self.chatID == chatID, self.provider == provider, !(failure is CancellationError) else { return }
+        switch failure as? AgentAttachmentError {
+        case .tooLarge: error = "Attachments must total 512 KB or less."
+        case .tooMany: error = "Attach up to 8 files."
+        case .missingFile: error = "That file could not be read. Choose it again."
+        default: error = "Use a text file or PNG, JPEG, GIF or WebP image\(provider == .claude ? ", or PDF." : ".")"
+        }
+    }
+    func commands() async throws -> [AgentCommand] {
+        guard let directory = projectDirectory, let backend = backends[provider] else { throw AgentFailure.unsupported }
+        return try await backend.commands(directory: directory)
+    }
+    func files(query: String) async throws -> [AgentFileMention] {
+        guard let directory = projectDirectory, let backend = backends[provider] else { throw AgentFailure.unsupported }
+        return try await backend.files(query: query, directory: directory)
+    }
+    private func clearComposer(chatID: UUID, provider: AgentProvider, sent: AgentInput) {
+        var value = composerSelections[chatID, provider]
+        value.attachments.removeAll { file in sent.attachments.contains { $0.id == file.id } }
+        value.mentions.removeAll { sent.mentions.contains($0) }
+        if value.command == sent.command { value.command = nil }
+        composerSelections[chatID, provider] = value
     }
     var isBusy: Bool { state?.isRunning == true || chatID.map { sending[$0] != nil } == true }
     var canSubmit: Bool {
@@ -109,6 +168,13 @@ final class ChatModel {
             try loadSettings()
             if let pending = try stores.pendingSend(), pending.session.chatID == id {
                 if selection.draft.isEmpty { selection.draft = pending.text }
+                if pending.session.provider == provider,
+                   let entry = try stores.agentEntries(chatID: pending.session.chatID).first(where: { $0.id == pending.inputID }) {
+                    let input = try AgentInput.restoring(id: pending.inputID, text: pending.text, payload: entry.payloadJSON)
+                    var value = composerSelection
+                    value.attachments = input.attachments; value.mentions = input.mentions; value.command = input.command
+                    composerSelections[pending.session.chatID, provider] = value
+                }
                 if pending.expiresAt > .now, pending.session.provider == provider {
                     authProvider = provider; error = "Sign in to \(provider.rawValue.capitalized)"
                     armPendingExpiry(pending)
@@ -185,12 +251,13 @@ final class ChatModel {
 
     func send() async {
         guard let id = chatID, canSubmit, var session = settings[settingsKey],
-              !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+              hasInput else { return }
         let text = draft, provider = provider, key = settingsKey
         let followup = state?.isRunning == true
-        let input = AgentInput(text: text)
+        let composition = composerSelection
+        let input = AgentInput(text: text, attachments: composition.attachments, mentions: composition.mentions, command: composition.command)
         invalidatePending(); sending[id] = input.id; error = nil; authProvider = nil
-        attempts[input.id] = (text, provider, statuses[provider]?.accountID)
+        attempts[input.id] = (input, provider, statuses[provider]?.accountID)
         if handledFailures.count > 128 { handledFailures.removeAll() }
         defer { if sending[id] == input.id { sending.removeValue(forKey: id) }; stoppedSends.remove(input.id) }
         do {
@@ -200,6 +267,7 @@ final class ChatModel {
                 try await manager.send(chatID: id, provider: provider, input: input)
                 attempts.removeValue(forKey: input.id)
                 selection.clearDraft(chatID: id, ifUnchanged: text)
+                clearComposer(chatID: id, provider: provider, sent: input)
                 return
             }
             session.instructions = try stores.workspaceContextPacket(chatID: id).promptText
@@ -216,7 +284,10 @@ final class ChatModel {
             guard !stoppedSends.contains(input.id) else { return }
             // Starting the manager first guarantees auth failures have a journal.
             try await manager.send(chatID: id, provider: provider, input: input)
-            if !handledFailures.contains(input.id) { selection.clearDraft(chatID: id, ifUnchanged: text) }
+            if !handledFailures.contains(input.id) {
+                self.selection.clearDraft(chatID: id, ifUnchanged: text)
+                clearComposer(chatID: id, provider: provider, sent: input)
+            }
         } catch {
             if chatID == id, !stoppedSends.contains(input.id) {
                 failed(inputID: input.id, failure: (error as? AgentFailure) ?? .unknown)
@@ -239,14 +310,22 @@ final class ChatModel {
     private func failed(inputID: UUID, failure: AgentFailure) {
         guard !handledFailures.contains(inputID), let attempt = attempts.removeValue(forKey: inputID) else { return }
         handledFailures.insert(inputID)
-        if selection.draft.isEmpty { selection.draft = attempt.text }
+        if selection.draft.isEmpty { selection.draft = attempt.input.text }
+        if let id = chatID, provider == attempt.provider {
+            var value = composerSelections[id, provider]
+            if value.attachments.isEmpty { value.attachments = attempt.input.attachments }
+            if value.mentions.isEmpty { value.mentions = attempt.input.mentions }
+            if value.command == nil { value.command = attempt.input.command }
+            composerSelections[id, provider] = value
+        }
         authProvider = failure == .authRequired ? attempt.provider : nil
         error = failureMessage(failure, provider: attempt.provider)
         guard failure == .authRequired, let id = chatID, attempt.provider == provider else { return }
         do {
             guard let turn = try stores.agentTurn(id: inputID), turn.chatID == id, turn.delivery == .prepared, turn.resendCount == 0,
                   let session = try stores.agentSession(chatID: id, provider: provider) else { return }
-            let pending = try PendingSend(inputID: inputID, text: attempt.text, session: session, accountID: attempt.accountID)
+            let pending = try PendingSend(inputID: inputID, text: attempt.input.text, session: session, accountID: attempt.accountID,
+                                          hasAttachments: !attempt.input.attachments.isEmpty)
             try stores.savePendingSend(pending)
             armPendingExpiry(pending)
         } catch { self.error = "Sign in to \(provider.rawValue.capitalized)" }
@@ -312,7 +391,10 @@ final class ChatModel {
                     guard self.loginToken == token, self.chatID == selectedChat, self.provider == provider else { return }
                     self.pendingExpiry?.cancel(); self.pendingExpiry = nil
                     self.handledFailures.remove(pending.inputID)
-                    self.attempts[pending.inputID] = (pending.text, provider, self.statuses[provider]?.accountID)
+                    let value = self.composerSelection
+                    let retryInput = AgentInput(id: pending.inputID, text: pending.text, attachments: value.attachments,
+                                               mentions: value.mentions, command: value.command)
+                    self.attempts[pending.inputID] = (retryInput, provider, self.statuses[provider]?.accountID)
                     retriedInput = pending.inputID
                     self.error = nil; self.authProvider = nil; self.signingIn = nil
                     // Login has finished. View changes and draft edits must no
@@ -328,6 +410,7 @@ final class ChatModel {
                     try await self.manager.resendPrepared(turnID: pending.inputID)
                     if !self.handledFailures.contains(pending.inputID) {
                         self.selection.clearDraft(chatID: pending.session.chatID, ifUnchanged: pending.text)
+                        self.clearComposer(chatID: pending.session.chatID, provider: provider, sent: retryInput)
                     } else { return }
                 } else { try self.stores.savePendingSend(nil) }
                 guard self.chatID == selectedChat else { return }

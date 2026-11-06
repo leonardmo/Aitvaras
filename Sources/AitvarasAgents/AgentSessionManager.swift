@@ -156,9 +156,13 @@ public actor AgentSessionManager {
                   provider: try providerForTurn(turn)), session.id == turn.sessionID else {
             throw AgentSessionManagerError.missingSession
         }
+        // Without the durable user entry we cannot prove that selected bytes
+        // and skills survived a failed save. Never retry a text-only substitute.
+        guard let entry = try persistence.agentEntries(chatID: turn.chatID).first(where: { $0.id == turn.id }) else {
+            throw AgentFailure.invalidTransition
+        }
         try await deliver(chatID: turn.chatID, provider: session.provider,
-                          input: .init(id: turn.id, text: try persistence.agentEntries(chatID: turn.chatID)
-                            .first(where: { $0.id == turn.id })?.text ?? turn.prompt), retry: true)
+                          input: .restoring(id: turn.id, text: entry.text, payload: entry.payloadJSON), retry: true)
     }
     private func providerForTurn(_ turn: AgentJournalTurn) throws -> AgentProvider {
         for provider in [AgentProvider.claude, .codex, .local] {
@@ -179,7 +183,8 @@ public actor AgentSessionManager {
         _ = try state(chatID: chatID)
         let context = try retry ? persistence.agentHandover(turnID: input.id) : persistence.agentContext(session: session)
         let wireText = try retry ? persistence.agentTurn(id: input.id)?.prompt : nil
-        let wireInput = AgentInput(id: input.id, text: wireText ?? context?.wire(message: input.text) ?? input.text)
+        let wireInput = AgentInput(id: input.id, text: wireText ?? context?.wire(message: input.text) ?? input.text,
+                                  attachments: input.attachments, mentions: input.mentions, command: input.command)
         if live[chatID] == nil, live.count >= 3 {
             states[chatID]?.end(.failed(.invalidTransition)); publish(chatID)
             throw AgentSessionManagerError.runningChatLimit

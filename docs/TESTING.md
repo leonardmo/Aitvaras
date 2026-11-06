@@ -717,6 +717,26 @@ a queued Claude input, and a provider that stops responding. Check Send/Stop and
 keyboard shortcuts at minimum size in light/dark, queued labels after restart,
 and that interrupted inputs are never resent without another explicit Send.
 
+Attachments and completions (M3.7/M3.8): `AgentAttachmentTests` covers immutable
+snapshots, size/count/type limits, cancellation before delivery, native text/image
+encoding on initial and follow-up sends, failed snapshot saves, exact retry and
+no attachment transfer through context handover. `AgentComposerInputTests` covers
+absent/malformed catalogs, duplicate/disabled skills, project search boundaries,
+filename quoting and explicit selection through fake CLI pipes. The checked-in
+Claude initialize recordings omit commands; a missing catalog must stay unavailable.
+
+Host verification: build the app and use an isolated profile. Drag and paste files
+and images, attach through the paperclip, remove chips, cancel the file picker,
+send an image alone, and reject oversized/unsupported files. Change a source file
+after selection and verify the original bytes arrive on both real providers,
+including follow-ups and a sign-in retry. Switch chat/provider before imports
+finish and verify the originating composer retains ownership. Type `@` and `/`,
+search, use arrows/Return/Escape and Tab, and verify one popover level, filename
+escaping, installed command/skill lists and native invocation. Confirm native MCP
+and project instructions remain available. Review minimum size, light/dark,
+accessibility identifiers and streaming layout. These checks require the host;
+package tests do not compile App views or establish live CLI conformance.
+
 ## What an agent session should do
 
 For Claude Code (or any agent) working on this repo: Layers 1–2 after every

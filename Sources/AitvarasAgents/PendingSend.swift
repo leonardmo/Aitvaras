@@ -10,8 +10,9 @@ public struct PendingSend: Codable, Sendable, Equatable {
     public let accountID: String?
     public let expiresAt: Date
 
-    public init(inputID: UUID, text: String, session: AgentChatSession, accountID: String? = nil, now: Date = .now) throws {
-        guard session.provider != .local, !text.isEmpty, text.utf8.count <= Self.maximumBytes else {
+    public init(inputID: UUID, text: String, session: AgentChatSession, accountID: String? = nil, now: Date = .now,
+                hasAttachments: Bool = false) throws {
+        guard session.provider != .local, (!text.isEmpty || hasAttachments), text.utf8.count <= Self.maximumBytes else {
             throw AgentFailure.invalidRequest
         }
         self.inputID = inputID; self.text = text; self.session = session; self.accountID = accountID
