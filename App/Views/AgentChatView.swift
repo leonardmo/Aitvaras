@@ -232,7 +232,7 @@ struct AgentChatView: View {
         HStack(spacing: compactDetails ? 2 : 10) {
             HStack(spacing: compactDetails ? 2 : 6) {
                 attachButton(narrow: compactDetails)
-                projectControls(iconOnly: compactProject, narrow: compactDetails)
+                projectControls(iconOnly: compactProject)
                 providerControl(compact: compactProvider, narrow: compactDetails)
                 modelControls(iconOnly: compactDetails)
             }.fixedSize(horizontal: !compactDetails, vertical: false)
@@ -271,7 +271,7 @@ struct AgentChatView: View {
         }.fixedSize()
     }
 
-    private func projectControls(iconOnly: Bool, narrow: Bool) -> some View {
+    private func projectControls(iconOnly: Bool) -> some View {
         HStack(spacing: 3) {
             Menu {
                 ForEach(model.workspaceProjects.filter(\.isVisible)) { project in
@@ -297,8 +297,8 @@ struct AgentChatView: View {
                 }
             }
             .menuStyle(.borderlessButton).buttonStyle(.plain)
-            .menuIndicator(iconOnly ? .hidden : .visible)
-            .frame(width: iconOnly ? (narrow ? 18 : 28) : 100).help(projectTitle)
+            .menuIndicator(.visible)
+            .frame(width: iconOnly ? 32 : 100).help(projectTitle)
             .accessibilityLabel("Project").accessibilityValue(projectTitle)
             .accessibilityIdentifier("chat.project")
             .disabled(chat.chatID != nil || chat.creatingChat)
@@ -317,7 +317,7 @@ struct AgentChatView: View {
                 .disabled(chat.chatID != nil || !gitProject || chat.creatingChat)
                 .accessibilityHidden(chat.chatID != nil || !gitProject)
             }
-        }.frame(width: iconOnly ? (narrow ? 18 : 28) : 127)
+        }.frame(width: iconOnly ? 32 : 127)
     }
     @ViewBuilder private func providerControl(compact: Bool, narrow: Bool) -> some View {
         if compact {
@@ -329,8 +329,8 @@ struct AgentChatView: View {
                     }.accessibilityIdentifier("chat.provider.\(provider.rawValue)")
                 }
             } label: { Text(chat.provider.rawValue.capitalized).lineLimit(1) }
-            .frame(width: narrow ? 36 : 76)
-            .menuIndicator(narrow ? .hidden : .visible)
+            .frame(width: narrow ? 62 : 76)
+            .menuIndicator(.visible)
             .help(chat.provider.rawValue.capitalized)
             .accessibilityIdentifier("chat.provider")
             .accessibilityLabel("Provider").accessibilityValue(chat.provider.rawValue.capitalized)
@@ -353,15 +353,15 @@ struct AgentChatView: View {
         HStack(spacing: iconOnly ? 2 : 6) {
             Menu {
                 Picker("Model", selection: $chat.model) {
-                    ForEach(chat.models, id: \.id) { Text($0.name).tag($0.id) }
+                    ForEach(chat.models, id: \.id) { Text(chat.modelTitle($0)).tag($0.id) }
                 }.pickerStyle(.inline)
             } label: {
-                Text(chat.selectedModel?.name ?? (chat.model == "default" ? "Default" : chat.model)).lineLimit(1)
+                Text(chat.modelTitle).lineLimit(1).truncationMode(.middle)
             }
-            .frame(minWidth: iconOnly ? 20 : 100, idealWidth: 100, maxWidth: 100)
-            .menuIndicator(iconOnly ? .hidden : .visible)
-            .help(chat.selectedModel?.name ?? chat.model)
-            .accessibilityLabel("Model").accessibilityValue(chat.selectedModel?.name ?? chat.model)
+            .frame(minWidth: iconOnly ? 60 : 100, idealWidth: 100, maxWidth: 100)
+            .menuIndicator(.visible)
+            .help(chat.modelTitle)
+            .accessibilityLabel("Model").accessibilityValue(chat.modelTitle)
             .accessibilityIdentifier("chat.model")
             .disabled(chat.isBusy || chat.creatingChat || chat.models.isEmpty)
             Group {
@@ -375,13 +375,13 @@ struct AgentChatView: View {
                         if iconOnly { Image(systemName: "brain") }
                         else { Text(chat.effort.isEmpty ? "Effort" : chat.effort.capitalized).lineLimit(1) }
                     }
-                    .menuIndicator(iconOnly ? .hidden : .visible)
+                    .menuIndicator(.visible)
                     .frame(maxWidth: .infinity)
                     .help("Effort: \(chat.effort.isEmpty ? "Default" : chat.effort.capitalized)")
                     .accessibilityLabel("Effort").accessibilityValue(chat.effort.isEmpty ? "Default" : chat.effort.capitalized)
                     .accessibilityIdentifier("chat.effort").disabled(chat.isBusy || chat.creatingChat)
                 } else { Color.clear.frame(height: 16).accessibilityHidden(true) }
-            }.frame(width: iconOnly ? 18 : 54)
+            }.frame(width: iconOnly ? 32 : 54)
             Group {
                 if chat.provider != .local || chat.statuses[.local]?.capabilities.contains(.approvals) == true {
                     Menu {
@@ -395,13 +395,13 @@ struct AgentChatView: View {
                         if iconOnly { Image(systemName: modeSymbol) }
                         else { Text(modeTitle).lineLimit(1) }
                     }
-                    .menuIndicator(iconOnly ? .hidden : .visible)
+                    .menuIndicator(.visible)
                     .frame(maxWidth: .infinity)
                     .help("Mode: \(modeTitle)")
                     .accessibilityLabel("Mode").accessibilityValue(modeTitle)
                     .accessibilityIdentifier("chat.mode").disabled(chat.isBusy || chat.creatingChat)
                 } else { Color.clear.frame(height: 16).accessibilityHidden(true) }
-            }.frame(width: iconOnly ? 18 : 64)
+            }.frame(width: iconOnly ? 32 : 64)
         }
         .controlSize(.small).menuStyle(.borderlessButton)
     }
@@ -425,9 +425,10 @@ struct AgentChatView: View {
             showingCompletion = false; choosingAttachments = true
         } label: {
             Image(systemName: "paperclip").font(.system(size: 15, weight: .medium))
+                .foregroundStyle(composerMessageColor)
                 .frame(width: narrow ? 18 : 28, height: 28)
         }
-        .buttonStyle(.plain).foregroundStyle(.primary)
+        .buttonStyle(.plain)
         .disabled(!canSend || chat.provider == .local)
         .help("Attach files").accessibilityLabel("Attach files")
         .accessibilityIdentifier("chat.composer.attach")

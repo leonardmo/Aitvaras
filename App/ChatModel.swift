@@ -29,6 +29,7 @@ final class ChatModel {
     private var sidebarTasks: [UUID: Task<Void, Never>] = [:]
     private var visibleChats: [UUID: UUID] = [:]
     private var localAvailable = true
+    private var localModelTitle = "Checking model…"
 
     func markChatOpened(_ id: UUID) {
         try? stores.markChatSeen(id)
@@ -240,6 +241,15 @@ final class ChatModel {
     private var settingsKey: String { "\(chatID?.uuidString ?? "").\(provider.rawValue)" }
     var models: [AgentModel] { catalogs[provider] ?? [] }
     var selectedModel: AgentModel? { models.first { $0.id == model } }
+    var modelTitle: String {
+        if let selectedModel { return modelTitle(selectedModel) }
+        return model == "default" ? "Default" : model == "local" ? localModelTitle : model
+    }
+    func modelTitle(_ value: AgentModel) -> String {
+        // The AgentLoop adapter has one routing entry, not a model named Local.
+        if provider == .local, value.id == "local", backends[.local] is LocalBackend { return localModelTitle }
+        return value.name.caseInsensitiveCompare(provider.rawValue) == .orderedSame ? value.id : value.name
+    }
     var model: String {
         get { settings[settingsKey]?.model ?? (provider == .local ? "local" : "default") }
         set {
@@ -404,8 +414,14 @@ final class ChatModel {
             }
         }
         if backends[.local] is LocalBackend {
-            localAvailable = !MLXEngine.installedModels().isEmpty
-            if !localAvailable { localAvailable = await OllamaEngine().isAvailable(for: .chat) }
+            let assigned = MLXEngine.assignedModel(for: .chat)
+            localAvailable = MLXEngine.installedModels().contains(assigned)
+            if localAvailable { localModelTitle = assigned }
+            else {
+                let ollama = OllamaEngine()
+                localAvailable = await ollama.isAvailable(for: .chat)
+                localModelTitle = localAvailable ? await ollama.configuredModelName : "Model unavailable"
+            }
         } else {
             localAvailable = (try? await backends[.local]?.models().isEmpty) == false
         }

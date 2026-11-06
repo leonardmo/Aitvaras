@@ -185,7 +185,7 @@ import AitvarasCore
         _ = try SelfDriveScenario.parse(Data(contentsOf: root.appendingPathComponent("UITests/self-drive/picker-probe.json")))
     }
 
-    @Test func layoutScenarioChecksRepliesAndSignInBeforeScreenshots() throws {
+    @Test func layoutScenarioKeepsNarrowScreenshotsWithoutProviderSegments() throws {
         let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
         let scenario = try SelfDriveScenario.parse(Data(contentsOf: root.appendingPathComponent("UITests/self-drive/layout.json")))
         let golden = try SelfDriveScenario.parse(Data(contentsOf: root.appendingPathComponent("UITests/self-drive/golden-path.json")))
@@ -212,6 +212,9 @@ import AitvarasCore
                ["chat.provider.codex", "chat.provider.claude"].contains(identifier) {
                 #expect(!sidebarVisible)
             }
+            let needsProviderSegments = ["chat.provider.codex", "chat.provider.claude", "chat.signin"].contains(step.identifier ?? "")
+                || step.text == "pelican" || step.text == "Sign in to Claude"
+            #expect((step.optional == true) == needsProviderSegments)
             if step.action == .type { typed = step.text }
             if step.action == .press, step.identifier == "chat.composer.send" {
                 let check = try #require(scenario.steps.dropFirst(index + 1).first)
@@ -219,9 +222,12 @@ import AitvarasCore
                 #expect(check.text == typed && check.within == "chat.composer.input")
             }
         }
-        #expect(scenario.steps.contains { $0.action == .press && $0.identifier == "checklist" })
+        let setup = try #require(scenario.steps.firstIndex { $0.action == .waitFor && $0.identifier == "settings.providers" })
+        #expect(scenario.steps[setup - 1].action == .press && scenario.steps[setup - 1].identifier == "gearshape")
+        #expect(scenario.steps.contains { $0.action == .press && $0.identifier == "settings.providers" })
+        #expect(!scenario.steps.contains { $0.identifier == "checklist" })
         #expect(scenario.steps.contains { $0.action == .waitFor && $0.identifier == "settings.providers.page" })
-        #expect(!scenario.steps.contains { $0.optional == true || $0.identifier == "chat.signin" && $0.action == .press })
+        #expect(!scenario.steps.contains { $0.identifier == "chat.signin" && $0.action == .press })
     }
 }
 #endif

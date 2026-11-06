@@ -184,12 +184,10 @@ struct MainWindow: View {
                     Divider()
                 }
                 destination.frame(maxWidth: .infinity, maxHeight: .infinity)
-                // NSSplitView-backed chat content does not consume a SwiftUI
-                // safe-area inset. Reserve actual layout height for its dock.
-                if chatSelected { detailDock }
-            }
-            .safeAreaInset(edge: .bottom, spacing: 0) {
-                if !chatSelected { detailDock }
+                // Native split/tab containers do not reliably propagate safe-area
+                // insets to their scroll views. Reserve the dock's full height
+                // (including padding) on every destination so its last row clears it.
+                detailDock
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)

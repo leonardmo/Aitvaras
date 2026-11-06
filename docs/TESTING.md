@@ -701,7 +701,9 @@ slots and keyboard access to the horizontal strip at minimum width. Inline error
 and Sign in must fit above the window edge. Chat's dock must remain absent on an
 idle fresh profile and after a manual provider failure; start automatic work to
 check that the visible dock consumes height without covering the composer. Other
-tabs retain their dock and attention presentation.
+tabs retain their dock and attention presentation; their scroll views must end
+above the dock, including its padding. On Setup, scroll to the final settings
+row and confirm it stays readable and reachable at 800×500.
 Verify readable composer messages (including sign-in, archived and interrupted)
 in both appearances. With no message, the card ends below its controls without
 an empty status row. Eight genuinely running chats show “8 chats are running.
@@ -999,35 +1001,40 @@ Optional debug-only window controls:
 message, verifies `pelican` inside `chat.transcript`, then uses a fresh chat for
 a signed-out Claude Send and waits for `Sign in to Claude` plus `chat.signin`
 inside `chat.error`. It captures five distinct `layout-*` PNGs: new composer,
-Codex reply, Claude sign-in row, Setup and Providers. It presses the Setup tab
-(`checklist`) explicitly before waiting for its AI providers card, then the
-Providers tab (`cpu`) before waiting for `settings.providers.page`.
+Codex reply, Claude sign-in row, Setup and Providers. It presses Settings
+(`gearshape`) before waiting for its AI providers card, then presses that card
+(`settings.providers`) before waiting for `settings.providers.page`.
 Codex must be signed in and Claude signed out; an unexpected Claude reply
-fails the sign-in checks. This scenario never initiates browser login or logout.
+does not establish the signed-out layout. This scenario never initiates browser
+login or logout.
 At minimum width the provider switch is a native menu. The scenario briefly
-hides the sidebar with `sidebar.left` to expose the provider segments, selects
-through their real controls, then restores the sidebar before Send and every
-screenshot. This assumes a fresh profile with the sidebar initially visible;
-it does not establish native provider-menu interaction at minimum width.
+hides the sidebar with `sidebar.left` to try to expose the provider segments,
+then restores it before Send and every screenshot. The segment waits/presses and
+provider-dependent reply/sign-in checks are optional: at 800×500 the native menu
+may remain collapsed, so those steps can be skipped. A skipped check does not
+verify that provider or its sign-in layout; review the result reasons and PNGs.
+This assumes a fresh profile with the sidebar initially visible and does not
+establish native provider-menu interaction at minimum width.
 
 Run this **unverified** matrix on the host with a fresh disposable profile and
 project for each invocation (the runner supplies both). Use a separate artifact
-directory per run because the runner replaces its scenario output:
+directory per run because the runner replaces its scenario output. Start with
+the real **800×500 minimum**; 1080×720 is a larger comparison size:
 
 ```sh
-AITVARAS_SELF_DRIVE_APPEARANCE=light AITVARAS_SELF_DRIVE_SIZE=1080x720 scripts/run-self-drive.sh layout
-mv .build-e2e/self-drive/layout .build-e2e/self-drive/layout-light-default
-AITVARAS_SELF_DRIVE_APPEARANCE=dark AITVARAS_SELF_DRIVE_SIZE=1080x720 scripts/run-self-drive.sh layout
-mv .build-e2e/self-drive/layout .build-e2e/self-drive/layout-dark-default
 AITVARAS_SELF_DRIVE_APPEARANCE=light AITVARAS_SELF_DRIVE_SIZE=800x500 scripts/run-self-drive.sh layout
 mv .build-e2e/self-drive/layout .build-e2e/self-drive/layout-light-minimum
 AITVARAS_SELF_DRIVE_APPEARANCE=dark AITVARAS_SELF_DRIVE_SIZE=800x500 scripts/run-self-drive.sh layout
 mv .build-e2e/self-drive/layout .build-e2e/self-drive/layout-dark-minimum
+AITVARAS_SELF_DRIVE_APPEARANCE=light AITVARAS_SELF_DRIVE_SIZE=1080x720 scripts/run-self-drive.sh layout
+mv .build-e2e/self-drive/layout .build-e2e/self-drive/layout-light-default
+AITVARAS_SELF_DRIVE_APPEARANCE=dark AITVARAS_SELF_DRIVE_SIZE=1080x720 scripts/run-self-drive.sh layout
+mv .build-e2e/self-drive/layout .build-e2e/self-drive/layout-dark-default
 ```
 
-Use fresh artifact destinations if repeating the matrix. Require every result
-to pass, then inspect all PNGs for clipped controls, sign-in contrast, text and
-background colors. Screenshot caching skips the native window background;
+Use fresh artifact destinations if repeating the matrix. Require all mandatory
+steps to pass and review optional skips, then inspect all PNGs for clipped
+controls, sign-in contrast, text and background colors. Screenshot caching skips the native window background;
 `SelfDriveSurface` fills it with `windowBackgroundColor` resolved under the
 content view's effective appearance on every capture. Keep that drawing step
 for both light and dark. These cached content images do not prove native
@@ -1111,8 +1118,13 @@ open, resize to the minimum width, and type while running or waiting for approva
 Stop must have a visible square, Sign in must have contrast, Allow must be prominent,
 and Send must appear beside Stop with input. The provider menu must replace the
 segments first, then project becomes an icon menu, then effort and mode become
-icon menus. The controls stay on one row, including at minimum width with Changes
-open and both Stop and Send visible. The project menu stays plain at every width;
+icon menus. Every collapsed menu keeps its chevron, including project, provider,
+model, effort and mode; mode remains reachable wherever supported. Provider shows
+the provider name and model shows the actual model name, including Local's assigned
+chat model or available Ollama fallback. Check the full model name in its tooltip
+and menu when the row truncates it. The controls stay on one row, including at
+minimum width with Changes open and both Stop and Send visible. The project menu
+stays plain at every width;
 its compact menu includes the new-chat worktree toggle. Changes must
 stay closed until requested, with file statuses and diff together at the top and
 Commit/Discard at the bottom. A new empty file reads “Empty file”; Commit remains
