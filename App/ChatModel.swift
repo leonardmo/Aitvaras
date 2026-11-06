@@ -4,6 +4,7 @@ import AppKit
 import AitvarasCore
 import AitvarasAgents
 import AitvarasStore
+import AitvarasEngines
 
 /// Selection and presentation only. Runs belong to the application manager.
 @MainActor @Observable
@@ -17,6 +18,61 @@ final class ChatModel {
     private let backends: [AgentProvider: any AgentBackend]
     private let signInCoordinator: ProviderSignIn
     private var selection = ChatSelectionState()
+    private(set) var newChatID = UUID()
+    var newProjectID: UUID? { didSet { if newProjectID != oldValue { useWorktree = false } } }
+    var useWorktree = false
+    private(set) var creatingChat = false
+    var didCreateChat: ((UUID) -> Void)?
+    var activityChanged: (() -> Void)?
+    private(set) var sidebarStates: [UUID: ChatState] = [:]
+    private(set) var unseenChats: Set<UUID> = []
+    private var sidebarTasks: [UUID: Task<Void, Never>] = [:]
+    private var visibleChats: [UUID: UUID] = [:]
+    private var localAvailable = true
+
+    func markChatOpened(_ id: UUID) {
+        try? stores.markChatSeen(id)
+        unseenChats.remove(id)
+    }
+    func showChat(_ id: UUID?, surface: UUID) {
+        visibleChats[surface] = id
+        if let id { markChatOpened(id) }
+    }
+    func sidebarStatus(_ id: UUID) -> ChatSidebarStatus {
+        ChatSidebarStatus(sidebarStates[id], unseen: unseenChats.contains(id))
+    }
+    var needsPerson: Bool { !approvalSuggestions.isEmpty }
+    func observeSidebar(_ chats: [WorkspaceChat]) {
+        for chat in chats where sidebarTasks[chat.id] == nil {
+            let id = chat.id
+            if (try? stores.chatHasUnseenCompletion(id)) == true { unseenChats.insert(id) }
+            sidebarTasks[id] = Task { [weak self, manager] in
+                do {
+                    for await value in try await manager.updates(chatID: id) {
+                        guard !Task.isCancelled, let self else { return }
+                        let previous = self.sidebarStates[id]
+                        self.sidebarStates[id] = value
+                        if self.visibleChats.values.contains(id) { try? self.stores.markChatSeen(id) }
+                        if (try? self.stores.chatHasUnseenCompletion(id)) == true { self.unseenChats.insert(id) }
+                        else { self.unseenChats.remove(id) }
+                        if let previous, previous.isRunning != value.isRunning || previous.outcome != value.outcome {
+                            self.activityChanged?()
+                        }
+                    }
+                } catch { /* A row keeps its saved history if observation fails. */ }
+            }
+        }
+    }
+    func prepareNew(projectID: UUID?) {
+        select(nil)
+        for provider in [AgentProvider.local, .claude, .codex] { composerSelections[newChatID, provider] = .init() }
+        newChatID = UUID(); newProjectID = projectID; useWorktree = false
+        selection.draft = ""
+        let saved = (try? stores.value(forKey: "agent.lastProvider")).flatMap(AgentProvider.init(rawValue:))
+        selection.select(nil, provider: ChatSettings.newProvider(lastUsed: saved, localAvailable: localAvailable, statuses: statuses))
+        error = nil; authProvider = nil
+        try? loadSettings()
+    }
     private var settings: [String: AgentChatSession] = [:]
     private var approvalSubscription: Task<Void, Never>?
     private var respondingRequests: Set<String> = []
@@ -99,15 +155,21 @@ final class ChatModel {
             selection.draft = newValue
         }
     }
+    var composerOwnerID: UUID { chatID ?? newChatID }
     var composerSelection: AgentComposerSelection {
-        get { chatID.map { composerSelections[$0, provider] } ?? .init() }
+        get { composerSelections[composerOwnerID, provider] }
         set {
-            guard let id = chatID else { return }
-            invalidatePending(); composerSelections[id, provider] = newValue
+            invalidatePending(); composerSelections[composerOwnerID, provider] = newValue
         }
     }
     var hasInput: Bool { !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !composerSelection.attachments.isEmpty }
-    var projectDirectory: URL? { settings[settingsKey].map { URL(fileURLWithPath: $0.cwd, isDirectory: true) } }
+    var projectDirectory: URL? {
+        if chatID == nil {
+            guard let newProjectID, let folder = try? stores.workspaceFolders(projectID: newProjectID).first else { return nil }
+            return URL(fileURLWithPath: folder.path, isDirectory: true)
+        }
+        return settings[settingsKey].map { URL(fileURLWithPath: $0.cwd, isDirectory: true) }
+    }
 
     func attach(_ url: URL, chatID: UUID, provider: AgentProvider) async {
         let access = url.startAccessingSecurityScopedResource()
@@ -131,10 +193,10 @@ final class ChatModel {
         var value = composerSelections[chatID, provider]
         try value.add(file)
         composerSelections[chatID, provider] = value
-        if self.chatID == chatID, self.provider == provider { invalidatePending(); error = nil }
+        if self.composerOwnerID == chatID, self.provider == provider { invalidatePending(); error = nil }
     }
     private func attachmentFailed(_ failure: Error, chatID: UUID, provider: AgentProvider) {
-        guard self.chatID == chatID, self.provider == provider, !(failure is CancellationError) else { return }
+        guard self.composerOwnerID == chatID, self.provider == provider, !(failure is CancellationError) else { return }
         switch failure as? AgentAttachmentError {
         case .tooLarge: error = "Attachments must total 512 KB or less."
         case .tooMany: error = "Attach up to 8 files."
@@ -159,7 +221,7 @@ final class ChatModel {
     }
     var isBusy: Bool { state?.isRunning == true || chatID.map { sending[$0] != nil || refreshingHistory.contains($0) } == true }
     var canSubmit: Bool {
-        guard let id = chatID else { return false }
+        guard let id = chatID else { return !terminating && !creatingChat && newProjectID != nil && signingIn == nil }
         return !terminating && !gitBusy && !refreshingHistory.contains(id) && !stopping.contains(id) && sending[id] == nil && !submittedText.contains(id) && signingIn == nil
             && (!isBusy || provider != .local)
     }
@@ -194,7 +256,7 @@ final class ChatModel {
             var value = session
             // The manager may have bound a native identity since the last Send.
             value.sessionID = try stores.agentSession(chatID: value.chatID, provider: value.provider)?.sessionID
-            try stores.saveAgentSession(value)
+            if chatID != nil { try stores.saveAgentSession(value) }
             settings[settingsKey] = value; invalidatePending()
         } catch { self.error = "Chat settings could not be saved." }
     }
@@ -206,11 +268,12 @@ final class ChatModel {
         // View changes cancel a browser flow and invalidate its automatic send.
         if loginToken != nil { cancelSignIn() }
         if let pending = try? stores.pendingSend(), pending.session.chatID != id { invalidatePending() }
-        state = nil; error = nil; authProvider = nil; changes = nil; canDiscardChanges = false
+        state = id.flatMap { sidebarStates[$0] }; error = nil; authProvider = nil; changes = nil; canDiscardChanges = false
         do {
-            let saved = try id.flatMap { try stores.value(forKey: "agent.provider.\($0.uuidString)") }
+            let saved = try stores.value(forKey: id.map { "agent.provider.\($0.uuidString)" } ?? "agent.lastProvider")
             selection.select(id, provider: saved.flatMap(AgentProvider.init(rawValue:)) ?? .local)
             try loadSettings()
+            if let id, state == nil { state = ChatState(chatID: id, entries: try stores.agentEntries(chatID: id)) }
             if let pending = try stores.pendingSend(), pending.session.chatID == id {
                 if selection.draft.isEmpty { selection.draft = pending.text }
                 if pending.session.provider == provider,
@@ -239,17 +302,26 @@ final class ChatModel {
     }
 
     func setProvider(_ value: AgentProvider) {
-        guard let id = chatID, !isBusy, value != provider else { return }
+        guard !isBusy, value != provider else { return }
+        let id = chatID
         do {
             try selection.select(id, provider: value) {
-                try stores.setValues(["agent.provider.\(id.uuidString)": value.rawValue])
+                var values = ["agent.lastProvider": value.rawValue]
+                if let id { values["agent.provider.\(id.uuidString)"] = value.rawValue }
+                try stores.setValues(values)
             }
             invalidatePending(); try loadSettings(); error = nil; authProvider = nil
         } catch { self.error = "Provider selection could not be saved." }
     }
 
     private func loadSettings() throws {
-        guard let id = chatID, let chat = try stores.workspaceChat(id: id) else { return }
+        guard let id = chatID, let chat = try stores.workspaceChat(id: id) else {
+            if settings[settingsKey] == nil {
+                settings[settingsKey] = AgentChatSession(chatID: newChatID, provider: provider, cwd: "/tmp",
+                                                       model: provider == .local ? "local" : "default")
+            }
+            return
+        }
         let folders = try stores.workspaceFolders(projectID: chat.projectID).map { URL(fileURLWithPath: $0.path) }
         let owned = try stores.agentWorktree(chatID: id)
         if try stores.requiresAgentWorktree(chatID: id), owned == nil { throw AgentGitError.creationFailed }
@@ -315,6 +387,16 @@ final class ChatModel {
                 providerLimits[provider] = try? await codex.rateLimits()
             }
         }
+        if backends[.local] is LocalBackend {
+            localAvailable = !MLXEngine.installedModels().isEmpty
+            if !localAvailable { localAvailable = await OllamaEngine().isAvailable(for: .chat) }
+        } else {
+            localAvailable = (try? await backends[.local]?.models().isEmpty) == false
+        }
+        if chatID == nil, (try? stores.value(forKey: "agent.lastProvider")) == nil {
+            let value = ChatSettings.newProvider(lastUsed: nil, localAvailable: localAvailable, statuses: statuses)
+            selection.select(nil, provider: value); try? loadSettings()
+        }
     }
     func loadModels() async {
         let provider = provider
@@ -361,7 +443,56 @@ final class ChatModel {
         return true
     }
 
+    func submitNewText(_ text: String) -> Bool {
+        guard chatID == nil, canSubmit else { return false }
+        let owner = newChatID
+        draft = text
+        Task { [weak self] in
+            guard let self, self.chatID == nil, self.newChatID == owner, self.draft == text else { return }
+            await self.send()
+        }
+        return true
+    }
+
     func send() async {
+        if chatID == nil {
+            guard canSubmit, hasInput, let projectID = newProjectID else { return }
+            creatingChat = true
+            defer { creatingChat = false }
+            let text = draft, chosenProvider = provider, chosenSettings = settings[settingsKey]
+            let composition = composerSelection
+            var createdChat: WorkspaceChat?
+            do {
+                guard let created = try stores.createChatOnFirstSend(projectID: projectID, text: text, hasAttachments: !composition.attachments.isEmpty, requiresWorktree: useWorktree) else { return }
+                createdChat = created
+                try stores.setValues(["agent.provider.\(created.id.uuidString)": chosenProvider.rawValue,
+                                      "agent.lastProvider": chosenProvider.rawValue])
+                if useWorktree {
+                    let folders = try stores.workspaceFolders(projectID: projectID).map { URL(fileURLWithPath: $0.path) }
+                    _ = try await gitActions.create(chatID: created.id, projectID: projectID, folders: folders,
+                        storage: AitvarasPaths.stateDirectory.appendingPathComponent("AgentWorktrees", isDirectory: true))
+                }
+                select(created.id)
+                if var session = settings[settingsKey], let chosenSettings {
+                    session.model = chosenSettings.model; session.effort = chosenSettings.effort; session.mode = chosenSettings.mode
+                    saveSettings(session)
+                }
+                selection.draft = text
+                composerSelections[created.id, chosenProvider] = composition
+                didCreateChat?(created.id)
+            } catch {
+                if let created = createdChat {
+                    // First Send owns this record even if git preparation failed.
+                    // Keep its failed ownership evidence and never use the checkout.
+                    select(created.id)
+                    selection.draft = text
+                    composerSelections[created.id, chosenProvider] = composition
+                    didCreateChat?(created.id)
+                }
+                self.error = useWorktree ? "Worktree could not be prepared. Use New Chat to retry." : "Chat could not be created. Try again."
+                return
+            }
+        }
         guard let id = chatID, canSubmit, var session = settings[settingsKey],
               hasInput else { return }
         if provider == .local, backends[provider] is CodexBackend, selectedModel == nil {
@@ -399,6 +530,7 @@ final class ChatModel {
             try await manager.configure(session)
             settings[key] = session
             guard !stoppedSends.contains(input.id) else { return }
+            try stores.setValues(["agent.lastProvider": provider.rawValue])
             // Starting the manager first guarantees auth failures have a journal.
             try await manager.send(chatID: id, provider: provider, input: input)
             if !handledFailures.contains(input.id) {
@@ -580,6 +712,7 @@ final class ChatModel {
         cancelSignIn(); stoppedSends.formUnion(sending.values)
         modelLoads.values.forEach { $0.task.cancel() }; modelLoads.removeAll()
         try await manager.shutdown()
+        sidebarTasks.values.forEach { $0.cancel() }; sidebarTasks.removeAll()
         for case let codex as CodexBackend in backends.values { try await codex.shutdown() }
     }
     func resumeAfterCancelledTermination() { terminating = false }

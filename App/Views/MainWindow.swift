@@ -99,6 +99,13 @@ struct MainWindow: View {
         .accessibilityLabel(item.title)
         .accessibilityIdentifier(item.icon)
         .accessibilityAddTraits(selected ? [.isSelected] : [])
+        .overlay(alignment: .topTrailing) {
+            if item == .chat, model.chatModel?.needsPerson == true {
+                Circle().fill(Color.accentColor).frame(width: 7, height: 7)
+                    .allowsHitTesting(false).accessibilityElement(children: .ignore)
+                    .accessibilityLabel("Chat needs you").accessibilityIdentifier("chat.needsYou")
+            }
+        }
         .background { layoutProbe("button-\(item.rawValue)") }
     }
 
@@ -266,7 +273,7 @@ struct SettingsWorkspaceView: View {
             if let chat = model.chatModel {
                 AgentProviderSettingsView(chat: chat).tabItem { Label("Providers", systemImage: "cpu") }.tag("providers").accessibilityIdentifier("settings.providers")
             }
-            OnboardingView().tabItem { Label("Setup", systemImage: "checklist") }.tag("setup")
+            OnboardingView(openProviders: { tab = "providers" }).tabItem { Label("Setup", systemImage: "checklist") }.tag("setup")
             ConnectorsView().tabItem { Label("Connections", systemImage: "point.3.connected.trianglepath.dotted") }.tag("connections")
             CommandRoutinesView(model: model).tabItem { Label("Routines", systemImage: "command") }.tag("routines")
             BackgroundReviewView().tabItem { Label("Automatic Work", systemImage: "clock") }.tag("background")

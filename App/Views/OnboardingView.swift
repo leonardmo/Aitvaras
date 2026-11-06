@@ -26,11 +26,15 @@ struct OnboardingView: View {
     @State private var localModelCount = MLXEngine.installedModels().count
     @State private var voiceVolume = Double(VoiceVolume.gain)
 
+    var openProviders: (() -> Void)?
+    @State private var showingProviders = false
+
     private let eventStore = EKEventStore()
     private static let dragonPreview = Bundle.main.url(forResource: "AitvarasDragonPreview", withExtension: "png")
         .flatMap { NSImage(contentsOf: $0) }
 
-    init(initialPage: SetupPage = .overview) {
+    init(initialPage: SetupPage = .overview, openProviders: (() -> Void)? = nil) {
+        self.openProviders = openProviders
         _selectedPage = State(initialValue: initialPage)
     }
 
@@ -69,6 +73,9 @@ struct OnboardingView: View {
         }
         .background(Color(nsColor: .windowBackgroundColor))
         .navigationTitle("Setup")
+        .sheet(isPresented: $showingProviders) {
+            if let chat = model.chatModel { AgentProviderSettingsView(chat: chat).frame(width: 560, height: 320) }
+        }
         .onChange(of: selectedAvatar) { AvatarLocator.style = selectedAvatar }
         .onChange(of: selectedPage) {
             if selectedPage == .overview {
@@ -113,6 +120,20 @@ struct OnboardingView: View {
                 .padding(16)
                 .background(Color.accentColor.opacity(0.07), in: RoundedRectangle(cornerRadius: 14))
 
+                Button {
+                    if let openProviders { openProviders() } else { showingProviders = true }
+                } label: {
+                    HStack(spacing: 12) {
+                        Image(systemName: "cpu").foregroundStyle(Color.accentColor)
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("AI providers").font(.headline)
+                            Text("Local, Claude and Codex").font(.caption).foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        Image(systemName: "chevron.right")
+                    }.padding(16).background(.quaternary, in: RoundedRectangle(cornerRadius: 12))
+                }
+                .buttonStyle(.plain).accessibilityIdentifier("settings.providers")
                 Text("Explore your settings").font(.headline)
                 LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
                     overviewCard(.capture, status: "Apple on-device · language, assets & summaries")

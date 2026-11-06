@@ -379,3 +379,44 @@ evidence. Local remains stateless: each Send starts a fresh ephemeral thread
 with completed chat context. The candidate advertises only its implemented
 capabilities; the host gate decides tool reliability, locality and memory
 before any default changes.
+
+## D32 — Chat opens the unified composer; every new chat has a project ✅ (2026-11-06)
+
+The Chat tab follows the Claude and Codex desktop apps. With no chat selected,
+or after New Chat, it shows an empty unified transcript and a ready composer.
+There is no creation dialog, Create/Cancel pair, project-less new chat or automatic
+catch-all workspace. First Send creates the record; abandoned drafts leave none.
+
+The composer's flat project menu (`chat.project`) preselects an explicitly requested
+project, then the optional default project, then the most recently used visible
+project. Its final item, “Add project…”, opens the folder picker. With no projects,
+it reads “Choose project”, Send is disabled and one short line explains why. Git
+projects offer a small worktree control beside the picker, off by default.
+
+Default project is a profile-local, initially unset choice, changed through a
+project row's “Set as default” / “Remove as default” context item and indicated by
+a small marker. Removing or hiding that project silently clears the choice.
+
+Projects and chats live together in the sidebar. A chat opens with one click,
+including across projects, retains a clear selection highlight and cannot be hidden
+by collapsing its project. Each project shows its five most recently active chats,
+plus every running or waiting chat; older chats are behind “Show more” / “Show less”.
+The selected chat also stays visible. A project's + opens its unsaved composer.
+Old conversations without projects remain readable in `LocalChatView`, exclusively
+through the bottom “Earlier chats” group, collapsed behind its own “Show more” and
+absent when empty. Existing voice and companion paths remain supported.
+
+One accessible icon per chat derives from the M3.12 state: animated running,
+accent-coloured and prominent needs-you (approval, plan or question), filled dot for
+completed but unseen, failed or interrupted. Idle/seen has no icon. A profile-local
+read receipt identifies the last completed turn seen; opening a chat clears its dot,
+and completion while visible is acknowledged immediately. The main Chat icon has
+an accent badge whenever any chat needs the person.
+
+New chats use the last provider chosen or sent with. A fresh profile starts on
+Local, except when no local model is available and an installed, signed-in provider
+exists. Signed-out providers remain selectable; Send retains the existing single
+sign-in action and safe retry. Setup includes a visible “AI providers” card
+(`settings.providers`) opening `AgentProviderSettingsView`. Section 4 of the unified
+chat plan still governs gauges, icons, flat menus and the absence of start buttons
+and checkboxes.

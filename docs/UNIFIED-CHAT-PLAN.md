@@ -2,7 +2,7 @@
 
 Goal: Aitvaras's Chat tab works like the Claude Code and Codex apps, with one
 click to switch between Claude, Codex and local models, and sign-in that is at
-most one click. Product intent comes from `docs/NEXT-WORKSPACE-PLAN.md`, D30 and
+most one click. Product intent comes from `docs/NEXT-WORKSPACE-PLAN.md`, D30, D32 and
 the maintainer's UI feedback. This document replaces the *technical* approach of
 `docs/CLAUDE-INTEGRATION.md` and `docs/CODEX-BIDIRECTIONAL-INTEGRATION.md`.
 
@@ -82,8 +82,9 @@ provider catch-up. Existing import controls retain access to saved-source detail
 Project conversation ownership and capture targets remain unchanged, including
 the guard against extracting project chats into global memory.
 
-**Projects.** A project is a set of folders with instructions and a default
-permission mode. A folder also used in Claude Code or Codex is the same project
+**Projects (D32).** Every new chat belongs to a project; there is no project-less
+chat or automatic catch-all workspace. A project is a set of folders with
+instructions and a default permission mode. A folder also used in Claude Code or Codex is the same project
 automatically, with no link step. Native sessions for that folder appear in the
 project's chat list and can be continued directly with `--resume` or
 `thread/resume`. claude.ai chats have no supported interface and stay out.
@@ -122,9 +123,36 @@ From the maintainer's feedback; a violation fails review.
 - Layout as in the Codex and Claude Code apps: sidebar with projects and chats
   (status dot per chat), transcript in the centre, changes panel on the right that
   appears only when there are changes.
+- Chat with no selection and New Chat open the empty unified transcript and ready
+  composer immediately. First Send creates the chat; there is no creation dialog.
+- The flat project menu (`chat.project`) sits beside the provider/model controls.
+  Selection order: explicitly requested project, optional default, most recently
+  used visible project. “Add project…” is the last item and opens the folder picker.
+  With no projects: “Choose project”, disabled Send, one short explanation.
+- Default project starts unset, is stored per profile and has one project context
+  item (“Set as default” / “Remove as default”) and a small row marker. Hiding or
+  removing it silently unsets it.
+- Projects stay expanded with chats directly underneath. One click opens any chat,
+  including in another project, without an intermediate selection or reload flash.
+  Selection remains highlighted and visible. Each project shows five recent chats
+  plus all running/waiting chats and the selected chat; “Show more” / “Show less”
+  (`chat.project.<id>.more`) reveals the rest. A project's + opens its new composer.
+- Old project-less conversations are only reached through the bottom “Earlier
+  chats” reader group, collapsed behind “Show more” and hidden when empty. Keep
+  `LocalChatView`, voice and the companion.
 - Composer holds everything per-chat: provider switcher (Claude, Codex, Local),
   model, effort, permission mode, gauges for context and usage.
-- Status is gauges and icons, not sentences. No walls of text.
+- Status is gauges and icons, not sentences. No walls of text. Sidebar icons reuse
+  M3.12: animated running, prominent accent needs-you, filled dot for completed/unseen,
+  failed, interrupted; idle/seen has none. Each has an accessibility label and
+  `chat.sidebar.<id>.status.<state>`. Opening a chat clears its persisted unseen
+  receipt; a turn completing while visible remains seen. The main Chat icon is
+  badged whenever any chat needs approval, a plan decision or a question answered.
+- New provider defaults to the last used. Fresh profiles choose Local unless no
+  local model is available and a signed-in provider exists. Signed-out providers
+  stay selectable; Send offers the existing single sign-in action.
+- Setup has a visible “AI providers” card (`settings.providers`) opening provider
+  settings.
 - At most one popover level. No sheet on top of a sheet.
 - No start or connect buttons. No "check setup". No consent checkboxes. Nothing
   like "conversation" as a concept separate from chat. No link, boundary-review or
@@ -145,8 +173,8 @@ several chats running in parallel and in the background; resume after restart;
 context and quota gauges; rename and archive.
 
 Chat lifecycle (M3.12): closing the window only detaches its observers; runs
-belong to the application. Sidebar dots distinguish running, needs-you, failed
-and interrupted chats. Rename and archive edit the shared chat's local metadata,
+belong to the application. Sidebar icons distinguish running, needs-you, completed/unseen, failed
+and interrupted chats, with durable last-seen tracking (D32). Rename and archive edit the shared chat's local metadata,
 preserving every provider session and transcript. Archive does not stop active
 work or expire approvals; Stop and replies remain available, and new messages
 require Restore. Running chats cannot expire automatically. Pending permission,
@@ -160,8 +188,8 @@ icon occupies the composer's existing status space; an archived chat offers
 Restore there. Native rename/archive propagation is outside this shared-chat
 metadata operation.
 
-Git (M3.9–M3.11): new-chat creation offers a small **Use worktree** toggle only
-for a git project, off by default. Ownership, primary cwd and additional folder
+Git (M3.9–M3.11): the unsaved composer's project picker has a small **Use
+worktree** button control beside it only for a git project, off by default. Ownership, primary cwd and additional folder
 mappings survive restart; failed creation blocks Send instead of using the original
 checkout. The right inspector appears for changed files and shows a file list,
 unified diff, commit message and Commit. The entered message goes directly to git,
@@ -247,9 +275,14 @@ discussion, usage ledger, supervisor continuation inside the app, phone dashboar
 
 Disposable project, isolated app profile, real CLIs.
 
-1. Launch the app; Chat opens with no setup step or dialog.
-2. Create a project on a temp git repo; new chat; send on Claude; reply streams.
-3. Switch to Codex with one click; send; it knows the earlier conversation.
+1. Launch the app; Chat opens the unified composer with no setup step or dialog.
+   Without projects, verify “Choose project”, disabled Send and the short hint.
+2. Add a project on a temp git repo; New Chat writes no record until Send. Send
+   “Reply with only this word spelled backwards: nacilep” on Claude; verify
+   “pelican” in `chat.transcript`, never in the whole window.
+3. Switch to Codex with one click; send “Which word did you just reply with? Reply
+   with only that word, in capitals.” Verify case-sensitive “PELICAN” inside
+   `chat.transcript`.
 4. Switch to Local; send; reply.
 5. With a signed-out temp profile: Send shows one sign-in button; the browser URL
    is correct; after sign-in the message goes out by itself.
@@ -258,12 +291,34 @@ Disposable project, isolated app profile, real CLIs.
 7. Ask for a shell command: card, approve, output in the transcript.
 8. Plan mode: plan card, approve, it executes.
 9. Stop mid-stream: stops within 2 s; the next message continues.
-10. Two chats running at once; switching between them loses nothing.
+10. Two chats running at once; one click switches between them without losing
+    text, including across projects. Send six chats through the composer to expose
+    Show more. Expand/collapse it; running/waiting and selected chats remain visible.
+    While approval is pending, verify its sidebar needs-you icon and Chat badge.
 11. Quit during a turn; relaunch; chat is marked interrupted; next Send resumes the
     same native session.
 12. Open that chat in the native CLI; it is there and continues; back in Aitvaras
     the new messages appear.
-13. Activity log shows the chain with provenance. No API key was used.
+13. Activity log shows the chain with provenance. No API key was used. Open Setup's
+    AI providers card before the final settings screenshot.
+
+The debug-only in-process self-driver accepts `AITVARAS_SELF_DRIVE_PROJECT` as an
+existing disposable folder. After isolated bootstrap it registers that project
+before running the scenario; it seeds no chats or approval states. The scenario
+creates its six chats through real Send. `$project` resolves to that project ID;
+`$chat1`, `$chat2`, etc. refer to chat IDs observed in selection order during the
+scenario, allowing assertions against real sidebar rows without fixed UUIDs.
+`waitFor.within` bounds traversal to the named accessibility subtree and
+`caseSensitive` defaults to false. Missing subtrees cannot satisfy positive checks.
+
+Native menu tracking is outside the in-process driver's reliable press surface
+(`picker-probe.json` tests that boundary separately from the golden path):
+project/model/mode/effort menus fail explicitly and require XCUITest for opening
+and selection. Keep tree dumps of both `chat.provider` and `chat.project`; the host
+must verify whether segmented provider items expose their identifiers and accept
+presses. If they do not, the smallest honest alternative is an XCUITest click on
+the actual segment/menu item, followed by the same transcript assertion. Never
+replace an unsuccessful press with a direct model mutation.
 
 ## 9. Running Codex
 

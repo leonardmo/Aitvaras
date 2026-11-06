@@ -51,8 +51,11 @@ struct AgentTranscriptView: View {
                 }
             } else {
                 ChatMarkdown(text: entry.text).frame(maxWidth: .infinity, alignment: .leading)
+                    .accessibilityElement(children: .combine)
+                    .accessibilityLabel(entry.text)
             }
         }
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier(entry.kind == "importedHistory" ? "chat.importedHistory.\(entry.id)"
             : entry.kind == "handover" ? "chat.handover.\(entry.id)" : "chat.entry.\(entry.id)")
     }

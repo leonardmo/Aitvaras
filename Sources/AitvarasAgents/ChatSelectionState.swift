@@ -6,10 +6,11 @@ public struct ChatSelectionState: Sendable {
     public private(set) var chatID: UUID?
     public private(set) var provider: AgentProvider = .local
     private var drafts: [UUID: String] = [:]
+    private var newDraft = ""
     public init() {}
     public var draft: String {
-        get { chatID.flatMap { drafts[$0] } ?? "" }
-        set { if let chatID { drafts[chatID] = newValue } }
+        get { if let chatID { drafts[chatID] ?? "" } else { newDraft } }
+        set { if let chatID { drafts[chatID] = newValue } else { newDraft = newValue } }
     }
     public mutating func select(_ chatID: UUID?, provider: AgentProvider) {
         self.chatID = chatID; self.provider = provider

@@ -58,6 +58,17 @@ import AitvarasStore
         #expect(try stores.agentEntries(chatID: chat.id) == [entry])
     }
 
+    @Test func newProviderUsesLastChoiceThenLocalThenSignedIn() {
+        let statuses: [AgentProvider: AgentStatus] = [
+            .claude: .init(installed: true, authentication: .signedOut, capabilities: []),
+            .codex: .init(installed: true, authentication: .subscription, capabilities: [])
+        ]
+        #expect(ChatSettings.newProvider(lastUsed: nil, localAvailable: true, statuses: statuses) == .local)
+        #expect(ChatSettings.newProvider(lastUsed: nil, localAvailable: false, statuses: statuses) == .codex)
+        #expect(ChatSettings.newProvider(lastUsed: .claude, localAvailable: false, statuses: statuses) == .claude)
+        #expect(ChatSettings.newProvider(lastUsed: nil, localAvailable: false, statuses: [:]) == .local)
+    }
+
     @Test func sidebarPrioritizesRequestsThenRunningThenFailure() {
         var state = ChatState(chatID: UUID())
         #expect(ChatSidebarStatus(state) == .idle)

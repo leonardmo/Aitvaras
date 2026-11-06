@@ -53,10 +53,38 @@ import AitvarasCore
             window.contentView = NSHostingView(rootView: MainWindow().environment(AppModel.shared))
             window.orderFront(nil) // Never makeKey, activate or orderFrontRegardless.
             await AppModel.shared.bootstrapIfNeeded()
+            if let folder = env["AITVARAS_SELF_DRIVE_PROJECT"] {
+                var isDirectory: ObjCBool = false
+                guard folder.hasPrefix("/"), FileManager.default.fileExists(atPath: folder, isDirectory: &isDirectory), isDirectory.boolValue,
+                      AppModel.shared.createWorkspaceProject(title: "Self-drive project", instructions: "",
+                          folderURLs: [URL(fileURLWithPath: folder, isDirectory: true)]) else {
+                    throw SelfDriveFailure("Self-drive project folder is unavailable")
+                }
+                AppModel.shared.startNewAgentChat(projectID: AppModel.shared.selectedWorkspaceProjectID)
+            }
+            let projectID = AppModel.shared.chatModel?.newProjectID
+            var chats: [UUID] = []
+            func resolve(_ identifier: String?) throws -> String? {
+                guard var identifier else { return nil }
+                if identifier.contains("$project") {
+                    guard let projectID else { throw SelfDriveFailure("No self-drive project") }
+                    identifier = identifier.replacingOccurrences(of: "$project", with: projectID.uuidString)
+                }
+                for number in (1...20).reversed() where identifier.contains("$chat\(number)") {
+                    guard chats.count >= number else { throw SelfDriveFailure("Chat reference has not been created by the scenario") }
+                    identifier = identifier.replacingOccurrences(of: "$chat\(number)", with: chats[number - 1].uuidString)
+                }
+                return identifier
+            }
             let surface = SelfDriveSurface(window: window)
             let results = try await SelfDriveRecorder.run(scenario, perform: { step in
                 if let delay = step.delay { try await Task.sleep(for: .seconds(delay)) }
-                return try await surface.perform(step, directory: directory)
+                var resolved = step
+                resolved.identifier = try resolve(step.identifier)
+                resolved.within = try resolve(step.within)
+                let result = try await surface.perform(resolved, directory: directory)
+                if let id = AppModel.shared.selectedWorkspaceChatID, !chats.contains(id) { chats.append(id) }
+                return result
             }, checkpoint: save)
             finish()
             // Normal delegate shutdown remains responsible for provider cleanup.
