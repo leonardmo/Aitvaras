@@ -18,6 +18,9 @@ struct AitvarasApp: App {
                 .task {
                     // Diagnostic modes own their lifecycle and must not race a
                     // second, normal bootstrap against the same temporary DB.
+                    #if DEBUG
+                    guard !SelfDriver.requested else { return }
+                    #endif
                     guard !SelfTest.requested,
                           AvatarShot.requestedPath == nil,
                           AvatarShot.liveshotPath == nil,
@@ -32,7 +35,11 @@ struct AitvarasApp: App {
                 }
         }
         .defaultSize(width: 1080, height: 720)
+        #if DEBUG
+        .defaultLaunchBehavior(SelfDriver.requested ? .suppressed : .presented)
+        #else
         .defaultLaunchBehavior(.presented)
+        #endif
         .commands {
             CommandGroup(after: .appVisibility) {
                 Button("Toggle Companion") {
@@ -67,7 +74,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var wakeBriefingPending = false
     private var terminationPending = false
 
+    func applicationWillFinishLaunching(_ notification: Notification) {
+        #if DEBUG
+        if SelfDriver.requested { SelfDriver.prepareLaunch() }
+        #endif
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
+        #if DEBUG
+        if SelfDriver.requested {
+            Task { await SelfDriver.run() }
+            return
+        }
+        #endif
         // Set the running app's Dock icon from the bundled artwork as well as
         // its Info.plist, avoiding a stale generic icon after local updates.
         if let iconURL = Bundle.main.url(forResource: "AppIcon", withExtension: "icns"),
