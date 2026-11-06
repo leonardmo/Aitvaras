@@ -5,7 +5,7 @@ extension AppModel {
     /// Avoid running a memory-heavy recognizer beside another local AI job.
     /// New chat/voice/capture and automatic entry points also check the reservation.
     var canStartCaptureRefinement: Bool {
-        guard !captureRefinement.isProcessing, !isResponding, !microphoneInUseByVoice,
+        guard !captureRefinement.isProcessing, !isResponding, !localAgentReplyActive, !microphoneInUseByVoice,
               !captureActive, modelDownloads.activeModelID == nil else { return false }
         let competing: Set<ActivityCategory> = [.chat, .voice, .capture, .memory, .automation, .cloud, .knowledge, .model]
         return !currentActivityRuns.contains { [.running, .cancellationRequested].contains($0.state) && competing.contains($0.category) }

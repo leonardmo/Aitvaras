@@ -233,7 +233,8 @@ private actor FixedRoutineEngine: InferenceEngine {
         #expect(weekdayRoutine.statusValue == .suggested)
     }
 
-    @Test func executorUsesExactShortcutWithoutAnEngineAndKeepsProvenance() async throws {
+    @Test(arguments: [CommandObservation.Channel.typed, .voice])
+    func executorUsesExactShortcutWithoutAnEngineAndKeepsProvenance(channel: CommandObservation.Channel) async throws {
         let stores = try inMemoryStores()
         let connector = RoutineSwitchConnector()
         let hub = ConnectorHub(stores: stores)
@@ -246,9 +247,9 @@ private actor FixedRoutineEngine: InferenceEngine {
         let executor = CommandRoutineExecutor(hub: hub, stores: stores)
 
         #expect(await executor.executeShortcut(
-            matching: "different words", channel: .voice) == nil)
+            matching: "different words", channel: channel) == nil)
         let result = try #require(await executor.executeShortcut(
-            matching: "STOP—LICHT AUS!", channel: .voice))
+            matching: "STOP—LICHT AUS!", channel: channel))
         #expect(result.success)
         #expect(result.spokenText.contains("Shortcut used"))
         #expect(await connector.count() == 1)

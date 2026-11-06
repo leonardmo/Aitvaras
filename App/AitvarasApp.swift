@@ -226,9 +226,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 // Journal interruption and detach chat generations before
                 // waiting for unrelated installers or legacy operations.
                 try await AppModel.shared.shutdownAgentChats()
-                await AppModel.shared.codexWorkspace.stopBeforeTermination()
-                await AppModel.shared.claudeWorkspace.stopBeforeTermination()
-                await AppModel.shared.codexNativeWorkspace.stopBeforeTermination()
                 await AppModel.shared.nativeWorkspace.operations.stopBeforeTermination()
                 await AppModel.shared.shutdownMonitoring()
                 await AppModel.shared.captureRefinement.stopBeforeTermination()
@@ -243,9 +240,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 terminationPending = false
                 AppModel.shared.chatModel?.resumeAfterCancelledTermination()
                 AppModel.shared.nativeWorkspace.operations.resumeAfterCancelledTermination()
-                AppModel.shared.codexWorkspace.resumeAfterCancelledTermination()
-                AppModel.shared.claudeWorkspace.resumeAfterCancelledTermination()
-                AppModel.shared.codexNativeWorkspace.resumeAfterCancelledTermination()
                 CaptureWindows.shared.showSaveError(error)
                 sender.reply(toApplicationShouldTerminate: false)
             }

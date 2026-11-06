@@ -55,7 +55,6 @@ extension AppModel {
         captureRefinement.reporter = activityReporter
         neuralVoiceInstaller.reporter = activityReporter
         nativeWorkspace.reporter = activityReporter
-        codexWorkspace.reporter = activityReporter
         guard monitoringObserver == nil else { return }
         monitoringObserver = NotificationCenter.default.addObserver(
             forName: .aitvarasMonitoringChanged, object: nil, queue: .main
@@ -275,7 +274,12 @@ extension AppModel {
         if run.id == nativeWorkspace.activeRunID { return true }
         if run.category == .capture, captureRefinement.isProcessing,
            run.referenceID == captureRefinement.activeArchiveID?.uuidString { return true }
-        if run.category == .chat { return run.parentID == nil && isResponding }
+        if run.category == .chat {
+            if let turn = try? stores?.agentTurn(id: run.id) {
+                return turn.state == .running && run.referenceID == turn.chatID.uuidString
+            }
+            return run.parentID == nil && isResponding && run.referenceID == localChatActivityReference
+        }
         if run.id == voiceActivityID { return true }
         if run.category == .capture { return capture?.isActive == true }
         if run.category == .knowledge { return integrations?.isIndexing == true }
@@ -294,7 +298,13 @@ extension AppModel {
         }
         activityReporter?.update(id: id, stage: "Stop requested; waiting for acknowledgement", state: .cancellationRequested)
         switch run.category {
-        case .chat: cancelTurn()
+        case .chat:
+            if (try? stores?.agentTurn(id: id)) != nil, let manager = agentSessionManager {
+                Task {
+                    do { try await manager.stop(activityRunID: id) }
+                    catch { monitoringError = "The response could not be stopped. Try Stop in its chat." }
+                }
+            } else { cancelTurn() }
         case .voice: if voiceEnabled { toggleVoice() }
         case .capture:
             if captureRefinement.isProcessing, run.referenceID == captureRefinement.activeArchiveID?.uuidString {

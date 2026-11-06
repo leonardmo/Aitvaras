@@ -1,9 +1,68 @@
 import Foundation
 import Testing
 import AitvarasAgents
+import AitvarasCore
 @testable import AitvarasStore
 
 @Suite struct AgentTurnStoreTests {
+    @Test func activityIdentityCollisionCannotOverwriteAnotherOperation() throws {
+        let stores = try inMemoryStores()
+        let (chat, session) = try agentStoreChat(stores)
+        let input = AgentInput(text: "must not leave")
+        let existing = ActivityRun(id: input.id, category: .capture, title: "Existing capture",
+            startedAt: Date(timeIntervalSince1970: 1_000))
+        ActivityReporter(stores: stores).begin(existing)
+        #expect(throws: AgentStoreError.identityConflict) {
+            try stores.prepareAgentTurn(.init(input: input, chatID: chat.id, sessionID: session.id))
+        }
+        #expect(try stores.agentTurn(id: input.id) == nil)
+        #expect(try stores.activityRun(id: input.id) == existing)
+    }
+
+    @Test func activityWriteFailureRollsBackPreparedInputAndCompletion() throws {
+        let stores = try inMemoryStores()
+        let (chat, session) = try agentStoreChat(stores)
+        let input = AgentInput(text: "PROMPT_CANARY")
+        try stores.db.queue.write { db in
+            try db.execute(sql: "CREATE TRIGGER testActivityInsert BEFORE INSERT ON activityRun BEGIN SELECT RAISE(ABORT, 'fixture failure'); END")
+        }
+        #expect(throws: (any Error).self) {
+            try stores.prepareAgentTurn(.init(input: input, chatID: chat.id, sessionID: session.id))
+        }
+        #expect(try stores.agentTurn(id: input.id) == nil)
+        try stores.db.queue.write { try $0.execute(sql: "DROP TRIGGER testActivityInsert") }
+        try stores.prepareAgentTurn(.init(input: input, chatID: chat.id, sessionID: session.id))
+        try stores.saveAgentPartial(id: input.id, text: "OUTPUT_CANARY")
+        try stores.db.queue.write { db in
+            try db.execute(sql: "CREATE TRIGGER testActivityUpdate BEFORE UPDATE ON activityRun BEGIN SELECT RAISE(ABORT, 'fixture failure'); END")
+        }
+        #expect(throws: (any Error).self) { try stores.finishAgentTurn(id: input.id, state: .completed) }
+        #expect(try stores.agentTurn(id: input.id)?.state == .running)
+        #expect(try stores.activityRun(id: input.id)?.state == .running)
+        try stores.db.queue.write { try $0.execute(sql: "DROP TRIGGER testActivityUpdate") }
+        try stores.finishAgentTurn(id: input.id, state: .completed)
+        let run = try #require(try stores.activityRun(id: input.id))
+        #expect(run.state == .succeeded)
+        let metadata = String(decoding: try JSONEncoder().encode(run), as: UTF8.self)
+        #expect(!metadata.contains("PROMPT_CANARY") && !metadata.contains("OUTPUT_CANARY"))
+        #expect(try stores.activityRunSteps(runID: input.id).map(\.state) == [.running, .succeeded])
+    }
+
+    @Test func activityRecoveryAndExplicitResendKeepOneIdentity() throws {
+        let stores = try inMemoryStores()
+        let (chat, session) = try agentStoreChat(stores)
+        let input = AgentInput(text: "undelivered")
+        try stores.prepareAgentTurn(.init(input: input, chatID: chat.id, sessionID: session.id))
+        try stores.recoverAgentTurns()
+        #expect(try stores.activityRun(id: input.id)?.state == .interrupted)
+        _ = try stores.claimAgentResend(id: input.id)
+        #expect(try stores.activityRun(id: input.id)?.state == .running)
+        #expect(try stores.activityRun(id: input.id)?.finishedAt == nil)
+        try stores.finishAgentTurn(id: input.id, state: .failed)
+        #expect(try stores.activityRuns().map(\.id) == [input.id])
+        #expect(try stores.activityRunSteps(runID: input.id).map(\.state) == [.running, .interrupted, .running, .failed])
+    }
+
     @Test func followupsRetainRootExclusivityAndRequireMatchingActiveParent() throws {
         let stores = try inMemoryStores()
         let (chat, session) = try agentStoreChat(stores)

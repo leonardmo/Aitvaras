@@ -99,6 +99,22 @@ Package.swift              — AitvarasKit: everything testable without the app
   tables, triggers and readers remain intact. Unassigned chat, voice, shortcuts,
   capture and memory archiving retain their existing paths; legacy project
   transcript migration remains separate work.
+  The companion's project-chat panel shares `AgentChatView`, `ChatModel` and
+  its retained drafts with the main window. Durable workspace selection drives
+  the companion even when the main window is closed; only that selected chat
+  drives its thinking animation. Unassigned local text uses `LocalChatView` and
+  shared message rows; voice and exact shortcuts keep their local paths.
+  Navigation, Activity Stop and quit no longer consult legacy provider owners.
+  Each managed input creates an Activity row atomically with its journal, and
+  provider audits reference that durable input. Activity Stop validates the
+  input against its live owner before stopping the chat, so a stale click cannot
+  stop a later turn. Local AgentLoop work appears beneath its managed input.
+  Chat Details reads linked captures directly from their immutable store targets;
+  opening a target changes selection without sending or attaching the capture.
+  Project membership still blocks global archiving, including its final
+  transaction check; normalized provider entries do not enter global learning.
+  Nightly consolidation also excludes project git and current/legacy provider
+  action audits while retaining them in Activity.
 - **CloudAgentService** is the single provider-neutral boundary for optional
   Claude Code and Codex CLI use. Authentication is checked before each call;
   prompts travel over stdin in a sanitized environment and always begin with

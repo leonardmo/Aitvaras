@@ -1,5 +1,6 @@
 import Foundation
 import GRDB
+import AitvarasCore
 import AitvarasAgents
 
 extension AgentJournalTurn: FetchableRecord, PersistableRecord {
@@ -21,19 +22,23 @@ public struct AgentTurnStore: Sendable {
               turn.partialOutput.isEmpty else { throw AgentFailure.invalidTransition }
         try db.queue.write { dbc in
             try turn.insert(dbc)
+            try Self.monitor(turn, in: dbc)
             if let context { try AgentHandoverRecord(context: context, turnID: turn.id).insert(dbc) }
             try Self.touchChat(turn.chatID, at: turn.startedAt, in: dbc)
         }
+        Self.notifyMonitoring()
     }
-    private func change(_ id: UUID, _ body: (inout AgentJournalTurn) throws -> Void) throws {
+    private func change(_ id: UUID, monitoring: Bool = false, _ body: (inout AgentJournalTurn) throws -> Void) throws {
         try db.queue.write { dbc in
             guard var turn = try AgentJournalTurn.fetchOne(dbc, key: id) else { throw AgentStoreError.missingTurn }
             try body(&turn)
             try turn.update(dbc)
+            if monitoring { try Self.monitor(turn, in: dbc) }
         }
+        if monitoring { Self.notifyMonitoring() }
     }
     public func advanceDelivery(id: UUID, to state: AgentDeliveryState) throws {
-        try change(id) { turn in
+        try change(id, monitoring: true) { turn in
             guard turn.state == .running else { throw AgentFailure.invalidTransition }
             turn.delivery = try turn.delivery.advancing(to: state)
         }
@@ -53,8 +58,48 @@ public struct AgentTurnStore: Sendable {
             turn.state = state; turn.endedAt = endedAt
             try turn.update(dbc)
             try Self.touchChat(turn.chatID, at: endedAt, in: dbc)
+            try Self.monitor(turn, in: dbc)
         }
+        Self.notifyMonitoring()
     }
+    /// The journal and its Activity identity commit together before delivery.
+    /// Metadata only: no prompt, output, path or native account/session identity.
+    private static func monitor(_ turn: AgentJournalTurn, in dbc: Database, retry: Bool = false) throws {
+        guard let session = try AgentChatSession.fetchOne(dbc, key: turn.sessionID) else { throw AgentStoreError.missingSession }
+        let state: ActivityRunState
+        let stage: String
+        switch turn.state {
+        case .completed: state = .succeeded; stage = "Response completed"
+        case .failed: state = .failed; stage = "Response failed"
+        case .interrupted: state = .interrupted; stage = "Response interrupted"
+        case .running:
+            state = turn.parentInputID != nil && turn.delivery != .acknowledged ? .queued : .running
+            stage = retry ? "Retrying undelivered input" : state == .queued ? "Follow-up queued" : "Responding"
+        }
+        let previous = try ActivityRun.fetchOne(dbc, key: turn.id)
+        if let previous {
+            guard previous.category == .chat, previous.referenceID == turn.chatID.uuidString,
+                  previous.provider == session.provider.rawValue, previous.parentID == turn.parentInputID else {
+                throw AgentStoreError.identityConflict
+            }
+        }
+        var run = previous ?? ActivityRun(
+            id: turn.id, parentID: turn.parentInputID, referenceID: turn.chatID.uuidString, category: .chat,
+            title: "Chat response", startedAt: turn.startedAt, provider: session.provider.rawValue,
+            executionLocation: session.provider == .local ? "This Mac" : "Official CLI",
+            dataAccess: "Selected project and this chat", dataDestination: session.provider == .local ? "This Mac" : "Selected provider")
+        run.state = state; run.stage = stage; run.updatedAt = turn.endedAt ?? .now
+        run.finishedAt = state.isTerminal ? run.updatedAt : nil
+        run.outcome = state.isTerminal ? stage : nil
+        if retry { run.acknowledgedAt = nil }
+        guard previous?.state != state || previous?.stage != stage else { return }
+        try run.save(dbc)
+        try ActivityRunStep(runID: run.id, timestamp: run.updatedAt, stage: stage, state: state).insert(dbc)
+    }
+    private static func notifyMonitoring() {
+        NotificationCenter.default.post(name: .aitvarasMonitoringChanged, object: nil)
+    }
+
     private static func touchChat(_ id: UUID, at date: Date, in dbc: Database) throws {
         guard var chat = try WorkspaceChat.fetchOne(dbc, key: id) else { throw AgentStoreError.missingChat }
         chat.lastActivityAt = max(chat.lastActivityAt, date)
@@ -62,7 +107,7 @@ public struct AgentTurnStore: Sendable {
     }
     /// Explicit retry only; recovery itself never sends or claims a retry.
     public func claimResend(id: UUID) throws -> AgentJournalTurn {
-        try db.queue.write { dbc in
+        let result = try db.queue.write { dbc in
             guard var turn = try AgentJournalTurn.fetchOne(dbc, key: id) else { throw AgentStoreError.missingTurn }
             guard try AgentJournalTurn.filter(Column("chatID") == turn.chatID && Column("state") == "running")
                 .fetchCount(dbc) == 0, turn.delivery.canAutomaticallyResend, turn.resendCount == 0, turn.state != .running else {
@@ -70,16 +115,21 @@ public struct AgentTurnStore: Sendable {
             }
             turn.resendCount = 1; turn.state = .running; turn.endedAt = nil
             try turn.update(dbc)
+            try Self.monitor(turn, in: dbc, retry: true)
             return turn
         }
+        Self.notifyMonitoring()
+        return result
     }
     public func recover() throws {
         try db.queue.write { dbc in
             for var turn in try AgentJournalTurn.filter(Column("state") == AgentJournalState.running.rawValue).fetchAll(dbc) {
                 turn.state = .interrupted; turn.endedAt = .now
                 try turn.update(dbc)
+                try Self.monitor(turn, in: dbc)
             }
         }
+        Self.notifyMonitoring()
     }
 }
 

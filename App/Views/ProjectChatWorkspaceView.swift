@@ -207,6 +207,7 @@ private struct SidebarChatRow: View {
 struct ChatDetailView: View {
     @Environment(AppModel.self) private var model
     @State private var importedHistory: WorkspaceSessionLink?
+    @State private var showingDetails = false
     @State private var creatingChat: WorkspaceProject?
 
     private var nativeLinks: [WorkspaceSessionLink] {
@@ -220,6 +221,8 @@ struct ChatDetailView: View {
                           workspaceError: model.workspaceMessage.map { _ in "Chat changes could not be saved." })
                 .navigationTitle(model.selectedWorkspaceChat?.title ?? "Chat")
                 .toolbar {
+                    Button("Chat details", systemImage: "info.circle") { showingDetails = true }
+                        .accessibilityIdentifier("chat.details")
                     Button("New Chat", systemImage: "square.and.pencil") {
                         creatingChat = model.workspaceProjects.first { $0.id == model.selectedWorkspaceChat?.projectID }
                     }
@@ -234,6 +237,9 @@ struct ChatDetailView: View {
                         }.accessibilityIdentifier("chat.imports")
                     }
                 }
+                .sheet(isPresented: $showingDetails) {
+                    WorkspaceInspectorView(chatID: chatID, provider: chatModel.provider)
+                }
                 .sheet(item: $importedHistory) { link in
                     VStack {
                         Button("Done") { importedHistory = nil }
@@ -244,7 +250,7 @@ struct ChatDetailView: View {
         } else if model.selectedWorkspaceChatID != nil {
             ProgressView().accessibilityLabel("Loading chat")
         } else {
-            ChatView(backend: .local).onAppear { model.chatModel?.select(nil) }
+            LocalChatView()
         }
     }
 

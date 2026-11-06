@@ -239,7 +239,13 @@ public actor AgentSessionManager {
                     await Self.close(raw, timeout: .seconds(2)); throw AgentSessionManagerError.staleRun
                 }
                 coordinator = AgentActionCoordinator(run: raw, mode: session.mode,
-                    provenance: .init(chatID: chatID), audit: audit)
+                    provenance: .init(chatID: chatID), audit: { [audit] event in
+                        var value = event
+                        // Coordinator IDs identify a transport that can serve many
+                        // turns. Activity is owned by the durable input instead.
+                        value.runID = event.detailJSON.flatMap(JSONValue.parse)?["inputID"]?.stringValue.flatMap(UUID.init(uuidString:)) ?? input.id
+                        try await audit(value)
+                    })
                 live[chatID]?.coordinator = coordinator
                 live[chatID]?.reader = Task { [weak self] in
                     do {
@@ -408,6 +414,17 @@ public actor AgentSessionManager {
         live.removeValue(forKey: chat); slot.reader?.cancel()
         if let run = slot.coordinator { await Self.close(run, timeout: .seconds(2)) }
     }
+    /// Reject stale Activity clicks before entering the chat-scoped Stop path.
+    /// A queued input stops its owning run, including the other queued inputs.
+    @discardableResult
+    public func stop(activityRunID: UUID) async throws -> Bool {
+        guard let turn = try persistence.agentTurn(id: activityRunID), turn.state == .running,
+              let slot = live[turn.chatID], slot.session.id == turn.sessionID,
+              slot.inputID == turn.id || slot.followups.contains(where: { $0.id == turn.id }) else { return false }
+        try await stop(chatID: turn.chatID)
+        return true
+    }
+
     public func stop(chatID: UUID) async throws {
         if refreshing.contains(chatID) {
             historyTokens.removeValue(forKey: chatID)

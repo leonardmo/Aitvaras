@@ -11,6 +11,7 @@ struct AgentChatView: View {
     let chatID: UUID
     var canSend = true
     var workspaceError: String? = nil
+    var compact = false
 
     @State private var atBottom = true
     @State private var bottomVisible = true
@@ -24,17 +25,22 @@ struct AgentChatView: View {
     var body: some View {
         HSplitView {
             transcript.frame(minWidth: 330)
-            if let changes = chat.changes, changes.hasChanges {
+            if !compact, let changes = chat.changes, changes.hasChanges {
                 AgentChangesView(chat: chat, owner: chatID, changes: changes).id(chatID)
             }
         }
         .task(id: chatID) {
+            guard model.selectedWorkspaceChatID == chatID else { return }
             chat.select(chatID)
             await chat.refreshNativePreview()
-            while !Task.isCancelled {
+            while !compact, !Task.isCancelled {
                 await chat.refreshChanges()
                 do { try await Task.sleep(for: .seconds(2)) } catch { return }
             }
+        }
+        .onAppear { if compact { composerFocused = true } }
+        .onChange(of: model.companionFocusRequest) {
+            if compact { composerFocused = true }
         }
         .onChange(of: scenePhase) { _, phase in
             if phase == .active { Task { await chat.refreshNativePreview() } }

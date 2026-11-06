@@ -3,6 +3,7 @@ import SwiftUI
 import AitvarasCore
 import AitvarasStore
 import AitvarasAgent
+import AitvarasAgents
 
 /// Manual, event-driven inspection. Nothing here reads project files, calls a
 /// provider, or attaches saved evidence to a model prompt.
@@ -10,12 +11,10 @@ struct WorkspaceInspectorView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
     let chatID: UUID
-    var backend: WorkspaceChatBackend = .local
-    var directAgentChat = false
+    var provider: AgentProvider = .local
     @State private var packet: WorkspaceContextPacket?
     @State private var captures: [CaptureRecord] = []
     @State private var error: String?
-    @State private var fileReadEnabled = false
     @State private var tab = "context"
 
     var body: some View {
@@ -34,13 +33,9 @@ struct WorkspaceInspectorView: View {
             Form {
                 if tab == "context", let packet {
                     Section {
-                        LabeledContent("Provider", value: backend.title)
-                        LabeledContent("Destination", value: backend == .local ? "This Mac" : backend == .codex ? "OpenAI, when you send" : directAgentChat ? "Anthropic, when you send" : "Not available yet")
+                        LabeledContent("Provider", value: provider.rawValue.capitalized)
+                        LabeledContent("Destination", value: provider == .local ? "This Mac" : "Selected provider, when you send")
                         LabeledContent("History", value: "Messages created in this chat")
-                        if !directAgentChat {
-                            LabeledContent("Project", value: packet.policyStatus == .reviewed ? "Settings saved" : "Settings need saving")
-                            if backend == .codex { LabeledContent("Project files", value: fileReadEnabled ? "Read-only, on request" : "Not shared") }
-                        }
                     }
                     Section("Context") {
                         Text("Project instructions and this chat's messages provide context.")
@@ -53,11 +48,7 @@ struct WorkspaceInspectorView: View {
                             }
                         }.accessibilityIdentifier("chat.details.context")
                         DisclosureGroup("What stays excluded") {
-                            Text(directAgentChat
-                                ? "Imported chats, linked captures, other chats and shared memories are not attached. Local is text-only; provider tools follow the selected mode."
-                                : fileReadEnabled && backend == .codex
-                                ? "Imported chats, captures, other chats and shared memories. No shell or file writes."
-                                : "Imported chats, file contents, captures, other chats and shared memories. No file tools are enabled.")
+                            Text("Imported chats, linked captures, other chats and shared memories are not attached. Local is text-only; provider tools follow the selected mode.")
                                 .font(.caption).foregroundStyle(.secondary)
                         }.accessibilityIdentifier("chat.details.exclusions")
                     }
@@ -93,7 +84,6 @@ struct WorkspaceInspectorView: View {
         do {
             guard let stores = model.stores else { throw WorkspacePolicyError.invalidPolicy }
             packet = try stores.workspaceContextPacket(chatID: chatID)
-            fileReadEnabled = try packet.map { try stores.workspacePolicy(projectID: $0.projectID)?.allowsFileAccess == true } ?? false
             captures = try stores.workspaceCaptures(chatID: chatID)
             error = nil
         } catch {
