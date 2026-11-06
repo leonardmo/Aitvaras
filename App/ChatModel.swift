@@ -73,6 +73,18 @@ final class ChatModel {
         error = nil; authProvider = nil
         try? loadSettings()
     }
+    #if DEBUG
+    // Set only by the isolated self-driver, never persisted as a preference.
+    var selfDriveCodexModel: String? {
+        didSet { settings.removeValue(forKey: ".codex") }
+    }
+    #endif
+    private var newSessionModel: String {
+        #if DEBUG
+        if provider == .codex, let selfDriveCodexModel { return selfDriveCodexModel }
+        #endif
+        return provider == .local ? "local" : "default"
+    }
     private var settings: [String: AgentChatSession] = [:]
     private var approvalSubscription: Task<Void, Never>?
     private var respondingRequests: Set<String> = []
@@ -104,14 +116,14 @@ final class ChatModel {
         do {
             try await manager.refreshNativeHistory(chatID: id)
             guard !Task.isCancelled, chatID == id else { return }
-            if error == "Native history could not be read." { error = nil }
         } catch AgentSessionManagerError.chatBusy { return }
         catch {
             guard !Task.isCancelled, chatID == id else { return }
-            self.error = "Native history could not be read."
+            // Native refresh is supplemental. Keep the canonical transcript
+            // and leave normal chatting quiet when the native store lags.
+            return
         }
     }
-    var nativePreviewFailed: Bool { error == "Native history could not be read." }
     func discoverNativeSessions() async {
         guard !terminating, !discoveringNativeSessions else { return }
         discoveringNativeSessions = true; nativeDiscoveryError = nil
@@ -275,14 +287,6 @@ final class ChatModel {
             try loadSettings()
             if let id, state == nil { state = ChatState(chatID: id, entries: try stores.agentEntries(chatID: id)) }
             if let pending = try stores.pendingSend(), pending.session.chatID == id {
-                if selection.draft.isEmpty { selection.draft = pending.text }
-                if pending.session.provider == provider,
-                   let entry = try stores.agentEntries(chatID: pending.session.chatID).first(where: { $0.id == pending.inputID }) {
-                    let input = try AgentInput.restoring(id: pending.inputID, text: pending.text, payload: entry.payloadJSON)
-                    var value = composerSelection
-                    value.attachments = input.attachments; value.mentions = input.mentions; value.command = input.command
-                    composerSelections[pending.session.chatID, provider] = value
-                }
                 if pending.expiresAt > .now, pending.session.provider == provider {
                     authProvider = provider; error = "Sign in to \(provider.rawValue.capitalized)"
                     armPendingExpiry(pending)
@@ -318,8 +322,9 @@ final class ChatModel {
         guard let id = chatID, let chat = try stores.workspaceChat(id: id) else {
             if settings[settingsKey] == nil {
                 settings[settingsKey] = AgentChatSession(chatID: newChatID, provider: provider, cwd: "/tmp",
-                                                       model: provider == .local ? "local" : "default")
+                                                       model: newSessionModel)
             }
+            restoreModelSelection()
             return
         }
         let folders = try stores.workspaceFolders(projectID: chat.projectID).map { URL(fileURLWithPath: $0.path) }
@@ -329,13 +334,24 @@ final class ChatModel {
         // Refresh identities while retaining unsent choices (which are saved immediately).
         settings[settingsKey] = try stores.agentSession(chatID: id, provider: provider)
             ?? AgentChatSession(chatID: id, provider: provider, cwd: cwd,
-                                model: provider == .local ? "local" : "default")
+                                model: newSessionModel)
         if settings[settingsKey]?.sessionID == nil { settings[settingsKey]?.cwd = cwd }
         let primary = URL(fileURLWithPath: settings[settingsKey]?.cwd ?? cwd).resolvingSymlinksInPath().standardizedFileURL.path
         settings[settingsKey]?.additionalRootsJSON = try owned?.additionalRootsJSON
             ?? String(decoding: JSONEncoder().encode(folders.filter {
                 $0.resolvingSymlinksInPath().standardizedFileURL.path != primary
             }.map(\.path)), as: UTF8.self)
+        restoreModelSelection()
+    }
+    private func restoreModelSelection() {
+        guard let session = settings[settingsKey] else { return }
+        var automaticallySelect = !(provider == .local && backends[provider] is CodexBackend)
+        #if DEBUG
+        // A cost-limited run must fail rather than fall back to another model.
+        if provider == .codex, selfDriveCodexModel == session.model { automaticallySelect = false }
+        #endif
+        let restored = ChatSettings.restoring(session, models: models, automaticallySelect: automaticallySelect)
+        if restored != session { saveSettings(restored) }
     }
     private func fallbackDirectory(_ id: UUID) -> URL {
         AitvarasPaths.stateDirectory.appendingPathComponent("AgentChats/\(id.uuidString)", isDirectory: true)
@@ -400,7 +416,8 @@ final class ChatModel {
     }
     func loadModels() async {
         let provider = provider
-        guard catalogs[provider] == nil, let backend = backends[provider] else { return }
+        if catalogs[provider] != nil { restoreModelSelection(); return }
+        guard let backend = backends[provider] else { return }
         let load: (token: UUID, task: Task<[AgentModel], Error>)
         if let existing = modelLoads[provider] { load = existing }
         else {
@@ -417,12 +434,8 @@ final class ChatModel {
             let values = try await load.task.value
             guard modelLoads[provider]?.token == load.token, !values.isEmpty else { return }
             catalogs[provider] = values
-            // The OSS candidate requires the user to choose an installed tag;
-            // viewing Local must not silently select the first model.
-            if provider == .local, backends[provider] is CodexBackend { return }
-            guard self.provider == provider, !isBusy, signingIn == nil, let first = values.first,
-                  let session = settings[settingsKey], !values.contains(where: { $0.id == session.model }) else { return }
-            saveSettings(ChatSettings.selecting(model: first, in: session))
+            guard self.provider == provider, !isBusy, signingIn == nil else { return }
+            restoreModelSelection()
         } catch { /* A real Send supplies the actionable failure. */ }
     }
 
@@ -455,6 +468,14 @@ final class ChatModel {
     }
 
     func send() async {
+        #if DEBUG
+        if provider == .codex, let selfDriveCodexModel {
+            await loadModels()
+            guard models.contains(where: { $0.id == selfDriveCodexModel }) else {
+                error = "The self-drive Codex model is unavailable."; return
+            }
+        }
+        #endif
         if chatID == nil {
             guard canSubmit, hasInput, let projectID = newProjectID else { return }
             creatingChat = true
@@ -493,6 +514,7 @@ final class ChatModel {
                 return
             }
         }
+        restoreModelSelection()
         guard let id = chatID, canSubmit, var session = settings[settingsKey],
               hasInput else { return }
         if provider == .local, backends[provider] is CodexBackend, selectedModel == nil {
@@ -510,10 +532,10 @@ final class ChatModel {
             guard let chat = try stores.workspaceChat(id: id), chat.archivedAt == nil,
                   let project = try stores.workspaceProject(id: chat.projectID), project.isVisible else { throw AgentFailure.invalidRequest }
             if followup {
-                try await manager.send(chatID: id, provider: provider, input: input)
+                try await manager.send(chatID: id, provider: provider, input: input, onAccepted: { [weak self] in
+                    await self?.accepted(input, chatID: id, provider: provider)
+                })
                 attempts.removeValue(forKey: input.id)
-                selection.clearDraft(chatID: id, ifUnchanged: text)
-                clearComposer(chatID: id, provider: provider, sent: input)
                 return
             }
             // Verification also rejects failed/incomplete creation after restart.
@@ -532,16 +554,22 @@ final class ChatModel {
             guard !stoppedSends.contains(input.id) else { return }
             try stores.setValues(["agent.lastProvider": provider.rawValue])
             // Starting the manager first guarantees auth failures have a journal.
-            try await manager.send(chatID: id, provider: provider, input: input)
-            if !handledFailures.contains(input.id) {
-                self.selection.clearDraft(chatID: id, ifUnchanged: text)
-                clearComposer(chatID: id, provider: provider, sent: input)
-            }
+            try await manager.send(chatID: id, provider: provider, input: input, onAccepted: { [weak self] in
+                await self?.accepted(input, chatID: id, provider: provider)
+            })
         } catch {
-            if chatID == id, !stoppedSends.contains(input.id) {
-                failed(inputID: input.id, failure: (error as? AgentFailure) ?? .unknown)
+            if !stoppedSends.contains(input.id) {
+                let failure = (error as? AgentFailure) ?? .unknown
+                try? await manager.reportSendFailure(chatID: id, failure: failure)
+                if chatID == id { failed(inputID: input.id, failure: failure) }
             }
         }
+    }
+    private func accepted(_ input: AgentInput, chatID: UUID, provider: AgentProvider) {
+        // Clear before provider startup, including auth failure. The durable
+        // user entry owns the accepted text; a later draft is independent.
+        selection.clearDraft(chatID: chatID, ifUnchanged: input.text)
+        clearComposer(chatID: chatID, provider: provider, sent: input)
     }
     private func observe(_ state: ChatState) {
         if let mode = state.acknowledgedMode, let provider = state.entries.last?.provider,
@@ -564,14 +592,6 @@ final class ChatModel {
     private func failed(inputID: UUID, failure: AgentFailure) {
         guard !handledFailures.contains(inputID), let attempt = attempts.removeValue(forKey: inputID) else { return }
         handledFailures.insert(inputID)
-        if selection.draft.isEmpty { selection.draft = attempt.input.text }
-        if let id = chatID, provider == attempt.provider {
-            var value = composerSelections[id, provider]
-            if value.attachments.isEmpty { value.attachments = attempt.input.attachments }
-            if value.mentions.isEmpty { value.mentions = attempt.input.mentions }
-            if value.command == nil { value.command = attempt.input.command }
-            composerSelections[id, provider] = value
-        }
         authProvider = failure == .authRequired ? attempt.provider : nil
         error = failureMessage(failure, provider: attempt.provider)
         guard failure == .authRequired, let id = chatID, attempt.provider == provider else { return }
@@ -587,11 +607,11 @@ final class ChatModel {
     private func failureMessage(_ failure: AgentFailure, provider: AgentProvider) -> String {
         switch failure {
         case .authRequired: "Sign in to \(provider.rawValue.capitalized)"
-        case .offline: "You’re offline. Your draft is kept."
+        case .offline: "You’re offline. Try again when connected."
         case .quota: "Usage limit reached. Try again later."
         case .notInstalled: "\(provider.rawValue.capitalized) is not installed."
         case .unsupported: "This provider configuration is unavailable."
-        default: "Message could not be sent. Your draft is kept."
+        default: "Message could not be sent."
         }
     }
     private func armPendingExpiry(_ pending: PendingSend) {
@@ -602,7 +622,7 @@ final class ChatModel {
             guard let self, let current = try? self.stores.pendingSend(), current.inputID == pending.inputID else { return }
             self.cancelSignIn()
             if self.chatID == pending.session.chatID {
-                self.error = "Sign-in timed out. Your draft is kept."
+                self.error = "Sign-in timed out. The message remains in this chat."
                 self.authProvider = pending.session.provider
             }
         }
@@ -636,7 +656,7 @@ final class ChatModel {
                 self.modelLoads.removeValue(forKey: provider)?.task.cancel()
                 if let pending = try self.stores.pendingSend(), pending.session.provider == provider,
                    self.chatID == selectedChat, self.chatID == pending.session.chatID, self.provider == provider,
-                   self.draft == pending.text, let turn = try self.stores.agentTurn(id: pending.inputID),
+                   let turn = try self.stores.agentTurn(id: pending.inputID),
                    let session = try self.stores.agentSession(chatID: pending.session.chatID, provider: provider),
                    let chat = try self.stores.workspaceChat(id: pending.session.chatID), chat.archivedAt == nil,
                    try self.stores.workspaceProject(id: chat.projectID)?.isVisible == true {
@@ -645,9 +665,10 @@ final class ChatModel {
                     guard self.loginToken == token, self.chatID == selectedChat, self.provider == provider else { return }
                     self.pendingExpiry?.cancel(); self.pendingExpiry = nil
                     self.handledFailures.remove(pending.inputID)
-                    let value = self.composerSelection
-                    let retryInput = AgentInput(id: pending.inputID, text: pending.text, attachments: value.attachments,
-                                               mentions: value.mentions, command: value.command)
+                    guard let entry = try self.stores.agentEntries(chatID: pending.session.chatID).first(where: { $0.id == pending.inputID }) else {
+                        throw ProviderSignInError.staleIntent
+                    }
+                    let retryInput = try AgentInput.restoring(id: pending.inputID, text: pending.text, payload: entry.payloadJSON)
                     self.attempts[pending.inputID] = (retryInput, provider, self.statuses[provider]?.accountID)
                     retriedInput = pending.inputID
                     self.error = nil; self.authProvider = nil; self.signingIn = nil
@@ -662,10 +683,7 @@ final class ChatModel {
                     }
                     // Retry shares the original ID; manager atomically claims it once.
                     try await self.manager.resendPrepared(turnID: pending.inputID)
-                    if !self.handledFailures.contains(pending.inputID) {
-                        self.selection.clearDraft(chatID: pending.session.chatID, ifUnchanged: pending.text)
-                        self.clearComposer(chatID: pending.session.chatID, provider: provider, sent: retryInput)
-                    } else { return }
+                    if self.handledFailures.contains(pending.inputID) { return }
                 } else { try self.stores.savePendingSend(nil) }
                 guard self.chatID == selectedChat else { return }
                 self.error = nil; self.authProvider = nil
@@ -681,7 +699,7 @@ final class ChatModel {
                 } else if let retriedInput {
                     self.failed(inputID: retriedInput, failure: (error as? AgentFailure) ?? .unknown)
                 } else {
-                    self.error = error is CancellationError ? nil : "Sign-in did not complete. Your draft is kept."
+                    self.error = error is CancellationError ? nil : "Sign-in did not complete. The message remains in this chat."
                     self.authProvider = provider
                 }
             }

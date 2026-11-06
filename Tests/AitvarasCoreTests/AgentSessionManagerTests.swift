@@ -254,6 +254,109 @@ import AitvarasStore
         try await manager.shutdown()
     }
 
+    @MainActor @Test func acceptedSendClearsDraftBeforeAuthFailureAndRetryUsesSavedInput() async throws {
+        let stores = try inMemoryStores()
+        let (chat, _) = try agentStoreChat(stores)
+        let backend = ManagerTestBackend()
+        await backend.setFailure(.auth)
+        let manager = try AgentSessionManager(persistence: stores, backend: { _ in backend }, audit: { _ in })
+        let composer = AcceptedComposer(chatID: chat.id, provider: .claude, draft: "Original message")
+        let input = AgentInput(text: composer.selection.draft)
+        await #expect(throws: AgentFailure.authRequired) {
+            try await manager.send(chatID: chat.id, provider: .claude, input: input, onAccepted: {
+                await composer.accept(input, chatID: chat.id)
+            })
+        }
+        #expect(composer.acceptances == 1)
+        #expect(composer.selection.draft.isEmpty)
+        #expect(try stores.agentTurn(id: input.id)?.delivery == .prepared)
+        #expect(try stores.agentEntries(chatID: chat.id).filter { $0.kind == "user" }.map(\.text) == [input.text])
+        // A new draft is independent of the saved sign-in retry.
+        composer.selection.draft = "Next message"
+        await backend.setFailure(.none)
+        try await manager.resendPrepared(turnID: input.id)
+        let run = try #require(await backend.runs.last)
+        #expect(await run.inputs.map(\.text) == [input.text])
+        #expect(composer.selection.draft == "Next message")
+        #expect(try stores.agentEntries(chatID: chat.id).filter { $0.kind == "user" }.count == 1)
+        try await manager.shutdown()
+    }
+
+    @MainActor @Test func rejectionBeforeAcceptanceKeepsDraftAndFailureAppearsInSidebar() async throws {
+        let stores = try inMemoryStores()
+        let (chat, _) = try agentStoreChat(stores)
+        let backend = ManagerTestBackend()
+        let manager = try AgentSessionManager(persistence: stores, backend: { _ in backend }, audit: { _ in })
+        let composer = AcceptedComposer(chatID: chat.id, provider: .claude, draft: "Keep this draft")
+        try stores.setWorkspaceChatArchived(id: chat.id, archived: true)
+        do {
+            try await manager.send(chatID: chat.id, provider: .claude, input: .init(text: composer.selection.draft), onAccepted: {
+                await composer.countAcceptance()
+            })
+            Issue.record("Archived chat accepted a Send")
+        } catch {
+            try await manager.reportSendFailure(chatID: chat.id, failure: .unsupported)
+        }
+        #expect(composer.acceptances == 0)
+        #expect(composer.selection.draft == "Keep this draft")
+        #expect(try await ChatSidebarStatus(manager.state(chatID: chat.id)) == .failed)
+        #expect(try stores.latestAgentTurn(chatID: chat.id) == nil)
+        try await manager.shutdown()
+    }
+
+    @Test func unavailableNativeHistoryDoesNotBlockSendOrReplaceTranscript() async throws {
+        for failure in [AgentFailure.unsupported, .offline, .notInstalled, .authRequired, .crashed(exitCode: 1)] {
+            let stores = try inMemoryStores()
+            var (chat, session) = try agentStoreChat(stores, provider: .codex)
+            session.sessionID = .init(provider: .codex, profile: "default", nativeID: "saved-thread")
+            try stores.saveAgentSession(session)
+            let saved = try stores.saveAgentEntry(.init(chatID: chat.id, provider: .codex,
+                kind: "assistant", text: "Saved answer", sessionID: session.id))
+            let backend = ManagerTestBackend()
+            await backend.setHistoryFailure(failure)
+            let manager = try AgentSessionManager(persistence: stores, backend: { _ in backend }, audit: { _ in })
+            let next = AgentInput(text: "Continue")
+            try await manager.send(chatID: chat.id, provider: .codex, input: next)
+            #expect(await backend.totalWrites() == 1)
+            #expect(try stores.agentEntries(chatID: chat.id).contains { $0.id == saved.id && $0.text == "Saved answer" })
+            #expect(try stores.agentTurn(id: next.id)?.state == .running)
+            try await manager.shutdown()
+        }
+    }
+
+    @Test func stopDuringAcceptanceNeverStartsProviderOrDeliversInput() async throws {
+        let stores = try inMemoryStores()
+        let (chat, _) = try agentStoreChat(stores)
+        let backend = ManagerTestBackend()
+        let manager = try AgentSessionManager(persistence: stores, backend: { _ in backend }, audit: { _ in })
+        let input = AgentInput(text: "Stop before startup")
+        await #expect(throws: AgentSessionManagerError.staleRun) {
+            try await manager.send(chatID: chat.id, provider: .claude, input: input, onAccepted: {
+                try? await manager.stop(chatID: chat.id)
+            })
+        }
+        #expect(await backend.runs.isEmpty)
+        #expect(try stores.agentTurn(id: input.id)?.delivery == .prepared)
+        #expect(try stores.agentTurn(id: input.id)?.state == .interrupted)
+        #expect(try await manager.state(chatID: chat.id).outcome == .interrupted)
+        try await manager.shutdown()
+    }
+
+    @Test func newChatDoesNotReadNativeHistoryWithoutSessionIdentity() async throws {
+        #expect(AgentSessionManager.historyUnavailable(AgentNativeHistoryError.notFound))
+        #expect(!AgentSessionManager.historyUnavailable(AgentNativeHistoryError.identityConflict))
+        #expect(!AgentSessionManager.historyUnavailable(AgentNativeHistoryError.malformedHistory))
+        let stores = try inMemoryStores()
+        let (chat, _) = try agentStoreChat(stores, provider: .codex)
+        let backend = ManagerTestBackend()
+        let manager = try AgentSessionManager(persistence: stores, backend: { _ in backend }, audit: { _ in })
+        try await manager.refreshNativeHistory(chatID: chat.id)
+        #expect(await backend.historyReads == 0)
+        try await manager.send(chatID: chat.id, provider: .codex, input: .init(text: "Hello"))
+        #expect(await backend.historyReads == 0)
+        try await manager.shutdown()
+    }
+
     @Test func reducerStableMessagesToolsHooksUsageAndOutcome() {
         let chat = UUID(); let input = AgentInput(text: "test")
         let session = AgentChatSession(chatID: chat, provider: .claude, cwd: "/tmp", model: "test")
@@ -324,8 +427,11 @@ private actor ManagerStartCounter: AgentBackend {
 }
 
 private actor ManagerTestBackend: AgentBackend {
-    enum Failure: Sendable { case none, before, after }
+    enum Failure: Sendable { case none, before, after, auth }
     private var failure: Failure = .none
+    private var historyFailure: AgentFailure = .unsupported
+    private(set) var historyReads = 0
+    func setHistoryFailure(_ value: AgentFailure) { historyFailure = value }
     private var hungShutdown = false
     private var pauseStart = false
     private var startWaiter: CheckedContinuation<Void, Never>?
@@ -339,7 +445,8 @@ private actor ManagerTestBackend: AgentBackend {
     func status() -> AgentStatus { .init(installed: true, authentication: .subscription, capabilities: []) }
     func signIn(onBrowserURL: @escaping @Sendable (URL) async -> Void) throws { throw AgentFailure.unsupported }
     func models() -> [AgentModel] { [] }
-    func start(_ configuration: AgentSessionConfiguration) async -> any AgentRun {
+    func start(_ configuration: AgentSessionConfiguration) async throws -> any AgentRun {
+        if failure == .auth { throw AgentFailure.authRequired }
         if pauseStart {
             pauseStart = false
             await withCheckedContinuation { startWaiter = $0 }
@@ -347,7 +454,9 @@ private actor ManagerTestBackend: AgentBackend {
         let run = ManagerTestRun(failure: failure, hungShutdown: hungShutdown); runs.append(run); return run
     }
     func listSessions(folder: URL, cursor: String?) throws -> AgentPage<AgentSessionSummary> { throw AgentFailure.unsupported }
-    func readHistory(session: AgentSessionID, cursor: String?) throws -> AgentPage<AgentEvent> { throw AgentFailure.unsupported }
+    func readHistory(session: AgentSessionID, cursor: String?) throws -> AgentPage<AgentEvent> {
+        historyReads += 1; throw historyFailure
+    }
 }
 private actor ManagerTestRun: AgentRun {
     nonisolated let id = UUID()
@@ -357,6 +466,7 @@ private actor ManagerTestRun: AgentRun {
     private let hungShutdown: Bool
     private var shutdownWaiter: CheckedContinuation<Void, Never>?
     private(set) var writes = 0
+    private(set) var inputs: [AgentInput] = []
     private(set) var responses: [AgentResponse] = []
     init(failure: ManagerTestBackend.Failure, hungShutdown: Bool) {
         self.failure = failure; self.hungShutdown = hungShutdown
@@ -364,7 +474,9 @@ private actor ManagerTestRun: AgentRun {
     }
     func send(_ input: AgentInput, willDeliver: @escaping @Sendable () async throws -> Void) async throws {
         if failure == .before { throw AgentFailure.offline }
+        if failure == .auth { throw AgentFailure.authRequired }
         try await willDeliver()
+        inputs.append(input)
         writes += 1
         if failure == .after { throw AgentFailure.offline }
     }
@@ -379,4 +491,17 @@ private actor ManagerTestRun: AgentRun {
     func emit(_ kind: AgentEvent.Kind, input: UUID, run: UUID? = nil) {
         continuation.yield(.init(scope: .init(runID: run ?? id, inputID: input), kind: kind))
     }
+}
+
+@MainActor private final class AcceptedComposer {
+    var selection = ChatSelectionState()
+    private(set) var acceptances = 0
+    init(chatID: UUID, provider: AgentProvider, draft: String) {
+        selection.select(chatID, provider: provider); selection.draft = draft
+    }
+    func accept(_ input: AgentInput, chatID: UUID) {
+        acceptances += 1
+        selection.clearDraft(chatID: chatID, ifUnchanged: input.text)
+    }
+    func countAcceptance() { acceptances += 1 }
 }

@@ -95,6 +95,24 @@ public actor AgentSessionManager {
         approvalSubscribers.values.forEach { $0.yield(approvals) }
     }
 
+    /// Surface pre-delivery failures too; they have no journaled turn yet.
+    /// A rejected follow-up must not overwrite the active turn's state.
+    public func reportSendFailure(chatID: UUID, failure: AgentFailure) throws {
+        guard live[chatID]?.inputID == nil else { return }
+        var value = try state(chatID: chatID)
+        value.end(.failed(failure)); states[chatID] = value; publish(chatID)
+    }
+
+    public static func historyUnavailable(_ error: any Error) -> Bool {
+        if let failure = error as? AgentFailure {
+            switch failure {
+            case .unsupported, .notInstalled, .offline, .authRequired, .crashed: return true
+            default: return false
+            }
+        }
+        return (error as? AgentNativeHistoryError) == .notFound
+    }
+
     /// Shared-chat metadata only. Neither operation sends to a provider or
     /// disposes a run; an archived active chat can still finish or be stopped.
     public func rename(chatID: UUID, title: String) throws {
@@ -122,14 +140,16 @@ public actor AgentSessionManager {
         }
     }
 
-    public func send(chatID: UUID, provider: AgentProvider, input: AgentInput) async throws {
+    public func send(chatID: UUID, provider: AgentProvider, input: AgentInput,
+                     onAccepted: @escaping @Sendable () async -> Void = {}) async throws {
         if live[chatID]?.inputID != nil {
-            try await followup(chatID: chatID, provider: provider, input: input)
+            try await followup(chatID: chatID, provider: provider, input: input, onAccepted: onAccepted)
         } else {
-            try await deliver(chatID: chatID, provider: provider, input: input, retry: false)
+            try await deliver(chatID: chatID, provider: provider, input: input, retry: false, onAccepted: onAccepted)
         }
     }
-    private func followup(chatID: UUID, provider: AgentProvider, input: AgentInput) async throws {
+    private func followup(chatID: UUID, provider: AgentProvider, input: AgentInput,
+                          onAccepted: @Sendable () async -> Void) async throws {
         guard !closing else { throw AgentSessionManagerError.shuttingDown }
         try persistence.requireAgentChatAvailable(chatID: chatID)
         guard let slot = live[chatID], slot.session.provider == provider,
@@ -146,6 +166,11 @@ public actor AgentSessionManager {
         states[chatID]?.appendFollowup(input, session: slot.session)
         do {
             try persistEntries(chatID); publish(chatID)
+            await onAccepted()
+            guard live[chatID]?.token == slot.token, live[chatID]?.stopping == false,
+                  live[chatID]?.followups.contains(where: { $0.id == input.id }) == true, !closing else {
+                throw AgentSessionManagerError.staleRun
+            }
             let persistence = persistence
             try await run.followup(input) { try persistence.advanceAgentDelivery(id: input.id, to: .deliveryUnknown) }
         } catch {
@@ -186,12 +211,17 @@ public actor AgentSessionManager {
         throw AgentSessionManagerError.missingSession
     }
 
-    private func deliver(chatID: UUID, provider: AgentProvider, input: AgentInput, retry: Bool) async throws {
+    private func deliver(chatID: UUID, provider: AgentProvider, input: AgentInput, retry: Bool,
+                         onAccepted: @Sendable () async -> Void = {}) async throws {
         guard !closing else { throw AgentSessionManagerError.shuttingDown }
         try persistence.requireAgentChatAvailable(chatID: chatID)
         guard !refreshing.contains(chatID) else { throw AgentSessionManagerError.chatBusy }
         if !retry, live[chatID]?.inputID == nil {
-            try await refreshNativeHistory(chatID: chatID)
+            do { try await refreshNativeHistory(chatID: chatID) }
+            catch where Self.historyUnavailable(error) {
+                // The durable transcript remains the context source when the
+                // CLI has no readable native history yet (or no full reader).
+            }
             try persistence.requireAgentChatAvailable(chatID: chatID)
         }
         guard live[chatID]?.inputID == nil, live[chatID]?.followups.isEmpty != false,
@@ -227,6 +257,9 @@ public actor AgentSessionManager {
         do {
             try persistEntries(chatID)
             publish(chatID)
+            await onAccepted()
+            guard live[chatID]?.token == token, live[chatID]?.inputID == input.id,
+                  live[chatID]?.stopping == false, !closing else { throw AgentSessionManagerError.staleRun }
             let coordinator: AgentActionCoordinator
             if let reusable {
                 coordinator = reusable

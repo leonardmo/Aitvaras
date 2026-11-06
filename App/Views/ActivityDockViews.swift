@@ -7,8 +7,9 @@ struct ActivityDockView: View {
     @Environment(AppModel.self) private var model
     @Binding var placement: ActivityDockPlacement
     let presentation: ActivityDockPlacement
+    var excludesChatFailures = false
     @State private var expanded = false
-    private var status: ActivityPresentation { ActivityPresentation(model: model) }
+    private var status: ActivityPresentation { ActivityPresentation(model: model, excludesChatFailures: excludesChatFailures) }
 
     var body: some View {
         Group {

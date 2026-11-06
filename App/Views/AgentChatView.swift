@@ -27,7 +27,7 @@ struct AgentChatView: View {
 
     var body: some View {
         HSplitView {
-            transcript.frame(minWidth: 330)
+            transcript.frame(minWidth: 280)
             if !compact, let changes = chat.changes, changes.hasChanges {
                 AgentChangesView(chat: chat, owner: chatID, changes: changes).id(chatID)
             }
@@ -71,8 +71,8 @@ struct AgentChatView: View {
                         }
                         Color.clear.frame(height: 1).id("chat.end")
                     }
-                    .frame(maxWidth: 720, alignment: .leading)
-                    .padding(20).frame(maxWidth: .infinity)
+                    .frame(maxWidth: 760, alignment: .leading)
+                    .padding(.horizontal, 16).padding(.vertical, 20).frame(maxWidth: .infinity)
                 }
                 .defaultScrollAnchor(.bottom)
                 .onScrollGeometryChange(for: Bool.self) { geometry in
@@ -103,11 +103,8 @@ struct AgentChatView: View {
                 // Reserved height keeps the transcript steady when an error appears.
                 HStack(spacing: 8) {
                     if let error = chat.error ?? workspaceError ?? outcomeError {
-                        Text(error).font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                        if chat.nativePreviewFailed {
-                            Button("Retry") { Task { await chat.refreshNativePreview() } }
-                                .accessibilityIdentifier("chat.native.preview.retry")
-                        }
+                        Text(error).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                            .fixedSize(horizontal: false, vertical: true)
                         Spacer(minLength: 0)
                         if chat.signingIn != nil {
                             ProgressView().controlSize(.mini)
@@ -132,10 +129,17 @@ struct AgentChatView: View {
                         Spacer(minLength: 0)
                     }
                 }
-                .controlSize(.small).frame(height: 24)
+                .controlSize(.small).frame(minHeight: 28)
+                .accessibilityElement(children: .contain)
                 .accessibilityIdentifier("chat.error")
             }
-            .frame(maxWidth: 760).padding(.horizontal, 16).padding(.top, 8)
+            .padding(12)
+            .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 18))
+            .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 18))
+            .overlay { RoundedRectangle(cornerRadius: 18).strokeBorder(.primary.opacity(0.12)) }
+            .frame(maxWidth: 760)
+            .padding(.horizontal, 16).padding(.top, 8).padding(.bottom, 16)
+            .frame(maxWidth: .infinity)
         }
         .task(id: chatID) { await chat.refreshStatus() }
         .task(id: "\(chatID).\(chat.provider.rawValue).\(chat.signingIn == nil)") { await chat.loadModels() }
@@ -184,7 +188,52 @@ struct AgentChatView: View {
                     if chat.canSubmit && canSend && chat.hasInput { Task { await chat.send() } }
                     return .handled
                 }
-            HStack(spacing: 5) {
+            HStack(spacing: 10) {
+                // The fixed control order stays reachable at minimum window
+                // width. Only this strip scrolls; Send/Stop always stays visible.
+                ScrollView(.horizontal) {
+                    composerControls
+                }.scrollIndicators(.hidden)
+                .frame(height: 32)
+                HStack(spacing: 8) {
+                    gaugeSlot(contextValue, title: "Context", identifier: "chat.gauge.context")
+                    gaugeSlot(usageValue, title: "Usage", identifier: "chat.gauge.usage")
+                    if chat.state?.isRunning == true {
+                        Button { Task { await chat.stop() } } label: {
+                            Image(systemName: "stop.fill").font(.system(size: 14, weight: .semibold))
+                                .frame(width: 30, height: 30)
+                        }
+                        .buttonStyle(.plain).foregroundStyle(.primary)
+                        .background(.quaternary, in: Circle())
+                        .accessibilityLabel("Stop").accessibilityIdentifier("chat.stop")
+                    } else {
+                        Button { Task { await chat.send() } } label: {
+                            Image(systemName: "arrow.up").font(.system(size: 16, weight: .semibold))
+                                .frame(width: 30, height: 30)
+                        }
+                        .buttonStyle(.plain).foregroundStyle(sendEnabled ? Color.white : Color.secondary)
+                        .background(sendEnabled ? Color.accentColor : Color.secondary.opacity(0.16), in: Circle())
+                        .keyboardShortcut(.return, modifiers: .command)
+                        .disabled(!sendEnabled)
+                        .accessibilityLabel("Send").accessibilityIdentifier("chat.composer.send")
+                    }
+                }.fixedSize()
+            }
+        }
+        .onDrop(of: [.fileURL, .png, .jpeg, .tiff], isTargeted: nil, perform: receiveAttachments)
+        .fileImporter(isPresented: $choosingAttachments, allowedContentTypes: [.item], allowsMultipleSelection: true) { result in
+            defer { attachmentTarget = nil }
+            guard case .success(let urls) = result, let target = attachmentTarget else { return }
+            Task { for url in urls { await chat.attach(url, chatID: target.chatID, provider: target.provider) } }
+        }
+        .onChange(of: chatID) { showingCompletion = false; completion = nil }
+        .onChange(of: chat.provider) { showingCompletion = false; completion = nil }
+        .onChange(of: showingCompletion) { if !showingCompletion { composerFocused = true } }
+    }
+    private var composerControls: some View {
+        HStack(spacing: 6) {
+            attachButton
+            HStack(spacing: 3) {
                 Menu {
                     ForEach(model.workspaceProjects.filter(\.isVisible)) { project in
                         Button { chat.newProjectID = project.id } label: {
@@ -195,39 +244,50 @@ struct AgentChatView: View {
                     Divider()
                     Button("Add project…") { model.chooseChatProjectFolder() }
                 } label: {
-                    Text(projectTitle).lineLimit(1)
+                    HStack(spacing: 4) {
+                        if chat.useWorktree { Image(systemName: "arrow.triangle.branch") }
+                        Text(projectTitle).lineLimit(1)
+                    }
                 }
-                .frame(maxWidth: 120).help(projectTitle)
+                .frame(width: 100).help(projectTitle)
                 .accessibilityLabel("Project").accessibilityValue(projectTitle)
                 .accessibilityIdentifier("chat.project")
                 .disabled(chat.chatID != nil || chat.creatingChat)
-                if chat.chatID == nil, gitProject {
-                    Toggle(isOn: $chat.useWorktree) { Image(systemName: "arrow.triangle.branch") }
-                        .toggleStyle(.button).help("Use worktree")
-                        .accessibilityLabel("Use worktree").accessibilityIdentifier("chat.new.worktree")
+                Button { chat.useWorktree.toggle() } label: {
+                    Image(systemName: "arrow.triangle.branch")
+                        .font(.system(size: 13, weight: .medium)).frame(width: 24, height: 26)
                 }
-                Picker("Provider", selection: Binding(get: { chat.provider }, set: { chat.setProvider($0) })) {
-                    ForEach([AgentProvider.claude, .codex, .local], id: \.self) { provider in
-                        Text(provider.rawValue.capitalized).tag(provider)
-                            .accessibilityIdentifier("chat.provider.\(provider.rawValue)")
-                    }
+                .buttonStyle(.plain)
+                .foregroundStyle(chat.useWorktree ? Color.accentColor : Color.secondary)
+                .background(chat.useWorktree ? Color.accentColor.opacity(0.14) : .clear, in: RoundedRectangle(cornerRadius: 5))
+                .help("Use worktree").accessibilityLabel("Use worktree")
+                .accessibilityValue(chat.useWorktree ? "On" : "Off")
+                .accessibilityIdentifier("chat.new.worktree")
+                .opacity(chat.chatID == nil && gitProject ? 1 : 0)
+                .disabled(chat.chatID != nil || !gitProject || chat.creatingChat)
+                .accessibilityHidden(chat.chatID != nil || !gitProject)
+            }.frame(width: 127)
+            Picker("Provider", selection: Binding(get: { chat.provider }, set: { chat.setProvider($0) })) {
+                ForEach([AgentProvider.claude, .codex, .local], id: \.self) { provider in
+                    Text(provider.rawValue.capitalized).tag(provider)
+                        .accessibilityIdentifier("chat.provider.\(provider.rawValue)")
                 }
-                .pickerStyle(.segmented).labelsHidden().frame(width: 154)
-                .accessibilityIdentifier("chat.provider")
-                .accessibilityValue(chat.provider.rawValue.capitalized)
-                .disabled(chat.isBusy || chat.creatingChat)
-                if !chat.models.isEmpty {
-                    Menu {
-                        Picker("Model", selection: $chat.model) {
-                            ForEach(chat.models, id: \.id) { Text($0.name).tag($0.id) }
-                        }.pickerStyle(.inline)
-                    } label: {
-                        Text(chat.selectedModel?.name ?? "Model").lineLimit(1)
-                    }
-                    .frame(minWidth: 36, maxWidth: 100)
-                    .accessibilityIdentifier("chat.model")
-                    .disabled(chat.isBusy || chat.creatingChat)
-                }
+            }
+            .pickerStyle(.segmented).labelsHidden().frame(width: 154)
+            .accessibilityIdentifier("chat.provider")
+            .accessibilityValue(chat.provider.rawValue.capitalized)
+            .disabled(chat.isBusy || chat.creatingChat)
+            Menu {
+                Picker("Model", selection: $chat.model) {
+                    ForEach(chat.models, id: \.id) { Text($0.name).tag($0.id) }
+                }.pickerStyle(.inline)
+            } label: {
+                Text(chat.selectedModel?.name ?? (chat.model == "default" ? "Default" : chat.model)).lineLimit(1)
+            }
+            .frame(width: 100)
+            .accessibilityIdentifier("chat.model")
+            .disabled(chat.isBusy || chat.creatingChat || chat.models.isEmpty)
+            Group {
                 if let model = chat.selectedModel, !model.efforts.isEmpty, chat.provider != .local {
                     Menu {
                         Picker("Effort", selection: $chat.effort) {
@@ -235,9 +295,11 @@ struct AgentChatView: View {
                             ForEach(model.efforts, id: \.self) { Text($0.capitalized).tag($0) }
                         }.pickerStyle(.inline)
                     } label: { Text(chat.effort.isEmpty ? "Effort" : chat.effort.capitalized).lineLimit(1) }
-                    .frame(minWidth: 32, maxWidth: 60)
+                    .frame(maxWidth: .infinity)
                     .accessibilityIdentifier("chat.effort").disabled(chat.isBusy || chat.creatingChat)
-                }
+                } else { Color.clear.frame(height: 16).accessibilityHidden(true) }
+            }.frame(width: 54)
+            Group {
                 if chat.provider != .local || chat.statuses[.local]?.capabilities.contains(.approvals) == true {
                     Menu {
                         Picker("Mode", selection: $chat.mode) {
@@ -247,49 +309,39 @@ struct AgentChatView: View {
                             Text("Auto").tag(AgentMode.auto)
                         }.pickerStyle(.inline)
                     } label: { Text(modeTitle).lineLimit(1) }
-                    .frame(minWidth: 30, maxWidth: 76)
+                    .frame(maxWidth: .infinity)
                     .accessibilityIdentifier("chat.mode").disabled(chat.isBusy || chat.creatingChat)
-                }
-            }
-            .controlSize(.small).menuStyle(.borderlessButton)
-            HStack(spacing: 5) {
-                Button {
-                    attachmentTarget = (chat.composerOwnerID, chat.provider)
-                    showingCompletion = false; choosingAttachments = true
-                } label: { Image(systemName: "paperclip") }
-                    .disabled(!canSend || chat.provider == .local)
-                    .help("Attach files").accessibilityLabel("Attach files")
-                    .accessibilityIdentifier("chat.composer.attach")
-                Spacer(minLength: 0)
-                if chat.state?.entries.last?.provider == chat.provider,
-                   let value = ChatSettings.contextFraction(chat.state?.usage) {
-                    ChatGauge(value: value, title: "Context", identifier: "chat.gauge.context")
-                }
-                if let value = chat.providerLimits[chat.provider]?.compactMap(\.utilization).filter(\.isFinite).max() {
-                    ChatGauge(value: value, title: "Usage", identifier: "chat.gauge.usage")
-                }
-                Button { Task { await chat.stop() } } label: { Image(systemName: "stop.fill") }
-                    .opacity(chat.isBusy ? 1 : 0).disabled(!chat.isBusy)
-                    .accessibilityHidden(!chat.isBusy)
-                    .accessibilityLabel("Stop").accessibilityIdentifier("chat.stop")
-                Button { Task { await chat.send() } } label: { Image(systemName: "arrow.up") }
-                    .keyboardShortcut(.return, modifiers: .command)
-                    .disabled(!canSend || !chat.canSubmit || !chat.hasInput)
-                    .accessibilityLabel("Send").accessibilityIdentifier("chat.composer.send")
-            }
-            .controlSize(.small).menuStyle(.borderlessButton).fixedSize(horizontal: false, vertical: true)
+                } else { Color.clear.frame(height: 16).accessibilityHidden(true) }
+            }.frame(width: 64)
         }
-        .padding(12)
-        .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 18))
-        .onDrop(of: [.fileURL, .png, .jpeg, .tiff], isTargeted: nil, perform: receiveAttachments)
-        .fileImporter(isPresented: $choosingAttachments, allowedContentTypes: [.item], allowsMultipleSelection: true) { result in
-            defer { attachmentTarget = nil }
-            guard case .success(let urls) = result, let target = attachmentTarget else { return }
-            Task { for url in urls { await chat.attach(url, chatID: target.chatID, provider: target.provider) } }
+        .controlSize(.small).menuStyle(.borderlessButton)
+    }
+    private var sendEnabled: Bool { canSend && chat.canSubmit && chat.hasInput }
+    private var contextValue: Double? {
+        guard chat.state?.entries.last?.provider == chat.provider else { return nil }
+        return ChatSettings.contextFraction(chat.state?.usage)
+    }
+    private var usageValue: Double? {
+        chat.providerLimits[chat.provider]?.compactMap(\.utilization).filter(\.isFinite).max()
+    }
+    private func gaugeSlot(_ value: Double?, title: String, identifier: String) -> some View {
+        Group {
+            if let value { ChatGauge(value: value, title: title, identifier: identifier) }
+            else { Color.clear.accessibilityHidden(true) }
+        }.frame(width: 22, height: 22)
+    }
+    private var attachButton: some View {
+        Button {
+            attachmentTarget = (chat.composerOwnerID, chat.provider)
+            showingCompletion = false; choosingAttachments = true
+        } label: {
+            Image(systemName: "paperclip").font(.system(size: 15, weight: .medium))
+                .frame(width: 28, height: 28)
         }
-        .onChange(of: chatID) { showingCompletion = false; completion = nil }
-        .onChange(of: chat.provider) { showingCompletion = false; completion = nil }
-        .onChange(of: showingCompletion) { if !showingCompletion { composerFocused = true } }
+        .buttonStyle(.plain).foregroundStyle(.primary)
+        .disabled(!canSend || chat.provider == .local)
+        .help("Attach files").accessibilityLabel("Attach files")
+        .accessibilityIdentifier("chat.composer.attach")
     }
     private var projectTitle: String {
         let id = model.selectedWorkspaceChat?.projectID ?? chat.newProjectID
@@ -415,9 +467,13 @@ struct ChatGauge: View {
     let title: String
     let identifier: String
     var body: some View {
-        Gauge(value: min(1, max(0, value))) { Text(title) }
-            .gaugeStyle(.accessoryCircularCapacity).labelsHidden()
-            .scaleEffect(0.55).frame(width: 22, height: 22)
+        ZStack {
+            Circle().stroke(.secondary.opacity(0.22), lineWidth: 3)
+            Circle().trim(from: 0, to: min(1, max(0, value)))
+                .stroke(Color.accentColor, style: StrokeStyle(lineWidth: 3, lineCap: .round))
+                .rotationEffect(.degrees(-90))
+        }.frame(width: 18, height: 18).padding(2)
+            .accessibilityElement(children: .ignore)
             .help("\(title): \(Int(min(1, max(0, value)) * 100))%")
             .accessibilityLabel(title).accessibilityValue("\(Int(min(1, max(0, value)) * 100)) percent")
             .accessibilityIdentifier(identifier)
