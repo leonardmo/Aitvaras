@@ -1,5 +1,12 @@
 # Claude and Codex integration: completion checklist
 
+**Superseded for current Chat by [UNIFIED-CHAT-PLAN.md](UNIFIED-CHAT-PLAN.md)
+and D31/D32.** The source audit below describes retained legacy adapters and
+their acceptance checklist. Direct CLI sessions now power the unified UI;
+M6.3 removal waits for owner review. Live Claude through this UI, the real
+Ollama gate and owner-assisted XCUITest remain unproven as recorded in the
+current plan. This older checklist does not establish those gates.
+
 Source audit — 2026-11-01. This records implementation status, not blanket runtime
 acceptance. It complements [NEXT-WORKSPACE-PLAN.md](NEXT-WORKSPACE-PLAN.md) and
 [CODEX-BIDIRECTIONAL-INTEGRATION.md](CODEX-BIDIRECTIONAL-INTEGRATION.md).

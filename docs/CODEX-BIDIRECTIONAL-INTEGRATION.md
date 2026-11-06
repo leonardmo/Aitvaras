@@ -1,5 +1,12 @@
 # Native Codex project and chat integration
 
+**Superseded for interactive Chat by [UNIFIED-CHAT-PLAN.md](UNIFIED-CHAT-PLAN.md)
+and D31/D32.** Direct app-server sessions, automatic native discovery and
+canonical reconciliation replace the explicit link/profile/consent flow below.
+Legacy tables and saved evidence remain readable; obsolete code is not yet
+removed, with M6.3 waiting for the owner's review. The current plan records
+unproven Claude, Ollama and owner-assisted XCUITest gates separately.
+
 Status: native project/chat linking, canonical history, native execution,
 streaming, approvals and recovery implemented. The installed app is not replaced
 while a recording is active. Existing isolated chats and read-only imports stay

@@ -1,5 +1,11 @@
 # Shared native Codex setup
 
+**Legacy setup, superseded for current Chat by
+[UNIFIED-CHAT-PLAN.md](UNIFIED-CHAT-PLAN.md) and D31/D32.** The unified UI drives
+the official app-server with its default login/store and discovers native chats
+without a connect/link step. The flow below documents the retained adapter;
+M6.3 removal waits for the owner's review. Use the current plan for open gates.
+
 ## User flow
 
 1. Choose Codex in a project chat and open its settings gear.
