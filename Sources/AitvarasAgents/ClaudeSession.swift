@@ -27,6 +27,7 @@ actor ClaudeRun: AgentRun {
         var arguments = ["-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose",
                          "--include-partial-messages", "--permission-prompt-tool", "stdio", "--permission-mode",
                          configuration.mode.claudePermission]
+        for root in configuration.additionalDirectories { arguments += ["--add-dir", root.path] }
         if configuration.model != "default" { arguments += ["--model", configuration.model] }
         if let resume = configuration.resume { arguments += ["--resume", resume.nativeID] }
         if let effort = configuration.effort { arguments += ["--effort", effort] }

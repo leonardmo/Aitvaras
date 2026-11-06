@@ -340,3 +340,10 @@ oldest first, states the omitted count (and explicitly clips an oversized newest
 message at a Unicode character boundary) and advances the per-provider watermark
 only on acknowledgement. Local receives completed context on every Send. Legacy
 adapters retain their existing sharing checks until migration.
+
+Per-chat git worktrees are optional and default off. Their ownership and cwd/root
+mappings are durable; failed or mismatched ownership blocks execution. Explicit
+Commit and confirmed Discard pass the autonomy policy and metadata-only activity
+audit. Discard clears reviewed changes only inside the selected owned worktree;
+it never force-removes a worktree or branch. Ordinary checkouts allow explicit
+Commit, with the user's message and native git hooks, without added attribution.

@@ -737,6 +737,29 @@ and project instructions remain available. Review minimum size, light/dark,
 accessibility identifiers and streaming layout. These checks require the host;
 package tests do not compile App views or establish live CLI conformance.
 
+Git workspaces and changes (M3.9–M3.11): `AgentWorktreeTests`,
+`AgentChangesTests`, `AgentGitActionTests` and `AgentGitProviderMappingTests` use
+disposable repositories and fake executables to cover durable creation, failed
+preflight/collisions, duplicate creation, foreign ownership, multi-folder mapping,
+provider resume arguments, staged/untracked/deleted/renamed files, unusual names,
+binary/large previews, stale bytes/index state, native hook failure, policy/audit
+failure and cancellation during a commit. Commit/discard use literal pathspecs
+and leave unrelated checkouts intact. Failed hooks may leave reviewed files
+staged; interrupted operations are reported, never automatically retried.
+
+Host verification: build the App target, then in an isolated profile create a
+project on a disposable committed git repository. Confirm worktree defaults off,
+is offered only for git, and both providers resume the recorded cwd after restart.
+Test multiple folders and failed creation without any fallback edits. Make real
+edits and verify the inspector appears only with changes, file selection, colored
+unified diffs, keyboard navigation and narrow-window layout in light/dark. Commit
+with a user message and verify the intended files and normal hooks. Cancel and
+accept the single native Discard confirmation in an owned worktree; confirm the
+original checkout, foreign worktrees, ignored files, branch and worktree survive.
+Confirm Discard is disabled on ordinary checkouts. Edit externally between review
+and click, fail a hook and interrupt git; verify a single inline error and safe
+refresh. These checks need the host and do not follow from package tests alone.
+
 ## What an agent session should do
 
 For Claude Code (or any agent) working on this repo: Layers 1–2 after every

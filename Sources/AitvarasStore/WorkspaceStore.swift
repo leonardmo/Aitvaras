@@ -238,7 +238,7 @@ extension Stores {
 
     @discardableResult
     public func createWorkspaceChat(projectID: UUID, title: String, kind: WorkspaceChatKind = .primary,
-                                    purpose: String = "", existingConversationID: UUID? = nil) throws -> WorkspaceChat {
+                                    purpose: String = "", existingConversationID: UUID? = nil, requiresWorktree: Bool = false) throws -> WorkspaceChat {
         let title = try Self.workspaceName(title)
         try Self.validateWorkspaceText(purpose, maximum: 2_000)
         return try db.queue.write { dbc in
@@ -258,6 +258,10 @@ extension Stores {
             let chat = WorkspaceChat(projectID: projectID, localConversationID: conversationID,
                                      title: title, purpose: purpose, kind: kind)
             try chat.insert(dbc)
+            if requiresWorktree {
+                try dbc.execute(sql: "INSERT INTO kv(key, value) VALUES (?, ?)",
+                    arguments: ["agent.worktreeRequested.\(chat.id.uuidString)", "true"])
+            }
             return chat
         }
     }

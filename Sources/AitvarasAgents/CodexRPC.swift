@@ -88,6 +88,10 @@ actor CodexRun: AgentRun {
             "input": content,
             "approvalPolicy": .string(mode.codexApproval),
             "sandboxPolicy": .object(["type": .string(mode == .plan ? "readOnly" : "workspaceWrite")])]
+        if mode != .plan, !configuration.additionalDirectories.isEmpty {
+            parameters["sandboxPolicy"] = .object(["type": .string("workspaceWrite"),
+                "writableRoots": .array(configuration.additionalDirectories.map { .string($0.path) })])
+        }
         if (content.arrayValue?.count ?? 0) > 1, let input {
             parameters["clientUserMessageId"] = .string(input.uuidString)
         }

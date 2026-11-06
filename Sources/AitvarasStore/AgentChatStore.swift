@@ -26,6 +26,8 @@ public struct AgentChatStore: Sendable {
               (value.host == nil && value.profile == nil && value.nativeID == nil) || value.sessionID != nil else {
             throw AgentStoreError.invalidValue
         }
+        guard let roots = try? JSONDecoder().decode([String].self, from: Data(value.additionalRootsJSON.utf8)),
+              roots.allSatisfy({ $0.hasPrefix("/") && !$0.contains("\0") }) else { throw AgentStoreError.invalidValue }
         try db.queue.write { dbc in
             guard try WorkspaceChat.fetchOne(dbc, key: value.chatID) != nil else { throw AgentStoreError.missingChat }
             if let old = try AgentChatSession.fetchOne(dbc, key: value.id) {
