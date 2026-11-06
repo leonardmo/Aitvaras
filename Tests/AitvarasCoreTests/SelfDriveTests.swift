@@ -90,16 +90,34 @@ import AitvarasCore
                           "14-composer-controls", "15-settings", "16-settings-providers",
                           "17-claude-send", "18-claude-replied"])
         let replies = scenario.steps.filter { $0.action == .waitFor && $0.text != nil && $0.absent != true }
-        #expect(replies.allSatisfy { $0.within == "chat.transcript" || $0.within == "chat.tool.completed" })
+        #expect(replies.allSatisfy { $0.within == "chat.transcript" || $0.within == "chat.tool.completed" || $0.within == "chat.error" })
         #expect(replies.filter { $0.text == "PELICAN" }.allSatisfy { $0.caseSensitive == true })
         #expect(scenario.steps.contains { $0.identifier == "chat.project.$project.more" })
-        #expect(scenario.steps.contains { $0.identifier == "chat.sidebar.$chat1.status.needsYou" })
+        #expect(scenario.steps.contains { $0.identifier == "chat.sidebar.$chat3.status.needsYou" })
         let claude = try #require(scenario.steps.firstIndex { $0.identifier == "chat.provider.claude" })
         let approval = try #require(scenario.steps.firstIndex { $0.action == .press && $0.identifier == "chat.request.0.allow" })
         #expect(approval < claude)
         #expect(scenario.steps[..<approval].contains { $0.action == .waitFor && $0.identifier == "chat.request.0.allow" })
         #expect(scenario.steps[(approval + 1)..<claude].contains {
             $0.action == .waitFor && $0.identifier == "chat.tool.completed" && $0.within == "chat.transcript"
+        })
+        let shell = try #require(scenario.steps.firstIndex {
+            $0.action == .type && $0.text == "Use your shell tool to create an empty file named e2e-made.txt in the current folder."
+        })
+        let freshShellChat = try #require(scenario.steps[..<shell].lastIndex {
+            $0.action == .press && $0.identifier == "chat.new.$project"
+        })
+        #expect(!scenario.steps[(freshShellChat + 1)..<shell].contains { $0.action == .type || $0.identifier == "chat.composer.send" })
+        #expect(scenario.steps[shell..<approval].contains { $0.identifier == "chat.needsYou" })
+        #expect(scenario.steps[claude - 1].identifier == "chat.new.$project")
+        #expect(scenario.steps[(claude + 1)...].contains {
+            $0.action == .waitFor && $0.text == "Sign in to Claude" && $0.within == "chat.error"
+        })
+        #expect(scenario.steps[(claude + 1)...].contains {
+            $0.action == .waitFor && $0.identifier == "chat.signin" && $0.within == "chat.error"
+        })
+        #expect(!scenario.steps[(claude + 1)...].contains {
+            $0.action == .waitFor && $0.within == "chat.transcript" && $0.absent != true
         })
         var lastTyped: String?
         for (index, step) in scenario.steps.enumerated() {

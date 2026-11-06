@@ -8,6 +8,7 @@ import AitvarasStore
 struct AgentChatView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.colorScheme) private var colorScheme
     @Bindable var chat: ChatModel
     let chatID: UUID
     var canSend = true
@@ -97,41 +98,44 @@ struct AgentChatView: View {
             }
             VStack(spacing: 6) {
                 if chat.chatID == nil, model.workspaceProjects.allSatisfy({ !$0.isVisible }) {
-                    Text("Choose a project to send a message.").font(.caption).foregroundStyle(.secondary)
+                    Text("Choose a project to send a message.").font(.caption).foregroundStyle(composerMessageColor)
                 }
                 composer
-                // Reserved height keeps the transcript steady when an error appears.
-                HStack(spacing: 8) {
-                    if let error = chat.error ?? workspaceError ?? outcomeError {
-                        Text(error).font(.caption).foregroundStyle(.secondary).lineLimit(2)
-                            .fixedSize(horizontal: false, vertical: true)
-                        Spacer(minLength: 0)
-                        if chat.signingIn != nil {
-                            ProgressView().controlSize(.mini)
-                            Button("Cancel") { chat.cancelSignIn() }
-                                .accessibilityIdentifier("chat.signin.cancel")
-                        } else if let provider = chat.authProvider {
-                            Button("Sign in") { chat.signIn(provider) }
-                                .accessibilityIdentifier("chat.signin")
+                if composerMessage != nil || !canSend || chat.state?.outcome == .interrupted {
+                    HStack(spacing: 8) {
+                        if let error = composerMessage {
+                            Text(error).font(.caption).lineLimit(2)
+                                .fixedSize(horizontal: false, vertical: true)
+                            Spacer(minLength: 0)
+                            if chat.signingIn != nil {
+                                ProgressView().controlSize(.mini)
+                                Button("Cancel") { chat.cancelSignIn() }
+                                    .accessibilityIdentifier("chat.signin.cancel")
+                            } else if let provider = chat.authProvider {
+                                Button("Sign in") { chat.signIn(provider) }
+                                    .accessibilityIdentifier("chat.signin")
+                            }
+                        } else if !canSend {
+                            Image(systemName: "archivebox")
+                                .accessibilityLabel("Archived")
+                                .accessibilityIdentifier("chat.archived.status")
+                            Spacer(minLength: 0)
+                            Button("Restore") { model.setWorkspaceChatArchived(chatID, archived: false) }
+                                .accessibilityIdentifier("chat.restore")
+                        } else if chat.state?.outcome == .interrupted {
+                            Image(systemName: "pause.circle")
+                                .help("Interrupted · Send to continue")
+                                .accessibilityLabel("Interrupted. Send to continue.")
+                                .accessibilityIdentifier("chat.interrupted")
+                            Spacer(minLength: 0)
                         }
-                    } else if !canSend {
-                        Image(systemName: "archivebox")
-                            .accessibilityLabel("Archived")
-                            .accessibilityIdentifier("chat.archived.status")
-                        Spacer(minLength: 0)
-                        Button("Restore") { model.setWorkspaceChatArchived(chatID, archived: false) }
-                            .accessibilityIdentifier("chat.restore")
-                    } else if chat.state?.outcome == .interrupted {
-                        Image(systemName: "pause.circle")
-                            .help("Interrupted · Send to continue")
-                            .accessibilityLabel("Interrupted. Send to continue.")
-                            .accessibilityIdentifier("chat.interrupted")
-                        Spacer(minLength: 0)
                     }
+                    .foregroundStyle(composerMessageColor)
+                    .tint(composerMessageColor)
+                    .controlSize(.small).frame(minHeight: 28)
+                    .accessibilityElement(children: .contain)
+                    .accessibilityIdentifier("chat.error")
                 }
-                .controlSize(.small).frame(minHeight: 28)
-                .accessibilityElement(children: .contain)
-                .accessibilityIdentifier("chat.error")
             }
             .padding(12)
             .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 18))
@@ -379,8 +383,14 @@ struct AgentChatView: View {
         }
         return true
     }
+    private var composerMessageColor: Color {
+        colorScheme == .dark ? Color(white: 0.92) : Color(white: 0.12)
+    }
+    private var composerMessage: String? { chat.error ?? workspaceError ?? outcomeError }
     private var outcomeError: String? {
-        if case .failed = chat.state?.outcome { return "The response did not complete." }
+        if case .failed(let failure) = chat.state?.outcome {
+            return AgentFailure.sendMessage(for: failure, provider: chat.state?.entries.last?.provider ?? chat.provider)
+        }
         return nil
     }
     private var modeTitle: String {

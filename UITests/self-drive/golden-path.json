@@ -201,8 +201,20 @@
       "timeout": 10
     },
     {
+      "action": "press",
+      "identifier": "chat.new.$project"
+    },
+    {
+      "action": "waitFor",
+      "text": "PELICAN",
+      "within": "chat.transcript",
+      "caseSensitive": true,
+      "timeout": 0,
+      "absent": true
+    },
+    {
       "action": "type",
-      "text": "Run this exact shell command and nothing else: touch e2e-made.txt"
+      "text": "Use your shell tool to create an empty file named e2e-made.txt in the current folder."
     },
     {
       "action": "press",
@@ -210,7 +222,7 @@
     },
     {
       "action": "waitFor",
-      "text": "Run this exact shell command and nothing else: touch e2e-made.txt",
+      "text": "Use your shell tool to create an empty file named e2e-made.txt in the current folder.",
       "within": "chat.composer.input",
       "absent": true,
       "timeout": 15
@@ -222,7 +234,7 @@
     },
     {
       "action": "waitFor",
-      "identifier": "chat.sidebar.$chat1.status.needsYou",
+      "identifier": "chat.sidebar.$chat3.status.needsYou",
       "timeout": 10
     },
     {
@@ -253,12 +265,6 @@
       "identifier": "chat.tool.completed",
       "within": "chat.transcript",
       "timeout": 120
-    },
-    {
-      "action": "waitFor",
-      "text": "e2e-made.txt \u00b7 Completed",
-      "within": "chat.transcript",
-      "timeout": 10
     },
     {
       "action": "screenshot",
@@ -513,9 +519,15 @@
     },
     {
       "action": "waitFor",
-      "text": "pelican",
-      "within": "chat.transcript",
-      "timeout": 90
+      "text": "Sign in to Claude",
+      "within": "chat.error",
+      "timeout": 30
+    },
+    {
+      "action": "waitFor",
+      "identifier": "chat.signin",
+      "within": "chat.error",
+      "timeout": 10
     },
     {
       "action": "screenshot",

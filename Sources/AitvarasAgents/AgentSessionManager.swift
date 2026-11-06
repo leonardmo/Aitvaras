@@ -6,6 +6,7 @@ public enum AgentSessionManagerError: Error, Sendable, Equatable {
 
 /// Application lifetime owner. Views only subscribe; detaching never stops a run.
 public actor AgentSessionManager {
+    public static let maximumRunningChats = 8
     public typealias BackendFactory = @Sendable (AgentProvider) throws -> any AgentBackend
     private struct Live {
         let token: UUID
@@ -17,6 +18,9 @@ public actor AgentSessionManager {
         var followups: [AgentInput] = []
         var sendingFollowup = false
         var stopping = false
+        var lastUsed = ContinuousClock.now
+
+        var isRunning: Bool { inputID != nil || !followups.isEmpty || sendingFollowup || stopping }
     }
     private let persistence: any AgentSessionPersistence
     private let backend: BackendFactory
@@ -162,6 +166,7 @@ public actor AgentSessionManager {
         defer { if live[chatID]?.token == slot.token { live[chatID]?.sendingFollowup = false } }
         try persistence.prepareAgentTurn(.init(input: input, chatID: chatID, sessionID: slot.session.id,
             parentInputID: slot.inputID))
+        live[chatID]?.lastUsed = .now
         live[chatID]?.followups.append(input)
         states[chatID]?.appendFollowup(input, session: slot.session)
         do {
@@ -236,10 +241,13 @@ public actor AgentSessionManager {
         let wireText = try retry ? persistence.agentTurn(id: input.id)?.prompt : nil
         let wireInput = AgentInput(id: input.id, text: wireText ?? context?.wire(message: input.text) ?? input.text,
                                   attachments: input.attachments, mentions: input.mentions, command: input.command)
-        if live[chatID] == nil, live.count >= 3 {
-            states[chatID]?.end(.failed(.invalidTransition)); publish(chatID)
+        if live.values.filter(\.isRunning).count >= Self.maximumRunningChats {
             throw AgentSessionManagerError.runningChatLimit
         }
+        // Retain at most eight transports. Idle sessions are durable and can
+        // resume natively; a running turn (including approvals) is never evicted.
+        let eviction = live[chatID] == nil && live.count >= Self.maximumRunningChats
+            ? live.filter { !$0.value.isRunning }.min { $0.value.lastUsed < $1.value.lastUsed } : nil
         // Reserve this chat and capacity before any await, including startup.
         let old = live[chatID]
         let token = provider != .local && old?.session == session ? old!.token : UUID()
@@ -253,11 +261,21 @@ public actor AgentSessionManager {
             if retry { _ = try persistence.claimAgentResend(id: input.id) }
             else { try persistence.prepareAgentTurn(.init(input: wireInput, chatID: chatID, sessionID: session.id), context: context) }
         } catch { live[chatID] = old; if let old { armIdle(chatID, token: old.token) }; throw error }
+        var evictionCleanup: Task<Void, Never>?
+        if let (chat, slot) = eviction {
+            live.removeValue(forKey: chat)
+            slot.reader?.cancel(); slot.idle?.cancel()
+            // Reserve the replacement before yielding to bounded shutdown.
+            evictionCleanup = Task {
+                if let run = slot.coordinator { await Self.close(run, timeout: .seconds(2)) }
+            }
+        }
         states[chatID]?.begin(input, session: session, outputID: UUID(), context: context)
         do {
             try persistEntries(chatID)
             publish(chatID)
             await onAccepted()
+            await evictionCleanup?.value
             guard live[chatID]?.token == token, live[chatID]?.inputID == input.id,
                   live[chatID]?.stopping == false, !closing else { throw AgentSessionManagerError.staleRun }
             let coordinator: AgentActionCoordinator
@@ -443,7 +461,7 @@ public actor AgentSessionManager {
         }
     }
     private func idleExpired(_ chat: UUID, token: UUID) async {
-        guard let slot = live[chat], slot.token == token, slot.inputID == nil else { return }
+        guard let slot = live[chat], slot.token == token, !slot.isRunning else { return }
         live.removeValue(forKey: chat); slot.reader?.cancel()
         if let run = slot.coordinator { await Self.close(run, timeout: .seconds(2)) }
     }
@@ -511,6 +529,7 @@ public actor AgentSessionManager {
     }
     public func respond(chatID: UUID, to request: AgentRequest, with response: AgentResponse) async throws {
         guard let slot = live[chatID], let run = slot.coordinator else { throw AgentSessionManagerError.staleRun }
+        live[chatID]?.lastUsed = .now
         do { try await run.respond(to: request, with: response) }
         catch {
             let pending = await run.pendingRequests()
