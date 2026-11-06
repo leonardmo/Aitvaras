@@ -1,0 +1,247 @@
+{
+  "steps": [
+    {
+      "action": "screenshot",
+      "name": "01-launch",
+      "delay": 3
+    },
+    {
+      "action": "dumpTree",
+      "name": "01-launch-tree"
+    },
+    {
+      "action": "press",
+      "identifier": "bubble.left.and.text.bubble.right"
+    },
+    {
+      "action": "screenshot",
+      "name": "02-chat-empty",
+      "delay": 2
+    },
+    {
+      "action": "dumpTree",
+      "name": "02-chat-tree"
+    },
+    {
+      "action": "press",
+      "identifier": "chat.new.unassigned"
+    },
+    {
+      "action": "screenshot",
+      "name": "03-new-chat",
+      "delay": 2
+    },
+    {
+      "action": "dumpTree",
+      "name": "03-new-chat-tree"
+    },
+    {
+      "action": "waitFor",
+      "identifier": "chat.composer.input",
+      "timeout": 10
+    },
+    {
+      "action": "press",
+      "identifier": "chat.provider.claude"
+    },
+    {
+      "action": "screenshot",
+      "name": "04-claude-selected",
+      "delay": 2
+    },
+    {
+      "action": "waitFor",
+      "identifier": "chat.composer.input",
+      "timeout": 10
+    },
+    {
+      "action": "type",
+      "text": "Reply with only the word pelican."
+    },
+    {
+      "action": "press",
+      "identifier": "chat.composer.send"
+    },
+    {
+      "action": "screenshot",
+      "name": "05-claude-streaming",
+      "delay": 2
+    },
+    {
+      "action": "waitFor",
+      "text": "pelican",
+      "timeout": 90
+    },
+    {
+      "action": "screenshot",
+      "name": "06-claude-replied",
+      "delay": 3
+    },
+    {
+      "action": "dumpTree",
+      "name": "06-claude-tree"
+    },
+    {
+      "action": "press",
+      "identifier": "chat.provider.codex"
+    },
+    {
+      "action": "screenshot",
+      "name": "07-codex-selected",
+      "delay": 2
+    },
+    {
+      "action": "waitFor",
+      "identifier": "chat.composer.input",
+      "timeout": 10
+    },
+    {
+      "action": "type",
+      "text": "Which bird did the previous assistant name? Reply with only that word, in capitals."
+    },
+    {
+      "action": "press",
+      "identifier": "chat.composer.send"
+    },
+    {
+      "action": "waitFor",
+      "text": "PELICAN",
+      "timeout": 120
+    },
+    {
+      "action": "screenshot",
+      "name": "08-codex-replied",
+      "delay": 3
+    },
+    {
+      "action": "waitFor",
+      "identifier": "chat.composer.input",
+      "timeout": 10
+    },
+    {
+      "action": "type",
+      "text": "Run this exact shell command and nothing else: touch e2e-made.txt"
+    },
+    {
+      "action": "press",
+      "identifier": "chat.composer.send"
+    },
+    {
+      "action": "waitFor",
+      "identifier": "chat.request.0.allow",
+      "timeout": 120
+    },
+    {
+      "action": "screenshot",
+      "name": "09-approval-card"
+    },
+    {
+      "action": "dumpTree",
+      "name": "09-approval-tree"
+    },
+    {
+      "action": "waitFor",
+      "identifier": "chat.request.1.allow",
+      "timeout": 0,
+      "absent": true
+    },
+    {
+      "action": "press",
+      "identifier": "chat.request.0.allow"
+    },
+    {
+      "action": "screenshot",
+      "name": "10-after-approval",
+      "delay": 15
+    },
+    {
+      "action": "waitFor",
+      "identifier": "chat.composer.input",
+      "timeout": 10
+    },
+    {
+      "action": "type",
+      "text": "Write a 400 word story about a dragon."
+    },
+    {
+      "action": "press",
+      "identifier": "chat.composer.send"
+    },
+    {
+      "action": "waitFor",
+      "identifier": "chat.stop",
+      "timeout": 30
+    },
+    {
+      "action": "screenshot",
+      "name": "11-running"
+    },
+    {
+      "action": "press",
+      "identifier": "chat.stop"
+    },
+    {
+      "action": "screenshot",
+      "name": "12-stopped",
+      "delay": 5
+    },
+    {
+      "action": "press",
+      "identifier": "chat.provider.local"
+    },
+    {
+      "action": "screenshot",
+      "name": "13-local-selected",
+      "delay": 2
+    },
+    {
+      "action": "press",
+      "identifier": "chat.model"
+    },
+    {
+      "action": "screenshot",
+      "name": "14-menu-chat.model",
+      "delay": 1
+    },
+    {
+      "action": "press",
+      "identifier": "chat.mode"
+    },
+    {
+      "action": "screenshot",
+      "name": "14-menu-chat.mode",
+      "delay": 1
+    },
+    {
+      "action": "press",
+      "identifier": "chat.effort"
+    },
+    {
+      "action": "screenshot",
+      "name": "14-menu-chat.effort",
+      "delay": 1
+    },
+    {
+      "action": "press",
+      "identifier": "gearshape"
+    },
+    {
+      "action": "screenshot",
+      "name": "15-settings",
+      "delay": 2
+    },
+    {
+      "action": "press",
+      "identifier": "settings.providers"
+    },
+    {
+      "action": "screenshot",
+      "name": "16-settings-providers",
+      "delay": 2
+    },
+    {
+      "action": "dumpTree",
+      "name": "16-settings-tree"
+    }
+  ]
+}

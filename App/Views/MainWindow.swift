@@ -97,6 +97,7 @@ struct MainWindow: View {
         .buttonStyle(.plain)
         .help(item.title)
         .accessibilityLabel(item.title)
+        .accessibilityIdentifier(item.icon)
         .accessibilityAddTraits(selected ? [.isSelected] : [])
         .background { layoutProbe("button-\(item.rawValue)") }
     }
@@ -263,7 +264,7 @@ struct SettingsWorkspaceView: View {
     var body: some View {
         TabView(selection: $tab) {
             if let chat = model.chatModel {
-                AgentProviderSettingsView(chat: chat).tabItem { Label("Providers", systemImage: "cpu") }.tag("providers")
+                AgentProviderSettingsView(chat: chat).tabItem { Label("Providers", systemImage: "cpu") }.tag("providers").accessibilityIdentifier("settings.providers")
             }
             OnboardingView().tabItem { Label("Setup", systemImage: "checklist") }.tag("setup")
             ConnectorsView().tabItem { Label("Connections", systemImage: "point.3.connected.trianglepath.dotted") }.tag("connections")

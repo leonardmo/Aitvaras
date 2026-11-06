@@ -909,3 +909,52 @@ Host checks in an isolated profile (package tests do not compile App):
   replay. Run the existing capture synthetic checks and private DB-copy gate.
 
 Legacy adapters and their diagnostic views remain until the M6.3 UI gate passes.
+
+## Debug in-process chat self-drive
+
+Set `AITVARAS_SELF_DRIVE` to a scenario JSON file and
+`AITVARAS_SELF_DRIVE_OUTPUT` to a local artifact directory. Also set
+`AITVARAS_STATE_DIR` to a disposable profile and
+`AITVARAS_DISABLE_EXTERNAL_INTEGRATIONS=1`; missing isolation refuses startup.
+Launch the Debug executable in the background without `open` or an activation
+request. Release builds exclude the driver and helpers. Self-drive bypasses the
+normal scene, companion and hotkeys, prohibits application activation and hosts
+MainWindow in a nonactivating panel at alpha zero with mouse events ignored.
+
+**Host gate first:** run `UITests/self-drive/probe.json` without VoiceOver or
+Accessibility, Automation or Screen Recording grants. Inspect its results and
+trees for identifier discovery, a successful press, and a typed composer value
+observed by the text wait. Check `probe-composer.png` for rendered content.
+Independently watch another app retain keyboard focus and the pointer stay still
+through launch and termination; no permission or password prompt may appear.
+Package tests do not prove these runtime assumptions. A failed probe blocks
+relying on self-drive coverage; preserve the artifacts to fix the adapter.
+
+The format is `{"steps":[{"action":"press","identifier":"chat.new"}]}`.
+Actions: `press` by identifier; `type` appends `text` to the composer;
+`waitFor` takes exactly one `identifier` or case-insensitive visible `text`,
+a `timeout` in seconds and optional `absent:true`; `screenshot` and `dumpTree`
+take a safe artifact `name`. Every step accepts an optional settling `delay`.
+Results contain one index/action/status/reason entry per step and checkpoint
+atomically after each step; failures continue. Press uses in-process accessibility
+then window-local mouse events; a later wait must verify its effect. Typing uses
+the accessibility value setter; Send must verify the SwiftUI binding. PNGs cache
+the content view, and dumps walk only the window's accessibility children.
+Setup/output errors write `startup-error.txt` when possible. Missing results,
+startup errors or failed steps fail a run regardless of process exit status.
+Keep artifacts local: they can contain chat content.
+
+`UITests/self-drive/golden-path.json` keeps the XCUITest's prompts, identifiers
+and screenshot names. `AITVARAS_AGENT_TEST_PROVIDERS=real` explicitly enables
+real CLI subscription turns with personal integrations disabled. The existing
+Unassigned New Chat path may expose the legacy Local composer without provider
+controls in an empty profile; missing controls remain failures. Text waits retain
+the original limitation that matching text does not prove its author. Settings
+uses the in-window `gearshape` button and Providers tab instead of Command-comma.
+Native menu presses record unsupported failures; their named screenshots show
+the current content. The original XCUITest stays as the final check for native
+menus, file panels, drag and drop, real focus and system-rendered screenshots.
+Self-drive covers in-process chat controls, bindings, turns, approvals and Stop
+only after the host gate passes. The supervisor must regenerate/build the App
+on the host; the recursive App source entry includes the new file without a
+project configuration change.

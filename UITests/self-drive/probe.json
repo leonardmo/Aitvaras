@@ -1,0 +1,35 @@
+{
+  "steps": [
+    {
+      "action": "dumpTree",
+      "name": "probe-launch-tree",
+      "delay": 1
+    },
+    {
+      "action": "press",
+      "identifier": "bubble.left.and.text.bubble.right"
+    },
+    {
+      "action": "waitFor",
+      "identifier": "chat.composer.input",
+      "timeout": 10
+    },
+    {
+      "action": "type",
+      "text": "Self-drive probe 🐉"
+    },
+    {
+      "action": "waitFor",
+      "text": "Self-drive probe 🐉",
+      "timeout": 5
+    },
+    {
+      "action": "screenshot",
+      "name": "probe-composer"
+    },
+    {
+      "action": "dumpTree",
+      "name": "probe-composer-tree"
+    }
+  ]
+}
