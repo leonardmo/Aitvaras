@@ -4,6 +4,112 @@ import AitvarasStore
 @testable import AitvarasAgents
 
 @Suite struct TranscriptReducerTests {
+    @Test(arguments: ["completed", "nonzero", "failure", "disconnect", "missing", "wrong-turn", "in-progress", "malformed", "timeout"])
+    func missingCodexToolCompletionReconcilesBeforeTurnEnd(scenario: String) async throws {
+        let fixture = try BackendExecutableFixture(script: "scenario = '\(scenario)'\n" + #"""
+codex_init()
+start_thread()
+r=read()
+assert r['method']=='turn/start'
+emit({'id':r['id'],'result':{'turn':{'id':'turn-test'}}})
+item={'id':'command-test','type':'commandExecution','command':'printf example','cwd':root,
+      'commandActions':[],'status':'inProgress','aggregatedOutput':None,'exitCode':None,'durationMs':None}
+p={'threadId':'thread-test','turnId':'turn-test','itemId':item['id']}
+emit({'method':'item/started','params':dict(p,item=item)})
+emit({'id':'approval-test','method':'item/commandExecution/requestApproval','params':dict(p,command=item['command'],cwd=root)})
+assert read()=={'id':'approval-test','result':{'decision':'accept'}}
+message={'id':'reply','type':'agentMessage','text':'Done'}
+terminal={'threadId':'thread-test','turn':{'id':'turn-test','status':'completed','items':[message]}}
+emit({'method':'turn/completed','params':terminal})
+r=read()
+assert r['method']=='thread/read'
+assert r['params']=={'threadId':'thread-test','includeTurns':True}
+if scenario=='disconnect':
+    open('done','w').close()
+    sys.exit(7)
+finished=dict(item,status='completed',aggregatedOutput='example',exitCode=7 if scenario=='nonzero' else 0,durationMs=12)
+result={'thread':{'id':'thread-test','turns':[
+    {'id':'older-turn','items':[dict(finished,aggregatedOutput='wrong turn')]},
+    {'id':'turn-test','items':[finished,finished,dict(finished,id='unstarted'),message]}]}}
+if scenario=='failure':
+    emit({'id':r['id'],'error':{'code':-32603,'message':'History unavailable'}})
+elif scenario!='timeout':
+    if scenario=='missing': result['thread']['turns'][1]['items']=[]
+    elif scenario=='wrong-turn': result['thread']['turns'].pop()
+    elif scenario=='in-progress': finished['status']='inProgress'
+    elif scenario=='malformed': finished.pop('status')
+    emit({'id':r['id'],'result':result})
+# A duplicate turn end cannot launch another read or finish twice.
+emit({'method':'turn/completed','params':terminal})
+next_turn=read()
+assert next_turn['method']=='turn/start'
+if scenario=='timeout':
+    # A reply after the deadline must not leak into this next turn.
+    emit({'id':r['id'],'result':result})
+emit({'method':'item/completed','params':dict(p,item=finished)})
+emit({'method':'turn/completed','params':terminal})
+emit({'id':next_turn['id'],'result':{'turn':{'id':'next-turn'}}})
+emit({'method':'turn/completed','params':{'threadId':'thread-test','turn':{'id':'next-turn','status':'completed','items':[]}}})
+done()
+"""#)
+        defer { fixture.remove() }
+        let backend = CodexBackend(executable: fixture.executable, environment: fixture.environment)
+        let session = AgentChatSession(chatID: UUID(), provider: .codex, cwd: fixture.directory.path, model: "test")
+        let raw = try await backend.start(session.configuration)
+        let run = AgentActionCoordinator(run: raw, mode: .ask, provenance: .init(chatID: session.chatID), audit: { _ in })
+        let input = AgentInput(text: "Run the example command")
+        var state = ChatState(chatID: session.chatID)
+        state.begin(input, session: session, outputID: UUID())
+        let started = ContinuousClock.now
+        try await run.send(input, willDeliver: {})
+        let events = try await collectTurn(run)
+        #expect(ContinuousClock.now - started < .seconds(5))
+        var completions = 0
+        for event in events {
+            state.reduce(event, newEntryID: UUID())
+            if case .toolFinished = event.kind {
+                completions += 1
+                #expect(state.isRunning)
+                #expect(event.scope.itemID == "command-test")
+                #expect(event.scope.turnID == "turn-test")
+            }
+        }
+        let confirmed = scenario == "completed" || scenario == "nonzero"
+        #expect(events.last?.kind == .turnEnded(.completed))
+        #expect(state.outcome == .completed)
+        #expect(!state.isRunning)
+        #expect(completions == (confirmed ? 1 : 0))
+        #expect(state.entries.filter { $0.kind == "assistant" }.map(\.text) == ["Done"])
+        let row = try #require(state.entries.first { $0.kind == "tool" })
+        #expect(state.entries.filter { $0.kind == "tool" }.count == 1)
+        let payload = try #require(row.payloadJSON.flatMap(JSONValue.parse))
+        #expect(payload["finished"] == .bool(true))
+        #expect(payload["completionUnconfirmed"] == .bool(!confirmed))
+        #expect(payload["isError"] == .bool(scenario == "nonzero"))
+        let summary = AgentActionPresentation.toolSummary(.init(name: row.text, input: payload["input"] ?? .null),
+            finished: true, isError: scenario == "nonzero", completionUnconfirmed: !confirmed)
+        #expect(summary == (scenario == "nonzero" ? "Failed to run printf example"
+            : confirmed ? "Ran printf example" : "Ended without a result: printf example"))
+        if confirmed {
+            #expect(payload["output"]?["exitCode"] == .number(scenario == "nonzero" ? 7 : 0))
+            #expect(payload["output"]?["durationMs"] == .number(12))
+            #expect(AgentTranscriptContent.display(payload["output"] ?? .null)
+                == "Exit code: \(scenario == "nonzero" ? 7 : 0)\nexample")
+        }
+        #expect((row.presentationIdentifier == "chat.tool.completed") == (scenario == "completed"))
+        if scenario != "disconnect" {
+            // Recovery failure, including timeout, must leave the shared wire usable.
+            try await run.send(.init(text: "Next turn"), willDeliver: {})
+            let next = try await collectTurn(run)
+            #expect(next.last?.kind == .turnEnded(.completed))
+            #expect(!next.contains { if case .toolFinished = $0.kind { true } else { false } })
+        }
+        try await Task.sleep(for: .milliseconds(20))
+        try fixture.assertComplete()
+        try await run.shutdown()
+        try await backend.shutdown()
+    }
+
     @Test(arguments: [true, false])
     func recordedAskCommandCompletionSurvivesManagerPersistence(completionDelivered: Bool) async throws {
         let fixture: BackendExecutableFixture

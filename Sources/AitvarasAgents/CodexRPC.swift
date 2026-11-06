@@ -19,10 +19,12 @@ actor CodexRun: AgentRun {
     private var seenRequests: Set<AgentRequestID> = []
     private var completedTurns: Set<String> = []
     private var completedItems: Set<String> = []
+    private var completingOutcome: AgentTurnOutcome?
     private var items: [String: JSONValue] = [:]
     private var proposedPlan: (id: String, text: String)?
     private var planRequestID: AgentRequestID?
     private var executingApprovedPlan = false
+    private static let toolTypes: Set<String> = ["commandExecution", "fileChange", "mcpToolCall", "dynamicToolCall", "webSearch"]
 
     init(backend: CodexBackend, wire: AgentWire, session: AgentSessionID, configuration: AgentSessionConfiguration) {
         self.backend = backend; self.wire = wire; self.session = session; self.configuration = configuration; mode = configuration.mode
@@ -151,7 +153,7 @@ actor CodexRun: AgentRun {
         case "item/started":
             let item = p["item"] ?? .null
             if let itemID { items[itemID] = item }
-            if ["commandExecution", "fileChange", "mcpToolCall", "dynamicToolCall", "webSearch"].contains(item["type"]?.stringValue ?? "") {
+            if Self.toolTypes.contains(item["type"]?.stringValue ?? "") {
                 emit(.toolStarted(AgentTool(name: item["type"]?.stringValue ?? "tool", input: item)), item: itemID)
             }
         case "item/completed": if let item = p["item"] { complete(item) }
@@ -163,25 +165,53 @@ actor CodexRun: AgentRun {
                 cacheWriteInputTokens: last["cacheWriteInputTokens"]?.int, thinkingTokens: last["reasoningOutputTokens"]?.int,
                 contextTokens: usage["total"]?["totalTokens"]?.int, contextLimit: usage["modelContextWindow"]?.int)))
         case "turn/completed":
-            guard input != nil else { return }
+            guard let owner = input else { return }
             acknowledge()
             for item in p["turn"]?["items"]?.arrayValue ?? [] { complete(item) }
             let status = p["turn"]?["status"]?.stringValue
             let outcome: AgentTurnOutcome = status == "completed" ? .completed : status == "interrupted" ? .interrupted : .failed(.unknown)
             if let turn { completedTurns.insert(turn) }
-            if mode == .plan, !executingApprovedPlan, outcome == .completed, let plan = proposedPlan,
-               !plan.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                // A completed plan item is authoritative. Unlike turn/plan/updated,
-                // this local review request authorizes a separate execution turn.
-                let requestID = AgentRequestID.string("plan:\(turn ?? ""):\(plan.id)")
-                let request = AgentRequest(id: requestID, scope: scope(item: plan.id), kind: .plan(plan.text))
-                requests[requestID] = request; planRequestID = requestID
-                emit(.request(request), item: plan.id)
-                return
-            }
-            emit(.turnEnded(outcome)); input = nil; requests.removeAll()
+            let unfinished = Set(items.filter { Self.toolTypes.contains($0.value["type"]?.stringValue ?? "") }.keys)
+            if let turn, !unfinished.isEmpty {
+                // The wire reader awaits receive(). Return before requesting so
+                // it can consume the reply, but keep turnEnded after recovery.
+                completingOutcome = outcome
+                Task { await self.reconcileTools(unfinished, turn: turn, owner: owner, outcome: outcome) }
+            } else { endTurn(outcome) }
         default: emit(.unknown(name: method, payload: p), item: itemID)
         }
+    }
+    private func reconcileTools(_ unfinished: Set<String>, turn nativeTurn: String, owner: UUID,
+                                outcome: AgentTurnOutcome) async {
+        let result = try? await wire.request("thread/read", .object([
+            "threadId": .string(session.nativeID), "includeTurns": .bool(true)]),
+            timeout: .seconds(2), failOnTimeout: false)
+        guard !closed, input == owner, turn == nativeTurn else { return }
+        if result?["thread"]?["id"]?.stringValue == session.nativeID,
+           let recovered = result?["thread"]?["turns"]?.arrayValue?.first(where: { $0["id"]?.stringValue == nativeTurn }) {
+            for item in recovered["items"]?.arrayValue ?? [] {
+                guard let id = item["id"]?.stringValue, unfinished.contains(id),
+                      item["type"]?.stringValue == items[id]?["type"]?.stringValue,
+                      item["type"]?.stringValue == "webSearch"
+                        || ["completed", "failed", "declined"].contains(item["status"]?.stringValue ?? "") else { continue }
+                complete(item)
+            }
+        }
+        endTurn(outcome)
+    }
+    private func endTurn(_ outcome: AgentTurnOutcome) {
+        completingOutcome = nil
+        if mode == .plan, !executingApprovedPlan, outcome == .completed, let plan = proposedPlan,
+           !plan.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            // A completed plan item is authoritative. Unlike turn/plan/updated,
+            // this local review request authorizes a separate execution turn.
+            let requestID = AgentRequestID.string("plan:\(turn ?? ""):\(plan.id)")
+            let request = AgentRequest(id: requestID, scope: scope(item: plan.id), kind: .plan(plan.text))
+            requests[requestID] = request; planRequestID = requestID
+            emit(.request(request), item: plan.id)
+            return
+        }
+        emit(.turnEnded(outcome)); input = nil; requests.removeAll()
     }
     private func complete(_ item: JSONValue) {
         guard let nativeID = item["id"]?.stringValue, completedItems.insert(nativeID).inserted else { return }
@@ -213,6 +243,9 @@ actor CodexRun: AgentRun {
                 emit(.fileChanged(path: change["path"]?.stringValue ?? "", diff: change["diff"]?.stringValue ?? ""), item: nativeID)
             }
             emit(.toolFinished(output: item, isError: item["status"]?.stringValue == "failed"), item: nativeID)
+        case "commandExecution":
+            let failed = item["status"]?.stringValue == "failed" || (item["exitCode"]?.int.map { $0 != 0 } ?? false)
+            emit(.toolFinished(output: item, isError: failed), item: nativeID)
         default: emit(.toolFinished(output: item["aggregatedOutput"] ?? item, isError: item["status"]?.stringValue == "failed"), item: nativeID)
         }
     }
@@ -225,6 +258,7 @@ actor CodexRun: AgentRun {
                 emit(.turnEnded(.completed)); input = nil
             } else {
                 turn = nil; proposedPlan = nil; executingApprovedPlan = true
+                completedItems.removeAll(); items.removeAll()
                 // Approval is the user's instruction to continue this journaled
                 // action; only the turn/start response acknowledges the new mode.
                 do { try await startTurn(content: try AgentInput(text: "Implement the approved plan.").codexContent(), mode: .ask) }
@@ -270,7 +304,10 @@ actor CodexRun: AgentRun {
     func disconnected(_ error: AgentFailure) {
         guard !closed else { return }
         closed = true; requests.removeAll()
-        if input != nil { emit(.turnEnded(.failed(error))); input = nil }
+        // The provider already ended this turn; a failed recovery read cannot
+        // retroactively change that authoritative outcome.
+        if input != nil { emit(.turnEnded(completingOutcome ?? .failed(error))); input = nil }
+        completingOutcome = nil
         continuation.finish(throwing: error)
     }
     func abort() async {
