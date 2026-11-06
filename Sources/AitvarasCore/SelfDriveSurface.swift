@@ -68,8 +68,7 @@ import AppKit
         let frame = element.frame
         let point = window.convertPoint(fromScreen: NSPoint(x: frame.midX, y: frame.midY))
         guard frame.width > 0, frame.height > 0,
-              let content = window.contentView,
-              content.bounds.contains(content.convert(point, from: nil)) else {
+              window.frame.contains(NSPoint(x: frame.midX, y: frame.midY)) else {
             throw SelfDriveFailure("No in-window press target: \(identifier)")
         }
         for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {

@@ -449,6 +449,7 @@ public actor AgentSessionManager {
             catch { states[chat]?.end(.failed(.unknown)) }
             states[chat]?.end(slot.stopping ? .interrupted : .failed(failure))
         }
+        try? persistEntries(chat)
         states[chat]?.pendingCards = []; publish(chat)
         if let run = slot.coordinator { await Self.close(run, timeout: .seconds(2)) }
     }

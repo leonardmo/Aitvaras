@@ -279,8 +279,10 @@
       "timeout": 120
     },
     {
-      "action": "press",
-      "identifier": "chat.changes"
+      "action": "waitFor",
+      "identifier": "chat.changes.refresh",
+      "absent": true,
+      "timeout": 0
     },
     {
       "action": "screenshot",
@@ -288,9 +290,8 @@
       "delay": 15
     },
     {
-      "action": "waitFor",
-      "identifier": "chat.composer.input",
-      "timeout": 10
+      "action": "press",
+      "identifier": "chat.changes"
     },
     {
       "action": "type",
@@ -551,8 +552,10 @@
       "timeout": 10
     },
     {
-      "action": "press",
-      "identifier": "chat.changes"
+      "action": "waitFor",
+      "identifier": "chat.changes.refresh",
+      "absent": true,
+      "timeout": 0
     },
     {
       "action": "screenshot",

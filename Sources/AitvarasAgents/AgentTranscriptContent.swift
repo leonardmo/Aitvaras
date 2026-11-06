@@ -135,8 +135,9 @@ extension AgentActionPresentation {
         return command
     }
 
-    public static func toolSummary(_ tool: AgentTool, finished: Bool, isError: Bool) -> String {
+    public static func toolSummary(_ tool: AgentTool, finished: Bool, isError: Bool, completionUnconfirmed: Bool = false) -> String {
         let detail = AgentActionPresentation(tool: tool).detail.components(separatedBy: .newlines).first ?? ""
+        if completionUnconfirmed { return detail.isEmpty ? "Ended without a result" : "Ended without a result: \(detail)" }
         let verbs: (String, String, String)
         switch tool.name.lowercased() {
         case "bash", "commandexecution": verbs = ("Running", "Ran", "Failed to run")
@@ -153,7 +154,8 @@ extension AgentActionPresentation {
 extension AgentTranscriptEntry {
     public var presentationIdentifier: String {
         if kind == "tool", let payload = payloadJSON.flatMap(JSONValue.parse),
-           payload["finished"]?.boolValue == true, payload["isError"]?.boolValue != true {
+           payload["finished"]?.boolValue == true, payload["isError"]?.boolValue != true,
+           payload["completionUnconfirmed"]?.boolValue != true {
             return "chat.tool.completed"
         }
         if kind == "importedHistory" { return "chat.importedHistory.\(id)" }

@@ -120,7 +120,14 @@ import AitvarasCore
         })
         #expect(secondApproval.optional == true)
         let panelShot = try #require(scenario.steps.firstIndex { $0.name == "10-after-approval" })
-        #expect(scenario.steps[panelShot - 1].action == .press && scenario.steps[panelShot - 1].identifier == "chat.changes")
+        #expect(scenario.steps[panelShot - 1].action == .waitFor
+            && scenario.steps[panelShot - 1].identifier == "chat.changes.refresh"
+            && scenario.steps[panelShot - 1].absent == true)
+        #expect(scenario.steps[panelShot + 1].action == .press && scenario.steps[panelShot + 1].identifier == "chat.changes")
+        let claudeShot = try #require(scenario.steps.firstIndex { $0.name == "18-claude-replied" })
+        #expect(scenario.steps[claudeShot - 1].action == .waitFor
+            && scenario.steps[claudeShot - 1].identifier == "chat.changes.refresh"
+            && scenario.steps[claudeShot - 1].absent == true)
         #expect(scenario.steps.contains { $0.action == .press && $0.identifier == "cpu" })
         #expect(scenario.steps.contains { $0.action == .waitFor && $0.identifier == "settings.providers.page" })
         #expect(approval < claude)
