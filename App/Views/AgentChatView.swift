@@ -5,6 +5,7 @@ import AitvarasAgents
 
 /// One transcript and composer, observing the application-owned chat manager.
 struct AgentChatView: View {
+    @Environment(AppModel.self) private var model
     @Bindable var chat: ChatModel
     let chatID: UUID
     var canSend = true
@@ -86,6 +87,19 @@ struct AgentChatView: View {
                             Button("Sign in") { chat.signIn(provider) }
                                 .accessibilityIdentifier("chat.signin")
                         }
+                    } else if !canSend {
+                        Image(systemName: "archivebox")
+                            .accessibilityLabel("Archived")
+                            .accessibilityIdentifier("chat.archived.status")
+                        Spacer(minLength: 0)
+                        Button("Restore") { model.setWorkspaceChatArchived(chatID, archived: false) }
+                            .accessibilityIdentifier("chat.restore")
+                    } else if chat.state?.outcome == .interrupted {
+                        Image(systemName: "pause.circle")
+                            .help("Interrupted · Send to continue")
+                            .accessibilityLabel("Interrupted. Send to continue.")
+                            .accessibilityIdentifier("chat.interrupted")
+                        Spacer(minLength: 0)
                     }
                 }
                 .controlSize(.small).frame(height: 24)

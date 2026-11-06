@@ -215,30 +215,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
-        false   // companion keeps living in the corner
+        false   // application-owned chats and the companion keep running
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         guard !terminationPending else { return .terminateLater }
         terminationPending = true
         Task {
-            await AppModel.shared.codexWorkspace.stopBeforeTermination()
-            await AppModel.shared.claudeWorkspace.stopBeforeTermination()
-            await AppModel.shared.codexNativeWorkspace.stopBeforeTermination()
-            await AppModel.shared.nativeWorkspace.operations.stopBeforeTermination()
-            await AppModel.shared.shutdownMonitoring()
-            await AppModel.shared.captureRefinement.stopBeforeTermination()
-            AppModel.shared.modelDownloads.cancelActive()
-            AppModel.shared.neuralVoiceInstaller.cancelActive()
-            await AppModel.shared.modelDownloads.stopBeforeTermination()
-            await AppModel.shared.neuralVoiceInstaller.stopBeforeTermination()
-            await SpeechAssetReadiness.shared.stopBeforeTermination(reporter: AppModel.shared.activityReporter)
             do {
+                // Journal interruption and detach chat generations before
+                // waiting for unrelated installers or legacy operations.
                 try await AppModel.shared.shutdownAgentChats()
+                await AppModel.shared.codexWorkspace.stopBeforeTermination()
+                await AppModel.shared.claudeWorkspace.stopBeforeTermination()
+                await AppModel.shared.codexNativeWorkspace.stopBeforeTermination()
+                await AppModel.shared.nativeWorkspace.operations.stopBeforeTermination()
+                await AppModel.shared.shutdownMonitoring()
+                await AppModel.shared.captureRefinement.stopBeforeTermination()
+                AppModel.shared.modelDownloads.cancelActive()
+                AppModel.shared.neuralVoiceInstaller.cancelActive()
+                await AppModel.shared.modelDownloads.stopBeforeTermination()
+                await AppModel.shared.neuralVoiceInstaller.stopBeforeTermination()
+                await SpeechAssetReadiness.shared.stopBeforeTermination(reporter: AppModel.shared.activityReporter)
                 try await AppModel.shared.capture?.stopBeforeTermination()
                 sender.reply(toApplicationShouldTerminate: true)
             } catch {
                 terminationPending = false
+                AppModel.shared.chatModel?.resumeAfterCancelledTermination()
                 AppModel.shared.nativeWorkspace.operations.resumeAfterCancelledTermination()
                 AppModel.shared.codexWorkspace.resumeAfterCancelledTermination()
                 AppModel.shared.claudeWorkspace.resumeAfterCancelledTermination()

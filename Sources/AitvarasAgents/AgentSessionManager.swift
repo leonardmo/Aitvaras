@@ -1,7 +1,7 @@
 import Foundation
 
 public enum AgentSessionManagerError: Error, Sendable, Equatable {
-    case chatBusy, runningChatLimit, shuttingDown, missingSession, staleRun, persistence
+    case chatBusy, chatUnavailable, runningChatLimit, shuttingDown, missingSession, staleRun, persistence
 }
 
 /// Application lifetime owner. Views only subscribe; detaching never stops a run.
@@ -93,9 +93,21 @@ public actor AgentSessionManager {
         approvalSubscribers.values.forEach { $0.yield(approvals) }
     }
 
+    /// Shared-chat metadata only. Neither operation sends to a provider or
+    /// disposes a run; an archived active chat can still finish or be stopped.
+    public func rename(chatID: UUID, title: String) throws {
+        guard !closing else { throw AgentSessionManagerError.shuttingDown }
+        try persistence.renameAgentChat(chatID: chatID, title: title)
+    }
+    public func setArchived(chatID: UUID, archived: Bool) throws {
+        guard !closing else { throw AgentSessionManagerError.shuttingDown }
+        try persistence.archiveAgentChat(chatID: chatID, archived: archived)
+    }
+
     /// Saving settings starts no process. A subsequent Send resumes with them.
     public func configure(_ session: AgentChatSession) async throws {
         guard !closing else { throw AgentSessionManagerError.shuttingDown }
+        try persistence.requireAgentChatAvailable(chatID: session.chatID)
         guard live[session.chatID]?.inputID == nil, live[session.chatID]?.followups.isEmpty != false,
               live[session.chatID]?.sendingFollowup != true, live[session.chatID]?.stopping != true else {
             throw AgentSessionManagerError.chatBusy
@@ -117,6 +129,7 @@ public actor AgentSessionManager {
     }
     private func followup(chatID: UUID, provider: AgentProvider, input: AgentInput) async throws {
         guard !closing else { throw AgentSessionManagerError.shuttingDown }
+        try persistence.requireAgentChatAvailable(chatID: chatID)
         guard let slot = live[chatID], slot.session.provider == provider,
               let run = slot.coordinator, !slot.stopping, !slot.sendingFollowup,
               provider != .local, slot.followups.count < 32,
@@ -173,6 +186,7 @@ public actor AgentSessionManager {
 
     private func deliver(chatID: UUID, provider: AgentProvider, input: AgentInput, retry: Bool) async throws {
         guard !closing else { throw AgentSessionManagerError.shuttingDown }
+        try persistence.requireAgentChatAvailable(chatID: chatID)
         guard live[chatID]?.inputID == nil, live[chatID]?.followups.isEmpty != false,
               live[chatID]?.sendingFollowup != true, live[chatID]?.stopping != true else {
             throw AgentSessionManagerError.chatBusy
@@ -463,7 +477,9 @@ public actor AgentSessionManager {
                 catch { storageFailed = true }
                 states[chat]?.end(.interrupted)
             }
-            states[chat]?.pendingCards = []; publish(chat)
+            states[chat]?.pendingCards = []
+            do { try persistEntries(chat) } catch { storageFailed = true }
+            publish(chat)
         }
         // All closes share one deadline, including a misbehaving injected run.
         let runs = slots.values.compactMap(\.coordinator)

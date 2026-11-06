@@ -1,5 +1,6 @@
 import Foundation
 import GRDB
+import AitvarasAgents
 
 public enum WorkspaceFolderAccess: String, Codable, Sendable, CaseIterable { case readOnly, readWrite }
 public enum WorkspaceChatKind: String, Codable, Sendable, CaseIterable { case primary, temporary }
@@ -321,6 +322,17 @@ extension Stores {
         }
     }
 
+    /// Read the current record inside the write so a rename cannot restore
+    /// stale pin, archive or activity metadata from an open editor.
+    public func renameWorkspaceChat(id: UUID, title: String) throws {
+        let title = try Self.workspaceName(title)
+        try db.queue.write { dbc in
+            guard var chat = try WorkspaceChat.fetchOne(dbc, key: id) else { throw WorkspaceStoreError.chatNotFound }
+            chat.title = title
+            try chat.update(dbc)
+        }
+    }
+
     public func setWorkspaceChatArchived(id: UUID, archived: Bool, now: Date = .now) throws {
         try db.queue.write { dbc in
             guard var chat = try WorkspaceChat.fetchOne(dbc, key: id) else { throw WorkspaceStoreError.chatNotFound }
@@ -364,6 +376,9 @@ extension Stores {
                 .filter(Column("lastActivityAt") <= now.addingTimeInterval(-Self.workspaceTemporaryChatLifetime)).fetchAll(dbc)
             var count = 0
             for var chat in candidates where !protectedChatIDs.contains(chat.id) {
+                let agentPending = try AgentJournalTurn.filter(Column("chatID") == chat.id)
+                    .filter(Column("state") == AgentJournalState.running.rawValue).fetchCount(dbc) > 0
+                guard !agentPending else { continue }
                 let pending = try Bool.fetchOne(dbc, sql: """
                     SELECT EXISTS(SELECT 1 FROM activityRun
                     WHERE (lower(referenceID) = lower(?) OR lower(referenceID) = lower(?))

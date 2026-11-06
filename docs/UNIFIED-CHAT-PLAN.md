@@ -120,6 +120,20 @@ instructions; git worktree per chat; changes panel with commit and discard;
 several chats running in parallel and in the background; resume after restart;
 context and quota gauges; rename and archive.
 
+Chat lifecycle (M3.12): closing the window only detaches its observers; runs
+belong to the application. Sidebar dots distinguish running, needs-you, failed
+and interrupted chats. Rename and archive edit the shared chat's local metadata,
+preserving every provider session and transcript. Archive does not stop active
+work or expire approvals; Stop and replies remain available, and new messages
+require Restore. Running chats cannot expire automatically. Send and turn end
+update activity ordering without unarchiving a chat. Quit journals active and
+queued inputs as interrupted before disposing runs; startup recovers crash
+leftovers without sending. The next explicit Send resumes the saved native
+session with new input, never replaying the interrupted input. An interrupted
+icon occupies the composer's existing status space; an archived chat offers
+Restore there. Native rename/archive propagation is outside this shared-chat
+metadata operation.
+
 Git (M3.9–M3.11): new-chat creation offers a small **Use worktree** toggle only
 for a git project, off by default. Ownership, primary cwd and additional folder
 mappings survive restart; failed creation blocks Send instead of using the original

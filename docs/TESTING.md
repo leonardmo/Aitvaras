@@ -760,6 +760,28 @@ Confirm Discard is disabled on ordinary checkouts. Edit externally between revie
 and click, fail a hook and interrupt git; verify a single inline error and safe
 refresh. These checks need the host and do not follow from package tests alone.
 
+Background chat lifecycle (M3.12): `AgentLifecycleTests` replays the checked-in
+Claude/Codex interrupt recordings and uses fake executables for parallel running
+chats, scoped approval/status, subscriber detach/reattach, active archive,
+restore/continuation, invalid IDs and metadata, failed writes, activity ordering
+and automatic-expiry protection. A disk-backed database is reopened after quit;
+startup launches no provider, keeps partial output and native identity, and only
+the next explicit Send resumes. Crash recovery covers prepared, uncertain and
+acknowledged inputs without replay. Queued Claude inputs retain interrupted
+labels durably.
+
+Host verification: build the App target and use an isolated profile. On both
+real providers, run two chats, switch between them, close/reopen the main window
+and verify output and approval dots continue independently. Rename an active
+chat; archive one while streaming and one awaiting approval, then answer or
+Stop from Archived. Confirm the composer blocks Send until Restore. Quit during
+streaming and with a queued follow-up, relaunch and verify interrupted status,
+partial output, retained title/archive state and same-session continuation on
+the next Send without replay. Cancel quit through a failed capture save and
+confirm Send works again. Check keyboard and VoiceOver access to rename,
+archive/restore and status at minimum window size in light/dark; confirm no
+streaming layout jumps. Native rename/archive propagation is not claimed.
+
 ## What an agent session should do
 
 For Claude Code (or any agent) working on this repo: Layers 1–2 after every

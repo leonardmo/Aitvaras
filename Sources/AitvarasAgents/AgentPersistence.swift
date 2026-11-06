@@ -93,6 +93,9 @@ public struct AgentJournalTurn: Codable, Sendable, Equatable {
 /// Synchronous calls commit before returning, including the willDeliver barrier.
 /// The application injects its single store into its single manager.
 public protocol AgentSessionPersistence: Sendable {
+    func requireAgentChatAvailable(chatID: UUID) throws
+    func renameAgentChat(chatID: UUID, title: String) throws
+    func archiveAgentChat(chatID: UUID, archived: Bool) throws
     func agentSession(chatID: UUID, provider: AgentProvider) throws -> AgentChatSession?
     func saveAgentSession(_ session: AgentChatSession) throws
     func agentEntries(chatID: UUID) throws -> [AgentTranscriptEntry]

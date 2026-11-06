@@ -33,6 +33,7 @@ final class ChatModel {
     private var composerSelections = AgentComposerSelections()
     private var handledFailures: Set<UUID> = []
     private(set) var state: ChatState?
+    private var terminating = false
     private(set) var error: String?
     private(set) var authProvider: AgentProvider?
     private(set) var signingIn: AgentProvider?
@@ -122,7 +123,7 @@ final class ChatModel {
     var isBusy: Bool { state?.isRunning == true || chatID.map { sending[$0] != nil } == true }
     var canSubmit: Bool {
         guard let id = chatID else { return false }
-        return !gitBusy && !stopping.contains(id) && sending[id] == nil && signingIn == nil
+        return !terminating && !gitBusy && !stopping.contains(id) && sending[id] == nil && signingIn == nil
             && (!isBusy || provider != .local)
     }
     private var settingsKey: String { "\(chatID?.uuidString ?? "").\(provider.rawValue)" }
@@ -504,11 +505,13 @@ final class ChatModel {
         if sending[id] == pending { sending.removeValue(forKey: id) }
     }
     func shutdown() async throws {
+        terminating = true
         cancelSignIn(); stoppedSends.formUnion(sending.values)
         modelLoads.values.forEach { $0.task.cancel() }; modelLoads.removeAll()
         try await manager.shutdown()
         if let codex = backends[.codex] as? CodexBackend { try await codex.shutdown() }
     }
+    func resumeAfterCancelledTermination() { terminating = false }
     func approvalContext(_ suggestion: AgentApprovalSuggestion) -> String {
         let title = (try? stores.workspaceChat(id: suggestion.chatID))?.title ?? "Chat"
         return "\(title) · \(suggestion.request.scope.session?.provider.rawValue.capitalized ?? "Agent")"
