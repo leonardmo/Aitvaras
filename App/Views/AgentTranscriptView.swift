@@ -26,15 +26,7 @@ struct AgentTranscriptView: View {
                 } label: {
                     HStack(spacing: 6) {
                         if entry.kind == "tool" {
-                            if payload?["completionUnconfirmed"]?.boolValue == true {
-                                Image(systemName: "questionmark.circle")
-                            } else if payload?["isError"]?.boolValue == true {
-                                Image(systemName: "exclamationmark.circle")
-                            } else if payload?["finished"]?.boolValue == true {
-                                Image(systemName: "checkmark.circle")
-                            } else {
-                                Image(systemName: "terminal")
-                            }
+                            Image(systemName: entry.toolPresentationIcon)
                         }
                         Text(title).lineLimit(1).truncationMode(.middle)
 
@@ -112,7 +104,9 @@ struct AgentTranscriptView: View {
         return AgentActionPresentation.toolSummary(.init(name: entry.text, input: input),
             finished: payload?["finished"]?.boolValue == true,
             isError: payload?["isError"]?.boolValue == true,
-            completionUnconfirmed: payload?["completionUnconfirmed"]?.boolValue == true)
+            completionUnconfirmed: payload?["completionUnconfirmed"]?.boolValue == true,
+            turnCompletedNormally: payload?["turnCompletedNormally"]?.boolValue == true,
+            isDenied: payload?["isDenied"]?.boolValue == true)
     }
     @ViewBuilder private var toolDetails: some View {
         let input = payload?["input"] ?? .null

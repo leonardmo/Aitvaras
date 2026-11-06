@@ -16,6 +16,8 @@ public struct SelfDriveStep: Codable, Sendable {
     public enum Action: String, Codable, Sendable { case press, type, waitFor, screenshot, dumpTree }
     public let action: Action
     public var identifier: String?
+    /// A wait succeeds when any of these accessibility identifiers is present.
+    public var anyOf: [String]?
     public let text: String?
     public let name: String?
     public let timeout: Double?
@@ -29,6 +31,11 @@ public struct SelfDriveStep: Codable, Sendable {
     public var within: String?
     public let caseSensitive: Bool?
 
+    public func matchesIdentifier(_ value: String?) -> Bool {
+        guard let value else { return false }
+        return identifier == value || anyOf?.contains(value) == true
+    }
+
     private func invalid(_ reason: String) -> SelfDriveFailure { .init(reason) }
     public func validate() throws {
         for value in [timeout, delay].compactMap({ $0 }) {
@@ -38,14 +45,21 @@ public struct SelfDriveStep: Codable, Sendable {
         if (within != nil || caseSensitive != nil) && action != .waitFor {
             throw invalid("within and caseSensitive apply only to waitFor")
         }
+        if let anyOf {
+            guard action == .waitFor, !anyOf.isEmpty, anyOf.count <= 16,
+                  anyOf.allSatisfy({ !$0.isEmpty }), Set(anyOf).count == anyOf.count else {
+                throw invalid("anyOf needs 1...16 distinct nonempty identifiers on waitFor")
+            }
+        }
         switch action {
         case .press:
             guard identifier?.isEmpty == false else { throw invalid("press needs an identifier") }
         case .type:
             guard text != nil else { throw invalid("type needs text") }
         case .waitFor:
-            guard (identifier?.isEmpty == false) != (text?.isEmpty == false) else {
-                throw invalid("waitFor needs exactly one identifier or text")
+            guard [identifier != nil, text != nil, anyOf != nil].filter({ $0 }).count == 1,
+                  identifier?.isEmpty != true, text?.isEmpty != true else {
+                throw invalid("waitFor needs exactly one identifier, text or anyOf")
             }
         case .screenshot, .dumpTree:
             guard let name, !name.isEmpty, name != ".", name != "..",

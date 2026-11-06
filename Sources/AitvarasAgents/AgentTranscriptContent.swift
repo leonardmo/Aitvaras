@@ -139,9 +139,14 @@ extension AgentActionPresentation {
         return command
     }
 
-    public static func toolSummary(_ tool: AgentTool, finished: Bool, isError: Bool, completionUnconfirmed: Bool = false) -> String {
+    public static func toolSummary(_ tool: AgentTool, finished: Bool, isError: Bool, completionUnconfirmed: Bool = false,
+                                   turnCompletedNormally: Bool = false, isDenied: Bool = false) -> String {
         let detail = AgentActionPresentation(tool: tool).detail.components(separatedBy: .newlines).first ?? ""
-        if completionUnconfirmed { return detail.isEmpty ? "Ended without a result" : "Ended without a result: \(detail)" }
+        if isDenied { return detail.isEmpty ? "Denied" : "Denied: \(detail)" }
+        if completionUnconfirmed {
+            if turnCompletedNormally { return detail.isEmpty ? tool.name : detail }
+            return detail.isEmpty ? "Ended without a result" : "Ended without a result: \(detail)"
+        }
         let verbs: (String, String, String)
         switch tool.name.lowercased() {
         case "bash", "commandexecution": verbs = ("Running", "Ran", "Failed to run")
@@ -156,11 +161,21 @@ extension AgentActionPresentation {
 }
 
 extension AgentTranscriptEntry {
+    public var toolPresentationIcon: String {
+        let payload = payloadJSON.flatMap(JSONValue.parse)
+        if payload?["isDenied"]?.boolValue == true { return "hand.raised" }
+        if payload?["completionUnconfirmed"]?.boolValue == true {
+            return payload?["turnCompletedNormally"]?.boolValue == true ? "terminal" : "questionmark.circle"
+        }
+        if payload?["isError"]?.boolValue == true { return "exclamationmark.circle" }
+        return payload?["finished"]?.boolValue == true ? "checkmark.circle" : "terminal"
+    }
+
     public var presentationIdentifier: String {
         if kind == "tool", let payload = payloadJSON.flatMap(JSONValue.parse),
-           payload["finished"]?.boolValue == true, payload["isError"]?.boolValue != true,
-           payload["completionUnconfirmed"]?.boolValue != true {
-            return "chat.tool.completed"
+           payload["finished"]?.boolValue == true, payload["isDenied"]?.boolValue != true {
+            if payload["completionUnconfirmed"]?.boolValue == true { return "chat.tool.unconfirmed" }
+            if payload["isError"]?.boolValue != true { return "chat.tool.completed" }
         }
         if kind == "importedHistory" { return "chat.importedHistory.\(id)" }
         if kind == "handover" { return "chat.handover.\(id)" }
