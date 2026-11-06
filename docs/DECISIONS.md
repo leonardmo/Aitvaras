@@ -333,6 +333,9 @@ Changing provider and pressing Send is the consent for sending that chat's earli
 messages to the provider (amends D30). Every provider action passes
 `AgentActionCoordinator`, using Claude's pre-tool hook callback and Codex's sandbox,
 approvals and item events, so the autonomy policy and activity log still hold.
+Pending permission, plan and question cards wait without an automatic timeout,
+matching the native CLIs. Answers, Stop, provider cancellation or resolution
+(including turn end), and process exit clear them through the audited lifecycle.
 
 The new chat path bounds each deterministic handover block, including labels, to
 16,000 UTF-8 bytes. It keeps the newest completed messages, orders them
