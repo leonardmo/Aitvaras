@@ -1,4 +1,6 @@
 import SwiftUI
+import AppKit
+import UniformTypeIdentifiers
 import AitvarasAgents
 
 /// One transcript and composer, observing the application-owned chat manager.
@@ -11,6 +13,11 @@ struct AgentChatView: View {
     @State private var atBottom = true
     @State private var bottomVisible = true
     @State private var scrolling = false
+    @State private var choosingAttachments = false
+    @State private var attachmentTarget: (chatID: UUID, provider: AgentProvider)?
+    @State private var completion: AgentComposerTrigger?
+    @State private var showingCompletion = false
+    @FocusState private var composerFocused: Bool
 
     var body: some View {
         VStack(spacing: 0) {
@@ -77,16 +84,56 @@ struct AgentChatView: View {
 
     private var composer: some View {
         VStack(spacing: 8) {
+            if !chat.composerSelection.attachments.isEmpty {
+                ScrollView(.horizontal) {
+                    HStack(spacing: 6) {
+                        ForEach(chat.composerSelection.attachments) { file in
+                            HStack(spacing: 4) {
+                                Image(systemName: file.kind == .image ? "photo" : "doc")
+                                Text(file.name).lineLimit(1).truncationMode(.middle).frame(maxWidth: 160)
+                                Button { chat.composerSelection.attachments.removeAll { $0.id == file.id } } label: {
+                                    Image(systemName: "xmark")
+                                }
+                                .buttonStyle(.plain).accessibilityLabel("Remove \(file.name)")
+                                .accessibilityIdentifier("chat.attachment.remove.\(file.id)")
+                            }
+                            .font(.caption).padding(.horizontal, 8).padding(.vertical, 5)
+                            .background(.quaternary, in: Capsule())
+                            .accessibilityIdentifier("chat.attachment.\(file.id)")
+                        }
+                    }
+                }.scrollIndicators(.hidden).accessibilityIdentifier("chat.attachments")
+            }
             TextField("Message", text: $chat.draft, axis: .vertical)
                 .lineLimit(2...6).textFieldStyle(.plain)
+                .focused($composerFocused)
                 .disabled(!canSend)
                 .accessibilityIdentifier("chat.composer.input")
+                .onPasteCommand(of: [.fileURL, .png, .jpeg, .tiff]) { providers in _ = receiveAttachments(providers) }
+                .onChange(of: chat.draft) {
+                    completion = chat.provider == .local ? nil : AgentComposerTrigger.detect(chat.draft)
+                    showingCompletion = completion != nil
+                }
+                .popover(isPresented: $showingCompletion, arrowEdge: .top) {
+                    if let completion {
+                        AgentComposerCompletionView(chat: chat, trigger: completion) { showingCompletion = false }
+                    }
+                }
                 .onKeyPress(.return, phases: .down) { press in
+                    if showingCompletion { return .handled }
                     if press.modifiers.contains(.shift) { return .ignored }
                     if chat.canSubmit && canSend { Task { await chat.send() } }
                     return .handled
                 }
             HStack(spacing: 5) {
+                Button {
+                    guard let owner = chat.chatID else { return }
+                    attachmentTarget = (owner, chat.provider)
+                    showingCompletion = false; choosingAttachments = true
+                } label: { Image(systemName: "paperclip") }
+                    .disabled(!canSend || chat.provider == .local)
+                    .help("Attach files").accessibilityLabel("Attach files")
+                    .accessibilityIdentifier("chat.composer.attach")
                 Picker("Provider", selection: Binding(get: { chat.provider }, set: { chat.setProvider($0) })) {
                     ForEach([AgentProvider.claude, .codex, .local], id: \.self) { provider in
                         Text(provider.rawValue.capitalized).tag(provider)
@@ -144,13 +191,53 @@ struct AgentChatView: View {
                     .accessibilityLabel("Stop").accessibilityIdentifier("chat.stop")
                 Button { Task { await chat.send() } } label: { Image(systemName: "arrow.up") }
                     .keyboardShortcut(.return, modifiers: .command)
-                    .disabled(!canSend || !chat.canSubmit || chat.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .disabled(!canSend || !chat.canSubmit || !chat.hasInput)
                     .accessibilityLabel("Send").accessibilityIdentifier("chat.composer.send")
             }
             .controlSize(.small).menuStyle(.borderlessButton).fixedSize(horizontal: false, vertical: true)
         }
         .padding(12)
         .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 18))
+        .onDrop(of: [.fileURL, .png, .jpeg, .tiff], isTargeted: nil, perform: receiveAttachments)
+        .fileImporter(isPresented: $choosingAttachments, allowedContentTypes: [.item], allowsMultipleSelection: true) { result in
+            defer { attachmentTarget = nil }
+            guard case .success(let urls) = result, let target = attachmentTarget else { return }
+            Task { for url in urls { await chat.attach(url, chatID: target.chatID, provider: target.provider) } }
+        }
+        .onChange(of: chatID) { showingCompletion = false; completion = nil }
+        .onChange(of: chat.provider) { showingCompletion = false; completion = nil }
+        .onChange(of: showingCompletion) { if !showingCompletion { composerFocused = true } }
+    }
+    private func receiveAttachments(_ providers: [NSItemProvider]) -> Bool {
+        guard canSend, chat.provider != .local, let owner = chat.chatID else { return false }
+        let provider = chat.provider
+        for item in providers {
+            if item.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) {
+                _ = item.loadDataRepresentation(forTypeIdentifier: UTType.fileURL.identifier) { data, _ in
+                    guard let data, let url = URL(dataRepresentation: data, relativeTo: nil), url.isFileURL else {
+                        Task { @MainActor in chat.attachmentLoadFailed(chatID: owner, provider: provider) }; return
+                    }
+                    Task { @MainActor in await chat.attach(url, chatID: owner, provider: provider) }
+                }
+            } else if let type = [UTType.png, .jpeg, .tiff].first(where: { item.hasItemConformingToTypeIdentifier($0.identifier) }) {
+                _ = item.loadDataRepresentation(forTypeIdentifier: type.identifier) { data, _ in
+                    guard let data else {
+                        Task { @MainActor in chat.attachmentLoadFailed(chatID: owner, provider: provider) }; return
+                    }
+                    Task { @MainActor in
+                        if type == .tiff {
+                            guard let png = NSBitmapImageRep(data: data)?.representation(using: .png, properties: [:]) else {
+                                chat.attachmentLoadFailed(chatID: owner, provider: provider); return
+                            }
+                            chat.attach(data: png, name: "Image.png", chatID: owner, provider: provider)
+                        } else {
+                            chat.attach(data: data, name: type == .png ? "Image.png" : "Image.jpg", chatID: owner, provider: provider)
+                        }
+                    }
+                }
+            }
+        }
+        return true
     }
     private var outcomeError: String? {
         if case .failed = chat.state?.outcome { return "The response did not complete." }

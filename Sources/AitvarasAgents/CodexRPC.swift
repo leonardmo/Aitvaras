@@ -46,13 +46,14 @@ actor CodexRun: AgentRun {
     }
     func send(_ value: AgentInput, willDeliver: @escaping @Sendable () async throws -> Void) async throws {
         guard !closed, input == nil else { throw AgentFailure.invalidTransition }
+        let content = try contentForDelivery(value)
         input = value.id; userInputs = [value]; turn = nil; acknowledged = false; completedItems.removeAll(); items.removeAll()
         proposedPlan = nil; planRequestID = nil; executingApprovedPlan = false
         do { try await willDeliver() } catch { input = nil; throw error }
         guard !closed, input == value.id else { throw AgentFailure.invalidTransition }
         emit(.delivery(.deliveryUnknown))
         do {
-            try await startTurn(text: value.text, mode: mode)
+            try await startTurn(content: content, mode: mode)
         } catch {
             if input == value.id { emit(.turnEnded(.failed((error as? AgentFailure) ?? .unknown))); input = nil; requests.removeAll() }
             throw error
@@ -61,6 +62,7 @@ actor CodexRun: AgentRun {
     func followup(_ value: AgentInput, willDeliver: @escaping @Sendable () async throws -> Void) async throws {
         guard !closed, input != nil, let turn, !completedTurns.contains(turn),
               planRequestID == nil, !steering else { throw AgentFailure.invalidTransition }
+        let content = try contentForDelivery(value)
         steering = true
         defer { steering = false }
         try await willDeliver()
@@ -71,16 +73,24 @@ actor CodexRun: AgentRun {
         let result = try await wire.request("turn/steer", .object([
             "threadId": .string(session.nativeID), "expectedTurnId": .string(turn),
             "clientUserMessageId": .string(value.id.uuidString),
-            "input": .array([.object(["type": .string("text"), "text": .string(value.text)])])]))
+            "input": content]))
         guard !closed, result["turnId"]?.stringValue == turn else { throw AgentFailure.invalidTransition }
         continuation.yield(.init(scope: scope, kind: .delivery(.acknowledged)))
     }
-    private func startTurn(text: String, mode: AgentMode) async throws {
+    private func contentForDelivery(_ value: AgentInput) throws -> JSONValue {
+        let content = try value.codexContent()
+        guard content.jsonString.utf8.count + 4096 <= StreamingProcess.maximumLineBytes else { throw AgentAttachmentError.tooLarge }
+        return content
+    }
+    private func startTurn(content: JSONValue, mode: AgentMode) async throws {
         let owner = input
         var parameters: [String: JSONValue] = ["threadId": .string(session.nativeID),
-            "input": .array([.object(["type": .string("text"), "text": .string(text)])]),
+            "input": content,
             "approvalPolicy": .string(mode.codexApproval),
             "sandboxPolicy": .object(["type": .string(mode == .plan ? "readOnly" : "workspaceWrite")])]
+        if (content.arrayValue?.count ?? 0) > 1, let input {
+            parameters["clientUserMessageId"] = .string(input.uuidString)
+        }
         if let effort = configuration.effort { parameters["effort"] = .string(effort) }
         let result = try await wire.request("turn/start", .object(parameters))
         guard !closed, owner != nil, let native = result["turn"]?["id"]?.stringValue,
@@ -181,7 +191,11 @@ actor CodexRun: AgentRun {
             let text = (item["content"]?.arrayValue ?? []).compactMap { $0["text"]?.stringValue }.joined(separator: "\n")
             // Native user items may arrive for a steer while output remains
             // scoped to the original turn. Bind only an exact submitted input.
-            guard let index = userInputs.firstIndex(where: { $0.id.uuidString == nativeID || $0.text == text }) else { return }
+            let exact = userInputs.firstIndex { $0.id.uuidString == nativeID }
+            let matchingText = userInputs.firstIndex {
+                ([$0.text] + $0.attachments.filter { $0.kind == .text }.map(\.textBlock)).joined(separator: "\n") == text
+            }
+            guard let index = exact ?? matchingText else { return }
             let owner = userInputs.remove(at: index)
             continuation.yield(.init(scope: .init(runID: id, session: session, inputID: owner.id,
                 turnID: turn, itemID: nativeID), kind: .message(id: nativeID, role: "user", text: text)))
@@ -207,7 +221,7 @@ actor CodexRun: AgentRun {
                 turn = nil; proposedPlan = nil; executingApprovedPlan = true
                 // Approval is the user's instruction to continue this journaled
                 // action; only the turn/start response acknowledges the new mode.
-                do { try await startTurn(text: "Implement the approved plan.", mode: .ask) }
+                do { try await startTurn(content: try AgentInput(text: "Implement the approved plan.").codexContent(), mode: .ask) }
                 catch { emit(.turnEnded(.failed((error as? AgentFailure) ?? .unknown))); input = nil; throw error }
             }
             return

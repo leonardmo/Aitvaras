@@ -120,6 +120,22 @@ instructions; git worktree per chat; changes panel with commit and discard;
 several chats running in parallel and in the background; resume after restart;
 context and quota gauges; rename and archive.
 
+Composer inputs (M3.7/M3.8): drag, paste or the paperclip adds removable file
+chips. Selection snapshots the bytes; subsequent source edits do not change a
+Send or a safe sign-in retry. Up to eight files share a 512 KiB budget to fit
+the bounded CLI frame. Both providers accept UTF-8 text and PNG/JPEG/GIF/WebP;
+Claude also accepts PDF. Local's current text-only adapter disables attachments.
+Attachment bytes never enter a provider-switch handover. Unsent selections are
+scoped to the chat and provider.
+
+Typing `@` opens one searchable project-file popover; choosing a file explicitly
+inserts a quoted mention. Codex uses `fuzzyFileSearch`, Claude a bounded local
+folder search. Typing `/` opens the same flat picker for the native CLI catalog:
+Claude initialize commands or enabled Codex `skills/list` entries for this cwd.
+Codex selections insert `$skill` and include the native skill input. Missing
+catalogs show unavailable; no fallback command list is invented. Escape cancels,
+arrows select and Return inserts; selection never sends a message.
+
 Follow-up delivery (M3.5): Claude receives additional `user` frames on stdin
 and queues them in submission order. Codex receives `turn/steer` with the active
 `expectedTurnId`; steering does not replace the output owner. Each input has its

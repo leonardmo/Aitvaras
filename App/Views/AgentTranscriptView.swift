@@ -34,6 +34,12 @@ struct AgentTranscriptView: View {
                     Spacer(minLength: 30)
                     VStack(alignment: .trailing, spacing: 4) {
                         Text(entry.text).textSelection(.enabled)
+                        if let attachments = payload?["composer"]?["attachments"]?.arrayValue {
+                            ForEach(Array(attachments.enumerated()), id: \.offset) { _, file in
+                                Label(file["name"]?.stringValue ?? "File", systemImage: file["kind"]?.stringValue == "image" ? "photo" : "doc")
+                                    .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                            }
+                        }
                         if let status = followupLabel {
                             Text(status).font(.caption).foregroundStyle(.secondary)
                                 .accessibilityIdentifier("chat.followup.\(entry.id)")

@@ -20,6 +20,7 @@ actor ClaudeRun: AgentRun {
     private var streamedThinking: Set<String> = []
     private var seenRequests: Set<AgentRequestID> = []
     private(set) var availableModels: [AgentModel] = []
+    private(set) var availableCommands: [AgentCommand]?
 
     init(executable: URL, environment: [String: String], profile: String, configuration: AgentSessionConfiguration) {
         self.profile = profile; session = configuration.resume; modeState = AgentModeState(configuration.mode)
@@ -42,6 +43,7 @@ actor ClaudeRun: AgentRun {
         let value = try await wire.request("initialize", .object(["hooks": .object([
             "PreToolUse": hook("pre"), "PostToolUse": hook("post")])]), id: .string("init"))
         if let source = value["account"]?["apiKeySource"], source.stringValue != "none" { throw AgentFailure.unsupported }
+        availableCommands = try? AgentCommandCatalog.claude(value)
         availableModels = (value["models"]?.arrayValue ?? []).compactMap {
             guard let id = $0["value"]?.stringValue else { return nil }
             return AgentModel(id: id, name: $0["displayName"]?.stringValue ?? id,
@@ -63,24 +65,32 @@ actor ClaudeRun: AgentRun {
     }
     func send(_ value: AgentInput, willDeliver: @escaping @Sendable () async throws -> Void) async throws {
         guard !closed, input == nil, !writing else { throw AgentFailure.invalidTransition }
+        let frame = try userFrame(value, followup: false)
         input = value.id; acknowledged = false; interrupted = false; assistantFailure = nil; streamedThinking.removeAll(); streamTools.removeAll(); streamTexts.removeAll(); streamingMessageID = nil
         do { try await willDeliver() } catch { input = nil; throw error }
         guard !closed, input == value.id, !interrupted else { throw AgentFailure.invalidTransition }
         emit(.delivery(.deliveryUnknown))
-        try await wire.write(.object(["type": .string("user"), "message": .object([
-            "role": .string("user"), "content": .string(value.text)])]))
+        try await wire.write(frame)
     }
     func followup(_ value: AgentInput, willDeliver: @escaping @Sendable () async throws -> Void) async throws {
         guard !closed, !interrupted, input != nil, !writing,
               input != value.id, !queue.contains(value.id), queue.count < 32 else { throw AgentFailure.invalidTransition }
+        let frame = try userFrame(value, followup: true)
         writing = true
         defer { writing = false }
         try await willDeliver()
         guard !closed, !interrupted, input != nil else { throw AgentFailure.invalidTransition }
         queue.append(value.id)
         continuation.yield(.init(scope: .init(runID: id, session: session, inputID: value.id), kind: .delivery(.deliveryUnknown)))
-        try await wire.write(.object(["type": .string("user"), "uuid": .string(value.id.uuidString),
-            "message": .object(["role": .string("user"), "content": .string(value.text)])]))
+        try await wire.write(frame)
+    }
+    private func userFrame(_ value: AgentInput, followup: Bool) throws -> JSONValue {
+        var frame: [String: JSONValue] = ["type": .string("user"), "message": .object([
+            "role": .string("user"), "content": try value.claudeContent()])]
+        if followup { frame["uuid"] = .string(value.id.uuidString) }
+        let result = JSONValue.object(frame)
+        guard result.jsonString.utf8.count <= StreamingProcess.maximumLineBytes else { throw AgentAttachmentError.tooLarge }
+        return result
     }
     private func activateNext() {
         guard !interrupted, !queue.isEmpty else { return }

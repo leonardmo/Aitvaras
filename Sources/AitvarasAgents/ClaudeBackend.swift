@@ -77,6 +77,17 @@ public actor ClaudeBackend: AgentBackend {
     }
 
     public func start(_ configuration: AgentSessionConfiguration) async throws -> any AgentRun { try await makeRun(configuration) }
+    public func commands(directory: URL) async throws -> [AgentCommand] {
+        let run = try await makeRun(.init(directory: directory, model: "default"))
+        let commands = await run.availableCommands
+        try await run.shutdown()
+        guard let commands else { throw AgentFailure.unsupported }
+        return commands
+    }
+    public func files(query: String, directory: URL) async throws -> [AgentFileMention] {
+        let task = Task.detached { try AgentFileMention.localSearch(query: query, directory: directory) }
+        return try await withTaskCancellationHandler { try await task.value } onCancel: { task.cancel() }
+    }
     private func makeRun(_ configuration: AgentSessionConfiguration) async throws -> ClaudeRun {
         guard let executable else { throw AgentFailure.notInstalled }
         let status = try await status()
