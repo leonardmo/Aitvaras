@@ -66,7 +66,7 @@ actor ClaudeRun: AgentRun {
     }
     func send(_ value: AgentInput, willDeliver: @escaping @Sendable () async throws -> Void) async throws {
         guard !closed, input == nil, !writing else { throw AgentFailure.invalidTransition }
-        let frame = try userFrame(value, followup: false)
+        let frame = try userFrame(value)
         input = value.id; acknowledged = false; interrupted = false; assistantFailure = nil; streamedThinking.removeAll(); streamTools.removeAll(); streamTexts.removeAll(); streamingMessageID = nil
         do { try await willDeliver() } catch { input = nil; throw error }
         guard !closed, input == value.id, !interrupted else { throw AgentFailure.invalidTransition }
@@ -76,7 +76,7 @@ actor ClaudeRun: AgentRun {
     func followup(_ value: AgentInput, willDeliver: @escaping @Sendable () async throws -> Void) async throws {
         guard !closed, !interrupted, input != nil, !writing,
               input != value.id, !queue.contains(value.id), queue.count < 32 else { throw AgentFailure.invalidTransition }
-        let frame = try userFrame(value, followup: true)
+        let frame = try userFrame(value)
         writing = true
         defer { writing = false }
         try await willDeliver()
@@ -85,10 +85,11 @@ actor ClaudeRun: AgentRun {
         continuation.yield(.init(scope: .init(runID: id, session: session, inputID: value.id), kind: .delivery(.deliveryUnknown)))
         try await wire.write(frame)
     }
-    private func userFrame(_ value: AgentInput, followup: Bool) throws -> JSONValue {
+    private func userFrame(_ value: AgentInput) throws -> JSONValue {
         var frame: [String: JSONValue] = ["type": .string("user"), "message": .object([
             "role": .string("user"), "content": try value.claudeContent()])]
-        if followup { frame["uuid"] = .string(value.id.uuidString) }
+        // The persisted JSONL uses this UUID as the canonical user identity.
+        frame["uuid"] = .string(value.id.uuidString)
         let result = JSONValue.object(frame)
         guard result.jsonString.utf8.count <= StreamingProcess.maximumLineBytes else { throw AgentAttachmentError.tooLarge }
         return result
@@ -293,7 +294,7 @@ actor ClaudeRun: AgentRun {
             default: emit(.unknown(name: block["type"]?.stringValue ?? "content", payload: block), item: messageID)
             }
         }
-        if let messageID, !texts.isEmpty { emit(.message(id: messageID, role: message["role"]?.stringValue ?? "assistant", text: messageID == streamingMessageID && !streamTexts.isEmpty
+        if let messageID, !texts.isEmpty { emit(.message(id: value["uuid"]?.stringValue ?? messageID, role: message["role"]?.stringValue ?? "assistant", text: messageID == streamingMessageID && !streamTexts.isEmpty
             ? streamTexts.keys.sorted().compactMap { streamTexts[$0] }.joined(separator: "\n")
             : texts.joined(separator: "\n")), item: messageID) }
     }

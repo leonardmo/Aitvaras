@@ -82,7 +82,12 @@ public struct ChatState: Sendable, Equatable {
                 if textIDs[key] == nil { textIDs[key] = id; outputID = nil }
                 let previous = entries.first(where: { $0.id == id })?.text ?? ""
                 streamingText = previous + text
-                put(id: id, kind: "assistant", text: streamingText)
+                let nativeID: String?
+                if let session = event.scope.session, session.provider == .codex,
+                   let item = event.scope.itemID, let turn = event.scope.turnID {
+                    nativeID = session.canonicalMessageID(item, turnID: turn)
+                } else { nativeID = nil }
+                put(id: id, kind: "assistant", text: streamingText, nativeID: nativeID)
             case .thinkingDelta(let text):
                 putThinking(text, item: event.scope.itemID, complete: false, newEntryID: newEntryID)
             case .thinkingCompleted(let text):
@@ -97,6 +102,12 @@ public struct ChatState: Sendable, Equatable {
                     let id = role == "assistant" ? (textIDs[key] ?? textIDs.removeValue(forKey: "text") ?? outputID ?? newEntryID) : newEntryID
                     put(id: id, kind: role, text: text, nativeID: nativeID)
                     if role == "assistant" { textIDs[key] = id; outputID = nil }
+                }
+                if let turnID = event.scope.turnID,
+                   let index = entries.firstIndex(where: { $0.sessionID == sessionID && $0.nativeMessageID == nativeID }) {
+                    var payload = entries[index].payloadJSON.flatMap(JSONValue.parse)?.objectValue ?? [:]
+                    payload["nativeTurnID"] = .string(turnID)
+                    entries[index].payloadJSON = JSONValue.object(payload).jsonString
                 }
                 if role == "assistant" { streamingText = "" }
             case .toolStarted(let tool):

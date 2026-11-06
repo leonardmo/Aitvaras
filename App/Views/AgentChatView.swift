@@ -6,6 +6,7 @@ import AitvarasAgents
 /// One transcript and composer, observing the application-owned chat manager.
 struct AgentChatView: View {
     @Environment(AppModel.self) private var model
+    @Environment(\.scenePhase) private var scenePhase
     @Bindable var chat: ChatModel
     let chatID: UUID
     var canSend = true
@@ -29,10 +30,14 @@ struct AgentChatView: View {
         }
         .task(id: chatID) {
             chat.select(chatID)
+            await chat.refreshNativePreview()
             while !Task.isCancelled {
                 await chat.refreshChanges()
                 do { try await Task.sleep(for: .seconds(2)) } catch { return }
             }
+        }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active { Task { await chat.refreshNativePreview() } }
         }
     }
 
@@ -111,7 +116,6 @@ struct AgentChatView: View {
             }
             .frame(maxWidth: 760).padding(.horizontal, 16).padding(.top, 8)
         }
-        .task(id: chatID) { chat.select(chatID) }
         .task { await chat.refreshStatus() }
         .task(id: "\(chatID).\(chat.provider.rawValue).\(chat.signingIn == nil)") { await chat.loadModels() }
     }

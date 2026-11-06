@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 
 /// Deterministic, bounded wire context. Callers supply only completed entries
 /// from this chat; thinking, tools and previous envelopes never enter it.
@@ -7,17 +8,26 @@ public struct ChatContextProjection: Codable, Sendable, Equatable {
     public let entryCount: Int
     public let omittedCount: Int
     public let throughPosition: Int
+    /// Full source receipt, including intentionally omitted older messages.
+    /// Optional for handovers persisted before revision-aware catch-up.
+    public var sources: [String: String]?
+
+    public static func digest(_ entry: AgentTranscriptEntry) -> String {
+        SHA256.hash(data: Data(JSONValue.array([.string(entry.kind), .string(entry.provider.rawValue), .string(entry.text), .number(Double(entry.position))]).jsonString.utf8))
+            .map { String(format: "%02x", $0) }.joined()
+    }
 
     public static func make(entries: [AgentTranscriptEntry], provider: AgentProvider,
-                            after position: Int = -1, maximumBytes: Int = 16_000) -> Self? {
-        let eligible = entries.filter {
-            $0.position > position && (provider == .local || $0.provider != provider)
-                && ["user", "assistant"].contains($0.kind) && !$0.text.isEmpty
+                            after position: Int = -1, maximumBytes: Int = 16_000,
+                            sessionID: UUID? = nil, replacingHistory: Bool = false) -> Self? {
+        let eligible = entries.filter { entry in
+            entry.position > position && (provider == .local || (sessionID.map { entry.sessionID != $0 } ?? (entry.provider != provider)))
+                && ["user", "assistant"].contains(entry.kind) && !entry.text.isEmpty
         }.sorted { $0.position < $1.position }
-        guard let newest = eligible.last else { return nil }
+        guard !eligible.isEmpty || replacingHistory else { return nil }
         var kept: [String] = []
         func block(_ messages: [String]) -> String {
-            (["[Aitvaras context handover · \(messages.count) messages · \(eligible.count - messages.count) earlier omitted · oldest first]"]
+            ((replacingHistory ? ["[Canonical history correction · replaces earlier handover context]"] : []) + ["[Aitvaras context handover · \(messages.count) messages · \(eligible.count - messages.count) earlier omitted · oldest first]"]
              + messages + ["[End of handover · current message follows]"]).joined(separator: "\n")
         }
         // Keep a contiguous newest suffix. If the newest message alone is
@@ -47,7 +57,8 @@ public struct ChatContextProjection: Codable, Sendable, Equatable {
         let text = block(kept)
         guard text.utf8.count <= maximumBytes else { return nil }
         return Self(text: text, entryCount: kept.count, omittedCount: eligible.count - kept.count,
-                    throughPosition: newest.position)
+                    throughPosition: eligible.last?.position ?? position,
+                    sources: Dictionary(uniqueKeysWithValues: eligible.map { ($0.id.uuidString, digest($0)) }))
     }
 
     public func wire(message: String) -> String { text + "\n" + message }

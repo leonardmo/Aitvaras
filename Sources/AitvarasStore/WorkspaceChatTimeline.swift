@@ -1,6 +1,8 @@
 import Foundation
 import GRDB
 import AitvarasCore
+import AitvarasAgents
+import CryptoKit
 
 /// Read-only chat history. Native imports are deliberately not part of this projection.
 public struct WorkspaceChatTimelineEntry: Identifiable, Sendable, Equatable {
@@ -316,5 +318,34 @@ extension Stores {
             state: rawState.flatMap(WorkspaceFrontierTurnState.init(rawValue:)),
             notDelivered: row["notDelivered"] ?? false, failureReason: row["failureReason"],
             sourceThread: sourceThread)
+    }
+}
+
+extension Stores {
+    /// Compatibility bridge over the same legacy sources as the old chat. No
+    /// imports, captures, memories or other chats enter this projection.
+    static func agentTimeline(chatID: UUID, entries: [AgentTranscriptEntry], in db: Database) throws -> [AgentTranscriptEntry] {
+        let local = try chatTimeline(chatID: chatID, limit: -1, completedOnly: false, in: db)
+        let native = try nativeChatTimeline(chatID: chatID, in: db)
+        let observed = try claudeObservedTimeline(chatID: chatID, in: db)
+        let handovers = try WorkspaceHandover.filter(Column("chatID") == chatID).fetchAll(db).map {
+            WorkspaceChatTimelineEntry(id: "handover:\($0.id)", role: "handover", text: $0.text,
+                timestamp: $0.anchorTimestamp, provider: WorkspaceThreadKey.provider($0.threadKey))
+        }
+        let legacy = (local + native + observed + handovers).enumerated().sorted {
+            $0.element.timestamp == $1.element.timestamp ? $0.offset < $1.offset : $0.element.timestamp < $1.element.timestamp
+        }.map(\.element)
+        var result = legacy.compactMap { item -> AgentTranscriptEntry? in
+            guard let provider = AgentProvider(rawValue: item.provider) else { return nil }
+            let digest = Array(SHA256.hash(data: Data(("legacy:" + item.id).utf8)).prefix(16))
+            let id = digest.withUnsafeBytes { UUID(uuid: $0.loadUnaligned(as: uuid_t.self)) }
+            let payload = JSONValue.object(["legacyID": .string(item.id),
+                "completed": .bool((item.state == nil || item.state == .completed) && !item.notDelivered),
+                "sourceThread": .string(item.sourceThread ?? "")]).jsonString
+            return .init(id: id, chatID: chatID, provider: provider, kind: item.role, text: item.text, payloadJSON: payload)
+        }
+        result += entries
+        for index in result.indices { result[index].position = index }
+        return result
     }
 }

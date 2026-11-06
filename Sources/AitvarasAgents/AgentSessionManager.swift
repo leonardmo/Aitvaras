@@ -26,6 +26,8 @@ public actor AgentSessionManager {
     private var states: [UUID: ChatState] = [:]
     private var subscribers: [UUID: [UUID: AsyncStream<ChatState>.Continuation]] = [:]
     private var closing = false
+    private var refreshing = Set<UUID>()
+    private var historyTokens: [UUID: UUID] = [:]
     private var approvalSubscribers: [UUID: AsyncStream<[AgentApprovalSuggestion]>.Continuation] = [:]
 
     /// Startup recovery is synchronous and must finish before any backend starts.
@@ -108,7 +110,7 @@ public actor AgentSessionManager {
     public func configure(_ session: AgentChatSession) async throws {
         guard !closing else { throw AgentSessionManagerError.shuttingDown }
         try persistence.requireAgentChatAvailable(chatID: session.chatID)
-        guard live[session.chatID]?.inputID == nil, live[session.chatID]?.followups.isEmpty != false,
+        guard !refreshing.contains(session.chatID), live[session.chatID]?.inputID == nil, live[session.chatID]?.followups.isEmpty != false,
               live[session.chatID]?.sendingFollowup != true, live[session.chatID]?.stopping != true else {
             throw AgentSessionManagerError.chatBusy
         }
@@ -187,6 +189,11 @@ public actor AgentSessionManager {
     private func deliver(chatID: UUID, provider: AgentProvider, input: AgentInput, retry: Bool) async throws {
         guard !closing else { throw AgentSessionManagerError.shuttingDown }
         try persistence.requireAgentChatAvailable(chatID: chatID)
+        guard !refreshing.contains(chatID) else { throw AgentSessionManagerError.chatBusy }
+        if !retry, live[chatID]?.inputID == nil {
+            try await refreshNativeHistory(chatID: chatID)
+            try persistence.requireAgentChatAvailable(chatID: chatID)
+        }
         guard live[chatID]?.inputID == nil, live[chatID]?.followups.isEmpty != false,
               live[chatID]?.sendingFollowup != true, live[chatID]?.stopping != true else {
             throw AgentSessionManagerError.chatBusy
@@ -254,10 +261,14 @@ public actor AgentSessionManager {
     private func persistEntries(_ chat: UUID, previous: [AgentTranscriptEntry] = []) throws {
         guard var value = states[chat] else { return }
         let old = Dictionary(previous.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
-        value.entries = try value.entries.map { old[$0.id] == $0 ? $0 : try persistence.saveAgentEntry($0) }
+        value.entries = try value.entries.map { $0.isLegacyProjection || old[$0.id] == $0 ? $0 : try persistence.saveAgentEntry($0) }
         states[chat] = value
     }
-    private func receive(_ event: AgentEvent, chatID: UUID, token: UUID) async {
+    private func receive(_ incoming: AgentEvent, chatID: UUID, token: UUID) async {
+        var event = incoming
+        if case .message(let id, let role, let text) = incoming.kind, let session = incoming.scope.session {
+            event = .init(scope: incoming.scope, kind: .message(id: session.canonicalMessageID(id, turnID: incoming.scope.turnID), role: role, text: text))
+        }
         guard let slot = live[chatID], slot.token == token, slot.coordinator?.id == event.scope.runID else { return }
         // Lifecycle events can precede Send. Turn events must match local input.
         if let input = event.scope.inputID, input != slot.inputID {
@@ -395,6 +406,9 @@ public actor AgentSessionManager {
         if let run = slot.coordinator { await Self.close(run, timeout: .seconds(2)) }
     }
     public func stop(chatID: UUID) async throws {
+        if refreshing.contains(chatID) {
+            historyTokens.removeValue(forKey: chatID)
+        }
         guard let slot = live[chatID], !slot.stopping,
               slot.inputID != nil || !slot.followups.isEmpty || slot.sendingFollowup else { return }
         live[chatID]?.stopping = true
@@ -460,6 +474,7 @@ public actor AgentSessionManager {
     public func shutdown(timeout: Duration = .seconds(2)) async throws {
         guard !closing else { return }
         closing = true
+        historyTokens.removeAll()
         let slots = live; live.removeAll()
         var storageFailed = false
         for (chat, slot) in slots {
@@ -529,25 +544,84 @@ extension AgentSessionManager {
 }
 
 extension AgentSessionManager {
-    /// Read-only initial preview. Atomic transcript reconciliation is a separate
-    /// operation; previewing never changes entries, turn journals or evidence.
+    /// Refresh all bound providers, even when a different provider is selected.
+    /// No process run or prompt is started. Per-chat reservation prevents a Send
+    /// or settings change from racing a multi-page observation.
+    public func refreshNativeHistory(chatID: UUID) async throws {
+        guard !closing else { throw AgentSessionManagerError.shuttingDown }
+        guard let store = persistence as? any AgentHistoryPersistence else { return }
+        guard !refreshing.contains(chatID), live[chatID]?.inputID == nil,
+              live[chatID]?.followups.isEmpty != false, live[chatID]?.sendingFollowup != true,
+              live[chatID]?.stopping != true else { throw AgentSessionManagerError.chatBusy }
+        refreshing.insert(chatID)
+        let token = UUID()
+        historyTokens[chatID] = token
+        defer { refreshing.remove(chatID); historyTokens.removeValue(forKey: chatID) }
+        let previous = try persistence.agentEntries(chatID: chatID)
+        var observations: [(AgentChatSession, [AgentTranscriptEntry])] = []
+        for provider in [AgentProvider.claude, .codex] {
+            guard let session = try persistence.agentSession(chatID: chatID, provider: provider), session.sessionID != nil else { continue }
+            let reader = try backend(provider)
+            // A complete second observation detects changes after the final
+            // page, including single-page reads. This is no native-client lock.
+            let entries = try await readNativeHistory(session: session, reader: reader)
+            guard !closing, historyTokens[chatID] == token else { throw AgentSessionManagerError.staleRun }
+            let confirmation = try await readNativeHistory(session: session, reader: reader)
+            guard entries.map(Self.historyEvidence) == confirmation.map(Self.historyEvidence) else { throw AgentNativeHistoryError.staleCursor }
+            try Task.checkCancellation()
+            guard !closing, historyTokens[chatID] == token else { throw AgentSessionManagerError.staleRun }
+            observations.append((session, entries))
+        }
+        // Read all providers before publishing any of them. A failed read must
+        // not leave half of a cross-provider catch-up in the visible transcript.
+        try store.reconcileAgentHistories(observations)
+        let entries = try persistence.agentEntries(chatID: chatID)
+        // An idle CLI still holds its old in-memory context. When native
+        // history changed externally, the next Send must resume afresh.
+        func contents(_ values: [AgentTranscriptEntry]) -> [String] {
+            values.map { JSONValue.array([.string($0.id.uuidString), .string($0.kind), .string($0.text)]).jsonString }
+        }
+        if contents(previous) != contents(entries), let slot = live.removeValue(forKey: chatID) {
+            slot.reader?.cancel(); slot.idle?.cancel()
+            if let run = slot.coordinator { await Self.close(run, timeout: .seconds(2)) }
+        }
+        guard !closing, historyTokens[chatID] == token else { throw AgentSessionManagerError.staleRun }
+        states[chatID]?.entries = entries
+        publish(chatID)
+    }
+
+    /// Kept for callers that need a read-only preview rather than publication.
     public func nativeHistoryPreview(chatID: UUID, provider: AgentProvider) async throws -> [AgentTranscriptEntry] {
         guard !closing else { throw AgentSessionManagerError.shuttingDown }
         guard provider != .local else { throw AgentFailure.unsupported }
-        guard let session = try persistence.agentSession(chatID: chatID, provider: provider), let nativeID = session.sessionID else { return [] }
-        let backend = try backend(provider)
-        var entries: [AgentTranscriptEntry] = [], cursor: String?, cursors = Set<String>()
+        guard let session = try persistence.agentSession(chatID: chatID, provider: provider), session.sessionID != nil else { return [] }
+        return try await readNativeHistory(session: session, reader: backend(provider))
+    }
+    private static func historyEvidence(_ entry: AgentTranscriptEntry) -> String {
+        JSONValue.array([.string(entry.nativeMessageID ?? ""), .string(entry.kind), .string(entry.text), .string(entry.payloadJSON ?? "")]).jsonString
+    }
+    private func readNativeHistory(session: AgentChatSession, reader: any AgentBackend) async throws -> [AgentTranscriptEntry] {
+        guard let nativeID = session.sessionID else { return [] }
+        var entries: [AgentTranscriptEntry] = [], cursor: String?, cursors = Set<String>(), seen = Set<String>(), bytes = 0
         repeat {
             try Task.checkCancellation()
-            let page = try await backend.readHistory(session: nativeID, cursor: cursor)
+            let page = try await reader.readHistory(session: nativeID, cursor: cursor)
             for event in page.items {
                 guard event.scope.session == nativeID else { throw AgentNativeHistoryError.identityConflict }
                 if case .message(let id, let role, let text) = event.kind {
-                    entries.append(.init(chatID: chatID, provider: provider, kind: role, text: text,
-                                         sessionID: session.id, nativeMessageID: id, position: entries.count))
+                    let canonicalID = nativeID.canonicalMessageID(id, turnID: event.scope.turnID)
+                    guard !id.isEmpty, seen.insert(canonicalID).inserted, ["user", "assistant"].contains(role) else { throw AgentNativeHistoryError.identityConflict }
+                    bytes += text.utf8.count
+                    let payload = JSONValue.object(["nativeHistory": .object([
+                        "turnID": event.scope.turnID.map(JSONValue.string) ?? .null,
+                        "itemID": .string(id),
+                        "completed": .bool(page.completedItemIDs.contains(canonicalID))
+                    ])]).jsonString
+                    entries.append(.init(chatID: session.chatID, provider: session.provider, kind: role, text: text,
+                                         payloadJSON: payload, sessionID: session.id, nativeMessageID: canonicalID, position: entries.count))
                 }
             }
-            guard entries.count <= 100_000 else { throw AgentNativeHistoryError.tooLarge }
+            guard entries.count <= 100_000, bytes <= 32 * 1024 * 1024 else { throw AgentNativeHistoryError.tooLarge }
             cursor = page.nextCursor
             if let cursor, !cursors.insert(cursor).inserted { throw AgentNativeHistoryError.invalidCursor }
             guard cursors.count <= 2_000 else { throw AgentNativeHistoryError.tooLarge }

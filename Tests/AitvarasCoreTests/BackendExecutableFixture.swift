@@ -44,7 +44,7 @@ struct BackendExecutableFixture {
         throw AgentFailure.invalidRequest
     }
     static let prelude = #"""
-import sys, os, json, time, base64
+import sys, os, json, time, base64, uuid
 root = os.path.dirname(os.path.abspath(__file__))
 os.chdir(root)
 def emit(value):
@@ -125,6 +125,10 @@ for line in lines:
                 expected['request']['hooks']={'PreToolUse':[{'matcher':None,'hookCallbackIds':['pre']}],'PostToolUse':[{'matcher':None,'hookCallbackIds':['post']}]}
             claude_ids[expected['request_id']]=actual.get('request_id')
             expected['request_id']=actual.get('request_id')
+        if expected.get('type')=='user':
+            # Aitvaras supplies a stable UUID, retained in native JSONL.
+            assert str(uuid.UUID(actual['uuid'])).upper()==actual['uuid'].upper()
+            expected['uuid']=actual['uuid']
         if expected!=actual: fail(expected,actual)
     elif line.startswith('{'):
         value=json.loads(line)

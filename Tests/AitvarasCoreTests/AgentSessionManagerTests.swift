@@ -53,7 +53,7 @@ import AitvarasStore
         let chat = try agentStoreChat(stores, cwd: fixture.directory.path).0.id
         let backend = ClaudeBackend(executable: fixture.executable, environment: fixture.environment)
         let starts = ManagerStartCounter(backend: backend)
-        let manager = try AgentSessionManager(persistence: stores, idleTimeout: .milliseconds(40), backend: { _ in starts }, audit: { _ = try stores.record($0) })
+        let manager = try AgentSessionManager(persistence: stores, idleTimeout: .milliseconds(40), backend: { _ in AgentHistoryTestBackend(starts, stores: stores) }, audit: { _ = try stores.record($0) })
         #expect(await starts.count == 0)
         try await manager.send(chatID: chat, provider: .claude, input: .init(text: "finish"))
         try await waitManager { try await manager.state(chatID: chat).outcome == .completed }

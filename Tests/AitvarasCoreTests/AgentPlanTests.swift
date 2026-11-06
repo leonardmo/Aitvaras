@@ -41,7 +41,7 @@ import AitvarasStore
         let final = try await manager.state(chatID: chat.id)
         #expect(final.pendingCards.isEmpty)
         if provider == .codex {
-            #expect(try stores.agentEntries(chatID: chat.id).contains { $0.nativeMessageID == "plan-item" && $0.text.hasPrefix("# Example plan") })
+            #expect(try stores.agentEntries(chatID: chat.id).contains { $0.nativeMessageID == AgentSessionID(provider: .codex, profile: "default", nativeID: "thread-test").canonicalMessageID("plan-item", turnID: "planning") && $0.text.hasPrefix("# Example plan") })
         }
         if action == "approve" || action == "fast" {
             try await planWait { try stores.agentSession(chatID: chat.id, provider: provider)?.mode == .ask }

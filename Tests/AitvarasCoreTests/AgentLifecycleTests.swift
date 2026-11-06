@@ -232,7 +232,7 @@ private func lifecycleBackend(_ provider: AgentProvider, _ fixture: BackendExecu
         : CodexBackend(executable: fixture.executable, environment: fixture.environment)
 }
 private func lifecycleManager(_ stores: Stores, _ backend: any AgentBackend) throws -> AgentSessionManager {
-    try AgentSessionManager(persistence: stores, backend: { _ in backend }, audit: { _ = try stores.record($0) })
+    try AgentSessionManager(persistence: stores, backend: { _ in AgentHistoryTestBackend(backend, stores: stores) }, audit: { _ = try stores.record($0) })
 }
 private func lifecycleLog(_ fixture: BackendExecutableFixture) throws -> [JSONValue] {
     let url = fixture.directory.appendingPathComponent("requests.jsonl")
