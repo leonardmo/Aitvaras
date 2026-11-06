@@ -117,3 +117,15 @@ public protocol AgentNativeSessionPersistence: Sendable {
     /// Atomically map metadata only; never writes legacy evidence or transcript.
     func discoverAgentNativeSessions(_ sessions: [AgentSessionSummary]) throws -> [UUID]
 }
+
+/// Publish only a fully read, internally consistent canonical branch.
+public protocol AgentHistoryPersistence: Sendable {
+    func reconcileAgentHistory(session: AgentChatSession, entries: [AgentTranscriptEntry]) throws
+    func reconcileAgentHistories(_ histories: [(session: AgentChatSession, entries: [AgentTranscriptEntry])]) throws
+}
+
+extension AgentTranscriptEntry {
+    public var isLegacyProjection: Bool {
+        payloadJSON.flatMap(JSONValue.parse)?["legacyID"]?.stringValue != nil
+    }
+}

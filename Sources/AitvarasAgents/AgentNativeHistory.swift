@@ -7,6 +7,14 @@ public enum AgentNativeHistoryError: Error, Sendable, Equatable {
 }
 
 func nativeCanonicalPath(_ url: URL) -> String { url.resolvingSymlinksInPath().standardizedFileURL.path }
+extension AgentSessionID {
+    /// Codex item identity includes its turn. JSON framing avoids ambiguous
+    /// separators, and Claude's persisted UUID remains unchanged.
+    public func canonicalMessageID(_ itemID: String, turnID: String?) -> String {
+        guard provider == .codex, let turnID else { return itemID }
+        return JSONValue.array([.string(turnID), .string(itemID)]).jsonString
+    }
+}
 func nativePath(_ path: String, belongsTo root: String) -> Bool {
     path == root || path.hasPrefix(root == "/" ? "/" : root + "/")
 }
@@ -128,16 +136,41 @@ public struct ClaudeNativeHistory: Sendable {
         }
         let value = try read(file)
         let runID = UUID()
-        var events: [AgentEvent] = [], seen = Set<String>()
-        for record in value.records {
+        // JSONL retains abandoned branches. Follow the last conversational leaf
+        // through parentUuid, including tool-only records, before projecting text.
+        let conversation = value.records.filter { ["user", "assistant"].contains($0["type"]?.stringValue ?? "") }
+        var records = conversation
+        if conversation.contains(where: { $0["parentUuid"] != nil }) {
+            var byID: [String: JSONValue] = [:]
+            for record in value.records {
+                if let id = record["uuid"]?.stringValue {
+                    guard byID.updateValue(record, forKey: id) == nil else { throw AgentNativeHistoryError.identityConflict }
+                }
+            }
+            records = []
+            var next = conversation.last?["uuid"]?.stringValue, visited = Set<String>()
+            while let id = next {
+                guard visited.insert(id).inserted, let record = byID[id] else { throw AgentNativeHistoryError.incompleteHistory }
+                records.append(record)
+                next = record["parentUuid"]?.stringValue
+            }
+            records.reverse()
+        }
+        var events: [AgentEvent] = [], seen = Set<String>(), pending: [String] = [], completed = Set<String>()
+        for record in records {
             guard let role = record["type"]?.stringValue, ["user", "assistant"].contains(role),
                   record["isMeta"]?.boolValue != true,
                   let text = Self.messageText(record["message"]?["content"]), !text.isEmpty else { continue }
             guard let id = record["uuid"]?.stringValue, !id.isEmpty, seen.insert(id).inserted else {
                 throw AgentNativeHistoryError.malformedHistory
             }
+            pending.append(id)
+            if role == "assistant", ["end_turn", "stop_sequence", "max_tokens"].contains(record["message"]?["stop_reason"]?.stringValue ?? "") {
+                completed.formUnion(pending); pending = []
+            }
             events.append(.init(scope: .init(runID: runID, session: session, itemID: id), kind: .message(id: id, role: role, text: text)))
         }
-        return try NativeHistoryPagination.page(events, cursor: cursor, key: "claude-read:\(profile):\(session.nativeID)", snapshot: value.snapshot)
+        let page = try NativeHistoryPagination.page(events, cursor: cursor, key: "claude-read:\(profile):\(session.nativeID)", snapshot: value.snapshot)
+        return .init(items: page.items, nextCursor: page.nextCursor, completedItemIDs: completed)
     }
 }

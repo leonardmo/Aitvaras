@@ -977,6 +977,18 @@ public final class AitvarasDatabase: Sendable {
                 BEGIN SELECT RAISE(ABORT, 'Worktree ownership is immutable'); END;
                 """)
         }
+        m.registerMigration("v32-agent-history-reconciliation") { db in
+            try db.alter(table: "agentTranscriptEntry") { t in
+                t.add(column: "isActive", .boolean).notNull().defaults(to: true)
+            }
+            // Immutable observations preserve replaced/deleted native evidence.
+            try db.create(table: "agentHistoryObservation") { t in
+                t.autoIncrementedPrimaryKey("id")
+                t.column("sessionID", .text).notNull().references("agentChatSession", onDelete: .restrict)
+                t.column("identityJSON", .text).notNull()
+                t.column("snapshotJSON", .text).notNull()
+            }
+        }
         return m
     }
 }

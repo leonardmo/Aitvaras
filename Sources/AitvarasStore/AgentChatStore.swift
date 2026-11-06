@@ -40,7 +40,9 @@ public struct AgentChatStore: Sendable {
     public func entries(chatID: UUID) throws -> [AgentTranscriptEntry] {
         try db.queue.read { dbc in
             guard try WorkspaceChat.fetchOne(dbc, key: chatID) != nil else { throw AgentStoreError.missingChat }
-            return try AgentTranscriptEntry.filter(Column("chatID") == chatID).order(Column("position")).fetchAll(dbc)
+            let entries = try AgentTranscriptEntry.filter(Column("chatID") == chatID)
+                .filter(Column("isActive") == true).order(Column("position")).fetchAll(dbc)
+            return try Stores.agentTimeline(chatID: chatID, entries: entries, in: dbc)
         }
     }
 

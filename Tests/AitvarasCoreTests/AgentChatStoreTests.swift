@@ -67,7 +67,9 @@ import AitvarasAgents
                 try db.drop(table: "agentTurn")
                 try db.drop(table: "agentTranscriptEntry")
                 try db.drop(table: "agentChatSession")
-                try db.execute(sql: "DELETE FROM grdb_migrations WHERE identifier = ?", arguments: ["v28-agent-chat-journal"])
+                try db.execute(sql: "DELETE FROM grdb_migrations WHERE identifier IN (?, ?)",
+                    arguments: ["v28-agent-chat-journal", "v32-agent-history-reconciliation"])
+                try db.drop(table: "agentHistoryObservation")
             }
         }
         let reopened = Stores(db: try AitvarasDatabase(url: url))

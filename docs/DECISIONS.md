@@ -341,6 +341,25 @@ message at a Unicode character boundary) and advances the per-provider watermark
 only on acknowledgement. Local receives completed context on every Send. Legacy
 adapters retain their existing sharing checks until migration.
 
+Native history refresh publishes a complete canonical branch atomically across
+a chat's refreshed sessions, keyed by native message identity (turn and item
+for Codex, persisted UUID for Claude). Streamed rows retain their display IDs;
+removed branch messages are retired from the projection, with prior observations
+and execution journals retained. Failed, partial or inconsistent reads keep the
+last projection. A second complete observation checks for changes during refresh;
+it does not reserve the native session against another client. Changed native
+content evicts an idle run so the next Send resumes the updated native session.
+
+Catch-up scans normalized entries and the chat's legacy local, owned and linked
+timeline without the UI page limit. Completed messages from other sessions are
+eligible, including earlier sessions of the same provider. Acknowledged handovers
+record source identities and text digests as well as their exact wire envelope.
+Corrections or deletions invalidate that receipt and send an explicitly labelled
+canonical-history correction on the next Send. Unknown delivery never consumes
+context. Older positional receipts conservatively repeat context. Envelopes are
+stripped only for an exact acknowledged send bound to the canonical user identity
+(and the acknowledged native turn identity for Codex).
+
 Per-chat git worktrees are optional and default off. Their ownership and cwd/root
 mappings are durable; failed or mismatched ownership blocks execution. Explicit
 Commit and confirmed Discard pass the autonomy policy and metadata-only activity

@@ -33,9 +33,10 @@ extension CodexBackend {
             throw AgentFailure.unsupported
         }
         let runID = UUID()
-        var events: [AgentEvent] = [], seen = Set<String>()
+        var events: [AgentEvent] = [], seen = Set<String>(), completed = Set<String>(), turnIDs = Set<String>()
         for turn in turns {
-            guard let turnID = turn["id"]?.stringValue, let items = turn["items"]?.arrayValue else {
+            guard let turnID = turn["id"]?.stringValue, !turnID.isEmpty, turnIDs.insert(turnID).inserted,
+                  let items = turn["items"]?.arrayValue else {
                 throw AgentNativeHistoryError.malformedHistory
             }
             for item in items {
@@ -50,17 +51,20 @@ extension CodexBackend {
                     role = "assistant"; text = value
                 default: continue // tool/unknown records are not invented text
                 }
-                guard let id = item["id"]?.stringValue, !id.isEmpty, seen.insert(id).inserted else {
+                guard let id = item["id"]?.stringValue, !id.isEmpty,
+                      seen.insert(session.canonicalMessageID(id, turnID: turnID)).inserted else {
                     throw AgentNativeHistoryError.malformedHistory
                 }
                 if !text.isEmpty {
+                    if turn["status"]?.stringValue == "completed" { completed.insert(session.canonicalMessageID(id, turnID: turnID)) }
                     events.append(.init(scope: .init(runID: runID, session: session, turnID: turnID, itemID: id),
                         kind: .message(id: id, role: role, text: text)))
                 }
             }
         }
-        return try NativeHistoryPagination.page(events, cursor: cursor,
+        let page = try NativeHistoryPagination.page(events, cursor: cursor,
             key: "codex-read:\(session.host):\(session.profile):\(session.nativeID)", snapshot: thread.jsonString)
+        return .init(items: page.items, nextCursor: page.nextCursor, completedItemIDs: completed)
     }
     private func nativeSummary(_ value: JSONValue, archived: Bool) throws -> AgentSessionSummary {
         guard let id = value["id"]?.stringValue, !id.isEmpty,

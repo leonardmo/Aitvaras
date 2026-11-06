@@ -92,8 +92,11 @@ public struct AgentPage<Element: Sendable>: Sendable {
     public let items: [Element]
     /// nil means complete; an unsuccessful read must throw, not claim completeness.
     public let nextCursor: String?
-    public init(items: [Element], nextCursor: String? = nil) {
-        self.items = items; self.nextCursor = nextCursor
+    /// Native history only: text from unfinished/unknown turns stays visible,
+    /// but cannot be passed on as completed context.
+    public let completedItemIDs: Set<String>
+    public init(items: [Element], nextCursor: String? = nil, completedItemIDs: Set<String> = []) {
+        self.items = items; self.nextCursor = nextCursor; self.completedItemIDs = completedItemIDs
     }
 }
 

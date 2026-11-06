@@ -271,6 +271,21 @@ installed-app review is still required before claiming appearance is verified.
 
 ## One chat transcript and handover (D30)
 
+`AgentHistoryReconciliationTests` covers native open/resume with executable
+Claude and Codex fixtures, streamed-row identity, external continuation,
+parent-branch selection, corrections/deletions, atomic rollback, duplicate IDs
+and failed/inconsistent refreshes. `AgentHandoverTests` covers normalized and
+legacy context beyond a UI page, UTF-8 byte limits and omission counts, revision
+receipts, exact-envelope stripping, and unknown delivery. Lifecycle/Stop tests
+retain their transport scripts and inject journal-backed history fixtures.
+
+Host acceptance for this path: open a native chat, Send, continue it in its CLI,
+reopen it in Chat, then switch providers and Send again. Verify one copy of every
+message and inspect the collapsed handover. Repeat after a native edit or branch
+change, with light/dark appearance and the minimum window size. The sandbox
+package suite cannot compile or visually verify `App/ChatModel.swift` or
+`App/Views/AgentChatView.swift`.
+
 `WorkspaceHandoverTests` cover what a thread has not seen: a new thread is
 caught up on everything other threads wrote; after a delivered handover only
 newer messages travel; undelivered and uncertain turns never do; over budget

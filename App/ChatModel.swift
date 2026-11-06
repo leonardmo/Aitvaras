@@ -33,27 +33,23 @@ final class ChatModel {
     private var composerSelections = AgentComposerSelections()
     private var handledFailures: Set<UUID> = []
     private(set) var state: ChatState?
-    private var nativePreview: [AgentTranscriptEntry] = []
     private var previewTask: Task<Void, Never>?
+    private var refreshingHistory = Set<UUID>()
+    private var refreshedInputs: [UUID: UUID] = [:]
     private(set) var discoveringNativeSessions = false
     private(set) var nativeDiscoveryError: String?
     var nativeDiscoveryFailed: Bool { nativeDiscoveryError != nil }
-    var displayEntries: [AgentTranscriptEntry] {
-        let entries = state?.entries ?? []
-        func key(_ entry: AgentTranscriptEntry) -> String {
-            "\(entry.sessionID?.uuidString ?? ""):\(entry.nativeMessageID ?? "")"
-        }
-        let saved = Set(entries.filter { $0.nativeMessageID != nil }.map(key))
-        return nativePreview.filter { !saved.contains(key($0)) } + entries
-    }
+    var displayEntries: [AgentTranscriptEntry] { state?.entries ?? [] }
     func refreshNativePreview() async {
-        guard let id = chatID, provider != .local else { return }
+        guard let id = chatID, state?.isRunning != true else { return }
+        guard refreshingHistory.insert(id).inserted else { return }
+        defer { refreshingHistory.remove(id) }
         do {
-            let entries = try await manager.nativeHistoryPreview(chatID: id, provider: provider)
+            try await manager.refreshNativeHistory(chatID: id)
             guard !Task.isCancelled, chatID == id else { return }
-            nativePreview = entries
             if error == "Native history could not be read." { error = nil }
-        } catch {
+        } catch AgentSessionManagerError.chatBusy { return }
+        catch {
             guard !Task.isCancelled, chatID == id else { return }
             self.error = "Native history could not be read."
         }
@@ -160,10 +156,10 @@ final class ChatModel {
         if value.command == sent.command { value.command = nil }
         composerSelections[chatID, provider] = value
     }
-    var isBusy: Bool { state?.isRunning == true || chatID.map { sending[$0] != nil } == true }
+    var isBusy: Bool { state?.isRunning == true || chatID.map { sending[$0] != nil || refreshingHistory.contains($0) } == true }
     var canSubmit: Bool {
         guard let id = chatID else { return false }
-        return !terminating && !gitBusy && !stopping.contains(id) && sending[id] == nil && signingIn == nil
+        return !terminating && !gitBusy && !refreshingHistory.contains(id) && !stopping.contains(id) && sending[id] == nil && signingIn == nil
             && (!isBusy || provider != .local)
     }
     private var settingsKey: String { "\(chatID?.uuidString ?? "").\(provider.rawValue)" }
@@ -204,7 +200,7 @@ final class ChatModel {
     func select(_ id: UUID?) {
         guard id != chatID else { return }
         subscription?.cancel()
-        previewTask?.cancel(); nativePreview = []
+        previewTask?.cancel()
         // View changes cancel a browser flow and invalidate its automatic send.
         if loginToken != nil { cancelSignIn() }
         if let pending = try? stores.pendingSend(), pending.session.chatID != id { invalidatePending() }
@@ -228,14 +224,6 @@ final class ChatModel {
                 } else { try stores.savePendingSend(nil) }
             }
             guard let id else { return }
-            // Existing normalized transcripts use their own history path. A
-            // newly discovered chat gets a read-only native preview immediately.
-            if try stores.agentEntries(chatID: id).isEmpty, provider != .local {
-                previewTask = Task { [weak self] in
-                    guard let self else { return }
-                    await self.refreshNativePreview()
-                }
-            }
             subscription = Task { [weak self, manager] in
                 do {
                     for await state in try await manager.updates(chatID: id) {
@@ -410,6 +398,11 @@ final class ChatModel {
         if let provider = state.entries.last?.provider, !state.rateLimits.isEmpty { providerLimits[provider] = state.rateLimits }
         if case .failed(let failure) = state.outcome, let input = state.inputID { failed(inputID: input, failure: failure) }
         if !state.isRunning, let input = state.inputID, state.outcome == .completed { attempts.removeValue(forKey: input) }
+        if !state.isRunning, state.outcome == .completed || state.outcome == .interrupted,
+           let input = state.inputID, refreshedInputs[state.chatID] != input {
+            refreshedInputs[state.chatID] = input
+            previewTask = Task { [weak self] in await self?.refreshNativePreview() }
+        }
     }
     private func failed(inputID: UUID, failure: AgentFailure) {
         guard !handledFailures.contains(inputID), let attempt = attempts.removeValue(forKey: inputID) else { return }

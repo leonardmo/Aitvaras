@@ -74,7 +74,7 @@ done()
         #expect(try stores.agentTurn(id: followup.id)?.delivery == .acknowledged)
         #expect(try stores.agentTurn(id: first.id)?.partialOutput == (fastCompletion ? "before " : "before after"))
         #expect(try stores.agentTurn(id: followup.id)?.partialOutput == "")
-        #expect(try stores.agentEntries(chatID: chat).first { $0.id == followup.id }?.nativeMessageID == followup.id.uuidString)
+        #expect(try stores.agentEntries(chatID: chat).first { $0.id == followup.id }?.nativeMessageID == AgentSessionID(provider: .codex, profile: "default", nativeID: "thread-test").canonicalMessageID(followup.id.uuidString, turnID: "active-turn"))
         #expect(try stores.agentEntries(chatID: chat).first { $0.id == first.id }?.nativeMessageID == nil)
         try await waitAgentCondition { FileManager.default.fileExists(atPath: fixture.directory.appendingPathComponent("done").path) }
         try fixture.assertComplete()
@@ -212,7 +212,7 @@ func followupManager(_ fixture: BackendExecutableFixture, provider: AgentProvide
     let backend: any AgentBackend = provider == .claude
         ? ClaudeBackend(executable: fixture.executable, environment: fixture.environment)
         : CodexBackend(executable: fixture.executable, environment: fixture.environment)
-    return (stores, chat, try AgentSessionManager(persistence: stores, backend: { _ in backend }, audit: { _ = try stores.record($0) }))
+    return (stores, chat, try AgentSessionManager(persistence: stores, backend: { _ in AgentHistoryTestBackend(backend, stores: stores) }, audit: { _ = try stores.record($0) }))
 }
 
 func waitAgentCondition(_ predicate: () async throws -> Bool) async throws {
