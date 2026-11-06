@@ -262,9 +262,25 @@
     },
     {
       "action": "waitFor",
+      "identifier": "chat.request.0.allow",
+      "timeout": 15,
+      "delay": 1,
+      "optional": true
+    },
+    {
+      "action": "press",
+      "identifier": "chat.request.0.allow",
+      "optional": true
+    },
+    {
+      "action": "waitFor",
       "identifier": "chat.tool.completed",
       "within": "chat.transcript",
       "timeout": 120
+    },
+    {
+      "action": "press",
+      "identifier": "chat.changes"
     },
     {
       "action": "screenshot",
@@ -470,7 +486,12 @@
     },
     {
       "action": "press",
-      "identifier": "settings.providers"
+      "identifier": "cpu"
+    },
+    {
+      "action": "waitFor",
+      "identifier": "settings.providers.page",
+      "timeout": 10
     },
     {
       "action": "screenshot",
@@ -528,6 +549,10 @@
       "identifier": "chat.signin",
       "within": "chat.error",
       "timeout": 10
+    },
+    {
+      "action": "press",
+      "identifier": "chat.changes"
     },
     {
       "action": "screenshot",

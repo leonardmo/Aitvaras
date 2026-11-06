@@ -1,7 +1,7 @@
 import SwiftUI
 import AitvarasAgents
 
-/// The inspector exists only while the selected checkout has changes.
+/// Explicitly opened inspector for the selected checkout.
 struct AgentChangesView: View {
     @Bindable var chat: ChatModel
     let owner: UUID
@@ -13,7 +13,7 @@ struct AgentChangesView: View {
         changes.files.first { $0.path == selectedPath } ?? changes.files.first
     }
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 8) {
             HStack {
                 Text("Changes").font(.headline)
                 Spacer()
@@ -22,30 +22,46 @@ struct AgentChangesView: View {
                     .accessibilityLabel("Refresh changes").accessibilityIdentifier("chat.changes.refresh")
                 Text("\(changes.files.count)").monospacedDigit().foregroundStyle(.secondary)
             }
-            List(changes.files, selection: $selectedPath) { file in
-                HStack(spacing: 6) {
-                    Text(file.status.trimmingCharacters(in: .whitespaces)).font(.caption.monospaced()).foregroundStyle(.secondary)
-                    Text(file.path).font(.callout).lineLimit(1).truncationMode(.middle)
-                }.tag(file.path)
-            }
-            .listStyle(.inset).frame(minHeight: 70, idealHeight: 120, maxHeight: 170)
-            .accessibilityIdentifier("chat.changes.files")
-            if let selected {
-                ScrollView([.horizontal, .vertical]) {
-                    LazyVStack(alignment: .leading, spacing: 0) {
-                        if selected.diffUnavailable {
-                            Text("Binary or large file — preview unavailable.").foregroundStyle(.secondary)
-                        } else {
-                            ForEach(Array(selected.diff.components(separatedBy: "\n").enumerated()), id: \.offset) { _, line in
-                                Text(line.isEmpty ? " " : line)
-                                    .foregroundStyle(line.hasPrefix("+") ? Color.green : line.hasPrefix("-") ? Color.red : Color.primary)
-                            }
+            ScrollView {
+                VStack(alignment: .leading, spacing: 0) {
+                    VStack(spacing: 2) {
+                        ForEach(changes.files) { file in
+                            Button { selectedPath = file.path } label: {
+                                HStack(spacing: 6) {
+                                    Image(systemName: file.statusSymbol)
+                                        .foregroundStyle(.secondary).help(file.statusLabel)
+                                        .accessibilityLabel(file.statusLabel)
+                                    Text(file.path).font(.callout).lineLimit(1).truncationMode(.middle)
+                                    Spacer(minLength: 0)
+                                }
+                                .padding(6).contentShape(Rectangle())
+                                .background(selected?.path == file.path ? Color.accentColor.opacity(0.12) : .clear,
+                                            in: RoundedRectangle(cornerRadius: 5))
+                            }.buttonStyle(.plain)
                         }
-                    }.font(.caption.monospaced()).textSelection(.enabled).padding(8)
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                .accessibilityIdentifier("chat.changes.diff")
-            }
+                    }.accessibilityIdentifier("chat.changes.files")
+                    if let selected {
+                        Divider().padding(.vertical, 8)
+                        ScrollView(.horizontal) {
+                            VStack(alignment: .leading, spacing: 0) {
+                                if selected.diffUnavailable {
+                                    Text("Binary or large file — preview unavailable.").foregroundStyle(.secondary)
+                                } else {
+                                    ForEach(Array(selected.diff.components(separatedBy: "\n").enumerated()), id: \.offset) { _, line in
+                                        Text(line.isEmpty ? " " : line)
+                                            .foregroundStyle(line.hasPrefix("+") ? Color.green : line.hasPrefix("-") ? Color.red : Color.primary)
+                                    }
+                                }
+                            }
+                            .font(.caption.monospaced()).textSelection(.enabled)
+                            .fixedSize(horizontal: true, vertical: false)
+                            .padding(.vertical, 4).frame(maxWidth: .infinity, alignment: .topLeading)
+                        }.accessibilityIdentifier("chat.changes.diff")
+                    } else {
+                        Text("No changes").foregroundStyle(.secondary).padding(.vertical, 12)
+                    }
+                }.frame(maxWidth: .infinity, alignment: .topLeading)
+            }.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             TextField("Commit message", text: $message, axis: .vertical)
                 .lineLimit(1...3).textFieldStyle(.roundedBorder)
                 .accessibilityIdentifier("chat.changes.message")
@@ -63,8 +79,8 @@ struct AgentChangesView: View {
                 .accessibilityIdentifier("chat.changes.commit")
             }.controlSize(.small).disabled(chat.isBusy || chat.gitBusy)
         }
-        .padding(12).frame(minWidth: 230, idealWidth: 290)
-        .accessibilityIdentifier("chat.changes")
+        .padding(12).frame(minWidth: 230, idealWidth: 270, maxWidth: 320)
+        .accessibilityIdentifier("chat.changes.panel")
         .confirmationDialog("Discard changes in this chat’s worktree?", isPresented: Binding(
             get: { discarding != nil }, set: { if !$0 { discarding = nil } }), titleVisibility: .visible) {
             Button("Discard changes", role: .destructive) {

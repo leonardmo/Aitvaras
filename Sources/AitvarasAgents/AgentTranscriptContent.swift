@@ -102,7 +102,7 @@ public struct AgentActionPresentation: Sendable, Equatable {
         let detail: String
         if let command, !command.isEmpty {
             title = input["kind"]?.stringValue == "writeStdin" ? "Send input to command?" : "Run command?"
-            detail = command
+            detail = Self.displayCommand(command)
         } else if let root = input["grantRoot"]?.stringValue {
             title = "Allow file changes?"
             detail = (["Write access under \(root) for this session"] + paths).joined(separator: "\n")
@@ -116,5 +116,48 @@ public struct AgentActionPresentation: Sendable, Equatable {
             detail = name == "filechange" ? "File changes requested; the provider did not supply paths." : AgentTranscriptContent.display(input)
         }
         self.init(title: title, detail: detail, reason: input["reason"]?.stringValue)
+    }
+}
+
+
+extension AgentActionPresentation {
+    /// Presentation only: never changes the command sent to the CLI or the input
+    /// retained in the expanded tool row. Reject extra arguments and shell syntax
+    /// outside one plain quoted -lc argument rather than guessing at shell parsing.
+    public static func displayCommand(_ command: String) -> String {
+        let pattern = #"^(?:/(?:usr/)?bin/)?(?:zsh|bash|sh) -lc (?:'([^']*)'|"([^"\\$`]*)")$"#
+        guard let regex = try? NSRegularExpression(pattern: pattern),
+              let match = regex.firstMatch(in: command, range: NSRange(command.startIndex..., in: command)),
+              match.range.length == command.utf16.count else { return command }
+        for index in 1...2 {
+            if let range = Range(match.range(at: index), in: command) { return String(command[range]) }
+        }
+        return command
+    }
+
+    public static func toolSummary(_ tool: AgentTool, finished: Bool, isError: Bool) -> String {
+        let detail = AgentActionPresentation(tool: tool).detail.components(separatedBy: .newlines).first ?? ""
+        let verbs: (String, String, String)
+        switch tool.name.lowercased() {
+        case "bash", "commandexecution": verbs = ("Running", "Ran", "Failed to run")
+        case "read": verbs = ("Reading", "Read", "Failed to read")
+        case "edit", "multiedit", "notebookedit", "filechange": verbs = ("Editing", "Edited", "Failed to edit")
+        case "write": verbs = ("Writing", "Wrote", "Failed to write")
+        default: verbs = ("Using \(tool.name)", "Used \(tool.name)", "Failed to use \(tool.name)")
+        }
+        let verb = finished ? (isError ? verbs.2 : verbs.1) : verbs.0
+        return detail.isEmpty ? verb : "\(verb) \(detail)"
+    }
+}
+
+extension AgentTranscriptEntry {
+    public var presentationIdentifier: String {
+        if kind == "tool", let payload = payloadJSON.flatMap(JSONValue.parse),
+           payload["finished"]?.boolValue == true, payload["isError"]?.boolValue != true {
+            return "chat.tool.completed"
+        }
+        if kind == "importedHistory" { return "chat.importedHistory.\(id)" }
+        if kind == "handover" { return "chat.handover.\(id)" }
+        return "chat.entry.\(id)"
     }
 }

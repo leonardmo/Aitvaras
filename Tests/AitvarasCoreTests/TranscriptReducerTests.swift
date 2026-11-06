@@ -95,6 +95,66 @@ import Testing
         if let backend = backend as? CodexBackend { try await backend.shutdown() }
     }
 
+    @Test func recordedCodexApprovalCompletesTheSameRowBeforeTurnEnds() async throws {
+        let fixture = try BackendExecutableFixture(provider: "codex", name: "write-ask")
+        defer { fixture.remove() }
+        let backend = CodexBackend(executable: fixture.executable, environment: fixture.environment)
+        let session = AgentChatSession(chatID: UUID(), provider: .codex, cwd: fixture.directory.path, model: "gpt-6-luna")
+        let raw = try await backend.start(session.configuration)
+        let run = AgentActionCoordinator(run: raw, mode: .ask, provenance: .init(chatID: session.chatID), audit: { _ in })
+        let input = AgentInput(text: try fixture.prompt(provider: "codex", name: "write-ask"))
+        var state = ChatState(chatID: session.chatID)
+        state.begin(input, session: session, outputID: UUID())
+        try await run.send(input, willDeliver: {})
+        var rowIDs: [String: UUID] = [:]
+        var completions = 0
+        for try await event in run.events {
+            state.reduce(event, newEntryID: UUID())
+            if case .toolStarted = event.kind {
+                let nativeID = try #require(event.scope.itemID)
+                let row = try #require(state.entries.last { $0.kind == "tool" })
+                rowIDs[nativeID] = row.id
+                #expect(row.presentationIdentifier == "chat.entry.\(row.id)")
+            }
+            if case .request(let request) = event.kind {
+                try await run.respond(to: request, with: .allow(updatedInput: nil))
+            }
+            if case .toolFinished = event.kind {
+                completions += 1
+                let nativeID = try #require(event.scope.itemID)
+                let rowID = try #require(rowIDs[nativeID])
+                let row = try #require(state.entries.first { $0.id == rowID })
+                let payload = try #require(row.payloadJSON.flatMap(JSONValue.parse))
+                #expect(state.isRunning)
+                #expect(payload["itemID"] == .string(nativeID))
+                #expect(payload["finished"] == .bool(true))
+                #expect(row.presentationIdentifier == "chat.tool.completed")
+                #expect(AgentActionPresentation.toolSummary(.init(name: row.text, input: payload["input"] ?? .null),
+                    finished: true, isError: false) == "Ran printf 'hi' > a.txt && echo marker > out.txt")
+                // Persistence/decoding must retain the value used by SwiftUI/AX.
+                let restored = try JSONDecoder().decode(AgentTranscriptEntry.self, from: JSONEncoder().encode(row))
+                #expect(restored.presentationIdentifier == "chat.tool.completed")
+            }
+            if case .turnEnded = event.kind { break }
+        }
+        #expect(completions == 1)
+        #expect(state.entries.filter { $0.kind == "tool" }.count == 1)
+        try await Task.sleep(for: .milliseconds(20))
+        try fixture.assertComplete()
+        try await run.shutdown()
+        try await backend.shutdown()
+    }
+
+    @Test func failedToolNeverAdvertisesSuccessfulCompletion() throws {
+        var fixture = TranscriptFixture()
+        fixture.emit(.toolStarted(.init(name: "Bash", input: .object(["command": .string("false")]))), item: "one")
+        fixture.emit(.toolFinished(output: .string("failed"), isError: true), item: "one")
+        let row = try #require(fixture.state.entries.last)
+        #expect(row.presentationIdentifier == "chat.entry.\(row.id)")
+        #expect(AgentActionPresentation.toolSummary(.init(name: row.text, input: .object(["command": .string("false")])),
+            finished: true, isError: true) == "Failed to run false")
+    }
+
     @Test func claudeStreamsToolArgumentsAndMultipleTextBlocks() async throws {
         let fixture = try BackendExecutableFixture(script: #"""
 claude_init()

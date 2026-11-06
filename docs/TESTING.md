@@ -976,6 +976,8 @@ field's own editor, because the accessibility setter skips the SwiftUI binding. 
 the content view, and dumps walk only the window's accessibility children.
 Setup/output errors write `startup-error.txt` when possible. Missing results,
 startup errors or failed steps fail a run regardless of process exit status.
+A step with `optional: true` records an error as `skipped` and continues without
+failing the run; required steps still record `failed`.
 Keep artifacts local: they can contain chat content.
 
 `UITests/self-drive/golden-path.json` uses transcript-scoped reply checks and
@@ -989,6 +991,10 @@ to a cheap model ID advertised by the installed CLI; only new Codex sessions use
 that choice. Codex steps run before the final Claude steps. Every Send checks
 that its text is absent within `chat.composer.input`; the shell step waits for its
 Allow card and then for the successful completed tool row in the transcript.
+An optional second Allow accommodates a provider's verification command. The panel
+screenshot explicitly presses `chat.changes`. Providers navigation presses the
+native `cpu` tab and waits for `settings.providers.page`; `settings.providers`
+remains the Setup card button, not a press target for the page container.
 The shell approval uses a fresh third chat and the explicit prompt “Use your shell
 tool to create an empty file named e2e-made.txt in the current folder.” Its
 needs-you sidebar status and Chat badge must appear before Allow. The final
@@ -996,8 +1002,8 @@ Claude step uses another new chat and expects “Sign in to Claude” plus `chat
 inside `chat.error`, rather than a reply from a signed-out provider.
 The scenario sends seven Codex chats plus a final Claude chat, checks one-click switching,
 Show more and a real waiting-approval sidebar icon plus the Chat badge. `$project`
-and `$chat1`/`$chat2`/`$chat3` resolve IDs observed during the scenario. Setup uses the
-in-window `gearshape` button and the visible AI providers card.
+and `$chat1`/`$chat2`/`$chat3` resolve IDs observed during the scenario. Settings uses
+the in-window `gearshape` button and the native Providers tab (`cpu`).
 
 `picker-probe.json` separately dumps the new composer's tree and attempts the
 project menu. Native menu presses report unsupported failures; they are excluded
@@ -1010,3 +1016,17 @@ Self-drive covers in-process chat controls, bindings, turns, approvals and Stop
 only after the host gate passes. The supervisor must regenerate/build the App
 on the host; the recursive App source entry includes the new file without a
 project configuration change.
+
+
+For chat layout review, check light and dark appearances with Changes closed and
+open, resize to the minimum width, and type while running or waiting for approval.
+Stop must have a visible square, Sign in must have contrast, Allow must be prominent,
+and Send must appear beside Stop with input. The provider menu must replace the
+segments before controls wrap; model, effort and mode remain visible. Changes must
+stay closed until requested, with file statuses and diff together at the top and
+Commit/Discard at the bottom. A new empty file reads “Empty file”; Commit remains
+disabled for a blank message. Signed-in providers show no Sign in action. Usage
+and context rings show a static full track and percentage, including low values.
+Tool summaries use Running/Ran and Reading/Read, Editing/Edited, Writing/Wrote;
+expanding a tool retains its full command. Successful tool completion exposes
+`chat.tool.completed` before turn completion; errors do not advertise success.

@@ -203,6 +203,35 @@ import AitvarasStore
         #expect(permissions.presentation.detail == "Network access for this turn\nWrite: /tmp/example\nRead: /tmp/input")
     }
 
+    @Test(arguments: ["zsh", "bash", "sh", "/bin/zsh", "/usr/bin/bash"])
+    func plainShellWrappersArePresentationOnly(shell: String) {
+        let command = "\(shell) -lc 'touch example.txt'"
+        let tool = AgentTool(name: "Bash", input: .object(["command": .string(command)]))
+        #expect(AgentActionPresentation(tool: tool).detail == "touch example.txt")
+        #expect(AgentActionPresentation.toolSummary(tool, finished: false, isError: false) == "Running touch example.txt")
+        #expect(AgentActionPresentation.toolSummary(tool, finished: true, isError: false) == "Ran touch example.txt")
+        #expect(tool.input["command"] == .string(command))
+        #expect(AgentTranscriptContent.display(tool.input).contains(command))
+    }
+
+    @Test(arguments: [
+        "/bin/zsh -lc 'echo one' extra", "/bin/zsh -c 'echo one'", "fish -lc 'echo one'",
+        "env sh -lc 'echo one'", "/custom/sh -lc 'echo one'", "sh -lc 'echo one' && echo two",
+        #"sh -lc "echo $HOME""#, #"sh -lc "echo `pwd`""#, #"sh -lc "echo \$x""#,
+        "sh -lc 'unterminated", "echo example"
+    ]) func complexCommandsKeepTheirFullSpelling(command: String) {
+        #expect(AgentActionPresentation.displayCommand(command) == command)
+    }
+
+    @Test func claudeFileToolsUsePlainVerbsAndDoubleQuotedCommandsUnwrap() {
+        for (name, running, finished) in [("Read", "Reading", "Read"), ("Edit", "Editing", "Edited"), ("Write", "Writing", "Wrote")] {
+            let tool = AgentTool(name: name, input: .object(["file_path": .string("example.txt")]))
+            #expect(AgentActionPresentation.toolSummary(tool, finished: false, isError: false) == "\(running) example.txt")
+            #expect(AgentActionPresentation.toolSummary(tool, finished: true, isError: false) == "\(finished) example.txt")
+        }
+        #expect(AgentActionPresentation.displayCommand(#"/bin/bash -lc "printf 'hi' > example.txt""#) == "printf 'hi' > example.txt")
+    }
+
     @Test func codexFileApprovalUsesItemPathsAndDenialUsesAvailableDecision() async throws {
         let fixture = try BackendExecutableFixture(script: #"""
 codex_init()

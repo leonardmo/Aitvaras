@@ -72,6 +72,25 @@ import AitvarasCore
         #expect(saved[2].action == "screenshot")
     }
 
+    @MainActor @Test func optionalFailuresAreSkippedAndRequiredFailuresStillFail() async throws {
+        let scenario = try SelfDriveScenario.parse(Data(#"""
+        {"steps":[{"action":"press","identifier":"missing","optional":true},
+                  {"action":"press","identifier":"missing","optional":false},
+                  {"action":"press","identifier":"present","optional":true},
+                  {"action":"type","text":"continue"}]}
+        """#.utf8))
+        var saved: [SelfDriveResult] = []
+        let results = try await SelfDriveRecorder.run(scenario, perform: { step in
+            if step.identifier == "missing" { throw SelfDriveFailure("Identifier unavailable") }
+            return "Observed success"
+        }, checkpoint: { saved = $0 })
+        #expect(results.map(\.status) == ["skipped", "failed", "passed", "passed"])
+        #expect(saved.map(\.status) == results.map(\.status))
+        #expect(results[0].reason == "Identifier unavailable")
+        let restored = try JSONDecoder().decode([SelfDriveResult].self, from: JSONEncoder().encode(saved))
+        #expect(restored[0].status == "skipped")
+    }
+
     @MainActor @Test func checkpointFailureIsSurfaced() async throws {
         let scenario = try SelfDriveScenario.parse(Data(#"{"steps":[]}"#.utf8))
         await #expect(throws: SelfDriveFailure.self) {
@@ -96,6 +115,14 @@ import AitvarasCore
         #expect(scenario.steps.contains { $0.identifier == "chat.sidebar.$chat3.status.needsYou" })
         let claude = try #require(scenario.steps.firstIndex { $0.identifier == "chat.provider.claude" })
         let approval = try #require(scenario.steps.firstIndex { $0.action == .press && $0.identifier == "chat.request.0.allow" })
+        let secondApproval = try #require(scenario.steps[(approval + 1)..<claude].first {
+            $0.action == .press && $0.identifier == "chat.request.0.allow"
+        })
+        #expect(secondApproval.optional == true)
+        let panelShot = try #require(scenario.steps.firstIndex { $0.name == "10-after-approval" })
+        #expect(scenario.steps[panelShot - 1].action == .press && scenario.steps[panelShot - 1].identifier == "chat.changes")
+        #expect(scenario.steps.contains { $0.action == .press && $0.identifier == "cpu" })
+        #expect(scenario.steps.contains { $0.action == .waitFor && $0.identifier == "settings.providers.page" })
         #expect(approval < claude)
         #expect(scenario.steps[..<approval].contains { $0.action == .waitFor && $0.identifier == "chat.request.0.allow" })
         #expect(scenario.steps[(approval + 1)..<claude].contains {

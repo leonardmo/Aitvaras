@@ -7,7 +7,7 @@ struct AgentTranscriptView: View {
     @State private var expanded = false
 
     var body: some View {
-        Group {
+        VStack(alignment: .leading, spacing: 0) {
             if entry.kind == "importedHistory" {
                 importedHistory
             } else if ["handover", "thinking", "tool"].contains(entry.kind) {
@@ -26,7 +26,13 @@ struct AgentTranscriptView: View {
                 } label: {
                     HStack(spacing: 6) {
                         if entry.kind == "tool" {
-                            Image(systemName: payload?["isError"]?.boolValue == true ? "exclamationmark.circle" : "terminal")
+                            if payload?["isError"]?.boolValue == true {
+                                Image(systemName: "exclamationmark.circle")
+                            } else if payload?["finished"]?.boolValue == true {
+                                Image(systemName: "checkmark.circle")
+                            } else {
+                                Image(systemName: "terminal")
+                            }
                         }
                         Text(title).lineLimit(1).truncationMode(.middle)
 
@@ -57,9 +63,10 @@ struct AgentTranscriptView: View {
             }
         }
         .accessibilityElement(children: .contain)
-        .accessibilityIdentifier(entry.kind == "tool" && payload?["finished"]?.boolValue == true
-            && payload?["isError"]?.boolValue != true ? "chat.tool.completed" : entry.kind == "importedHistory" ? "chat.importedHistory.\(entry.id)"
-            : entry.kind == "handover" ? "chat.handover.\(entry.id)" : "chat.entry.\(entry.id)")
+        .accessibilityIdentifier(entry.presentationIdentifier)
+        // Give completion a fresh AX container as well as a new identifier,
+        // keeping the row identity stable throughout streaming.
+        .id(entry.presentationIdentifier)
     }
     private var importedHistory: some View {
         DisclosureGroup(isExpanded: $expanded) {
@@ -100,11 +107,9 @@ struct AgentTranscriptView: View {
         if entry.kind == "handover" { return "Context sent to \(entry.provider.rawValue.capitalized)" }
         if entry.kind == "thinking" { return "Thinking" }
         let input = payload?["input"] ?? .null
-        let action = AgentActionPresentation(tool: .init(name: entry.text, input: input))
-        let detail = action.detail.components(separatedBy: .newlines).first ?? ""
-        let summary = detail.isEmpty ? (entry.text.isEmpty ? "Tool" : entry.text) : "\(entry.text) · \(detail)"
-        guard payload?["finished"]?.boolValue == true else { return summary }
-        return summary + (payload?["isError"]?.boolValue == true ? " · Failed" : " · Completed")
+        return AgentActionPresentation.toolSummary(.init(name: entry.text, input: input),
+            finished: payload?["finished"]?.boolValue == true,
+            isError: payload?["isError"]?.boolValue == true)
     }
     @ViewBuilder private var toolDetails: some View {
         let input = payload?["input"] ?? .null
