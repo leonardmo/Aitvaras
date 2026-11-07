@@ -41,6 +41,11 @@
       "absent": true
     },
     {
+      "action": "dumpTree",
+      "name": "before-local-switch",
+      "delay": 3
+    },
+    {
       "action": "press",
       "identifier": "chat.provider.local"
     },

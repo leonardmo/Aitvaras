@@ -75,10 +75,27 @@ public struct OpencodeConfiguration: Sendable {
     static func writeRoots(_ urls: [URL]) throws -> [String] {
         try Array(Set(urls.map {
             guard $0.isFileURL, $0.path.hasPrefix("/"), !$0.path.contains("\0") else { throw AgentFailure.invalidRequest }
-            let path = $0.resolvingSymlinksInPath().standardizedFileURL.path
+            let path = realPath($0.standardizedFileURL.path)
             guard path != "/" else { throw AgentFailure.invalidRequest }
             return path
         })).sorted()
+    }
+    /// The sandbox matches the kernel's real path. Foundation's
+    /// `resolvingSymlinksInPath()` turns `/private/var/...` back into `/var/...`,
+    /// which the sandbox then never matches. Resolve the deepest existing ancestor
+    /// with realpath(3) and keep the not-yet-created remainder.
+    static func realPath(_ path: String) -> String {
+        var existing = path, rest: [String] = []
+        while existing != "/" {
+            if let resolved = realpath(existing, nil) {
+                defer { free(resolved) }
+                let base = String(cString: resolved)
+                return rest.isEmpty ? base : base + "/" + rest.reversed().joined(separator: "/")
+            }
+            rest.append((existing as NSString).lastPathComponent)
+            existing = (existing as NSString).deletingLastPathComponent
+        }
+        return path
     }
     private static func quote(_ path: String) -> String {
         "\"" + path.replacingOccurrences(of: "\\", with: "\\\\")
