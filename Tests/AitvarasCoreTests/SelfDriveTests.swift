@@ -66,9 +66,20 @@ import AitvarasCore
         #"{"steps":[{"action":"waitFor","anyOf":["x"],"identifier":"y"}]}"#,
         #"{"steps":[{"action":"waitFor","anyOf":["x"],"text":"y"}]}"#,
         #"{"steps":[{"action":"press","anyOf":["x"],"identifier":"y"}]}"#,
+        #"{"steps":[{"action":"press","anyOf":["x"],"text":"y"}]}"#,
+        #"{"steps":[{"action":"type","anyOf":["x"],"text":"y"}]}"#,
         "not json"
     ]) func rejectsMalformedScenarios(json: String) {
         #expect(throws: (any Error).self) { try SelfDriveScenario.parse(Data(json.utf8)) }
+    }
+
+    @Test func approvalScenarioCanPressCommandOrQuestionCard() throws {
+        let scenario = try SelfDriveScenario.parse(Data(#"{"steps":[{"action":"press","anyOf":["chat.request.0.allow","chat.request.0.submit"]}]}"#.utf8))
+        let step = try #require(scenario.steps.first)
+        #expect(step.matchesIdentifier("chat.request.0.allow"))
+        #expect(step.matchesIdentifier("chat.request.0.submit"))
+        let restored = try JSONDecoder().decode(SelfDriveStep.self, from: JSONEncoder().encode(step))
+        #expect(restored.anyOf == step.anyOf)
     }
 
     @MainActor @Test func failureContinuesAndCheckpointsRoundTrip() async throws {
@@ -135,6 +146,10 @@ import AitvarasCore
         #expect(switching.steps.filter { $0.action == .press && ($0.identifier?.hasPrefix("chat.provider.") ?? false) }
             .compactMap(\.identifier) == ["chat.provider.codex", "chat.provider.local", "chat.provider.claude"])
         #expect(switching.steps.contains { $0.action == .waitFor && $0.text == "PELICAN" && $0.within == "chat.transcript" && $0.caseSensitive == true })
+        #expect(switching.steps.contains { $0.action == .press && $0.anyOf == ["chat.request.0.allow", "chat.request.0.submit"] })
+        #expect(switching.steps.contains { $0.action == .type && $0.text?.contains("Use your question tool now") == true })
+        #expect(switching.steps.contains { $0.action == .waitFor && $0.identifier == "chat.question.0.0.option.0" })
+        #expect(switching.steps.contains { $0.action == .screenshot && $0.name == "local-question" })
         let names = scenario.steps.filter { $0.action == .screenshot }.compactMap(\.name)
         #expect(names == ["01-launch", "02-chat-empty", "03-new-chat", "04-codex-first-selected",
                           "05-codex-first-streaming", "06-codex-first-replied", "07-codex-selected", "08-codex-replied",

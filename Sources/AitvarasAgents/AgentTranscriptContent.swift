@@ -100,7 +100,7 @@ public struct AgentActionPresentation: Sendable, Equatable {
         let input = tool.input
         let name = tool.name.lowercased()
         let command = input["command"]?.stringValue ?? input["command"]?.arrayValue?.compactMap(\.stringValue).joined(separator: " ")
-        let path = input["file_path"]?.stringValue ?? input["path"]?.stringValue
+        let path = input["file_path"]?.stringValue ?? input["filePath"]?.stringValue ?? input["path"]?.stringValue
         let paths = input["changes"]?.arrayValue?.compactMap { $0["path"]?.stringValue } ?? []
         let title: String
         let detail: String
@@ -141,22 +141,45 @@ extension AgentActionPresentation {
 
     public static func toolSummary(_ tool: AgentTool, finished: Bool, isError: Bool, completionUnconfirmed: Bool = false,
                                    turnCompletedNormally: Bool = false, isDenied: Bool = false) -> String {
-        let detail = AgentActionPresentation(tool: tool).detail.components(separatedBy: .newlines).first ?? ""
+        let name = tool.name.lowercased()
+        let detail = toolDetail(tool).components(separatedBy: .newlines).first ?? ""
         if isDenied { return detail.isEmpty ? "Denied" : "Denied: \(detail)" }
         if completionUnconfirmed {
             if turnCompletedNormally { return detail.isEmpty ? tool.name : detail }
             return detail.isEmpty ? "Ended without a result" : "Ended without a result: \(detail)"
         }
         let verbs: (String, String, String)
-        switch tool.name.lowercased() {
+        switch name {
         case "bash", "commandexecution": verbs = ("Running", "Ran", "Failed to run")
         case "read": verbs = ("Reading", "Read", "Failed to read")
         case "edit", "multiedit", "notebookedit", "filechange": verbs = ("Editing", "Edited", "Failed to edit")
         case "write": verbs = ("Writing", "Wrote", "Failed to write")
+        case "question", "askuserquestion": verbs = ("Asked:", "Asked:", "Failed to ask:")
+        case "grep", "glob": verbs = ("Searching for", "Searched for", "Failed to search for")
+        case "list", "ls": verbs = ("Listing", "Listed", "Failed to list")
+        case "webfetch": verbs = ("Fetching", "Fetched", "Failed to fetch")
+        case "todo", "todowrite": verbs = ("Updating tasks", "Updated tasks", "Failed to update tasks")
+        case "todoread": verbs = ("Reading tasks", "Read tasks", "Failed to read tasks")
+        case "task": verbs = ("Delegating:", "Delegated:", "Failed to delegate:")
         default: verbs = ("Using \(tool.name)", "Used \(tool.name)", "Failed to use \(tool.name)")
         }
         let verb = finished ? (isError ? verbs.2 : verbs.1) : verbs.0
         return detail.isEmpty ? verb : "\(verb) \(detail)"
+    }
+
+    private static func toolDetail(_ tool: AgentTool) -> String {
+        let input = tool.input
+        switch tool.name.lowercased() {
+        case "question", "askuserquestion":
+            let questions = input["questions"]?.arrayValue ?? []
+            return questions.compactMap { $0["header"]?.stringValue ?? $0["question"]?.stringValue }.joined(separator: "; ")
+        case "grep", "glob": return input["pattern"]?.stringValue ?? ""
+        case "list", "ls": return input["path"]?.stringValue ?? "."
+        case "webfetch": return input["url"]?.stringValue ?? ""
+        case "todo", "todowrite", "todoread": return ""
+        case "task": return input["description"]?.stringValue ?? ""
+        default: return AgentActionPresentation(tool: tool).detail
+        }
     }
 }
 

@@ -89,6 +89,11 @@ Reject (`reject`) and Stop (`interrupt`). Failure checks cover delivery barriers
 unknown events, malformed/stale permission IDs, unavailable models/service,
 resume and write-root changes. `OpencodeConfigurationTests` verifies local-only
 config/catalogs, exact sandbox write roots, SSE framing and credential isolation.
+Form tests cover nested `form.created` routing, audited question permissions,
+option-label/value mapping, text and multiple answers, cancellation and failed
+replies. Unsupported controls are cancelled through DELETE; unknown requests
+interrupt through HTTP and release the turn and queued follow-ups even without
+a terminal SSE event. Neither path forwards unknown payloads to the transcript.
 The manager test sends Codex→Local→Claude in one chat, checks both catch-ups,
 and verifies a retained Local session does not receive its own transcript again.
 These offline tests do not load model weights or prove runtime tool reliability.
@@ -99,8 +104,10 @@ run `UITests/self-drive/switching.json` with
 is DEBUG-only, like `AITVARAS_SELF_DRIVE_CODEX_MODEL`, and never a preference.
 Set `AITVARAS_AGENT_TEST_PROVIDERS=real` when integrations are disabled. In one
 chat Codex answers the backwards-word prompt, Local receives it and answers in
-capitals, Local requests shell approval and completes its tool row, then signed-out
-Claude shows its sign-in row. `golden-path.json` additionally checks Local Allow
+capitals, Local requests shell approval or asks through a question card and
+completes its tool row. A separate explicit question-tool prompt must show a
+question card, accept an option and finish before signed-out Claude shows its
+sign-in row. `golden-path.json` additionally checks Local Allow
 and Deny. Use a clean synthetic project without the generated filenames.
 
 Verify the generated sandbox blocks outbound remote traffic and writes outside
@@ -794,8 +801,12 @@ text; Codex allows free text for `isOther` or a question without options, and
 preserves `isBlocking`. Secret free text uses a secure field. Replies are
 validated again at the coordinator and backend; malformed questions, unknown
 IDs, empty required answers, stale cards and duplicate replies are rejected.
-Cancel closes the native request with an unsupported response because neither
-protocol defines a question-denial payload.
+For Claude and Codex, Cancel closes the native request with an unsupported
+response because neither protocol defines a question-denial payload. Local's
+opencode forms use `POST /api/session/{id}/form/{formID}/reply` with a keyed
+`answer` object, and Cancel uses `DELETE /api/session/{id}/form/{formID}`.
+Conditional, external and constrained fields that the shared card cannot
+represent are cancelled with a visible “Not supported here” transcript line.
 
 `AgentPlanTests` covers the recorded Claude acknowledgement and both fake
 executables for approve/reject, failed transitions, Stop and stale plans.
@@ -1069,8 +1080,9 @@ background themselves. Package tests do not prove these runtime assumptions. A f
 relying on self-drive coverage; preserve the artifacts to fix the adapter.
 
 The format is `{"steps":[{"action":"press","identifier":"chat.new"}]}`.
-Actions: `press` by identifier; `type` appends `text` to the composer;
-`waitFor` takes exactly one `identifier` or case-insensitive visible `text`,
+Actions: `press` by identifier or an `anyOf` identifier array (first available,
+enabled target); `type` appends `text` to the composer;
+`waitFor` takes exactly one `identifier`, an `anyOf` identifier array, or case-insensitive visible `text`,
 a `timeout` in seconds, optional `absent:true`, `enabled:true` (or `false`), `within` subtree identifier and
 `caseSensitive:true`; `screenshot` and `dumpTree`
 take a safe artifact `name`. Every step accepts an optional settling `delay`.
