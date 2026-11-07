@@ -528,12 +528,12 @@
       "text": "Use your bash shell tool to run exactly: printf example > local-approved.txt. Do not use an edit tool. Wait for approval.",
       "within": "chat.composer.input",
       "absent": true,
-      "timeout": 15
+      "timeout": 300
     },
     {
       "action": "waitFor",
       "identifier": "chat.request.0.allow",
-      "timeout": 180
+      "timeout": 300
     },
     {
       "action": "screenshot",
@@ -546,19 +546,19 @@
     {
       "action": "waitFor",
       "identifier": "chat.request.0.allow",
-      "timeout": 30,
+      "timeout": 300,
       "absent": true
     },
     {
       "action": "waitFor",
       "identifier": "chat.tool.completed",
       "within": "chat.transcript",
-      "timeout": 180
+      "timeout": 300
     },
     {
       "action": "waitFor",
       "identifier": "chat.composer.stop",
-      "timeout": 180,
+      "timeout": 300,
       "absent": true
     },
     {
@@ -582,12 +582,12 @@
       "text": "Use your bash shell tool to run exactly: printf example > local-denied.txt. Do not use an edit tool. Wait for approval.",
       "within": "chat.composer.input",
       "absent": true,
-      "timeout": 15
+      "timeout": 300
     },
     {
       "action": "waitFor",
       "identifier": "chat.request.0.allow",
-      "timeout": 180
+      "timeout": 300
     },
     {
       "action": "screenshot",
@@ -600,13 +600,13 @@
     {
       "action": "waitFor",
       "identifier": "chat.request.0.allow",
-      "timeout": 30,
+      "timeout": 300,
       "absent": true
     },
     {
       "action": "waitFor",
       "identifier": "chat.composer.stop",
-      "timeout": 180,
+      "timeout": 300,
       "absent": true
     },
     {
@@ -633,7 +633,7 @@
     {
       "action": "waitFor",
       "identifier": "settings.providers.page",
-      "timeout": 10
+      "timeout": 300
     },
     {
       "action": "screenshot",

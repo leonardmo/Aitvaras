@@ -455,6 +455,48 @@ import AitvarasStore
         try await manager.shutdown()
     }
 
+    @Test(arguments: ["complete", "unavailable", "invalid"])
+    func sendAfterTurnEndWaitsForPassiveRefreshAndFailsClosedOnInvalidHistory(history: String) async throws {
+        let stores = try inMemoryStores()
+        var (chat, session) = try agentStoreChat(stores, provider: .codex)
+        session.sessionID = .init(provider: .codex, profile: "default", nativeID: "thread")
+        try stores.saveAgentSession(session)
+        let backend = ManagerTestBackend()
+        let manager = try AgentSessionManager(persistence: stores, backend: { _ in backend }, audit: { _ in })
+        let first = AgentInput(text: "First")
+        try await manager.send(chatID: chat.id, provider: .codex, input: first)
+        let run = try #require(await backend.runs.last)
+        await run.emit(.turnEnded(.completed), input: first.id)
+        try await waitManager { try await manager.state(chatID: chat.id).outcome == .completed }
+        await backend.pauseNextHistoryRead()
+        if history == "complete" { await backend.setHistoryFailure(nil) }
+        if history == "invalid" { await backend.setHistoryFailure(AgentNativeHistoryError.identityConflict) }
+        let owner = chat.id, chosenSession = session
+        let refresh = Task { try await manager.refreshNativeHistory(chatID: owner) }
+        try await waitManager { await backend.historyIsPaused }
+        let next = AgentInput(text: "Send immediately after Stop disappears")
+        let queued = Task {
+            do { try await manager.waitForNativeHistory(chatID: owner) }
+            catch where AgentSessionManager.historyUnavailable(error) { }
+            try await manager.configure(chosenSession)
+            try await manager.send(chatID: owner, provider: .codex, input: next)
+        }
+        #expect(await backend.totalWrites() == 1)
+        #expect(try stores.agentTurn(id: next.id) == nil)
+        await backend.releaseHistoryRead()
+        _ = await refresh.result
+        if history == "invalid" {
+            await #expect(throws: AgentNativeHistoryError.identityConflict) { try await queued.value }
+            #expect(await backend.totalWrites() == 1)
+            #expect(try stores.agentTurn(id: next.id) == nil)
+        } else {
+            try await queued.value
+            #expect(await backend.totalWrites() == 2)
+            #expect(try stores.agentEntries(chatID: chat.id).filter { $0.id == next.id }.count == 1)
+        }
+        try await manager.shutdown()
+    }
+
     @Test func newChatDoesNotReadNativeHistoryWithoutSessionIdentity() async throws {
         #expect(AgentSessionManager.historyUnavailable(AgentNativeHistoryError.notFound))
         #expect(!AgentSessionManager.historyUnavailable(AgentNativeHistoryError.identityConflict))
@@ -542,9 +584,14 @@ private actor ManagerStartCounter: AgentBackend {
 private actor ManagerTestBackend: AgentBackend {
     enum Failure: Sendable { case none, before, after, auth }
     private var failure: Failure = .none
-    private var historyFailure: AgentFailure = .unsupported
+    private var historyFailure: (any Error)? = AgentFailure.unsupported
+    private var pauseHistory = false
+    private var historyWaiter: CheckedContinuation<Void, Never>?
+    var historyIsPaused: Bool { historyWaiter != nil }
+    func pauseNextHistoryRead() { pauseHistory = true }
+    func releaseHistoryRead() { historyWaiter?.resume(); historyWaiter = nil }
     private(set) var historyReads = 0
-    func setHistoryFailure(_ value: AgentFailure) { historyFailure = value }
+    func setHistoryFailure(_ value: (any Error)?) { historyFailure = value }
     private var hungShutdown = false
     private var pauseStart = false
     private var startWaiter: CheckedContinuation<Void, Never>?
@@ -569,8 +616,14 @@ private actor ManagerTestBackend: AgentBackend {
         let run = ManagerTestRun(failure: failure, hungShutdown: hungShutdown); runs.append(run); return run
     }
     func listSessions(folder: URL, cursor: String?) throws -> AgentPage<AgentSessionSummary> { throw AgentFailure.unsupported }
-    func readHistory(session: AgentSessionID, cursor: String?) throws -> AgentPage<AgentEvent> {
-        historyReads += 1; throw historyFailure
+    func readHistory(session: AgentSessionID, cursor: String?) async throws -> AgentPage<AgentEvent> {
+        historyReads += 1
+        if pauseHistory {
+            pauseHistory = false
+            await withCheckedContinuation { historyWaiter = $0 }
+        }
+        if let historyFailure { throw historyFailure }
+        return .init(items: [])
     }
 }
 private actor ManagerTestRun: AgentRun {

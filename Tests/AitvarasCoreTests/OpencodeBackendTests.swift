@@ -227,6 +227,65 @@ actor OpencodeFakeTransport: OpencodeTransport {
 }
 
 extension OpencodeBackendTests {
+    @Test func reasoningUpdatesOneThinkingRowBeforePromptAcknowledgement() async throws {
+        let wire = OpencodeFakeTransport()
+        await wire.pauseNextPrompt()
+        let run = OpencodeRun(transport: wire, session: localSession, configuration: localConfiguration, release: { _ in })
+        let input = AgentInput(text: "Think about an example")
+        let progress = LocalReasoningProgress(input: input)
+        let reader = Task {
+            for try await event in run.events { await progress.receive(event) }
+        }
+        let send = Task { try await run.send(input, willDeliver: {}) }
+        try await waitOpencode { await wire.promptIsPaused }
+        await run.receive(localEvent("session.execution.started"))
+        await run.receive(localEvent("session.inbox.delivered", ["inboxID": .string("msg_" + input.id.uuidString)]))
+        await run.receive(localEvent("session.reasoning.started", ["assistantMessageID": .string("thought")]))
+        try await waitOpencode { await progress.state.entries.contains { $0.kind == "thinking" } }
+        let row = try #require(await progress.state.entries.last?.id)
+        for delta in ["Consider ", "the example."] {
+            await run.receive(localEvent("session.reasoning.delta", ["assistantMessageID": .string("thought"), "delta": .string(delta)]))
+        }
+        try await waitOpencode { await progress.state.thinking == "Consider the example." }
+        #expect(await progress.state.entries.last?.id == row)
+        #expect(await progress.state.isRunning)
+        #expect(await !progress.kinds.contains(.delivery(.acknowledged)))
+        #expect(await !progress.state.entries.contains { $0.kind == "assistant" })
+        await run.receive(localEvent("session.reasoning.ended", ["assistantMessageID": .string("thought"), "text": .string("Consider the example.")]))
+        await run.receive(localEvent("session.execution.succeeded"))
+        #expect(await progress.state.isRunning)
+        await wire.releasePrompt()
+        try await send.value
+        try await waitOpencode { await progress.state.outcome == .completed }
+        #expect(await progress.state.entries.filter { $0.kind == "thinking" }.count == 1)
+        #expect(await progress.state.entries.last?.id == row)
+        #expect(await progress.state.thinking == "Consider the example.")
+        try await run.shutdown(); try await reader.value
+    }
+
+    @Test func queuedReasoningCannotLeakAcrossBufferedInputActivation() async throws {
+        let wire = OpencodeFakeTransport()
+        let run = OpencodeRun(transport: wire, session: localSession, configuration: localConfiguration, release: { _ in })
+        let first = AgentInput(text: "First"), next = AgentInput(text: "Next")
+        try await run.send(first, willDeliver: {})
+        await wire.pauseNextPrompt()
+        let send = Task { try await run.followup(next, willDeliver: {}) }
+        try await waitOpencode { await wire.promptIsPaused }
+        await run.receive(localEvent("session.execution.succeeded"))
+        await run.receive(localEvent("session.inbox.delivered", ["inboxID": .string("msg_" + next.id.uuidString)]))
+        await run.receive(localEvent("session.reasoning.delta", ["delta": .string("Next thought")]))
+        await wire.releasePrompt()
+        try await send.value
+        await run.receive(localEvent("session.execution.succeeded"))
+        var thoughts: [UUID?] = [], ended = 0
+        for try await event in run.events {
+            if case .thinkingDelta = event.kind { thoughts.append(event.scope.inputID) }
+            if case .turnEnded = event.kind { ended += 1; if ended == 2 { break } }
+        }
+        #expect(thoughts == [next.id])
+        try await run.shutdown()
+    }
+
     @Test func fastSSECompletionWaitsForHTTPDeliveryAcknowledgement() async throws {
         let wire = OpencodeFakeTransport()
         await wire.pauseNextPrompt()
@@ -300,4 +359,18 @@ extension OpencodeBackendTests {
 private actor LocalAuditCounter {
     private(set) var count = 0
     func record(_ event: ActivityEvent) { count += 1 }
+}
+
+private actor LocalReasoningProgress {
+    private(set) var state: ChatState
+    private(set) var kinds: [AgentEvent.Kind] = []
+    init(input: AgentInput) {
+        let chat = UUID()
+        state = ChatState(chatID: chat)
+        state.begin(input, session: .init(chatID: chat, provider: .local, cwd: "/tmp", model: "test-model"), outputID: UUID())
+    }
+    func receive(_ event: AgentEvent) {
+        kinds.append(event.kind)
+        state.reduce(event, newEntryID: UUID())
+    }
 }

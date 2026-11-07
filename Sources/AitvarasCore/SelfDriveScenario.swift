@@ -25,6 +25,8 @@ public struct SelfDriveStep: Codable, Sendable {
     public let delay: Double?
     /// Used for assertions such as "there is no second approval card".
     public let absent: Bool?
+    /// Restrict a wait to controls with this enabled state.
+    public let enabled: Bool?
     /// A failed optional step is recorded as skipped and does not fail the run.
     public let optional: Bool?
     /// Restrict a wait to this accessibility subtree.
@@ -42,8 +44,8 @@ public struct SelfDriveStep: Codable, Sendable {
             guard value.isFinite, value >= 0, value <= 300 else { throw invalid("Invalid time interval") }
         }
         if let within, within.isEmpty { throw invalid("within must be a nonempty identifier") }
-        if (within != nil || caseSensitive != nil) && action != .waitFor {
-            throw invalid("within and caseSensitive apply only to waitFor")
+        if (within != nil || caseSensitive != nil || enabled != nil) && action != .waitFor {
+            throw invalid("within, caseSensitive and enabled apply only to waitFor")
         }
         if let anyOf {
             guard action == .waitFor, !anyOf.isEmpty, anyOf.count <= 16,
