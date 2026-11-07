@@ -1071,7 +1071,7 @@ relying on self-drive coverage; preserve the artifacts to fix the adapter.
 The format is `{"steps":[{"action":"press","identifier":"chat.new"}]}`.
 Actions: `press` by identifier; `type` appends `text` to the composer;
 `waitFor` takes exactly one `identifier` or case-insensitive visible `text`,
-a `timeout` in seconds, optional `absent:true`, `within` subtree identifier and
+a `timeout` in seconds, optional `absent:true`, `enabled:true` (or `false`), `within` subtree identifier and
 `caseSensitive:true`; `screenshot` and `dumpTree`
 take a safe artifact `name`. Every step accepts an optional settling `delay`.
 Results contain one index/action/status/reason entry per step and checkpoint
@@ -1084,6 +1084,19 @@ startup errors or failed steps fail a run regardless of process exit status.
 A step with `optional: true` records an error as `skipped` and continues without
 failing the run; required steps still record `failed`.
 Keep artifacts local: they can contain chat content.
+
+Local waits in the golden and switching scenarios allow 300 seconds for small
+models. Switching waits for enabled Send before typing each prompt. An idle
+composer exposes enabled Send even when empty; pressing it with no input does
+nothing. After a turn, Send accepts input while native history is refreshing
+and waits for reconciliation before preparing delivery. Invalid history still
+blocks delivery. Verify this on the host by sending immediately after Stop
+disappears, without an extra settling delay.
+
+Local reasoning creates the same collapsed Thinking row as the other providers
+on its first event, including while the prompt HTTP acknowledgement is pending.
+Expand it during a slow turn to verify incremental updates and stable identity;
+the delivery journal still waits for acknowledgement.
 
 `UITests/self-drive/golden-path.json` uses transcript-scoped reply checks and
 case-sensitive catch-up checks. Prompts spell the expected word backwards or refer

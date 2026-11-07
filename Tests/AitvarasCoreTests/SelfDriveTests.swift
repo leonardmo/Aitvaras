@@ -25,6 +25,15 @@ import AitvarasCore
         #expect(SelfDriveText.matches("PELICAN", text: "PELICAN", caseSensitive: true))
     }
 
+    @Test(arguments: [true, false])
+    func enabledWaitRoundTrips(enabled: Bool) throws {
+        let data = Data("{\"steps\":[{\"action\":\"waitFor\",\"identifier\":\"chat.composer.send\",\"enabled\":\(enabled),\"timeout\":300}]}".utf8)
+        let step = try #require(SelfDriveScenario.parse(data).steps.first)
+        #expect(step.enabled == enabled)
+        let restored = try JSONDecoder().decode(SelfDriveStep.self, from: JSONEncoder().encode(step))
+        #expect(restored.enabled == enabled)
+    }
+
     @Test(arguments: ["chat.tool.completed", "chat.tool.unconfirmed"])
     func waitsForEitherToolOutcome(identifier: String) throws {
         let scenario = try SelfDriveScenario.parse(Data(#"{"steps":[{"action":"waitFor","anyOf":["chat.tool.completed","chat.tool.unconfirmed"],"timeout":0,"within":"chat.transcript"}]}"#.utf8))
@@ -50,6 +59,7 @@ import AitvarasCore
         #"{"steps":[{"action":"dumpTree","name":".."}]}"#,
         #"{"steps":[{"action":"waitFor","text":"x","within":""}]}"#,
         #"{"steps":[{"action":"press","identifier":"x","within":"chat.transcript"}]}"#,
+        #"{"steps":[{"action":"press","identifier":"x","enabled":true}]}"#,
         #"{"steps":[{"action":"waitFor","anyOf":[]}]}"#,
         #"{"steps":[{"action":"waitFor","anyOf":[""]}]}"#,
         #"{"steps":[{"action":"waitFor","anyOf":["x","x"]}]}"#,
@@ -188,6 +198,25 @@ import AitvarasCore
         #expect(!scenario.steps[(claude + 1)...].contains { $0.identifier == "chat.provider.codex" })
         _ = try SelfDriveScenario.parse(Data(contentsOf: root.appendingPathComponent("UITests/self-drive/probe.json")))
         _ = try SelfDriveScenario.parse(Data(contentsOf: root.appendingPathComponent("UITests/self-drive/picker-probe.json")))
+    }
+
+    @Test func localWaitsAllowSlowModelsAndSwitchingWaitsBeforeTyping() throws {
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        for name in ["golden-path", "switching"] {
+            let scenario = try SelfDriveScenario.parse(Data(contentsOf: root.appendingPathComponent("UITests/self-drive/\(name).json")))
+            var local = false
+            for (index, step) in scenario.steps.enumerated() {
+                if step.action == .press, let id = step.identifier, id.hasPrefix("chat.provider.") {
+                    local = id == "chat.provider.local"
+                }
+                if local, step.action == .waitFor { #expect(step.timeout == 300) }
+                if name == "switching", step.action == .type {
+                    let readiness = scenario.steps[index - 1]
+                    #expect(readiness.action == .waitFor)
+                    #expect(readiness.identifier == "chat.composer.send" && readiness.enabled == true)
+                }
+            }
+        }
     }
 
     @Test func layoutScenarioKeepsNarrowScreenshotsWithoutProviderSegments() throws {

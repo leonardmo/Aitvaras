@@ -115,7 +115,7 @@ final class ChatModel {
     var nativeDiscoveryFailed: Bool { nativeDiscoveryError != nil }
     var displayEntries: [AgentTranscriptEntry] { state?.entries ?? [] }
     func refreshNativePreview() async {
-        guard let id = chatID, state?.isRunning != true else { return }
+        guard let id = chatID, state?.isRunning != true, sending[id] == nil else { return }
         guard refreshingHistory.insert(id).inserted else { return }
         defer { refreshingHistory.remove(id) }
         do {
@@ -236,10 +236,10 @@ final class ChatModel {
         if value.command == sent.command { value.command = nil }
         composerSelections[chatID, provider] = value
     }
-    var isBusy: Bool { state?.isRunning == true || chatID.map { sending[$0] != nil || refreshingHistory.contains($0) } == true }
+    var isBusy: Bool { state?.isRunning == true || chatID.map { sending[$0] != nil } == true }
     var canSubmit: Bool {
         guard let id = chatID else { return !terminating && !creatingChat && newProjectID != nil && signingIn == nil }
-        return !terminating && !gitBusy && !refreshingHistory.contains(id) && !stopping.contains(id) && sending[id] == nil && !submittedText.contains(id) && signingIn == nil
+        return !terminating && !gitBusy && !stopping.contains(id) && sending[id] == nil && !submittedText.contains(id) && signingIn == nil
             && (!isBusy || statuses[provider]?.capabilities.contains(.followups) == true)
     }
     private var settingsKey: String { "\(chatID?.uuidString ?? "").\(provider.rawValue)" }
@@ -494,6 +494,7 @@ final class ChatModel {
     }
 
     func send() async {
+        guard hasInput else { return }
         #if DEBUG
         if provider == .codex, let selfDriveCodexModel {
             await loadModels()
@@ -570,6 +571,11 @@ final class ChatModel {
                 attempts.removeValue(forKey: input.id)
                 return
             }
+            // A post-turn preview must finish before settings/context are read.
+            // Send stays available and owns this input while it waits.
+            do { try await manager.waitForNativeHistory(chatID: id) }
+            catch where AgentSessionManager.historyUnavailable(error) { /* Send uses retained history. */ }
+            guard !stoppedSends.contains(input.id) else { return }
             // Verification also rejects failed/incomplete creation after restart.
             _ = try await gitActions.mapping(chatID: id)
             session.instructions = try stores.workspaceContextPacket(chatID: id).promptText

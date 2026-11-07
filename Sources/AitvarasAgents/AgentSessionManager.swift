@@ -31,6 +31,7 @@ public actor AgentSessionManager {
     private var subscribers: [UUID: [UUID: AsyncStream<ChatState>.Continuation]] = [:]
     private var closing = false
     private var refreshing = Set<UUID>()
+    private var historyWaiters: [UUID: [CheckedContinuation<Void, any Error>]] = [:]
     private var historyTokens: [UUID: UUID] = [:]
     private var approvalSubscribers: [UUID: AsyncStream<[AgentApprovalSuggestion]>.Continuation] = [:]
 
@@ -622,6 +623,17 @@ extension AgentSessionManager {
 }
 
 extension AgentSessionManager {
+    /// A composer can accept input while a passive refresh owns the chat.
+    /// Resume only after its atomic publication (or propagate its failure).
+    public func waitForNativeHistory(chatID: UUID) async throws {
+        guard !closing else { throw AgentSessionManagerError.shuttingDown }
+        if refreshing.contains(chatID) {
+            try await withCheckedThrowingContinuation { historyWaiters[chatID, default: []].append($0) }
+        }
+        try Task.checkCancellation()
+        guard !closing else { throw AgentSessionManagerError.shuttingDown }
+    }
+
     /// Refresh all bound providers, even when a different provider is selected.
     /// No process run or prompt is started. Per-chat reservation prevents a Send
     /// or settings change from racing a multi-page observation.
@@ -634,7 +646,19 @@ extension AgentSessionManager {
         refreshing.insert(chatID)
         let token = UUID()
         historyTokens[chatID] = token
-        defer { refreshing.remove(chatID); historyTokens.removeValue(forKey: chatID) }
+        var failure: (any Error)?
+        defer {
+            refreshing.remove(chatID); historyTokens.removeValue(forKey: chatID)
+            for waiter in historyWaiters.removeValue(forKey: chatID) ?? [] {
+                if let failure { waiter.resume(throwing: failure) }
+                else { waiter.resume() }
+            }
+        }
+        do { try await refreshNativeHistory(chatID: chatID, store: store, token: token) }
+        catch { failure = error; throw error }
+    }
+
+    private func refreshNativeHistory(chatID: UUID, store: any AgentHistoryPersistence, token: UUID) async throws {
         let previous = try persistence.agentEntries(chatID: chatID)
         var observations: [(AgentChatSession, [AgentTranscriptEntry])] = []
         for provider in [AgentProvider.claude, .codex] {

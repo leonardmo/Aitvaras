@@ -405,7 +405,7 @@ struct AgentChatView: View {
         }
         .controlSize(.small).menuStyle(.borderlessButton)
     }
-    private var sendEnabled: Bool { canSend && chat.canSubmit && chat.hasInput }
+    private var sendEnabled: Bool { canSend && chat.canSubmit }
     private var contextValue: Double? {
         guard chat.state?.entries.last?.provider == chat.provider else { return nil }
         return ChatSettings.contextFraction(chat.state?.usage)

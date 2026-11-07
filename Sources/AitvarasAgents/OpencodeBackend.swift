@@ -244,6 +244,20 @@ actor OpencodeRun: AgentRun {
     func receive(_ value: JSONValue) async {
         guard !closed, let type = value["type"]?.stringValue, let data = value["data"],
               data["sessionID"]?.stringValue == session.nativeID else { return }
+        // Reasoning is presentation-only progress, not a delivery receipt. A
+        // slow prompt response must not hide it. Keep lifecycle/ack ordering,
+        // and never attribute a queued input's reasoning to the previous turn.
+        let reasoning = ["session.reasoning.started", "session.reasoning.delta", "session.reasoning.ended"].contains(type)
+        let pendingBoundary = buffered.contains {
+            let type = $0["type"]?.stringValue ?? ""
+            if type == "session.inbox.delivered", let inbox = $0["data"]?["inboxID"]?.stringValue,
+               queued[inbox] != nil { return true }
+            return ["session.execution.succeeded", "session.execution.failed", "session.execution.interrupted"].contains(type)
+        }
+        if reasoning, !draining, !pendingBoundary {
+            await apply(value, type: type, data: data)
+            return
+        }
         if sending || draining {
             guard buffered.count < 4096 else { await abort(); return }
             buffered.append(value); return
@@ -269,6 +283,7 @@ actor OpencodeRun: AgentRun {
         guard inputID != nil else { return }
         switch type {
         case "session.text.delta": if let text = data["delta"]?.stringValue { emit(.textDelta(text), item: item) }
+        case "session.reasoning.started": emit(.thinkingDelta(""), item: item)
         case "session.reasoning.delta": if let text = data["delta"]?.stringValue { emit(.thinkingDelta(text), item: item) }
         case "session.reasoning.ended": if let text = data["text"]?.stringValue { emit(.thinkingCompleted(text), item: item) }
         case "session.tool.input.started":
@@ -319,7 +334,7 @@ actor OpencodeRun: AgentRun {
                     thinkingTokens: opencodeTokenCount(tokens["reasoning"]), costUSD: data["cost"]?.doubleValue)))
             }
         case "session.execution.started", "session.inbox.enqueued", "session.inbox.delivered",
-             "session.text.started", "session.text.ended", "session.reasoning.started", "session.step.started", "session.step.streamed": break
+             "session.text.started", "session.text.ended", "session.step.started", "session.step.streamed": break
         default:
             // Unknown data is deliberately not forwarded: future server events
             // might include credentials. Preserve only a fixed event marker.

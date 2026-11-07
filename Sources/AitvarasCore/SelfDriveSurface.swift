@@ -133,6 +133,7 @@ import AppKit
                     candidates = try root.map { try nodes(root: $0.object) } ?? []
                 } else { candidates = try nodes(); subtreeAvailable = true }
                 let matches = candidates.contains { node in
+                    if let enabled = step.enabled, node.enabled != enabled { return false }
                     if step.identifier != nil || step.anyOf != nil { return step.matchesIdentifier(node.identifier) }
                     let text = step.text!
                     let frame = node.frame
