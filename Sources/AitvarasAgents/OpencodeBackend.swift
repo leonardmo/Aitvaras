@@ -3,7 +3,7 @@ import Foundation
 /// One sandboxed server for this Aitvaras profile; native sessions persist in
 /// its isolated XDG data store. A server never silently gains write authority.
 public actor OpencodeBackend: AgentBackend {
-    public static let capabilities: Set<AgentCapability> = [.thinking, .tools, .approvals, .followups]
+    public static let capabilities: Set<AgentCapability> = [.thinking, .tools, .approvals, .questions, .followups]
     private let executable: URL?
     private let transport: any OpencodeTransport
     private let catalog: @Sendable () async throws -> [AgentModel]
@@ -95,8 +95,26 @@ public actor OpencodeBackend: AgentBackend {
     private func release(_ nativeID: String, id: UUID) { if runs[nativeID]?.id == id { runs.removeValue(forKey: nativeID) } }
     private func receive(_ value: JSONValue, generation: UUID) async {
         guard generation == self.generation else { return }
-        guard let session = value["data"]?["sessionID"]?.stringValue, let run = runs[session] else { return }
-        await run.receive(value)
+        if let session = opencodeEventSession(value) {
+            if let run = runs[session] { await run.receive(value) }
+            return
+        }
+        // Known server-wide notifications carry no session and need no reply.
+        // An unrecognised/session-less request cannot safely be assigned to one
+        // chat, so interrupt active sessions rather than leave an invisible wait.
+        let notifications: Set<String> = [
+            "server.connected", "location.shutdown", "models-dev.refreshed",
+            "credential.updated", "credential.switched", "integration.updated", "provider.updated",
+            "model.updated", "agent.updated", "filesystem.changed", "reference.updated",
+            "plugin.updated", "project.updated", "worktree.updated", "worktree.resolved",
+            "command.updated", "config.updated", "skill.updated", "pty.created", "pty.updated",
+            "pty.exited", "pty.deleted", "persistent-pty.added", "persistent-pty.removed",
+            "persistent-pty.updated", "shell.created", "shell.exited", "shell.deleted",
+            "websearch.updated", "artifact.updated", "installation.updated", "installation.update-available",
+            "vcs.branch.updated", "mcp.status.changed", "mcp.resources.changed"
+        ]
+        guard !notifications.contains(value["type"]?.stringValue ?? "") else { return }
+        for run in Array(runs.values) where await run.isActive { await run.unroutableEvent() }
     }
     private func disconnected(generation: UUID) async {
         guard generation == self.generation else { return }
@@ -128,11 +146,14 @@ actor OpencodeRun: AgentRun {
     private var inputID: UUID?
     private var queued: [String: UUID] = [:]
     private var requests: [AgentRequestID: AgentRequest] = [:]
+    private var forms: [AgentRequestID: OpencodeForm] = [:]
+    private var seenForms: Set<String> = []
     private var tools: [String: AgentTool] = [:]
     private var mode: AgentMode
     private var closed = false
     private var sending = false
     private var draining = false
+    private var rejectingUnknown = false
     private var buffered: [JSONValue] = []
     var isActive: Bool { inputID != nil || sending || !queued.isEmpty }
 
@@ -143,6 +164,11 @@ actor OpencodeRun: AgentRun {
         (events, continuation) = AsyncThrowingStream.makeStream(bufferingPolicy: .bufferingOldest(4096))
     }
     func started() { emit(.sessionStarted(session)) }
+    func unroutableEvent() async {
+        // Use normal buffering so a slow prompt acknowledgement remains first.
+        await receive(.object(["type": .string("opencode.unroutable"),
+            "data": .object(["sessionID": .string(session.nativeID)])]))
+    }
     private func scope(item: String? = nil, input: UUID? = nil) -> AgentEventScope {
         .init(runID: id, session: session, inputID: input ?? inputID, itemID: item)
     }
@@ -157,7 +183,7 @@ actor OpencodeRun: AgentRun {
         }
     }
     func send(_ input: AgentInput, willDeliver: @escaping @Sendable () async throws -> Void) async throws {
-        guard !closed, !isActive else { throw AgentFailure.invalidTransition }
+        guard !closed, !rejectingUnknown, !isActive else { throw AgentFailure.invalidTransition }
         try input.validateComposerInput(provider: .local)
         sending = true; inputID = input.id
         defer { sending = false }
@@ -169,7 +195,7 @@ actor OpencodeRun: AgentRun {
         } catch { if inputID == input.id { inputID = nil }; throw error }
     }
     func followup(_ input: AgentInput, willDeliver: @escaping @Sendable () async throws -> Void) async throws {
-        guard !closed, !sending, inputID != nil, queued.count < 32 else { throw AgentFailure.invalidTransition }
+        guard !closed, !rejectingUnknown, !sending, inputID != nil, queued.count < 32 else { throw AgentFailure.invalidTransition }
         try input.validateComposerInput(provider: .local)
         let key = "msg_" + input.id.uuidString
         guard queued[key] == nil else { throw AgentFailure.invalidRequest }
@@ -196,14 +222,32 @@ actor OpencodeRun: AgentRun {
     func respond(to request: AgentRequest, with response: AgentResponse) async throws {
         guard !closed, request.scope.runID == id, request.scope.inputID == inputID,
               requests[request.id] == request, case .string(let requestID) = request.id else { throw AgentFailure.invalidRequest }
-        let decision: String
-        switch response {
-        case .allow(updatedInput: nil): decision = "once"
-        case .deny, .unsupported: decision = "reject"
+        let path: String, method: String, body: JSONValue?
+        switch request.kind {
+        case .questions:
+            guard let form = forms[request.id] else { throw AgentFailure.invalidRequest }
+            switch response {
+            case .answers(let answers):
+                path = "api/session/\(session.nativeID)/form/\(requestID)/reply"
+                method = "POST"; body = try form.reply(answers)
+            case .deny, .unsupported:
+                path = "api/session/\(session.nativeID)/form/\(requestID)"; method = "DELETE"; body = nil
+            default: throw AgentFailure.invalidRequest
+            }
+        case .permission:
+            let decision: String
+            switch response {
+            case .allow(updatedInput: nil): decision = "once"
+            case .deny, .unsupported: decision = "reject"
+            default: throw AgentFailure.invalidRequest
+            }
+            path = "api/session/\(session.nativeID)/permission/\(requestID)/reply"
+            method = "POST"; body = .object(["decision": .string(decision)])
         default: throw AgentFailure.invalidRequest
         }
-        requests.removeValue(forKey: request.id)
-        _ = try await transport.request("api/session/\(session.nativeID)/permission/\(requestID)/reply", method: "POST", body: .object(["decision": .string(decision)]))
+        requests.removeValue(forKey: request.id); forms.removeValue(forKey: request.id)
+        do { _ = try await transport.request(path, method: method, body: body) }
+        catch { await abort(); throw error }
         emit(.requestResolved(request.id), item: request.scope.itemID)
     }
     func setMode(_ mode: AgentMode) async throws {
@@ -218,7 +262,7 @@ actor OpencodeRun: AgentRun {
     func shutdown() async throws {
         guard !closed else { return }
         if isActive { try await interrupt() }
-        closed = true; requests.removeAll(); queued.removeAll(); buffered.removeAll(); inputID = nil
+        closed = true; requests.removeAll(); forms.removeAll(); queued.removeAll(); buffered.removeAll(); inputID = nil
         continuation.finish(); await release(id)
     }
     func abort() async {
@@ -227,13 +271,13 @@ actor OpencodeRun: AgentRun {
     }
     func disconnected() {
         guard !closed else { return }
-        closed = true; requests.removeAll(); queued.removeAll(); buffered.removeAll(); inputID = nil
+        closed = true; requests.removeAll(); forms.removeAll(); queued.removeAll(); buffered.removeAll(); inputID = nil
         continuation.finish(throwing: AgentFailure.offline)
     }
     private func end(_ outcome: AgentTurnOutcome) {
-        for id in requests.keys { emit(.requestResolved(id)) }; requests.removeAll()
+        for id in requests.keys { emit(.requestResolved(id)) }; requests.removeAll(); forms.removeAll()
         if inputID != nil { emit(.turnEnded(outcome)) }
-        inputID = nil; tools.removeAll()
+        inputID = nil; tools.removeAll(); seenForms.removeAll()
         if outcome != .completed {
             let abandoned = Array(queued.values); queued.removeAll()
             for input in abandoned {
@@ -242,8 +286,9 @@ actor OpencodeRun: AgentRun {
         }
     }
     func receive(_ value: JSONValue) async {
-        guard !closed, let type = value["type"]?.stringValue, let data = value["data"],
-              data["sessionID"]?.stringValue == session.nativeID else { return }
+        guard !closed, let data = value["data"],
+              opencodeEventSession(value) == session.nativeID else { return }
+        let type = value["type"]?.stringValue ?? "opencode.invalid"
         // Reasoning is presentation-only progress, not a delivery receipt. A
         // slow prompt response must not hide it. Keep lifecycle/ack ordering,
         // and never attribute a queued input's reasoning to the previous turn.
@@ -308,9 +353,7 @@ actor OpencodeRun: AgentRun {
             emit(.toolFinished(output: output, isError: type == "session.tool.failed"), item: item)
             tools.removeValue(forKey: item)
         case "permission.asked":
-            guard let requestID = data["id"]?.stringValue, !requestID.isEmpty,
-                  requestID.utf8.count < 256,
-                  requestID.unicodeScalars.allSatisfy({ CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "_-" )).contains($0) }),
+            guard let requestID = data["id"]?.stringValue, opencodeRequestID(requestID),
                   let action = data["action"]?.stringValue, requests.count < 64,
                   requests[.string(requestID)] == nil else { await abort(); return }
             let toolID = data["source"]?["id"]?.stringValue
@@ -323,6 +366,35 @@ actor OpencodeRun: AgentRun {
             requests[request.id] = request; emit(.request(request), item: toolID)
         case "permission.replied":
             if let id = data["requestID"]?.stringValue, requests.removeValue(forKey: .string(id)) != nil { emit(.requestResolved(.string(id))) }
+        case "form.created":
+            guard let form = data["form"], let formID = form["id"]?.stringValue,
+                  formID.hasPrefix("frm_"), opencodeRequestID(formID), requests.count < 64 else {
+                await unsupportedEvent(); return
+            }
+            // Duplicate delivery must not reset the draft or offer a second card.
+            guard seenForms.contains(formID) || seenForms.count < 4096 else { await unsupportedEvent(); return }
+            guard seenForms.insert(formID).inserted else { return }
+            do {
+                let parsed = try OpencodeForm(form)
+                let request = AgentRequest(id: .string(formID), scope: scope(), kind: .questions(parsed.questions))
+                forms[request.id] = parsed; requests[request.id] = request
+                emit(.request(request))
+            } catch {
+                // The schema supplies a cancellation endpoint even for controls
+                // this UI cannot render. Let the tool report its cancellation.
+                emit(.textDelta("\nNot supported here\n"), item: "opencode.unsupported.\(formID)")
+                do { _ = try await transport.request("api/session/\(session.nativeID)/form/\(formID)", method: "DELETE", body: nil) }
+                catch { await unsupportedEvent(showMessage: false) }
+            }
+        case "form.replied", "form.cancelled":
+            if let id = data["id"]?.stringValue {
+                forms.removeValue(forKey: .string(id))
+                if requests.removeValue(forKey: .string(id)) != nil { emit(.requestResolved(.string(id))) }
+            }
+        case "session.status":
+            guard let status = data["status"]?["type"]?.stringValue, ["idle", "busy", "retry"].contains(status) else {
+                await unsupportedEvent(); return
+            }
         case "session.execution.succeeded": end(.completed)
         case "session.execution.interrupted": end(.interrupted)
         case "session.execution.failed": end(.failed(.unknown))
@@ -334,12 +406,32 @@ actor OpencodeRun: AgentRun {
                     thinkingTokens: opencodeTokenCount(tokens["reasoning"]), costUSD: data["cost"]?.doubleValue)))
             }
         case "session.execution.started", "session.inbox.enqueued", "session.inbox.delivered",
-             "session.text.started", "session.text.ended", "session.step.started", "session.step.streamed": break
+             "session.text.started", "session.text.ended", "session.step.started", "session.step.streamed",
+             "session.tool.progress", "session.idle",
+             "session.retry.scheduled", "session.compaction.started", "session.compaction.delta",
+             "session.compaction.ended", "session.compaction.failed", "session.step.failed",
+             "session.created", "session.model.selected", "session.permissions",
+             "session.renamed", "session.metadata.updated", "session.viewed": break
         default:
             // Unknown data is deliberately not forwarded: future server events
             // might include credentials. Preserve only a fixed event marker.
             emit(.unknown(name: "opencode.event", payload: .null))
+            await unsupportedEvent()
         }
+    }
+
+    private func unsupportedEvent(showMessage: Bool = true) async {
+        guard !rejectingUnknown else { return }
+        rejectingUnknown = true
+        defer { rejectingUnknown = false }
+        let interruptedInput = inputID
+        if showMessage { emit(.textDelta("\nNot supported here\n"), item: "opencode.unsupported") }
+        // There is no generic reply endpoint for future request kinds. Interrupt
+        // via the supported API and resolve locally even if no terminal SSE arrives.
+        do {
+            _ = try await transport.request("api/session/\(session.nativeID)/interrupt", method: "POST", body: .object([:]))
+            if inputID == interruptedInput { end(.interrupted) }
+        } catch { await abort() }
     }
 }
 

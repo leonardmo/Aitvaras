@@ -325,7 +325,7 @@ public actor AgentActionCoordinator: AgentRun {
     private func risk(_ tool: AgentTool) -> ActionRisk {
         if isServiceRead(tool) { return .read }
         return switch tool.name.lowercased() {
-        case "read", "glob", "grep", "ls", "websearch", "webfetch", "enterplanmode", "exitplanmode", "askuserquestion": .read
+        case "read", "glob", "grep", "list", "ls", "todoread", "websearch", "webfetch", "enterplanmode", "exitplanmode", "askuserquestion", "question": .read
         case "write", "edit", "multiedit", "notebookedit": .reversibleWrite
         default: .confirmable
         }

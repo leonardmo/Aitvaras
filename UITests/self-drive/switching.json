@@ -112,7 +112,10 @@
     },
     {
       "action": "waitFor",
-      "identifier": "chat.request.0.allow",
+      "anyOf": [
+        "chat.request.0.allow",
+        "chat.question.0.0.option.0"
+      ],
       "timeout": 300
     },
     {
@@ -121,13 +124,44 @@
     },
     {
       "action": "press",
-      "identifier": "chat.request.0.allow"
+      "identifier": "chat.question.0.0.option.0",
+      "optional": true
     },
     {
       "action": "waitFor",
-      "identifier": "chat.request.0.allow",
+      "anyOf": [
+        "chat.request.0.allow",
+        "chat.request.0.submit"
+      ],
+      "enabled": true,
+      "timeout": 300
+    },
+    {
+      "action": "press",
+      "anyOf": [
+        "chat.request.0.allow",
+        "chat.request.0.submit"
+      ]
+    },
+    {
+      "action": "waitFor",
+      "identifier": "chat.request.0.submit",
       "timeout": 300,
       "absent": true
+    },
+    {
+      "action": "waitFor",
+      "timeout": 300,
+      "anyOf": [
+        "chat.request.0.allow",
+        "chat.provider.local"
+      ],
+      "enabled": true
+    },
+    {
+      "action": "press",
+      "identifier": "chat.request.0.allow",
+      "optional": true
     },
     {
       "action": "waitFor",
@@ -140,6 +174,68 @@
       "identifier": "chat.composer.stop",
       "timeout": 300,
       "absent": true
+    },
+    {
+      "action": "waitFor",
+      "identifier": "chat.composer.send",
+      "enabled": true,
+      "timeout": 300
+    },
+    {
+      "action": "type",
+      "text": "Use your question tool now to ask me which color to use. Ask exactly one question with options Blue and Green. Do not answer it yourself. After my answer, reply with only COLOR-CHOICE-DONE."
+    },
+    {
+      "action": "press",
+      "identifier": "chat.composer.send"
+    },
+    {
+      "action": "waitFor",
+      "text": "Use your question tool now to ask me which color to use. Ask exactly one question with options Blue and Green. Do not answer it yourself. After my answer, reply with only COLOR-CHOICE-DONE.",
+      "within": "chat.composer.input",
+      "absent": true,
+      "timeout": 300
+    },
+    {
+      "action": "waitFor",
+      "identifier": "chat.question.0.0.option.0",
+      "timeout": 300
+    },
+    {
+      "action": "screenshot",
+      "name": "local-question"
+    },
+    {
+      "action": "press",
+      "identifier": "chat.question.0.0.option.0"
+    },
+    {
+      "action": "waitFor",
+      "identifier": "chat.request.0.submit",
+      "enabled": true,
+      "timeout": 300
+    },
+    {
+      "action": "press",
+      "identifier": "chat.request.0.submit"
+    },
+    {
+      "action": "waitFor",
+      "identifier": "chat.request.0.submit",
+      "absent": true,
+      "timeout": 300
+    },
+    {
+      "action": "waitFor",
+      "text": "COLOR-CHOICE-DONE",
+      "within": "chat.transcript",
+      "timeout": 300
+    },
+    {
+      "action": "waitFor",
+      "identifier": "chat.composer.stop",
+      "absent": true,
+      "timeout": 300
     },
     {
       "action": "press",

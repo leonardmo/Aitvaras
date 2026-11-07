@@ -61,6 +61,225 @@ import AitvarasStore
             if case .turnEnded = event.kind { break }
         }
         #expect(sawUnknown)
+        #expect(await !run.isActive)
+        #expect(await wire.calls.contains { $0.path.hasSuffix("/interrupt") })
+        try await run.shutdown()
+    }
+
+    @Test func nestedFormRoutesThroughBackendAndAuditedQuestionCard() async throws {
+        let wire = OpencodeFakeTransport()
+        let backend = localBackend(wire)
+        #expect(try await backend.status().capabilities.contains(.questions))
+        let raw = try await backend.start(localConfiguration)
+        let run = AgentActionCoordinator(run: raw, mode: .ask, provenance: .init(chatID: UUID()), audit: { _ in })
+        try await run.send(.init(text: "Ask a question"), willDeliver: {})
+        await wire.emit(localEvent("permission.asked", ["id": .string("permission_question"), "action": .string("question")]))
+        try await waitOpencode { await wire.calls.contains { $0.body?["decision"]?.stringValue == "once" } }
+        #expect(await run.pendingRequests().isEmpty)
+        // Unlike permission events, the session ID is nested inside data.form.
+        await wire.emit(formCreated(questionForm))
+        try await waitOpencode { await run.pendingRequests().count == 1 }
+        let request = try #require(await run.pendingRequests().first)
+        guard case .questions(let questions) = request.kind else { Issue.record("Missing questions"); return }
+        #expect(questions[0].prompt == "Approval\nWhich color?")
+        #expect(questions[0].options.map(\.label) == ["Blue", "Green"])
+        #expect(questions[0].options[0].description == "Cool")
+        var draft = AgentQuestionState(questions: questions)
+        try draft.select("Blue", for: "color")
+        try await run.respond(to: request, with: .answers(try #require(draft.answers)))
+        let reply = try #require(await wire.calls.last)
+        #expect(reply.path == "api/session/ses_fixture/form/frm_question/reply")
+        #expect(reply.method == "POST")
+        #expect(reply.body == .object(["answer": .object(["color": .string("blue_value")])]))
+        await #expect(throws: AgentFailure.invalidRequest) { try await run.respond(to: request, with: .deny) }
+        await wire.emit(localEvent("session.execution.succeeded"))
+        try await waitOpencode { await (raw as? OpencodeRun)?.isActive == false }
+        try await run.shutdown(); await backend.shutdown()
+    }
+
+    @Test func formMapsMultipleAndTextAnswersAndValidatesBeforeHTTP() async throws {
+        let form = try OpencodeForm(.object(["title": .string("Choose"), "fields": .array([
+            .object(["key": .string("many"), "type": .string("multiselect"), "title": .string("Features?"),
+                "custom": .bool(true), "minItems": .number(1), "options": .array([
+                    .object(["label": .string("Fast"), "value": .string("fast_value")])])]),
+            .object(["key": .string("text"), "type": .string("string"), "title": .string("Details?")])])]))
+        var draft = AgentQuestionState(questions: form.questions)
+        try draft.select("Fast", for: "many")
+        try draft.setText("Quiet", for: "many")
+        try draft.setText(" Example ", for: "text")
+        #expect(try form.reply(try #require(draft.answers)) == .object(["answer": .object([
+            "many": .array([.string("fast_value"), .string("Quiet")]), "text": .string("Example")])]))
+
+        let wire = OpencodeFakeTransport()
+        let run = OpencodeRun(transport: wire, session: localSession, configuration: localConfiguration, release: { _ in })
+        try await run.send(.init(text: "Question"), willDeliver: {})
+        await run.receive(formCreated(questionForm))
+        var iterator = run.events.makeAsyncIterator()
+        let request = try await nextOpencodeRequest(&iterator)
+        for answers in [["unknown": ["Blue"]], ["color": []], ["color": ["Other"]], ["color": ["Blue", "Green"]]] {
+            await #expect(throws: AgentFailure.invalidRequest) { try await run.respond(to: request, with: .answers(answers)) }
+        }
+        #expect(await wire.calls.count == 1)
+        await run.receive(localEvent("form.cancelled", ["id": .string("frm_question")]))
+        await #expect(throws: AgentFailure.invalidRequest) { try await run.respond(to: request, with: .answers(["color": ["Blue"]])) }
+        try await run.shutdown()
+    }
+
+    @Test func unsupportedFormRulesAndMalformedChoicesAreRejected() throws {
+        let fields: [JSONValue] = [
+            .object(["key": .string("q"), "type": .string("string"), "pattern": .string(".*")]),
+            .object(["key": .string("q"), "type": .string("string"), "hidden": .bool(true)]),
+            .object(["key": .string("q"), "type": .string("string"), "future-control": .bool(true)]),
+            .object(["key": .string("q"), "type": .string("multiselect"), "minItems": .number(2), "options": .array([])]),
+            .object(["key": .string("q"), "type": .string("string"), "options": .array([
+                .object(["label": .string("Same"), "value": .string("one")]),
+                .object(["label": .string("Same"), "value": .string("two")])])])
+        ]
+        for field in fields {
+            #expect(throws: (any Error).self) {
+                _ = try OpencodeForm(.object(["title": .string("Question"), "fields": .array([field])]))
+            }
+        }
+    }
+
+    @Test(arguments: [AgentResponse.deny, .unsupported, .answers(["color": ["Blue"]])])
+    func formCancellationRepliesAndHTTPFailureCannotHang(response: AgentResponse) async throws {
+        let wire = OpencodeFakeTransport()
+        let run = OpencodeRun(transport: wire, session: localSession, configuration: localConfiguration, release: { _ in })
+        try await run.send(.init(text: "Question"), willDeliver: {})
+        await run.receive(formCreated(questionForm))
+        var iterator = run.events.makeAsyncIterator()
+        let request = try await nextOpencodeRequest(&iterator)
+        if case .answers = response {
+            await wire.setFailure(true)
+            await #expect(throws: AgentFailure.offline) { try await run.respond(to: request, with: response) }
+            #expect(await !run.isActive); #expect(await wire.closes == 1)
+        } else {
+            try await run.respond(to: request, with: response)
+            #expect(await wire.calls.last?.method == "DELETE")
+            #expect(await wire.calls.last?.path == "api/session/ses_fixture/form/frm_question")
+            await run.receive(localEvent("session.execution.succeeded"))
+            #expect(await !run.isActive)
+            try await run.shutdown()
+        }
+    }
+
+    @Test(arguments: ["external", "future-control", "number"])
+    func unsupportedFormsAreCancelledAndVisible(type: String) async throws {
+        let wire = OpencodeFakeTransport()
+        let run = OpencodeRun(transport: wire, session: localSession, configuration: localConfiguration, release: { _ in })
+        try await run.send(.init(text: "Unsupported form"), willDeliver: {})
+        await run.receive(formCreated(.object(["id": .string("frm_unknown"), "sessionID": .string("ses_fixture"),
+            "title": .string("Unknown"), "fields": .array([.object(["key": .string("q"), "type": .string(type)])]) ])))
+        #expect(await wire.calls.last?.method == "DELETE")
+        #expect(await wire.calls.last?.path == "api/session/ses_fixture/form/frm_unknown")
+        // Cancellation allows the native tool to fail and the turn to continue.
+        await run.receive(localEvent("session.execution.succeeded"))
+        try await run.shutdown()
+        var texts: [String] = [], cards = 0
+        for try await event in run.events {
+            if case .textDelta(let text) = event.kind { texts.append(text) }
+            if case .request = event.kind { cards += 1 }
+        }
+        #expect(texts == ["\nNot supported here\n"]); #expect(cards == 0)
+    }
+
+    @Test(arguments: [false, true], ["future.request.asked", "session.status"])
+    func unknownRequestInterruptsAndReleasesQueuedInputsWithoutTerminalEvent(failure: Bool, type: String) async throws {
+        let wire = OpencodeFakeTransport()
+        let run = OpencodeRun(transport: wire, session: localSession, configuration: localConfiguration, release: { _ in })
+        let first = AgentInput(text: "First"), next = AgentInput(text: "Follow-up")
+        try await run.send(first, willDeliver: {})
+        try await run.followup(next, willDeliver: {})
+        await wire.setFailure(failure)
+        await run.receive(localEvent(type, ["id": .string("request_unknown"), "credential": .string("never-forward"),
+            "status": .object(["type": .string("future-wait")])]))
+        #expect(await !run.isActive)
+        #expect(await wire.calls.last?.path == "api/session/ses_fixture/interrupt")
+        if !failure { try await run.shutdown() }
+        var text = "", ended: [UUID?] = []
+        do {
+            for try await event in run.events {
+                if case .textDelta(let delta) = event.kind { text += delta }
+                if case .turnEnded(let outcome) = event.kind { #expect(outcome == .interrupted); ended.append(event.scope.inputID) }
+                if case .unknown(_, let payload) = event.kind { #expect(payload == .null) }
+            }
+            #expect(!failure)
+        } catch { #expect(failure); #expect(error as? AgentFailure == .offline) }
+        #expect(text == "\nNot supported here\n")
+        if !failure { #expect(ended == [first.id, next.id]) }
+    }
+
+    @Test func unscopedUnknownRequestDoesNotWaitSilently() async throws {
+        let wire = OpencodeFakeTransport()
+        let backend = localBackend(wire)
+        let run = try await backend.start(localConfiguration)
+        try await run.send(.init(text: "Hello"), willDeliver: {})
+        await wire.emit(.object(["type": .string("server.connected"), "data": .object([:])]))
+        await wire.emit(.object(["type": .string("future.request"), "data": .object(["id": .string("unknown")])]))
+        try await waitOpencode { await (run as? OpencodeRun)?.isActive == false }
+        #expect(await wire.calls.contains { $0.path.hasSuffix("/interrupt") })
+        try await run.shutdown(); await backend.shutdown()
+    }
+
+    @Test func unknownRequestClearsRunningChatCardsAndFollowupDelivery() async throws {
+        let stores = try inMemoryStores()
+        let wire = OpencodeFakeTransport()
+        let backend = localBackend(wire)
+        let manager = try AgentSessionManager(persistence: stores, backend: { _ in backend }, audit: { _ = try stores.record($0) })
+        let chat = try agentStoreChat(stores, provider: .local, cwd: "/tmp/project").0
+        let first = AgentInput(text: "Ask me"), followup = AgentInput(text: "Follow-up")
+        try await manager.send(chatID: chat.id, provider: .local, input: first)
+        await wire.emit(formCreated(questionForm))
+        try await waitOpencode { try await manager.state(chatID: chat.id).pendingCards.count == 1 }
+        try await manager.send(chatID: chat.id, provider: .local, input: followup)
+        await wire.emit(localEvent("future.request.asked", ["id": .string("unknown")]))
+        try await waitOpencode { try stores.agentTurn(id: followup.id)?.state == .interrupted }
+        let state = try await manager.state(chatID: chat.id)
+        #expect(!state.isRunning); #expect(state.pendingCards.isEmpty)
+        #expect(state.entries.contains { $0.text.contains("Not supported here") })
+        let queued = try #require(state.entries.first { $0.id == followup.id })
+        #expect(queued.payloadJSON.flatMap(JSONValue.parse)?["followup"]?.stringValue != "steering")
+        #expect(try stores.agentTurn(id: first.id)?.state == .interrupted)
+        // The provider switch uses the same manager busy state. Changing mode
+        // proves that no hidden input/queue continues to reserve this chat.
+        var session = try #require(try stores.agentSession(chatID: chat.id, provider: .local))
+        session.mode = .plan
+        try await manager.configure(session)
+        try await manager.shutdown(); await backend.shutdown()
+    }
+
+    @Test func duplicateFormDoesNotResetCardAndResolutionRejectsLateAnswer() async throws {
+        let wire = OpencodeFakeTransport()
+        let run = OpencodeRun(transport: wire, session: localSession, configuration: localConfiguration, release: { _ in })
+        try await run.send(.init(text: "Question"), willDeliver: {})
+        await run.receive(formCreated(questionForm))
+        await run.receive(formCreated(questionForm))
+        await run.receive(localEvent("form.replied", ["id": .string("frm_question")]))
+        await run.receive(formCreated(questionForm))
+        await run.receive(localEvent("session.execution.succeeded"))
+        try await run.shutdown()
+        var requests: [AgentRequest] = [], resolutions = 0
+        for try await event in run.events {
+            if case .request(let request) = event.kind { requests.append(request) }
+            if case .requestResolved = event.kind { resolutions += 1 }
+        }
+        #expect(requests.count == 1); #expect(resolutions == 1)
+        let request = try #require(requests.first)
+        await #expect(throws: AgentFailure.invalidRequest) { try await run.respond(to: request, with: .answers(["color": ["Blue"]])) }
+    }
+
+    @Test(arguments: ["frm_../bad", "frm_missing"])
+    func malformedOrUncancellableFormInterruptsInsteadOfWaiting(formID: String) async throws {
+        let wire = OpencodeFakeTransport()
+        let run = OpencodeRun(transport: wire, session: localSession, configuration: localConfiguration, release: { _ in })
+        try await run.send(.init(text: "Question"), willDeliver: {})
+        if formID == "frm_missing" { await wire.failNextFormCancellation() }
+        await run.receive(formCreated(.object(["id": .string(formID), "sessionID": .string("ses_fixture"),
+            "title": .string("Unsupported"), "fields": .array([])])))
+        #expect(await !run.isActive)
+        #expect(await wire.calls.last?.path.hasSuffix("/interrupt") == true)
+        #expect(await !wire.calls.contains { $0.path.contains("..") })
         try await run.shutdown()
     }
 
@@ -158,6 +377,22 @@ import AitvarasStore
 
 let localSession = AgentSessionID(provider: .local, profile: "opencode", nativeID: "ses_fixture")
 let localConfiguration = AgentSessionConfiguration(directory: URL(fileURLWithPath: "/tmp/project"), model: "test-model")
+private let questionForm: JSONValue = .object([
+    "id": .string("frm_question"), "sessionID": .string("ses_fixture"), "title": .string("Question"),
+    "fields": .array([.object([
+        "key": .string("color"), "type": .string("string"), "title": .string("Approval"),
+        "description": .string("Which color?"), "custom": .bool(false), "options": .array([
+            .object(["value": .string("blue_value"), "label": .string("Blue"), "description": .string("Cool")]),
+            .object(["value": .string("green_value"), "label": .string("Green")])])])])])
+private func formCreated(_ form: JSONValue) -> JSONValue {
+    .object(["type": .string("form.created"), "data": .object(["form": form])])
+}
+private func nextOpencodeRequest(_ iterator: inout AsyncThrowingStream<AgentEvent, Error>.Iterator) async throws -> AgentRequest {
+    while let event = try await iterator.next() {
+        if case .request(let request) = event.kind { return request }
+    }
+    throw AgentFailure.invalidRequest
+}
 func localEvent(_ type: String, _ extra: [String: JSONValue] = [:]) -> JSONValue {
     .object(["type": .string(type), "data": .object(extra.merging(["sessionID": .string("ses_fixture")]) { _, right in right })])
 }
@@ -180,6 +415,7 @@ actor OpencodeFakeTransport: OpencodeTransport {
     private var continuation: AsyncThrowingStream<JSONValue, Error>.Continuation?
     private var recording: [JSONValue]
     private var failure = false
+    private var failFormCancellation = false
     private var promptNumber = 0
     private var pausePrompt = false
     private var promptWaiter: CheckedContinuation<Void, Never>?
@@ -188,6 +424,7 @@ actor OpencodeFakeTransport: OpencodeTransport {
     func releasePrompt() { promptWaiter?.resume(); promptWaiter = nil }
     init(recording: [JSONValue] = []) { self.recording = recording }
     func setFailure(_ value: Bool) { failure = value }
+    func failNextFormCancellation() { failFormCancellation = true }
     func open(projects: [URL], models: [AgentModel]) { opens += 1 }
     func subscribe() -> AsyncThrowingStream<JSONValue, Error> {
         let (stream, continuation) = AsyncThrowingStream<JSONValue, Error>.makeStream()
@@ -203,6 +440,9 @@ actor OpencodeFakeTransport: OpencodeTransport {
     func request(_ path: String, method: String, body: JSONValue?) async throws -> JSONValue {
         calls.append(.init(path: path, method: method, body: body))
         if failure { throw AgentFailure.offline }
+        if method == "DELETE", path.contains("/form/"), failFormCancellation {
+            failFormCancellation = false; throw AgentFailure.offline
+        }
         if path == "api/session", method == "POST" {
             return .object(["data": .object(["id": .string("ses_fixture")])])
         }

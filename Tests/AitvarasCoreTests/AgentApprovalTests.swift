@@ -232,6 +232,29 @@ import AitvarasStore
         #expect(AgentActionPresentation.displayCommand(#"/bin/bash -lc "printf 'hi' > example.txt""#) == "printf 'hi' > example.txt")
     }
 
+    @Test func opencodeBuiltinToolsUsePlainSummaries() throws {
+        let cases: [(String, JSONValue, String, String)] = [
+            ("question", .object(["questions": .array([.object(["header": .string("Approval"), "question": .string("Continue?")])])]), "Asked: Approval", "Asked: Approval"),
+            ("read", .object(["filePath": .string("example.txt")]), "Reading example.txt", "Read example.txt"),
+            ("edit", .object(["filePath": .string("example.txt")]), "Editing example.txt", "Edited example.txt"),
+            ("write", .object(["filePath": .string("example.txt")]), "Writing example.txt", "Wrote example.txt"),
+            ("grep", .object(["pattern": .string("example")]), "Searching for example", "Searched for example"),
+            ("glob", .object(["pattern": .string("*.swift")]), "Searching for *.swift", "Searched for *.swift"),
+            ("list", .object(["path": .string("Sources")]), "Listing Sources", "Listed Sources"),
+            ("webfetch", .object(["url": .string("https://example.invalid")]), "Fetching https://example.invalid", "Fetched https://example.invalid"),
+            ("todo", .object(["todos": .array([])]), "Updating tasks", "Updated tasks"),
+            ("todowrite", .object(["todos": .array([])]), "Updating tasks", "Updated tasks"),
+            ("todoread", .object([:]), "Reading tasks", "Read tasks"),
+            ("task", .object(["description": .string("Inspect files")]), "Delegating: Inspect files", "Delegated: Inspect files")
+        ]
+        for (name, input, running, finished) in cases {
+            let tool = AgentTool(name: name, input: input)
+            #expect(AgentActionPresentation.toolSummary(tool, finished: false, isError: false) == running)
+            #expect(AgentActionPresentation.toolSummary(tool, finished: true, isError: false) == finished)
+            #expect(AgentActionPresentation.toolSummary(tool, finished: true, isError: true).hasPrefix("Failed to"))
+        }
+    }
+
     @Test func codexFileApprovalUsesItemPathsAndDenialUsesAvailableDecision() async throws {
         let fixture = try BackendExecutableFixture(script: #"""
 codex_init()

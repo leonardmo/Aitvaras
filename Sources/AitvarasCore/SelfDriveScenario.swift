@@ -16,7 +16,8 @@ public struct SelfDriveStep: Codable, Sendable {
     public enum Action: String, Codable, Sendable { case press, type, waitFor, screenshot, dumpTree }
     public let action: Action
     public var identifier: String?
-    /// A wait succeeds when any of these accessibility identifiers is present.
+    /// A wait succeeds when any identifier is present; press uses the first
+    /// available enabled target in this order.
     public var anyOf: [String]?
     public let text: String?
     public let name: String?
@@ -48,14 +49,15 @@ public struct SelfDriveStep: Codable, Sendable {
             throw invalid("within, caseSensitive and enabled apply only to waitFor")
         }
         if let anyOf {
-            guard action == .waitFor, !anyOf.isEmpty, anyOf.count <= 16,
+            guard [.waitFor, .press].contains(action), !anyOf.isEmpty, anyOf.count <= 16,
                   anyOf.allSatisfy({ !$0.isEmpty }), Set(anyOf).count == anyOf.count else {
-                throw invalid("anyOf needs 1...16 distinct nonempty identifiers on waitFor")
+                throw invalid("anyOf needs 1...16 distinct nonempty identifiers on waitFor or press")
             }
         }
         switch action {
         case .press:
-            guard identifier?.isEmpty == false else { throw invalid("press needs an identifier") }
+            guard [identifier != nil, anyOf != nil].filter({ $0 }).count == 1,
+                  identifier?.isEmpty != true, text == nil else { throw invalid("press needs an identifier or anyOf") }
         case .type:
             guard text != nil else { throw invalid("type needs text") }
         case .waitFor:

@@ -168,9 +168,6 @@ extension OpencodeConfigurationTests {
             "id": .string("msg_" + input.id.uuidString), "sessionID": .string("ses_fixture")])]).jsonString)
         try await manager.send(chatID: chat.id, provider: .local, input: input)
         let run = try #require(await backend.run)
-        // A future server event might contain a credential. It must never be
-        // projected, even though ordinary tool output remains inspectable.
-        await run.receive(localEvent("future.credentials", ["password": .string(secret)]))
         await run.receive(localEvent("session.tool.input.started", ["id": .string("tool_test"), "name": .string("bash")]))
         await run.receive(localEvent("session.tool.called", ["id": .string("tool_test"), "input": .object(["command": .string("printf example > example.txt")])]))
         await run.receive(localEvent("permission.asked", ["id": .string("permission_test"), "action": .string("bash"),
@@ -181,8 +178,11 @@ extension OpencodeConfigurationTests {
         try await manager.respond(chatID: chat.id, to: request, with: .allow(updatedInput: nil))
         #expect(stub.request?.value(forHTTPHeaderField: "Authorization") == "Basic " + Data("opencode:\(secret)".utf8).base64EncodedString())
         await run.receive(localEvent("session.tool.success", ["id": .string("tool_test"), "content": .string("Created")]))
-        await run.receive(localEvent("session.execution.succeeded"))
-        try await waitOpencode { try await manager.state(chatID: chat.id).outcome == .completed }
+        // A future server event might contain a credential. Reject it without
+        // projecting its payload or waiting for a native terminal event.
+        await run.receive(localEvent("future.credentials", ["password": .string(secret)]))
+        try await waitOpencode { try await manager.state(chatID: chat.id).outcome == .interrupted }
+        #expect(try await manager.state(chatID: chat.id).entries.contains { $0.text.contains("Not supported here") })
         let encoder = JSONEncoder()
         let entries = try encoder.encode(stores.agentEntries(chatID: chat.id))
         let journal = try encoder.encode(stores.agentTurn(id: input.id))

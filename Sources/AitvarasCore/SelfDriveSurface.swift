@@ -114,7 +114,11 @@ import AppKit
     public func perform(_ step: SelfDriveStep, directory: URL) async throws -> String {
         switch step.action {
         case .press:
-            let reason = try press(step.identifier!)
+            let targets = step.anyOf ?? [step.identifier!]
+            guard let target = try targets.first(where: { try find($0)?.enabled == true }) else {
+                throw SelfDriveFailure("No enabled press target: \(targets.joined(separator: " or "))")
+            }
+            let reason = try press(target)
             await Task.yield()
             return reason
         case .type:

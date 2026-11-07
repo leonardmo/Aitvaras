@@ -495,8 +495,12 @@ reversible edits through the audited coordinator; shell remains confirmable in
 all modes. Read permissions pass policy and are audited automatically. Plan
 denies shell and edits (a shell command cannot be proved read-only from text).
 Web search is off; web fetch has an Ask permission but remote network requests
-are blocked by the sandbox. Local currently has no native plan/question cards,
-attachments, slash commands, file completion or effort control.
+are blocked by the sandbox. Local forms containing plain text or single/multiple
+choices use the shared question card, with replies sent to the native form API.
+Unsupported form controls are cancelled; unknown session events interrupt the
+turn with a visible “Not supported here” line rather than waiting silently.
+Local currently has no native plan cards, attachments, slash commands, file
+completion or effort control.
 
 Installed models are discovered from Ollama's loopback `/api/tags`, without
 loading/pulling weights. Remote/cloud model metadata is excluded. Missing
