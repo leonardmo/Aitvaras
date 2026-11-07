@@ -481,24 +481,31 @@ project folders (including its worktree and additional roots), isolated
 opencode XDG/home directories under `AitvarasPaths`, and the temp directory.
 The normal opencode home/config/plugins are not inherited; project config and
 external skills are disabled. Config admits only Ollama at loopback, disables
-sharing and auto-update, and starts with all tool permissions asking. The
-startup HTTP password is transient memory used only for Basic authentication;
+sharing and auto-update, and starts with tool permissions asking, except denied
+web search and question tools. The startup HTTP password is transient memory used only for Basic authentication;
 it never becomes a transcript event, diagnostic, DB value or activity field.
 
 A live server cannot acquire additional write roots. A different folder set
 restarts it only when its sessions are idle; conflicting active requests fail
 inline. Idle sessions resume from the same isolated data store. This keeps one
 server per profile without widening authority across simultaneous chats.
+Shutting down the final run, backend or app terminates the isolated process group,
+including the sandbox wrapper and descendants: SIGTERM, then SIGKILL after two
+seconds. A PID file in the isolated data directory supports startup recovery;
+stale cleanup verifies an opencode serve process and its owned group before
+signalling. Native sessions remain resumable after the server stops.
 
 Ask requires approval for shell and edits. Accept Edits and Auto permit typed
 reversible edits through the audited coordinator; shell remains confirmable in
 all modes. Read permissions pass policy and are audited automatically. Plan
 denies shell and edits (a shell command cannot be proved read-only from text).
 Web search is off; web fetch has an Ask permission but remote network requests
-are blocked by the sandbox. Local forms containing plain text or single/multiple
-choices use the shared question card, with replies sent to the native form API.
-Unsupported form controls are cancelled; unknown session events interrupt the
-turn with a visible “Not supported here” line rather than waiting silently.
+are blocked by the sandbox. The question tool is denied in generated config and
+session permissions; Local asks questions in plain text. The tested form adapter
+remains defensive support for unexpected native forms. Unsupported blocking
+permissions, forms or questions are cancelled or interrupted with a visible
+“Not supported here” line. Informational events, including instructions, inbox,
+usage, project/plugin updates and unknown non-blocking events, never cancel a turn.
 Local currently has no native plan cards, attachments, slash commands, file
 completion or effort control.
 

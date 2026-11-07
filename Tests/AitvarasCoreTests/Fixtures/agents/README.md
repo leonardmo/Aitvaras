@@ -14,6 +14,8 @@ the selected approval/sandbox policy so subsequent mode changes take effect.
 
 `opencode/allow-deny-stop.jsonl` preserves event order and payload field shapes
 from the host's opencode 2.2.6 HTTP/SSE recording with a local Ollama model.
+The source is `.build/agent-recordings/opencode/session-allow-deny-stop.jsonl`;
+all event types are retained, including instructions and server/project updates.
 Session/tool/request/message IDs, text, reasoning, commands, usage and outputs
 are replaced with generic values; adjacent identical sanitized deltas are
 coalesced. It contains no host paths, timestamps, native IDs or startup password.

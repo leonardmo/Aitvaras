@@ -20,6 +20,7 @@ public final class StreamingProcess: @unchecked Sendable {
     private let directory: URL?
     private let environment: [String: String]
     private let keepEmptyLines: Bool
+    private let terminationDelay: Duration
     private let io = DispatchQueue(label: "aitvaras.agent.process")
     private var pid: pid_t = 0
     private var started = false
@@ -48,10 +49,12 @@ public final class StreamingProcess: @unchecked Sendable {
     private let continuation: AsyncThrowingStream<String, Error>.Continuation
 
     public init(executable: URL, arguments: [String], currentDirectory: URL?,
-                environment: [String: String]? = nil, keepEmptyLines: Bool = false) {
+                environment: [String: String]? = nil, keepEmptyLines: Bool = false,
+                terminationDelay: Duration = .milliseconds(200)) {
         self.executable = executable; self.arguments = arguments; directory = currentDirectory
         self.environment = environment ?? ProcessInfo.processInfo.environment
         self.keepEmptyLines = keepEmptyLines
+        self.terminationDelay = terminationDelay
         (lines, continuation) = AsyncThrowingStream.makeStream(bufferingPolicy: .bufferingOldest(Self.maximumQueuedLines))
         continuation.onTermination = { [weak self] reason in
             if case .cancelled = reason { self?.terminate() }
@@ -283,13 +286,13 @@ public final class StreamingProcess: @unchecked Sendable {
             guard !groupCleaned else { return }
             closeInputNow()
             _ = kill(-pid, SIGTERM)
-            io.asyncAfter(deadline: .now() + 0.2) { [self] in
+            io.asyncAfter(deadline: .now() + terminationDelay.timeInterval) { [self] in
                 guard !groupCleaned else { return }
                 if kill(-pid, SIGKILL) == -1 && errno != ESRCH { cleanupFailure = .cleanupUnconfirmed }
                 groupCleaned = true
             }
         }
-        io.asyncAfter(deadline: .now() + grace.timeInterval + 1.2) { [self] in
+        io.asyncAfter(deadline: .now() + grace.timeInterval + terminationDelay.timeInterval + 1) { [self] in
             if status == nil || stdoutSource != nil || stderrSource != nil {
                 cleanupFailure = .cleanupUnconfirmed
                 finishStream(.cleanupUnconfirmed)

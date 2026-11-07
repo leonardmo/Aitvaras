@@ -3,7 +3,7 @@ import Foundation
 /// One sandboxed server for this Aitvaras profile; native sessions persist in
 /// its isolated XDG data store. A server never silently gains write authority.
 public actor OpencodeBackend: AgentBackend {
-    public static let capabilities: Set<AgentCapability> = [.thinking, .tools, .approvals, .questions, .followups]
+    public static let capabilities: Set<AgentCapability> = [.thinking, .tools, .approvals, .followups]
     private let executable: URL?
     private let transport: any OpencodeTransport
     private let catalog: @Sendable () async throws -> [AgentModel]
@@ -13,6 +13,7 @@ public actor OpencodeBackend: AgentBackend {
     private var reader: Task<Void, Never>?
     private var starting = false
     private var generation = UUID()
+    private var shutdownTask: Task<Void, Never>?
 
     public init(executable: URL? = nil, environment: [String: String] = ProcessInfo.processInfo.environment,
                 configuration: OpencodeConfiguration = .init()) {
@@ -39,19 +40,24 @@ public actor OpencodeBackend: AgentBackend {
     public func signIn(onBrowserURL: @escaping @Sendable (URL) async -> Void) throws { throw AgentFailure.unsupported }
     public func start(_ configuration: AgentSessionConfiguration) async throws -> any AgentRun {
         guard executable != nil else { throw AgentFailure.notInstalled }
-        guard !starting else { throw AgentFailure.invalidTransition }
+        guard !starting, shutdownTask == nil else { throw AgentFailure.invalidTransition }
         starting = true
         defer { starting = false }
+        let startGeneration = generation
         let models = try await models()
+        guard startGeneration == generation else { throw AgentFailure.invalidTransition }
         guard configuration.effort == nil, models.contains(where: { $0.id == configuration.model }) else { throw AgentFailure.unsupported }
         let projects = [configuration.directory] + configuration.additionalDirectories
         let requestedRoots = try OpencodeConfiguration.writeRoots(projects)
         if roots != requestedRoots || serverModels != models {
             for run in runs.values where await run.isActive { throw AgentFailure.invalidTransition }
             if roots != nil { await shutdown() }
+            let openingGeneration = generation
             do {
                 try await transport.open(projects: projects, models: models)
+                guard openingGeneration == generation else { throw AgentFailure.invalidTransition }
                 let events = try await transport.subscribe()
+                guard openingGeneration == generation else { throw AgentFailure.invalidTransition }
                 roots = requestedRoots; serverModels = models
                 let generation = self.generation
                 reader = Task { [weak self] in
@@ -62,6 +68,7 @@ public actor OpencodeBackend: AgentBackend {
                 }
             } catch { await transport.close(); throw (error as? AgentFailure) ?? .offline }
         }
+        let sessionGeneration = generation
         let nativeID: String
         let model: JSONValue = .object(["id": .string(configuration.model), "providerID": .string("ollama")])
         if let resume = configuration.resume, resume.profile == OpencodeConfiguration.profile {
@@ -82,6 +89,7 @@ public actor OpencodeBackend: AgentBackend {
             guard let id = value["data"]?["id"]?.stringValue, Self.validID(id), runs[id] == nil else { throw AgentFailure.invalidRequest }
             nativeID = id
         }
+        guard sessionGeneration == generation else { throw AgentFailure.invalidTransition }
         let session = AgentSessionID(provider: .local, profile: OpencodeConfiguration.profile, nativeID: nativeID)
         let run = OpencodeRun(transport: transport, session: session, configuration: configuration,
             release: { [weak self] id in await self?.release(nativeID, id: id) })
@@ -92,42 +100,37 @@ public actor OpencodeBackend: AgentBackend {
     private static func validID(_ id: String) -> Bool {
         id.hasPrefix("ses") && id.utf8.count < 256 && id.unicodeScalars.allSatisfy { CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "_-" )).contains($0) }
     }
-    private func release(_ nativeID: String, id: UUID) { if runs[nativeID]?.id == id { runs.removeValue(forKey: nativeID) } }
+    private func release(_ nativeID: String, id: UUID) async {
+        guard runs[nativeID]?.id == id else { return }
+        runs.removeValue(forKey: nativeID)
+        if runs.isEmpty { await shutdown() }
+    }
     private func receive(_ value: JSONValue, generation: UUID) async {
         guard generation == self.generation else { return }
         if let session = opencodeEventSession(value) {
             if let run = runs[session] { await run.receive(value) }
             return
         }
-        // Known server-wide notifications carry no session and need no reply.
-        // An unrecognised/session-less request cannot safely be assigned to one
-        // chat, so interrupt active sessions rather than leave an invisible wait.
-        let notifications: Set<String> = [
-            "server.connected", "location.shutdown", "models-dev.refreshed",
-            "credential.updated", "credential.switched", "integration.updated", "provider.updated",
-            "model.updated", "agent.updated", "filesystem.changed", "reference.updated",
-            "plugin.updated", "project.updated", "worktree.updated", "worktree.resolved",
-            "command.updated", "config.updated", "skill.updated", "pty.created", "pty.updated",
-            "pty.exited", "pty.deleted", "persistent-pty.added", "persistent-pty.removed",
-            "persistent-pty.updated", "shell.created", "shell.exited", "shell.deleted",
-            "websearch.updated", "artifact.updated", "installation.updated", "installation.update-available",
-            "vcs.branch.updated", "mcp.status.changed", "mcp.resources.changed"
-        ]
-        guard !notifications.contains(value["type"]?.stringValue ?? "") else { return }
+        // Only protocol-defined input waits may interrupt an unroutable turn.
+        // Informational and unknown events never establish a user-input wait.
+        guard opencodeBlocksOnUserInput(value) else { return }
         for run in Array(runs.values) where await run.isActive { await run.unroutableEvent() }
     }
     private func disconnected(generation: UUID) async {
         guard generation == self.generation else { return }
-        let current = runs; runs.removeAll(); roots = nil
-        for run in current.values { await run.disconnected() }
-        await transport.close()
+        await shutdown()
     }
     public func shutdown() async {
+        if let shutdownTask { await shutdownTask.value; return }
+        guard starting || roots != nil || reader != nil || !runs.isEmpty else { return }
         generation = UUID()
         reader?.cancel(); reader = nil
         let current = runs; runs.removeAll(); roots = nil
+        let cleanup = Task { [transport] in await transport.close() }
+        shutdownTask = cleanup
         for run in current.values { await run.disconnected() }
-        await transport.close()
+        await cleanup.value
+        shutdownTask = nil
     }
     // The Aitvaras transcript is authoritative. We don't advertise native history
     // until opencode's complete-branch reconciliation is implemented.
@@ -166,7 +169,7 @@ actor OpencodeRun: AgentRun {
     func started() { emit(.sessionStarted(session)) }
     func unroutableEvent() async {
         // Use normal buffering so a slow prompt acknowledgement remains first.
-        await receive(.object(["type": .string("opencode.unroutable"),
+        await receive(.object(["type": .string("opencode.unroutable.wait"),
             "data": .object(["sessionID": .string(session.nativeID)])]))
     }
     private func scope(item: String? = nil, input: UUID? = nil) -> AgentEventScope {
@@ -261,7 +264,10 @@ actor OpencodeRun: AgentRun {
     }
     func shutdown() async throws {
         guard !closed else { return }
-        if isActive { try await interrupt() }
+        if isActive {
+            do { try await interrupt() }
+            catch { await abort(); throw error }
+        }
         closed = true; requests.removeAll(); forms.removeAll(); queued.removeAll(); buffered.removeAll(); inputID = nil
         continuation.finish(); await release(id)
     }
@@ -391,10 +397,7 @@ actor OpencodeRun: AgentRun {
                 forms.removeValue(forKey: .string(id))
                 if requests.removeValue(forKey: .string(id)) != nil { emit(.requestResolved(.string(id))) }
             }
-        case "session.status":
-            guard let status = data["status"]?["type"]?.stringValue, ["idle", "busy", "retry"].contains(status) else {
-                await unsupportedEvent(); return
-            }
+        case "question.asked", "opencode.unroutable.wait": await unsupportedEvent()
         case "session.execution.succeeded": end(.completed)
         case "session.execution.interrupted": end(.interrupted)
         case "session.execution.failed": end(.failed(.unknown))
@@ -412,11 +415,7 @@ actor OpencodeRun: AgentRun {
              "session.compaction.ended", "session.compaction.failed", "session.step.failed",
              "session.created", "session.model.selected", "session.permissions",
              "session.renamed", "session.metadata.updated", "session.viewed": break
-        default:
-            // Unknown data is deliberately not forwarded: future server events
-            // might include credentials. Preserve only a fixed event marker.
-            emit(.unknown(name: "opencode.event", payload: .null))
-            await unsupportedEvent()
+        default: break // Includes unknown notifications; their payloads stay private.
         }
     }
 
@@ -433,6 +432,10 @@ actor OpencodeRun: AgentRun {
             if inputID == interruptedInput { end(.interrupted) }
         } catch { await abort() }
     }
+}
+
+private func opencodeBlocksOnUserInput(_ value: JSONValue) -> Bool {
+    ["permission.asked", "form.created", "question.asked"].contains(value["type"]?.stringValue ?? "")
 }
 
 private func opencodeTokenCount(_ value: JSONValue?) -> Int? {

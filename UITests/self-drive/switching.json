@@ -9,6 +9,12 @@
       "identifier": "chat.new.$project"
     },
     {
+      "action": "waitFor",
+      "identifier": "chat.provider.codex",
+      "enabled": true,
+      "timeout": 180
+    },
+    {
       "action": "press",
       "identifier": "chat.provider.codex"
     },
@@ -112,10 +118,8 @@
     },
     {
       "action": "waitFor",
-      "anyOf": [
-        "chat.request.0.allow",
-        "chat.question.0.0.option.0"
-      ],
+      "identifier": "chat.request.0.allow",
+      "enabled": true,
       "timeout": 300
     },
     {
@@ -124,44 +128,7 @@
     },
     {
       "action": "press",
-      "identifier": "chat.question.0.0.option.0",
-      "optional": true
-    },
-    {
-      "action": "waitFor",
-      "anyOf": [
-        "chat.request.0.allow",
-        "chat.request.0.submit"
-      ],
-      "enabled": true,
-      "timeout": 300
-    },
-    {
-      "action": "press",
-      "anyOf": [
-        "chat.request.0.allow",
-        "chat.request.0.submit"
-      ]
-    },
-    {
-      "action": "waitFor",
-      "identifier": "chat.request.0.submit",
-      "timeout": 300,
-      "absent": true
-    },
-    {
-      "action": "waitFor",
-      "timeout": 300,
-      "anyOf": [
-        "chat.request.0.allow",
-        "chat.provider.local"
-      ],
-      "enabled": true
-    },
-    {
-      "action": "press",
-      "identifier": "chat.request.0.allow",
-      "optional": true
+      "identifier": "chat.request.0.allow"
     },
     {
       "action": "waitFor",
@@ -183,7 +150,7 @@
     },
     {
       "action": "type",
-      "text": "Use your question tool now to ask me which color to use. Ask exactly one question with options Blue and Green. Do not answer it yourself. After my answer, reply with only COLOR-CHOICE-DONE."
+      "text": "Ask me in plain text which color to use, offering Blue and Green. Start your question with \"Which\" and wait for my next message. After I answer, reply with only the words COLOR CHOICE DONE joined with hyphens."
     },
     {
       "action": "press",
@@ -191,14 +158,22 @@
     },
     {
       "action": "waitFor",
-      "text": "Use your question tool now to ask me which color to use. Ask exactly one question with options Blue and Green. Do not answer it yourself. After my answer, reply with only COLOR-CHOICE-DONE.",
+      "text": "Ask me in plain text which color to use, offering Blue and Green. Start your question with \"Which\" and wait for my next message. After I answer, reply with only the words COLOR CHOICE DONE joined with hyphens.",
       "within": "chat.composer.input",
       "absent": true,
       "timeout": 300
     },
     {
       "action": "waitFor",
-      "identifier": "chat.question.0.0.option.0",
+      "text": "Which color",
+      "within": "chat.transcript",
+      "timeout": 300,
+      "caseSensitive": true
+    },
+    {
+      "action": "waitFor",
+      "identifier": "chat.composer.stop",
+      "absent": true,
       "timeout": 300
     },
     {
@@ -206,22 +181,23 @@
       "name": "local-question"
     },
     {
-      "action": "press",
-      "identifier": "chat.question.0.0.option.0"
-    },
-    {
       "action": "waitFor",
-      "identifier": "chat.request.0.submit",
+      "identifier": "chat.composer.send",
       "enabled": true,
       "timeout": 300
     },
     {
+      "action": "type",
+      "text": "Blue"
+    },
+    {
       "action": "press",
-      "identifier": "chat.request.0.submit"
+      "identifier": "chat.composer.send"
     },
     {
       "action": "waitFor",
-      "identifier": "chat.request.0.submit",
+      "text": "Blue",
+      "within": "chat.composer.input",
       "absent": true,
       "timeout": 300
     },

@@ -53,6 +53,29 @@ struct AgentProcessTests {
         #expect(await gone(child))
     }
 
+    @Test func serverGroupGetsTwoSecondsBeforeKillEvenWhenWrapperExits() async throws {
+        let fixture = try AgentExecutableFixture("""
+        /bin/sh -c 'trap "" TERM; echo $$ > child.pid; printf "ready\\n"; while :; do /bin/sleep 1; done' &
+        wait
+        """)
+        defer { fixture.remove() }
+        let process = StreamingProcess(executable: fixture.executable, arguments: [], currentDirectory: fixture.directory,
+            environment: fixture.environment, terminationDelay: .seconds(2))
+        defer { process.terminate() }
+        try process.start()
+        #expect(getpgid(process.processIdentifier) == process.processIdentifier)
+        #expect(getpgid(process.processIdentifier) != getpgrp())
+        var iterator = process.lines.makeAsyncIterator()
+        #expect(try await iterator.next() == "ready")
+        let child = try fixture.childPID()
+        let started = ContinuousClock.now
+        try await process.shutdown(grace: .zero)
+        #expect(started.duration(to: .now) >= .seconds(2))
+        #expect(started.duration(to: .now) < .seconds(4))
+        #expect(!process.isRunning)
+        #expect(await gone(child))
+    }
+
     @Test func parentExitCleansUpGrandchildHoldingPipes() async throws {
         let fixture = try AgentExecutableFixture("""
         /bin/sh -c 'trap "" TERM; echo $$ > child.pid; printf "ready\\n"; while :; do /bin/sleep 1; done' &

@@ -5,12 +5,18 @@ import AitvarasStore
 @testable import AitvarasAgents
 
 @Suite struct OpencodeBackendTests {
-    @Test func replayAllowRejectAndStop() async throws {
+    @Test func replayRecordedSessionDoesNotCancelInformationalEvents() async throws {
         let fixture = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
             .appendingPathComponent("Fixtures/agents/opencode/allow-deny-stop.jsonl")
-        let events = try String(contentsOf: fixture, encoding: .utf8).split(separator: "\n").map {
-            try #require(JSONValue.parse(String($0)))
-        }
+        let hostRecording = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+            .deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent(".build/agent-recordings/opencode/session-allow-deny-stop.jsonl")
+        // Replay the host evidence when available; public CI uses its sanitized
+        // projection, including informational events the old fixture omitted.
+        let source = FileManager.default.fileExists(atPath: hostRecording.path) ? hostRecording : fixture
+        let events = try opencodeRecordingEvents(source)
+        #expect(events.contains { $0["type"] == .string("session.instructions.updated") })
+        #expect(events.contains { $0["type"] == .string("project.updated") })
         let wire = OpencodeFakeTransport(recording: events)
         let backend = localBackend(wire)
         #expect(try await backend.status().authentication == .local)
@@ -20,9 +26,10 @@ import AitvarasStore
         for step in 0..<3 {
             try await run.send(.init(text: "Test local turn"), willDeliver: {})
             if step == 2 { try await run.interrupt() }
-            var requested = false, ended = false
+            var requested = false, ended = false, text = ""
             while let event = try await iterator.next() {
                 all.append(event)
+                if case .textDelta(let delta) = event.kind { text += delta }
                 if case .request(let request) = event.kind {
                     requested = true
                     try await run.respond(to: request, with: step == 0 ? .allow(updatedInput: nil) : .deny)
@@ -33,6 +40,8 @@ import AitvarasStore
                 }
             }
             #expect(ended)
+            #expect(!text.contains("Not supported"))
+            if step == 0 { #expect(!text.isEmpty) }
             if step < 2 { #expect(requested) }
         }
         #expect(all.contains { if case .textDelta = $0.kind { true } else { false } })
@@ -43,33 +52,43 @@ import AitvarasStore
         #expect(all.contains { if case .usage = $0.kind { true } else { false } })
         let decisions = await wire.calls.filter { $0.path.hasSuffix("/reply") }.map { $0.body?["decision"]?.stringValue }
         #expect(decisions == ["once", "reject"])
+        #expect(events.filter { $0["type"] == .string("permission.replied") }
+            .compactMap { $0["data"]?["reply"]?.stringValue } == decisions)
         #expect(await wire.calls.contains { $0.path.hasSuffix("/interrupt") })
         try await run.shutdown(); await backend.shutdown()
     }
 
-    @Test func unknownEventsAreBoundedAndNeverForwardTheirPayload() async throws {
+    @Test func informationalAndUnknownEventsNeverInterrupt() async throws {
         let wire = OpencodeFakeTransport()
-        let run = OpencodeRun(transport: wire, session: localSession, configuration: localConfiguration, release: { _ in })
+        let backend = localBackend(wire)
+        let run = try await backend.start(localConfiguration)
         try await run.send(.init(text: "Hello"), willDeliver: {})
-        await run.receive(localEvent("future.event", ["credential": .string("transient-test-password")]))
-        await run.receive(localEvent("session.execution.succeeded"))
-        var sawUnknown = false
-        for try await event in run.events {
-            if case .unknown(let name, let payload) = event.kind {
-                #expect(name == "opencode.event"); #expect(payload == .null); sawUnknown = true
+        for type in ["session.instructions.updated", "session.inbox.enqueued", "session.inbox.delivered",
+                     "session.usage.updated", "project.updated", "plugin.updated", "session.status",
+                     "future.event", "future.request.asked"] {
+            for sessionScoped in [false, true] {
+                var data: [String: JSONValue] = ["credential": .string("never-forward")]
+                if sessionScoped { data["sessionID"] = .string("ses_fixture") }
+                await wire.emit(.object(["type": .string(type), "data": .object(data)]))
             }
+        }
+        await wire.emit(localEvent("session.text.delta", ["delta": .string("Hello back")]))
+        await wire.emit(localEvent("session.execution.succeeded"))
+        var kinds: [AgentEvent.Kind] = []
+        for try await event in run.events {
+            kinds.append(event.kind)
             if case .turnEnded = event.kind { break }
         }
-        #expect(sawUnknown)
-        #expect(await !run.isActive)
-        #expect(await wire.calls.contains { $0.path.hasSuffix("/interrupt") })
-        try await run.shutdown()
+        #expect(kinds == [.sessionStarted(localSession), .delivery(.acknowledged),
+                          .textDelta("Hello back"), .turnEnded(.completed)])
+        #expect(await !wire.calls.contains { $0.path.hasSuffix("/interrupt") })
+        try await run.shutdown(); await backend.shutdown()
     }
 
     @Test func nestedFormRoutesThroughBackendAndAuditedQuestionCard() async throws {
         let wire = OpencodeFakeTransport()
         let backend = localBackend(wire)
-        #expect(try await backend.status().capabilities.contains(.questions))
+        #expect(try await !backend.status().capabilities.contains(.questions))
         let raw = try await backend.start(localConfiguration)
         let run = AgentActionCoordinator(run: raw, mode: .ask, provenance: .init(chatID: UUID()), audit: { _ in })
         try await run.send(.init(text: "Ask a question"), willDeliver: {})
@@ -184,8 +203,8 @@ import AitvarasStore
         #expect(texts == ["\nNot supported here\n"]); #expect(cards == 0)
     }
 
-    @Test(arguments: [false, true], ["future.request.asked", "session.status"])
-    func unknownRequestInterruptsAndReleasesQueuedInputsWithoutTerminalEvent(failure: Bool, type: String) async throws {
+    @Test(arguments: [false, true], ["question.asked"])
+    func unsupportedBlockingQuestionReleasesQueuedInputsWithoutTerminalEvent(failure: Bool, type: String) async throws {
         let wire = OpencodeFakeTransport()
         let run = OpencodeRun(transport: wire, session: localSession, configuration: localConfiguration, release: { _ in })
         let first = AgentInput(text: "First"), next = AgentInput(text: "Follow-up")
@@ -210,19 +229,19 @@ import AitvarasStore
         if !failure { #expect(ended == [first.id, next.id]) }
     }
 
-    @Test func unscopedUnknownRequestDoesNotWaitSilently() async throws {
+    @Test func unscopedBlockingRequestDoesNotWaitSilently() async throws {
         let wire = OpencodeFakeTransport()
         let backend = localBackend(wire)
         let run = try await backend.start(localConfiguration)
         try await run.send(.init(text: "Hello"), willDeliver: {})
         await wire.emit(.object(["type": .string("server.connected"), "data": .object([:])]))
-        await wire.emit(.object(["type": .string("future.request"), "data": .object(["id": .string("unknown")])]))
+        await wire.emit(.object(["type": .string("permission.asked"), "data": .object(["id": .string("unknown")])]))
         try await waitOpencode { await (run as? OpencodeRun)?.isActive == false }
         #expect(await wire.calls.contains { $0.path.hasSuffix("/interrupt") })
         try await run.shutdown(); await backend.shutdown()
     }
 
-    @Test func unknownRequestClearsRunningChatCardsAndFollowupDelivery() async throws {
+    @Test func unsupportedBlockingQuestionClearsChatCardsAndFollowupDelivery() async throws {
         let stores = try inMemoryStores()
         let wire = OpencodeFakeTransport()
         let backend = localBackend(wire)
@@ -233,7 +252,7 @@ import AitvarasStore
         await wire.emit(formCreated(questionForm))
         try await waitOpencode { try await manager.state(chatID: chat.id).pendingCards.count == 1 }
         try await manager.send(chatID: chat.id, provider: .local, input: followup)
-        await wire.emit(localEvent("future.request.asked", ["id": .string("unknown")]))
+        await wire.emit(localEvent("question.asked", ["id": .string("unknown")]))
         try await waitOpencode { try stores.agentTurn(id: followup.id)?.state == .interrupted }
         let state = try await manager.state(chatID: chat.id)
         #expect(!state.isRunning); #expect(state.pendingCards.isEmpty)
@@ -332,13 +351,52 @@ import AitvarasStore
         try await waitOpencode { !(await (run as? OpencodeRun)?.isActive ?? true) }
         try await run.shutdown()
         let resumed = try await backend.start(.init(directory: localConfiguration.directory, resume: localSession, model: "test-model", mode: .plan))
-        #expect(await wire.opens == 1)
+        #expect(await wire.opens == 2)
         #expect(await wire.calls.filter { $0.path == "api/session" && $0.method == "POST" }.count == 1)
         #expect(await wire.calls.contains { $0.path == "api/session/ses_fixture/model" })
         try await resumed.shutdown()
         let other = try await backend.start(.init(directory: URL(fileURLWithPath: "/tmp/other-project"), model: "test-model"))
-        #expect(await wire.opens == 2)
+        #expect(await wire.opens == 3)
         try await other.shutdown(); await backend.shutdown()
+    }
+
+    @Test func finalRunShutdownClosesServerAndNextRunReopensIt() async throws {
+        let wire = OpencodeFakeTransport()
+        let backend = localBackend(wire)
+        let run = try await backend.start(localConfiguration)
+        #expect(await wire.closes == 0)
+        try await run.shutdown()
+        #expect(await wire.closes == 1)
+        await backend.shutdown()
+        #expect(await wire.closes == 1)
+        let resumed = try await backend.start(.init(directory: localConfiguration.directory, resume: localSession, model: "test-model"))
+        #expect(await wire.opens == 2)
+        await backend.shutdown()
+        #expect(await wire.closes == 2)
+        #expect(await (resumed as? OpencodeRun)?.isActive == false)
+    }
+
+    @Test func shutdownDuringStartupCannotLeaveANewServerBehind() async throws {
+        let wire = OpencodeFakeTransport()
+        await wire.pauseNextOpen()
+        let backend = localBackend(wire)
+        let starting = Task { try await backend.start(localConfiguration) }
+        try await waitOpencode { await wire.openIsPaused }
+        await backend.shutdown()
+        await wire.releaseOpen()
+        await #expect(throws: AgentFailure.invalidTransition) { _ = try await starting.value }
+        #expect(await wire.closes >= 1)
+        #expect(await wire.calls.isEmpty)
+    }
+
+    @Test func shutdownClosesTransportEvenWhenInterruptFails() async throws {
+        let wire = OpencodeFakeTransport()
+        let run = OpencodeRun(transport: wire, session: localSession, configuration: localConfiguration, release: { _ in })
+        try await run.send(.init(text: "Running"), willDeliver: {})
+        await wire.setFailure(true)
+        await #expect(throws: AgentFailure.offline) { try await run.shutdown() }
+        #expect(await wire.closes == 1)
+        #expect(await !run.isActive)
     }
 
     @Test func unavailableAndMissingModelsFailClosed() async throws {
@@ -373,6 +431,44 @@ import AitvarasStore
         #expect(await wire.closes == 1)
         await backend.shutdown()
     }
+}
+
+/// Keep protocol shape/order while replacing all host text and identifiers
+/// before they can enter test assertions, events or diagnostics.
+private func opencodeRecordingEvents(_ source: URL) throws -> [JSONValue] {
+    var ids: [String: String] = [:]
+    func scrub(_ value: JSONValue, key: String = "") -> JSONValue {
+        switch value {
+        case .object(let fields): return .object(Dictionary(uniqueKeysWithValues: fields.map { ($0.key, scrub($0.value, key: $0.key)) }))
+        case .array(let values): return .array(values.map { scrub($0, key: key) })
+        case .string(let text):
+            if key == "sessionID" { return .string("ses_fixture") }
+            if ["id", "assistantMessageID", "requestID", "inboxID"].contains(key) {
+                if ids[text] == nil { ids[text] = "fixture_\(ids.count + 1)" }
+                return .string(ids[text]!)
+            }
+            if ["action", "name"].contains(key) { return .string("bash") }
+            if key == "type" { return .string(text == "aborted" ? "aborted" : "fixture") }
+            if key == "command" { return .string("printf example > local-made.txt") }
+            if key == "reply", ["once", "reject"].contains(text) { return .string(text) }
+            return .string("Local reply.")
+        case .number: return .number(1)
+        default: return value
+        }
+    }
+    var result: [JSONValue] = []
+    for line in try String(contentsOf: source, encoding: .utf8).split(separator: "\n") {
+        guard let row = JSONValue.parse(String(line)) else { throw AgentFailure.invalidRequest }
+        let event = row["type"] == nil ? row["data"] : row
+        guard let event, let type = event["type"]?.stringValue, let data = event["data"] else { continue }
+        var clean = scrub(data).objectValue ?? [:]
+        if type == "session.tool.input.ended" {
+            clean["text"] = .string(#"{"command":"printf example > local-made.txt"}"#)
+        }
+        let sanitized: JSONValue = .object(["type": .string(type), "data": .object(clean)])
+        if result.last != sanitized { result.append(sanitized) }
+    }
+    return result
 }
 
 let localSession = AgentSessionID(provider: .local, profile: "opencode", nativeID: "ses_fixture")
@@ -419,13 +515,24 @@ actor OpencodeFakeTransport: OpencodeTransport {
     private var promptNumber = 0
     private var pausePrompt = false
     private var promptWaiter: CheckedContinuation<Void, Never>?
+    private var pauseOpen = false
+    private var openWaiter: CheckedContinuation<Void, Never>?
+    var openIsPaused: Bool { openWaiter != nil }
+    func pauseNextOpen() { pauseOpen = true }
+    func releaseOpen() { openWaiter?.resume(); openWaiter = nil }
     var promptIsPaused: Bool { promptWaiter != nil }
     func pauseNextPrompt() { pausePrompt = true }
     func releasePrompt() { promptWaiter?.resume(); promptWaiter = nil }
     init(recording: [JSONValue] = []) { self.recording = recording }
     func setFailure(_ value: Bool) { failure = value }
     func failNextFormCancellation() { failFormCancellation = true }
-    func open(projects: [URL], models: [AgentModel]) { opens += 1 }
+    func open(projects: [URL], models: [AgentModel]) async {
+        opens += 1
+        if pauseOpen {
+            pauseOpen = false
+            await withCheckedContinuation { openWaiter = $0 }
+        }
+    }
     func subscribe() -> AsyncThrowingStream<JSONValue, Error> {
         let (stream, continuation) = AsyncThrowingStream<JSONValue, Error>.makeStream()
         self.continuation = continuation; return stream

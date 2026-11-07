@@ -145,10 +145,12 @@ One server per profile starts on demand with a free loopback port, an in-memory
 Basic-auth password and isolated XDG/home directories under `AitvarasPaths`
 (respecting `AITVARAS_STATE_DIR`). Generated config disables sharing and
 updates, enables only loopback Ollama, disables project config/external skills
-and default plugins, and asks for tool permissions. The sandbox denies network
-except loopback and writes except project/worktree/additional folders, opencode
+and default plugins, denies the question tool and asks for other tool permissions.
+The sandbox denies network except loopback and writes except project/worktree/additional folders, opencode
 data directories and temp. A different root set restarts an idle server; an
-active conflicting session is refused rather than gaining more roots.
+active conflicting session is refused rather than gaining more roots. The final
+run/backend/app shutdown terminates the owned group with TERM then KILL after
+two seconds; startup verifies any recorded stale server before group cleanup.
 
 Ask prompts for shell and edits. Accept Edits/Auto allow reversible edits only
 through the audited policy boundary; shell stays confirmable. Plan denies shell

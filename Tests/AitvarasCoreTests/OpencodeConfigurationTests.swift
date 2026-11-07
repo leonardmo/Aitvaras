@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import Testing
 import AitvarasStore
@@ -14,8 +15,14 @@ import AitvarasStore
         #expect(value["provider"]?["ollama"]?["options"]?["baseURL"] == .string("http://127.0.0.1:11434/v1"))
         #expect(value["plugin"] == .array([])); #expect(value["mcp"] == .object([:]))
         for tool in ["*", "bash", "edit", "webfetch"] { #expect(value["permission"]?[tool] == .string("ask")) }
-        for mode in [AgentMode.ask, .auto, .acceptEdits] {
+        for mode in [AgentMode.ask, .auto, .acceptEdits, .plan] {
             #expect(OpencodeConfiguration.permissions(mode: mode).arrayValue?.first?["effect"] == .string("ask"))
+        }
+        #expect(value["permission"]?["question"] == .string("deny"))
+        for mode in [AgentMode.ask, .auto, .acceptEdits, .plan] {
+            #expect(OpencodeConfiguration.permissions(mode: mode).arrayValue?.contains {
+                $0["action"] == .string("question") && $0["effect"] == .string("deny")
+            } == true)
         }
         let plan = try #require(OpencodeConfiguration.permissions(mode: .plan).arrayValue)
         for tool in ["bash", "edit", "webfetch", "websearch"] {
@@ -178,11 +185,13 @@ extension OpencodeConfigurationTests {
         try await manager.respond(chatID: chat.id, to: request, with: .allow(updatedInput: nil))
         #expect(stub.request?.value(forHTTPHeaderField: "Authorization") == "Basic " + Data("opencode:\(secret)".utf8).base64EncodedString())
         await run.receive(localEvent("session.tool.success", ["id": .string("tool_test"), "content": .string("Created")]))
-        // A future server event might contain a credential. Reject it without
-        // projecting its payload or waiting for a native terminal event.
+        // A future notification might contain a credential. Ignore its payload
+        // and let the native turn complete normally.
         await run.receive(localEvent("future.credentials", ["password": .string(secret)]))
-        try await waitOpencode { try await manager.state(chatID: chat.id).outcome == .interrupted }
-        #expect(try await manager.state(chatID: chat.id).entries.contains { $0.text.contains("Not supported here") })
+        await run.receive(localEvent("session.text.delta", ["delta": .string("Created")]))
+        await run.receive(localEvent("session.execution.succeeded"))
+        try await waitOpencode { try await manager.state(chatID: chat.id).outcome == .completed }
+        #expect(try await !manager.state(chatID: chat.id).entries.contains { $0.text.contains("Not supported here") })
         let encoder = JSONEncoder()
         let entries = try encoder.encode(stores.agentEntries(chatID: chat.id))
         let journal = try encoder.encode(stores.agentTurn(id: input.id))
@@ -208,4 +217,76 @@ private actor OpencodeHTTPTestBackend: AgentBackend {
     func signIn(onBrowserURL: @escaping @Sendable (URL) async -> Void) throws { throw AgentFailure.unsupported }
     func listSessions(folder: URL, cursor: String?) throws -> AgentPage<AgentSessionSummary> { throw AgentFailure.unsupported }
     func readHistory(session: AgentSessionID, cursor: String?) throws -> AgentPage<AgentEvent> { throw AgentFailure.unsupported }
+}
+
+@Suite struct OpencodeServerPIDTests {
+    @Test func nativeArgumentsRecognizeOnlyTheServeSubcommand() throws {
+        #expect(OpencodeServerPID.isServer(["/tmp/bin/opencode", "serve", "--port", "12345"]))
+        for argv in [[], ["opencode"], ["opencode", "run", "serve"], ["/bin/echo", "opencode", "serve"],
+                     ["opencode-other", "serve"], ["/bin/sh", "-c", "opencode serve"]] {
+            #expect(!OpencodeServerPID.isServer(argv))
+        }
+        let own = try #require(OpencodeServerPID.arguments(for: getpid()))
+        let identifiedAsServer = OpencodeServerPID.isServer(own)
+        #expect(!identifiedAsServer)
+    }
+
+    @Test(arguments: ["server", "unrelated", "other-group", "reused", "leader-exited"])
+    func stalePIDRequiresVerifiedServerAndOwnedGroup(kind: String) async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("opencode-pid-test-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let file = directory.appendingPathComponent("server.pid")
+        try Data("4242".utf8).write(to: file)
+        let probe = OpencodePIDProbe(kind: kind)
+        try await OpencodeServerPID.recover(file: file, inspect: { probe.arguments($0) },
+            group: { probe.group($0) }, signal: { probe.signal($0, $1) })
+        let signals = probe.signals
+        if kind == "unrelated" || kind == "other-group" {
+            #expect(signals.isEmpty)
+            #expect(FileManager.default.fileExists(atPath: file.path))
+        } else {
+            #expect(signals.map(\.0) == Array(repeating: -4242, count: kind == "reused" ? 1 : 2))
+            #expect(signals.map(\.1) == (kind == "reused" ? [SIGTERM] : [SIGTERM, SIGKILL]))
+            #expect(!FileManager.default.fileExists(atPath: file.path))
+        }
+    }
+
+    @Test func stalePIDCannotKillAnUnrelatedLiveProcess() async throws {
+        let fixture = try AgentExecutableFixture("printf 'ready\\n'; exec /bin/sleep 30")
+        defer { fixture.remove() }
+        let process = fixture.process()
+        defer { process.terminate() }
+        try process.start()
+        var iterator = process.lines.makeAsyncIterator()
+        #expect(try await iterator.next() == "ready")
+        let file = fixture.directory.appendingPathComponent("server.pid")
+        try Data(String(process.processIdentifier).utf8).write(to: file)
+        try await OpencodeServerPID.recover(file: file)
+        #expect(process.isRunning)
+        OpencodeServerPID.remove(file: file, matching: process.processIdentifier + 1)
+        #expect(FileManager.default.fileExists(atPath: file.path))
+        try await process.shutdown(grace: .zero)
+    }
+}
+
+private final class OpencodePIDProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private let kind: String
+    private var sent: [(Int32, Int32)] = []
+    init(kind: String) { self.kind = kind }
+    var signals: [(Int32, Int32)] { lock.lock(); defer { lock.unlock() }; return sent }
+    func arguments(_ pid: Int32) -> [String]? {
+        lock.lock(); defer { lock.unlock() }
+        if kind == "unrelated" || (kind == "reused" && !sent.isEmpty) { return ["/bin/sleep", "30"] }
+        return ["/tmp/bin/opencode", "serve"]
+    }
+    func group(_ pid: Int32) -> Int32 {
+        lock.lock(); defer { lock.unlock() }
+        if kind == "leader-exited", !sent.isEmpty { errno = ESRCH; return -1 }
+        return kind == "other-group" ? pid + 1 : pid
+    }
+    func signal(_ pid: Int32, _ value: Int32) -> Int32 {
+        lock.lock(); defer { lock.unlock() }; sent.append((pid, value)); return 0
+    }
 }

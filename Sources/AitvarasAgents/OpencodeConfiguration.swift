@@ -16,6 +16,7 @@ public struct OpencodeConfiguration: Sendable {
     public var dataDirectories: [URL] {
         ["config", "data", "cache", "state", "home"].map { root.appendingPathComponent($0, isDirectory: true) }
     }
+    var serverPIDFile: URL { root.appendingPathComponent("data/server.pid") }
     public func environment(_ inherited: [String: String]) -> [String: String] {
         // ProviderEnvironment removes known CLI overrides; an allowlist additionally
         // keeps opencode/plugin/proxy/credential configuration out of this child.
@@ -46,14 +47,15 @@ public struct OpencodeConfiguration: Sendable {
             // Native auto-allow would bypass the app's audit/policy boundary.
             // All actions ask; the coordinator may auto-authorize safe edits.
             "permission": .object(["*": .string("ask"), "bash": .string("ask"),
-                "edit": .string("ask"), "webfetch": .string("ask"), "websearch": .string("deny")])
+                "edit": .string("ask"), "webfetch": .string("ask"), "websearch": .string("deny"),
+                "question": .string("deny")])
         ])
     }
     public static func permissions(mode: AgentMode) -> JSONValue {
         var rules: [JSONValue] = [.object(["action": .string("*"), "resource": .string("*"), "effect": .string("ask")])]
         // Plan forbids shell as well as edits: shell cannot be made read-only
         // by classifying command text. Other modes always pass the coordinator.
-        for action in (mode == .plan ? ["bash", "edit", "webfetch", "websearch"] : ["websearch"]) {
+        for action in (mode == .plan ? ["bash", "edit", "webfetch", "websearch", "question"] : ["websearch", "question"]) {
             rules.append(.object(["action": .string(action), "resource": .string("*"), "effect": .string("deny")]))
         }
         return .array(rules)
