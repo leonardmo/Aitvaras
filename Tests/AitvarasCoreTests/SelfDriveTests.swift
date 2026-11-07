@@ -120,11 +120,16 @@ import AitvarasCore
     @Test func checkedInScenariosParseAndKeepGoldenScreenshotNames() throws {
         let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
         let scenario = try SelfDriveScenario.parse(Data(contentsOf: root.appendingPathComponent("UITests/self-drive/golden-path.json")))
+        let switching = try SelfDriveScenario.parse(Data(contentsOf: root.appendingPathComponent("UITests/self-drive/switching.json")))
+        #expect(switching.steps.filter { $0.action == .press && $0.identifier == "chat.new.$project" }.count == 1)
+        #expect(switching.steps.filter { $0.action == .press && ($0.identifier?.hasPrefix("chat.provider.") ?? false) }
+            .compactMap(\.identifier) == ["chat.provider.codex", "chat.provider.local", "chat.provider.claude"])
+        #expect(switching.steps.contains { $0.action == .waitFor && $0.text == "PELICAN" && $0.within == "chat.transcript" && $0.caseSensitive == true })
         let names = scenario.steps.filter { $0.action == .screenshot }.compactMap(\.name)
         #expect(names == ["01-launch", "02-chat-empty", "03-new-chat", "04-codex-first-selected",
                           "05-codex-first-streaming", "06-codex-first-replied", "07-codex-selected", "08-codex-replied",
                           "09-approval-card", "10-after-approval", "11-running", "12-stopped", "13-local-selected",
-                          "14-composer-controls", "15-settings", "16-settings-providers",
+                          "local-approval", "local-denial", "14-composer-controls", "15-settings", "16-settings-providers",
                           "17-claude-send", "18-claude-replied"])
         let replies = scenario.steps.filter { $0.action == .waitFor && $0.text != nil && $0.absent != true }
         #expect(replies.allSatisfy { $0.within == "chat.transcript" || $0.within == "chat.tool.completed" || $0.within == "chat.error" })

@@ -158,7 +158,7 @@ public actor AgentSessionManager {
         try persistence.requireAgentChatAvailable(chatID: chatID)
         guard let slot = live[chatID], slot.session.provider == provider,
               let run = slot.coordinator, !slot.stopping, !slot.sendingFollowup,
-              provider != .local, slot.followups.count < 32,
+              slot.session.usesThreadContext, slot.followups.count < 32,
               try persistence.agentTurn(id: input.id) == nil else { throw AgentSessionManagerError.chatBusy }
         // Reserve before yielding, and commit this input separately from the
         // output owner. Failed/uncertain follow-ups are never silently resent.
@@ -233,8 +233,14 @@ public actor AgentSessionManager {
               live[chatID]?.sendingFollowup != true, live[chatID]?.stopping != true else {
             throw AgentSessionManagerError.chatBusy
         }
-        guard let session = try persistence.agentSession(chatID: chatID, provider: provider) else {
+        guard var session = try persistence.agentSession(chatID: chatID, provider: provider) else {
             throw AgentSessionManagerError.missingSession
+        }
+        if provider == .local, (try? backend(provider)) is LocalBackend, session.usesThreadContext {
+            // A missing opencode installation must not make text-only inference
+            // skip its own prior replies or pretend it resumed a native thread.
+            session.sessionID = nil
+            try persistence.saveAgentSession(session)
         }
         _ = try state(chatID: chatID)
         let context = try retry ? persistence.agentHandover(turnID: input.id) : persistence.agentContext(session: session)
@@ -250,12 +256,11 @@ public actor AgentSessionManager {
             ? live.filter { !$0.value.isRunning }.min { $0.value.lastUsed < $1.value.lastUsed } : nil
         // Reserve this chat and capacity before any await, including startup.
         let old = live[chatID]
-        let token = provider != .local && old?.session == session ? old!.token : UUID()
+        let token = session.usesThreadContext && old?.session == session ? old!.token : UUID()
         old?.idle?.cancel()
-        // Local consumes the complete completed context on every Send. Start a
-        // fresh run so an experimental thread-backed Local implementation never
-        // receives that same history twice in a retained native thread.
-        let reusable = provider != .local && old?.session == session ? old?.coordinator : nil
+        // Native Local sessions reuse their transport and acknowledged handover
+        // receipts, just like the subscription providers. AgentLoop stays fresh.
+        let reusable = session.usesThreadContext && old?.session == session ? old?.coordinator : nil
         live[chatID] = Live(token: token, session: session, coordinator: reusable, inputID: input.id)
         do {
             if retry { _ = try persistence.claimAgentResend(id: input.id) }
@@ -404,7 +409,7 @@ public actor AgentSessionManager {
                         }
                     }
                 }
-                if slot.session.provider == .claude, !slot.stopping, let next = slot.followups.first {
+                if (slot.session.provider == .claude || slot.session.provider == .local), !slot.stopping, let next = slot.followups.first {
                     live[chatID]?.inputID = next.id
                     states[chatID]?.awaitingQueuedInput()
                 }

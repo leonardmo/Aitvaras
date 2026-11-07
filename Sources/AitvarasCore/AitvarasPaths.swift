@@ -70,6 +70,11 @@ public enum AitvarasPaths {
         stateDirectory.appendingPathComponent("AgentWorktrees", isDirectory: true)
     }
 
+    /// Isolated Local agent state; never the user’s native opencode store.
+    public static var opencodeDirectory: URL {
+        stateDirectory.appendingPathComponent("Opencode", isDirectory: true)
+    }
+
     public static var databaseURL: URL {
         stateDirectory.appendingPathComponent("aitvaras.sqlite")
     }

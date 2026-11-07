@@ -622,3 +622,89 @@ private actor ManagerTestRun: AgentRun {
     }
     func countAcceptance() { acceptances += 1 }
 }
+
+extension AgentSessionManagerTests {
+    @Test func codexLocalClaudeShareOneChatAndLocalResumesWithoutDuplicateContext() async throws {
+        let stores = try inMemoryStores()
+        let (chat, _) = try agentStoreChat(stores, provider: .codex, cwd: "/tmp/project")
+        let subscription = ManagerTestBackend()
+        let wire = OpencodeFakeTransport()
+        let local = localBackend(wire)
+        let manager = try AgentSessionManager(persistence: stores,
+            backend: { provider in
+                if provider == .local { return local }; return subscription
+            }, audit: { _ = try stores.record($0) })
+        let first = AgentInput(text: "Reply with only this word spelled backwards: nacilep")
+        try await manager.send(chatID: chat.id, provider: .codex, input: first)
+        let codex = try #require(await subscription.runs.last)
+        await codex.emit(.sessionStarted(.init(provider: .codex, profile: "default", nativeID: "codex-fixture")), input: first.id)
+        await codex.emit(.delivery(.acknowledged), input: first.id)
+        await codex.emit(.textDelta("pelican"), input: first.id)
+        await codex.emit(.turnEnded(.completed), input: first.id)
+        try await waitManager { try await manager.state(chatID: chat.id).outcome == .completed }
+
+        try await manager.configure(.init(chatID: chat.id, provider: .local, cwd: "/tmp/project", model: "test-model"))
+        let second = AgentInput(text: "Which word did you just reply with? Reply in capitals.")
+        try await manager.send(chatID: chat.id, provider: .local, input: second)
+        let intoLocal = try #require(await wire.calls.last?.body?["text"]?.stringValue)
+        #expect(intoLocal.contains("pelican")); #expect(intoLocal.contains("nacilep"))
+        await wire.emit(localEvent("session.text.delta", ["delta": .string("PELICAN")]))
+        await wire.emit(localEvent("session.execution.succeeded"))
+        try await waitManager { try await manager.state(chatID: chat.id).outcome == .completed }
+        #expect(try stores.agentSession(chatID: chat.id, provider: .local)?.sessionID == localSession)
+
+        try await manager.send(chatID: chat.id, provider: .local, input: .init(text: "Keep this native session"))
+        #expect(await wire.calls.last?.body?["text"] == .string("Keep this native session"))
+        #expect(await wire.calls.filter { $0.path == "api/session" && $0.method == "POST" }.count == 1)
+        await wire.emit(localEvent("session.text.delta", ["delta": .string("Session kept")]))
+        await wire.emit(localEvent("session.execution.succeeded"))
+        try await waitManager { try await manager.state(chatID: chat.id).outcome == .completed }
+
+        try await manager.configure(.init(chatID: chat.id, provider: .claude, cwd: "/tmp/project", model: "test"))
+        let fourth = AgentInput(text: "Continue with the earlier word")
+        try await manager.send(chatID: chat.id, provider: .claude, input: fourth)
+        let claude = try #require(await subscription.runs.last)
+        let intoClaude = try #require(await claude.inputs.last?.text)
+        #expect(intoClaude.contains("pelican")); #expect(intoClaude.contains("PELICAN"))
+        #expect(intoClaude.contains("Session kept")); #expect(intoClaude.contains("nacilep"))
+        #expect(intoClaude.components(separatedBy: "[Aitvaras context handover").count == 2)
+        await claude.emit(.delivery(.acknowledged), input: fourth.id)
+        await claude.emit(.turnEnded(.completed), input: fourth.id)
+        try await waitManager { try await manager.state(chatID: chat.id).outcome == .completed }
+        try await manager.shutdown(); await local.shutdown()
+    }
+}
+
+extension AgentSessionManagerTests {
+    @Test func missingOpencodeFallbackKeepsEarlierLocalRepliesInContext() async throws {
+        let stores = try inMemoryStores()
+        let (chat, original) = try agentStoreChat(stores, provider: .local, cwd: "/tmp/project")
+        let wire = OpencodeFakeTransport()
+        let native = localBackend(wire)
+        let firstManager = try AgentSessionManager(persistence: stores, backend: { _ in native }, audit: { _ in })
+        var selected = original; selected.model = "test-model"
+        try await firstManager.configure(selected)
+        try await firstManager.send(chatID: chat.id, provider: .local, input: .init(text: "Remember the earlier word"))
+        await wire.emit(localEvent("session.text.delta", ["delta": .string("PELICAN")]))
+        await wire.emit(localEvent("session.execution.succeeded"))
+        try await waitManager { try await firstManager.state(chatID: chat.id).outcome == .completed }
+        try await firstManager.shutdown(); await native.shutdown()
+        #expect(try stores.agentSession(chatID: chat.id, provider: .local)?.sessionID == localSession)
+
+        let recorder = LocalFallbackRecorder()
+        let fallback = LocalBackend { _, input in
+            await recorder.record(input.text)
+            return AsyncThrowingStream { $0.yield("Fallback reply"); $0.finish() }
+        }
+        let manager = try AgentSessionManager(persistence: stores, backend: { _ in fallback }, audit: { _ in })
+        try await manager.send(chatID: chat.id, provider: .local, input: .init(text: "Continue locally"))
+        try await waitManager { try await manager.state(chatID: chat.id).outcome == .completed }
+        #expect(await recorder.text?.contains("PELICAN") == true)
+        #expect(try stores.agentSession(chatID: chat.id, provider: .local)?.sessionID == nil)
+        try await manager.shutdown()
+    }
+}
+private actor LocalFallbackRecorder {
+    private(set) var text: String?
+    func record(_ value: String) { text = value }
+}

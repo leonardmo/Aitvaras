@@ -42,6 +42,9 @@ public struct AgentChatSession: Codable, Sendable, Equatable {
         }
         set { host = newValue?.host; profile = newValue?.profile; nativeID = newValue?.nativeID }
     }
+    /// Text-only Local is stateless; opencode keeps a durable native session.
+    public var usesThreadContext: Bool { provider != .local || profile == OpencodeConfiguration.profile }
+
     public var configuration: AgentSessionConfiguration {
         .init(directory: URL(fileURLWithPath: cwd), resume: sessionID, model: model, effort: effort, mode: mode,
               instructions: instructions, additionalDirectories: (try? JSONDecoder().decode([String].self, from: Data(additionalRootsJSON.utf8)))?.map { URL(fileURLWithPath: $0) } ?? [])

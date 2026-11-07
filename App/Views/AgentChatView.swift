@@ -598,7 +598,10 @@ struct AgentProviderSettingsView: View {
                     Image(systemName: statusIcon(provider)).foregroundStyle(statusColor(provider))
                         .accessibilityLabel(statusLabel(provider))
                         .accessibilityIdentifier("chat.settings.status.\(provider.rawValue)")
-                    Text(provider.rawValue.capitalized)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(provider.rawValue.capitalized)
+                        if provider == .local { Text(chat.localProviderDetail).font(.caption).foregroundStyle(.secondary) }
+                    }
                     Spacer()
                     if let value = chat.providerLimits[provider]?.compactMap(\.utilization).filter(\.isFinite).max() {
                         ChatGauge(value: value, title: "Usage", identifier: "chat.settings.gauge.\(provider.rawValue)")

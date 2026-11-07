@@ -66,7 +66,7 @@ import AitvarasStore
         try await manager.shutdown()
     }
 
-    @Test func modelChangeClearsUnsupportedEffortAndLocalHasNoMode() {
+    @Test func modelChangeClearsUnsupportedEffortAndPreservesLocalMode() {
         var session = AgentChatSession(chatID: UUID(), provider: .claude, cwd: "/tmp", model: "old", effort: "high", mode: .plan)
         let plain = AgentModel(id: "plain", name: "Plain")
         #expect(ChatSettings.selecting(model: plain, in: session).effort == nil)
@@ -75,7 +75,7 @@ import AitvarasStore
         session.provider = .local
         let local = ChatSettings.selecting(model: supported, in: session)
         #expect(local.effort == nil)
-        #expect(local.mode == .ask)
+        #expect(local.mode == .plan)
         #expect(ChatSettings.contextFraction(nil) == nil)
         #expect(ChatSettings.contextFraction(.init(scope: .turn, contextTokens: 5, contextLimit: 0)) == nil)
         #expect(ChatSettings.contextFraction(.init(scope: .turn, contextTokens: 25, contextLimit: 100)) == 0.25)

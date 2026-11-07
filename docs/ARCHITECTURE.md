@@ -8,7 +8,7 @@ Package.swift              — AitvarasKit: everything testable without the app
   Sources/
     AitvarasCore/             — domain types, shared reducers, activity and memory contracts
     AitvarasAgents/           — direct CLI backends, per-chat sessions, policy/audit,
-                             native history, git workspaces and Local adapter
+                             native history, git workspaces and sandboxed Local agent
     AitvarasStore/            — GRDB records, migrations, chat journal and projections
     AitvarasAgent/            — AgentLoop, connector dispatch, memory pipelines
     AitvarasEngines/          — InferenceEngine impls: MLX, Ollama, AppleFM  (added in M1)
@@ -106,7 +106,8 @@ Package.swift              — AitvarasKit: everything testable without the app
   entries in one labelled 16,000-byte UTF-8 block, explicitly clipping an
   oversized newest message at a Unicode character boundary. Its exact text is saved
   atomically with the prepared turn. Only acknowledged journal rows contribute
-  to a provider watermark. Local reads bounded completed context on every Send
+  to a provider watermark. Text-only Local reads bounded completed context on every Send; opencode Local
+  retains a native session and acknowledged catch-up receipts
   through a tool-free injected `AgentLoop` adapter.
   Existing workspace project/chat/conversation identities and legacy execution
   tables, triggers and readers remain intact. Legacy text projects into the
@@ -131,13 +132,26 @@ Package.swift              — AitvarasKit: everything testable without the app
   transaction check; normalized provider entries do not enter global learning.
   Nightly consolidation also excludes project git and current/legacy provider
   action audits while retaining them in Activity.
-- **Local project chat** defaults to the tool-free `LocalBackend` AgentLoop
-  adapter. The opt-in `AITVARAS_LOCAL_CHAT_BACKEND=codex-oss` candidate pins
-  app-server to loopback Ollama, requires an explicitly selected installed
-  model, validates provider/model evidence and has no cloud fallback. Each Send
-  uses a fresh ephemeral thread and completed context. The real Ollama gate
-  has not run; tool reliability, locality, memory and voice/capture coexistence
-  remain unproven on that path.
+- **Local project chat (D33)** uses MIT opencode with Ollama, with a text-only
+  `LocalBackend` AgentLoop fallback when opencode is absent. `OpencodeBackend`
+  owns one on-demand server per profile and durable native session IDs.
+  `OpencodeHTTPTransport` consumes the transient startup password without
+  logging or forwarding stdout and uses Basic auth over loopback HTTP/SSE.
+  Generated XDG/config/data/cache/state/home directories live under
+  `AitvarasPaths.opencodeDirectory`; user/project config, credentials and default
+  plugins are not inherited. Sharing and updates are off and only local Ollama
+  is enabled. Model discovery uses loopback `/api/tags` and excludes remote
+  model metadata. No OpenAI CLI or remote-provider fallback is used.
+  `sandbox-exec` restricts the server and descendants to loopback network and
+  writes only in project/worktree/additional roots, isolated opencode data and
+  temp. New roots restart an idle server; a conflicting active run is refused.
+  All permissions pass the action coordinator with provenance before approval:
+  Ask confirms shell/edits, Accept Edits/Auto allow reversible edits, Plan denies
+  shell/edits. Shell remains confirmable and reads are automatically audited.
+  Remote web search/fetch is blocked. Existing catch-up works both ways with
+  Claude/Codex; native opencode history import is not yet advertised. Knowledge
+  exposure through Aitvaras MCP remains a follow-up. Host tests must verify the
+  generated sandbox/config, tool reliability, memory and voice coexistence.
 - **CloudAgentService** is the provider-neutral boundary for the four optional
   non-chat CLI features, separate from direct project Chat. Authentication is checked before each call;
   prompts travel over stdin in a sanitized environment and always begin with

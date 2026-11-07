@@ -19,9 +19,9 @@ public struct ChatContextProjection: Codable, Sendable, Equatable {
 
     public static func make(entries: [AgentTranscriptEntry], provider: AgentProvider,
                             after position: Int = -1, maximumBytes: Int = 16_000,
-                            sessionID: UUID? = nil, replacingHistory: Bool = false) -> Self? {
+                            sessionID: UUID? = nil, replacingHistory: Bool = false, includeOwnSession: Bool? = nil) -> Self? {
         let eligible = entries.filter { entry in
-            entry.position > position && (provider == .local || (sessionID.map { entry.sessionID != $0 } ?? (entry.provider != provider)))
+            entry.position > position && ((includeOwnSession ?? (provider == .local)) || (sessionID.map { entry.sessionID != $0 } ?? (entry.provider != provider)))
                 && ["user", "assistant"].contains(entry.kind) && !entry.text.isEmpty
         }.sorted { $0.position < $1.position }
         guard !eligible.isEmpty || replacingHistory else { return nil }

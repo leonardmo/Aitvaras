@@ -78,6 +78,9 @@ import AitvarasCore
             if let model = env["AITVARAS_SELF_DRIVE_CODEX_MODEL"]?.trimmingCharacters(in: .whitespacesAndNewlines), !model.isEmpty {
                 AppModel.shared.chatModel?.selfDriveCodexModel = model
             }
+            if let model = env["AITVARAS_SELF_DRIVE_LOCAL_MODEL"]?.trimmingCharacters(in: .whitespacesAndNewlines), !model.isEmpty {
+                AppModel.shared.chatModel?.selfDriveLocalModel = model
+            }
             if let folder = env["AITVARAS_SELF_DRIVE_PROJECT"] {
                 var isDirectory: ObjCBool = false
                 guard folder.hasPrefix("/"), FileManager.default.fileExists(atPath: folder, isDirectory: &isDirectory), isDirectory.boolValue,

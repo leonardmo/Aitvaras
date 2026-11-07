@@ -310,7 +310,10 @@
     },
     {
       "action": "waitFor",
-      "anyOf": ["chat.tool.completed", "chat.tool.unconfirmed"],
+      "anyOf": [
+        "chat.tool.completed",
+        "chat.tool.unconfirmed"
+      ],
       "within": "chat.transcript",
       "timeout": 120
     },
@@ -503,6 +506,108 @@
       "action": "screenshot",
       "name": "13-local-selected",
       "delay": 2
+    },
+    {
+      "action": "press",
+      "identifier": "chat.new.$project"
+    },
+    {
+      "action": "press",
+      "identifier": "chat.provider.local"
+    },
+    {
+      "action": "type",
+      "text": "Use your bash shell tool to run exactly: printf example > local-approved.txt. Do not use an edit tool. Wait for approval."
+    },
+    {
+      "action": "press",
+      "identifier": "chat.composer.send"
+    },
+    {
+      "action": "waitFor",
+      "text": "Use your bash shell tool to run exactly: printf example > local-approved.txt. Do not use an edit tool. Wait for approval.",
+      "within": "chat.composer.input",
+      "absent": true,
+      "timeout": 15
+    },
+    {
+      "action": "waitFor",
+      "identifier": "chat.request.0.allow",
+      "timeout": 180
+    },
+    {
+      "action": "screenshot",
+      "name": "local-approval"
+    },
+    {
+      "action": "press",
+      "identifier": "chat.request.0.allow"
+    },
+    {
+      "action": "waitFor",
+      "identifier": "chat.request.0.allow",
+      "timeout": 30,
+      "absent": true
+    },
+    {
+      "action": "waitFor",
+      "identifier": "chat.tool.completed",
+      "within": "chat.transcript",
+      "timeout": 180
+    },
+    {
+      "action": "waitFor",
+      "identifier": "chat.composer.stop",
+      "timeout": 180,
+      "absent": true
+    },
+    {
+      "action": "press",
+      "identifier": "chat.new.$project"
+    },
+    {
+      "action": "press",
+      "identifier": "chat.provider.local"
+    },
+    {
+      "action": "type",
+      "text": "Use your bash shell tool to run exactly: printf example > local-denied.txt. Do not use an edit tool. Wait for approval."
+    },
+    {
+      "action": "press",
+      "identifier": "chat.composer.send"
+    },
+    {
+      "action": "waitFor",
+      "text": "Use your bash shell tool to run exactly: printf example > local-denied.txt. Do not use an edit tool. Wait for approval.",
+      "within": "chat.composer.input",
+      "absent": true,
+      "timeout": 15
+    },
+    {
+      "action": "waitFor",
+      "identifier": "chat.request.0.allow",
+      "timeout": 180
+    },
+    {
+      "action": "screenshot",
+      "name": "local-denial"
+    },
+    {
+      "action": "press",
+      "identifier": "chat.request.0.deny"
+    },
+    {
+      "action": "waitFor",
+      "identifier": "chat.request.0.allow",
+      "timeout": 30,
+      "absent": true
+    },
+    {
+      "action": "waitFor",
+      "identifier": "chat.composer.stop",
+      "timeout": 180,
+      "absent": true
     },
     {
       "action": "screenshot",
