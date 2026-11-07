@@ -5,7 +5,6 @@ public actor CodexBackend: AgentBackend {
     private let executable: URL?
     private let environment: [String: String]
     private let profile: String
-    private let oss: CodexOSSConfiguration?
     private var wire: AgentWire?
     private var transport: AgentWire?
     private var generation = UUID()
@@ -15,22 +14,11 @@ public actor CodexBackend: AgentBackend {
     private var loginInProgress = false
 
     public init(executable: URL? = nil, environment: [String: String] = ProcessInfo.processInfo.environment,
-                profile: String = "default", overrides: [String: String] = [:], oss: CodexOSSConfiguration? = nil) {
-        var childEnvironment = ProviderEnvironment.make(inherited: environment, overrides: overrides)
-        if oss != nil {
-            childEnvironment.removeValue(forKey: "OLLAMA_HOST")
-            childEnvironment.removeValue(forKey: "OLLAMA_BASE_URL")
-            for key in ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"] {
-                childEnvironment.removeValue(forKey: key)
-            }
-            childEnvironment["NO_PROXY"] = "127.0.0.1,localhost,::1"
-            childEnvironment["no_proxy"] = "127.0.0.1,localhost,::1"
-        }
-        self.environment = childEnvironment
+                profile: String = "default", overrides: [String: String] = [:]) {
+        self.environment = ProviderEnvironment.make(inherited: environment, overrides: overrides)
         self.executable = ProviderLocator.executable(for: .codex, environment: self.environment,
             overrides: executable.map { [.codex: $0] } ?? [:])
-        self.profile = oss == nil ? profile : CodexOSSConfiguration.profile
-        self.oss = oss
+        self.profile = profile
     }
     private func connection() async throws -> AgentWire {
         if let wire { return wire }
@@ -39,7 +27,7 @@ public actor CodexBackend: AgentBackend {
         let generation = UUID(); self.generation = generation
         let task = Task { [self] () throws -> AgentWire in
             let wire = AgentWire(process: StreamingProcess(executable: executable,
-                arguments: oss?.arguments ?? ["app-server"],
+                arguments: ["app-server"],
                 currentDirectory: nil, environment: environment), format: .codex)
             self.transport = wire
             do {
@@ -58,14 +46,6 @@ public actor CodexBackend: AgentBackend {
     }
     public func status() async throws -> AgentStatus {
         guard executable != nil else { return AgentStatus(installed: false, authentication: .signedOut, capabilities: []) }
-        if let oss {
-            do {
-                let models = try await oss.models()
-                return AgentStatus(installed: true, authentication: models.isEmpty ? .unavailable : .local,
-                                   capabilities: models.isEmpty ? [] : oss.capabilities)
-            } catch is CancellationError { throw CancellationError() }
-            catch { return AgentStatus(installed: true, authentication: .unavailable, capabilities: []) }
-        }
         let account = try await rpc("account/read", .object(["refreshToken": .bool(false)]))["account"]
         let authentication: AgentStatus.Authentication = account == nil || account == .null ? .signedOut
             : account?["type"]?.stringValue == "chatgpt" ? .subscription : .unsupported
@@ -73,7 +53,6 @@ public actor CodexBackend: AgentBackend {
                            accountID: account?["chatgptAccountId"]?.stringValue ?? account?["id"]?.stringValue)
     }
     public func signIn(onBrowserURL: @escaping @Sendable (URL) async -> Void) async throws {
-        guard oss == nil else { throw AgentFailure.unsupported }
         guard !loginInProgress else { throw AgentFailure.invalidTransition }
         loginInProgress = true; loginResults.removeAll()
         defer { loginInProgress = false; loginResults.removeAll() }
@@ -106,7 +85,6 @@ public actor CodexBackend: AgentBackend {
     }
 
     public func models() async throws -> [AgentModel] {
-        if let oss { return try await oss.models() }
         var models: [AgentModel] = [], cursor: String?
         repeat {
             var params: [String: JSONValue] = [:]
@@ -124,48 +102,29 @@ public actor CodexBackend: AgentBackend {
         return models
     }
     public func rateLimits() async throws -> [AgentRateLimitWindow] {
-        guard oss == nil else { throw AgentFailure.unsupported }
         let result = try await rpc("account/rateLimits/read")
         return codexRateLimits(result)
     }
     public func commands(directory: URL) async throws -> [AgentCommand] {
-        guard oss == nil else { throw AgentFailure.unsupported }
         return try AgentCommandCatalog.codex(await rpc("skills/list", .object([
             "cwds": .array([.string(directory.path)]), "forceReload": .bool(false)])), directory: directory)
     }
     public func files(query: String, directory: URL) async throws -> [AgentFileMention] {
-        guard oss == nil else { throw AgentFailure.unsupported }
         return try AgentFileMention.codex(await rpc("fuzzyFileSearch", .object([
             "query": .string(query), "roots": .array([.string(directory.path)])])), directory: directory)
     }
     public func start(_ configuration: AgentSessionConfiguration) async throws -> any AgentRun {
-        if let oss {
-            guard executable != nil else { throw AgentFailure.notInstalled }
-            guard CodexOSSConfiguration.isLocalModel(configuration.model) else { throw AgentFailure.unsupported }
-            let models: [AgentModel]
-            do { models = try await oss.models() }
-            catch is CancellationError { throw CancellationError() }
-            catch { throw AgentFailure.offline }
-            guard models.contains(where: { $0.id == configuration.model }) else { throw AgentFailure.unsupported }
-            guard configuration.effort == nil else { throw AgentFailure.unsupported }
-            if let resume = configuration.resume, resume.provider != .local { throw AgentFailure.invalidRequest }
-        } else {
-            let authentication = try await status().authentication
-            guard authentication == .subscription else {
-                throw authentication == .signedOut ? AgentFailure.authRequired : AgentFailure.unsupported
-            }
+        let authentication = try await status().authentication
+        guard authentication == .subscription else {
+            throw authentication == .signedOut ? AgentFailure.authRequired : AgentFailure.unsupported
         }
         var parameters: [String: JSONValue] = ["cwd": .string(configuration.directory.path),
             "approvalPolicy": .string(configuration.mode.codexApproval),
             "sandbox": .string(configuration.mode.codexSandbox)]
         if configuration.model != "default" { parameters["model"] = .string(configuration.model) }
-        if oss != nil {
-            parameters["modelProvider"] = .string(CodexOSSConfiguration.provider)
-            parameters["ephemeral"] = .bool(true)
-        }
         if !configuration.instructions.isEmpty { parameters["developerInstructions"] = .string(configuration.instructions) }
         let method: String
-        if let resume = configuration.resume, oss == nil {
+        if let resume = configuration.resume {
             guard resume.provider == .codex, resume.host == "local", resume.profile == profile,
                   runs[resume.nativeID] == nil else { throw AgentFailure.invalidRequest }
             parameters["threadId"] = .string(resume.nativeID); method = "thread/resume"
@@ -174,12 +133,8 @@ public actor CodexBackend: AgentBackend {
         let result = try await connection.request(method, .object(parameters))
         guard wire === connection else { throw AgentFailure.invalidTransition }
         guard let nativeID = result["thread"]?["id"]?.stringValue, runs[nativeID] == nil else { throw AgentFailure.invalidRequest }
-        if oss != nil {
-            guard result["thread"]?["modelProvider"]?.stringValue == CodexOSSConfiguration.provider,
-                  result["modelProvider"]?.stringValue == CodexOSSConfiguration.provider,
-                  result["model"]?.stringValue == configuration.model else { throw AgentFailure.unsupported }
-        } else if let provider = result["thread"]?["modelProvider"]?.stringValue, provider != "openai" { throw AgentFailure.unsupported }
-        let session = AgentSessionID(provider: oss == nil ? .codex : .local, profile: profile, nativeID: nativeID)
+        if let provider = result["thread"]?["modelProvider"]?.stringValue, provider != "openai" { throw AgentFailure.unsupported }
+        let session = AgentSessionID(provider: .codex, profile: profile, nativeID: nativeID)
         let run = CodexRun(backend: self, wire: connection, session: session, configuration: configuration)
         runs[nativeID] = run
         await run.started()
@@ -187,13 +142,9 @@ public actor CodexBackend: AgentBackend {
     }
     func nativeSessionID(_ id: String) -> AgentSessionID { .init(provider: .codex, profile: profile, nativeID: id) }
     func validateNativeSession(_ session: AgentSessionID) throws {
-        guard oss == nil else { throw AgentFailure.unsupported }
         guard session.provider == .codex, session.profile == profile, session.host == "local", !session.nativeID.isEmpty else {
             throw AgentFailure.invalidRequest
         }
-    }
-    func requireNativeHistory() throws {
-        guard oss == nil else { throw AgentFailure.unsupported }
     }
 
     func rpc(_ method: String, _ parameters: JSONValue = .object([:])) async throws -> JSONValue {

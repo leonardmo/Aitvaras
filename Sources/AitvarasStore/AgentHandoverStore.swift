@@ -38,9 +38,9 @@ extension Stores {
                 }
                 return current?.state == .completed && entry.sessionID == current?.sessionID
             }.filter { ["user", "assistant"].contains($0.kind) && !$0.text.isEmpty
-                && (session.provider == .local || $0.sessionID != session.id) }
+                && (!session.usesThreadContext || $0.sessionID != session.id) }
             var receipt: [String: String]?
-            if session.provider != .local {
+            if session.usesThreadContext {
                 // Preparation order breaks timestamp ties deterministically.
                 let record = try AgentHandoverRecord.fetchOne(dbc, sql: """
                     SELECT h.* FROM agentHandover h JOIN agentTurn t ON t.id = h.turnID
@@ -52,10 +52,10 @@ extension Stores {
             let sources = Dictionary(uniqueKeysWithValues: completed.map { ($0.id.uuidString, ChatContextProjection.digest($0)) })
             let changed = receipt?.contains { sources[$0.key] != $0.value } ?? false
             let missed: [AgentTranscriptEntry]
-            if changed || session.provider == .local { missed = completed }
+            if changed || !session.usesThreadContext { missed = completed }
             else if let receipt { missed = completed.filter { receipt[$0.id.uuidString] == nil } }
             else { missed = completed } // Older positional receipts cannot prove legacy coverage.
-            var context = ChatContextProjection.make(entries: missed, provider: session.provider, sessionID: session.id, replacingHistory: changed)
+            var context = ChatContextProjection.make(entries: missed, provider: session.provider, sessionID: session.id, replacingHistory: changed, includeOwnSession: !session.usesThreadContext)
             context?.sources = sources
             return context
         }

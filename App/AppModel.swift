@@ -432,14 +432,7 @@ final class AppModel {
                 ? ["CLAUDE_CONFIG_DIR": AitvarasPaths.stateDirectory.appendingPathComponent("FakeProviders/claude").path] : [:])
         let codex = CodexBackend(executable: AgentProviderLaunchPolicy.executable(.codex,
             environment: inherited, isolated: isolated), environment: environment)
-        let localSelection = inherited["AITVARAS_LOCAL_CHAT_BACKEND"]
-        if localSelection == "codex-oss",
-           !AgentProviderLaunchPolicy.allows(.codex, environment: inherited, isolated: isolated) {
-            throw AgentFailure.offline
-        }
-        let local = try LocalChatBackendFactory.make(selection: localSelection,
-            executable: AgentProviderLaunchPolicy.executable(.codex, environment: inherited, isolated: isolated),
-            environment: environment) { [weak self] configuration, input in
+        let local = LocalChatBackendFactory.make(environment: environment) { [weak self] configuration, input in
             guard let self else { throw AgentFailure.offline }
             return try await self.localAgentReply(agentLoop: agentLoop, configuration: configuration, input: input)
         }

@@ -11,3 +11,12 @@ two recordings that omitted it. For Codex, it handles the added `account/read`
 subscription preflight and checks the app's client metadata shape. Recorder-only
 `ephemeral: true` is omitted for native persistent threads; turn frames include
 the selected approval/sandbox policy so subsequent mode changes take effect.
+
+`opencode/allow-deny-stop.jsonl` preserves event order and payload field shapes
+from the host's opencode 2.2.6 HTTP/SSE recording with a local Ollama model.
+Session/tool/request/message IDs, text, reasoning, commands, usage and outputs
+are replaced with generic values; adjacent identical sanitized deltas are
+coalesced. It contains no host paths, timestamps, native IDs or startup password.
+`OpencodeFakeTransport` releases each segment at Send, permission reply or Stop
+and checks the app’s actual reply/interrupt requests separately. This fixture
+is protocol evidence, not a live-app or sandbox acceptance result.

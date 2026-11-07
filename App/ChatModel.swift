@@ -79,10 +79,14 @@ final class ChatModel {
     var selfDriveCodexModel: String? {
         didSet { settings.removeValue(forKey: ".codex") }
     }
+    var selfDriveLocalModel: String? {
+        didSet { settings.removeValue(forKey: ".local") }
+    }
     #endif
     private var newSessionModel: String {
         #if DEBUG
         if provider == .codex, let selfDriveCodexModel { return selfDriveCodexModel }
+        if provider == .local, let selfDriveLocalModel { return selfDriveLocalModel }
         #endif
         return provider == .local ? "local" : "default"
     }
@@ -236,9 +240,14 @@ final class ChatModel {
     var canSubmit: Bool {
         guard let id = chatID else { return !terminating && !creatingChat && newProjectID != nil && signingIn == nil }
         return !terminating && !gitBusy && !refreshingHistory.contains(id) && !stopping.contains(id) && sending[id] == nil && !submittedText.contains(id) && signingIn == nil
-            && (!isBusy || provider != .local)
+            && (!isBusy || statuses[provider]?.capabilities.contains(.followups) == true)
     }
     private var settingsKey: String { "\(chatID?.uuidString ?? "").\(provider.rawValue)" }
+    var localProviderDetail: String {
+        if backends[.local] is LocalBackend { return "Install opencode for tools. opencode is not installed; Local uses text-only inference." }
+        if statuses[.local]?.authentication == .unavailable { return "Ollama is not running or has no installed local models." }
+        return "opencode · sandboxed on this Mac. Web search is off."
+    }
     var models: [AgentModel] { catalogs[provider] ?? [] }
     var selectedModel: AgentModel? { models.first { $0.id == model } }
     var modelTitle: String {
@@ -355,10 +364,11 @@ final class ChatModel {
     }
     private func restoreModelSelection() {
         guard let session = settings[settingsKey] else { return }
-        var automaticallySelect = !(provider == .local && backends[provider] is CodexBackend)
+        var automaticallySelect = true
         #if DEBUG
         // A cost-limited run must fail rather than fall back to another model.
         if provider == .codex, selfDriveCodexModel == session.model { automaticallySelect = false }
+        if provider == .local, selfDriveLocalModel == session.model { automaticallySelect = false }
         #endif
         let restored = ChatSettings.restoring(session, models: models, automaticallySelect: automaticallySelect)
         if restored != session { saveSettings(restored) }
@@ -491,6 +501,12 @@ final class ChatModel {
                 error = "The self-drive Codex model is unavailable."; return
             }
         }
+        if provider == .local, let selfDriveLocalModel {
+            await loadModels()
+            guard models.contains(where: { $0.id == selfDriveLocalModel }) else {
+                error = "The self-drive Local model is unavailable."; return
+            }
+        }
         #endif
         if chatID == nil {
             guard canSubmit, hasInput, let projectID = newProjectID else { return }
@@ -533,7 +549,7 @@ final class ChatModel {
         restoreModelSelection()
         guard let id = chatID, canSubmit, var session = settings[settingsKey],
               hasInput else { return }
-        if provider == .local, backends[provider] is CodexBackend, selectedModel == nil {
+        if provider == .local, backends[provider] is OpencodeBackend, selectedModel == nil {
             error = "Choose an installed local model."; return
         }
         let text = draft, provider = provider, key = settingsKey
@@ -747,6 +763,7 @@ final class ChatModel {
         try await manager.shutdown()
         sidebarTasks.values.forEach { $0.cancel() }; sidebarTasks.removeAll()
         for case let codex as CodexBackend in backends.values { try await codex.shutdown() }
+        for case let opencode as OpencodeBackend in backends.values { await opencode.shutdown() }
     }
     func resumeAfterCancelledTermination() { terminating = false }
     func approvalContext(_ suggestion: AgentApprovalSuggestion) -> String {

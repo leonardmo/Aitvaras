@@ -81,27 +81,42 @@ Direct Chat uses the official default CLI login/store and never silently routes
 to another provider. Switching sends nothing; Send authorizes bounded catch-up
 under D31. The earlier adapter sharing-consent checks below remain legacy-only.
 
-The M4.1 Local candidate is opt-in with
-`AITVARAS_LOCAL_CHAT_BACKEND=codex-oss`; unset or `agent-loop` retains
-LocalBackend. `CodexOSSConfigurationTests` checks exact app-server arguments,
-loopback/proxy restrictions, explicit installed-model selection, metadata-only
-discovery, unavailable service, missing executable, cloud/remote model refusal,
-provider/model mismatch before prompt delivery, unsupported actions and no
-fallback after turn failure. Codex tool/approval/interrupt recordings are
-replayed with a synthetic Ollama provider/model selection; they are not live
-Ollama recordings. A real Store/manager test verifies fresh ephemeral Local
-threads and completed context on each Send. No test loads a model.
+Local now selects sandboxed opencode when installed (D33), with text-only
+AgentLoop when it is absent. No environment switch or OpenAI CLI is involved.
+`OpencodeBackendTests` replays a sanitized/coalesced opencode 2.2.6 recording
+through a fake transport: text/reasoning, tool success/failure, Allow (`once`),
+Reject (`reject`) and Stop (`interrupt`). Failure checks cover delivery barriers,
+unknown events, malformed/stale permission IDs, unavailable models/service,
+resume and write-root changes. `OpencodeConfigurationTests` verifies local-only
+config/catalogs, exact sandbox write roots, SSE framing and credential isolation.
+The manager test sends Codex→Local→Claude in one chat, checks both catch-ups,
+and verifies a retained Local session does not receive its own transcript again.
+These offline tests do not load model weights or prove runtime tool reliability.
 
-The host M4 gate must build the app, use a fresh isolated profile and a synthetic
-project, enable the candidate switch and select Local with an installed local
-model. If connectors are disabled, `AITVARAS_AGENT_TEST_PROVIDERS=real` is still
-required to permit this explicit provider test. Verify the installed app-server
-accepts the pinned configuration, inspect inference locality, test real tool
-approval and denial, Stop, two Sends and provider switches, and measure total
-model memory against the budget. Stop Ollama and confirm Unavailable and no
-fallback; restart it and refresh status. Review light/dark and minimum-window
-states. The real Ollama gate has not run. Default adoption and validation of
-resource coordination with voice/capture remain open host decisions.
+Host gate: build the App, use an isolated profile and a synthetic project, and
+run `UITests/self-drive/switching.json` with
+`AITVARAS_SELF_DRIVE_LOCAL_MODEL` set to an installed Ollama model. The override
+is DEBUG-only, like `AITVARAS_SELF_DRIVE_CODEX_MODEL`, and never a preference.
+Set `AITVARAS_AGENT_TEST_PROVIDERS=real` when integrations are disabled. In one
+chat Codex answers the backwards-word prompt, Local receives it and answers in
+capitals, Local requests shell approval and completes its tool row, then signed-out
+Claude shows its sign-in row. `golden-path.json` additionally checks Local Allow
+and Deny. Use a clean synthetic project without the generated filenames.
+
+Verify the generated sandbox blocks outbound remote traffic and writes outside
+project/worktree/additional roots, isolated opencode directories and temp; permits
+local Ollama; and continues after the blocked model-catalog fetch at startup.
+Check the exact isolated XDG/config with the installed opencode version, including
+that no credentials/plugins/project config are inherited and no password reaches
+process diagnostics, logs, the DB or Activity. No Unix-socket network exception
+is granted. Web search is off; remote web fetch is blocked even after approval.
+Test Ask, Auto/Accept Edits and Plan, queued follow-ups, Stop, app restart/resume,
+and idle-root restart versus a conflicting active chat. Missing opencode must show
+“Install opencode for tools” with a text-only fallback and no installer button.
+Stop Ollama and confirm a plain unavailable reason with no provider fallback.
+Measure memory against the model budget, test coexistence with voice/capture,
+and review light/dark and minimum-window states. Exposing Aitvaras knowledge
+through a policy-gated MCP server remains an open follow-up.
 
 ## Legacy Claude subscription adapter checkpoint
 
@@ -711,7 +726,7 @@ Stop one or wait.” inline on another Send, with no failed sidebar status.
 
 Settings → Providers has one row per provider: status icon, known usage gauge
 and Sign in (Local needs no login). Model choices come from the backend; effort
-is hidden for models without it, and Local omits effort and mode. Unknown gauges
+is hidden for models without it, and Local omits effort; sandboxed opencode exposes permission modes. Unknown gauges
 are absent. In a signed-out temporary profile, Send must show one inline sign-in
 action. Verify the browser URL, Cancel, a five-minute timeout and successful
 completion followed by one automatic send. The maintainer must complete the

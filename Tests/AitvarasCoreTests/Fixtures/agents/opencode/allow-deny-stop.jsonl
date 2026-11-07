@@ -1,0 +1,36 @@
+{"type":"session.inbox.enqueued","data":{"sessionID":"ses_fixture","inboxID":"fixture_1"}}
+{"type":"session.execution.started","data":{"sessionID":"ses_fixture"}}
+{"type":"session.inbox.delivered","data":{"sessionID":"ses_fixture","inboxID":"fixture_1"}}
+{"type":"session.reasoning.delta","data":{"sessionID":"ses_fixture","assistantMessageID":"fixture_2","delta":"Local reply."}}
+{"type":"session.tool.input.started","data":{"sessionID":"ses_fixture","id":"fixture_3","assistantMessageID":"fixture_2","name":"bash"}}
+{"type":"session.reasoning.ended","data":{"sessionID":"ses_fixture","assistantMessageID":"fixture_2","text":"Local reasoning."}}
+{"type":"session.tool.input.ended","data":{"sessionID":"ses_fixture","id":"fixture_3","assistantMessageID":"fixture_2","text":"{\"command\":\"printf example > local-made.txt\"}"}}
+{"type":"session.tool.called","data":{"sessionID":"ses_fixture","id":"fixture_3","assistantMessageID":"fixture_2","input":{"command":"printf example > local-made.txt"},"executed":false}}
+{"type":"permission.asked","data":{"sessionID":"ses_fixture","id":"fixture_4","action":"bash","resources":["printf example > local-made.txt"],"save":[],"source":{"type":"tool","messageID":"fixture_2","id":"fixture_3"}}}
+{"type":"permission.replied","data":{"sessionID":"ses_fixture","requestID":"fixture_4","reply":"once"}}
+{"type":"session.tool.success","data":{"sessionID":"ses_fixture","id":"fixture_3","assistantMessageID":"fixture_2","content":[{"type":"text","text":"Created example file."}],"executed":true}}
+{"type":"session.usage.updated","data":{"sessionID":"ses_fixture","tokens":{"input":20,"output":10,"reasoning":2,"cache":{"read":0,"write":0}},"cost":0}}
+{"type":"session.reasoning.delta","data":{"sessionID":"ses_fixture","assistantMessageID":"fixture_5","delta":"Local reply."}}
+{"type":"session.reasoning.ended","data":{"sessionID":"ses_fixture","assistantMessageID":"fixture_5","text":"Local reasoning."}}
+{"type":"session.text.delta","data":{"sessionID":"ses_fixture","assistantMessageID":"fixture_5","delta":"Local reply."}}
+{"type":"session.usage.updated","data":{"sessionID":"ses_fixture","tokens":{"input":20,"output":10,"reasoning":2,"cache":{"read":0,"write":0}},"cost":0}}
+{"type":"session.execution.succeeded","data":{"sessionID":"ses_fixture"}}
+{"type":"session.inbox.enqueued","data":{"sessionID":"ses_fixture","inboxID":"fixture_6"}}
+{"type":"session.execution.started","data":{"sessionID":"ses_fixture"}}
+{"type":"session.inbox.delivered","data":{"sessionID":"ses_fixture","inboxID":"fixture_6"}}
+{"type":"session.reasoning.delta","data":{"sessionID":"ses_fixture","assistantMessageID":"fixture_7","delta":"Local reply."}}
+{"type":"session.tool.input.started","data":{"sessionID":"ses_fixture","id":"fixture_8","assistantMessageID":"fixture_7","name":"bash"}}
+{"type":"session.reasoning.ended","data":{"sessionID":"ses_fixture","assistantMessageID":"fixture_7","text":"Local reasoning."}}
+{"type":"session.tool.input.ended","data":{"sessionID":"ses_fixture","id":"fixture_8","assistantMessageID":"fixture_7","text":"{\"command\":\"printf example > local-made.txt\"}"}}
+{"type":"session.tool.called","data":{"sessionID":"ses_fixture","id":"fixture_8","assistantMessageID":"fixture_7","input":{"command":"printf example > local-made.txt"},"executed":false}}
+{"type":"permission.asked","data":{"sessionID":"ses_fixture","id":"fixture_9","action":"bash","resources":["printf example > local-made.txt"],"save":[],"source":{"type":"tool","messageID":"fixture_7","id":"fixture_8"}}}
+{"type":"permission.replied","data":{"sessionID":"ses_fixture","requestID":"fixture_9","reply":"reject"}}
+{"type":"session.tool.failed","data":{"sessionID":"ses_fixture","id":"fixture_8","assistantMessageID":"fixture_7","error":{"type":"PermissionRejected","message":"Permission rejected."},"executed":false}}
+{"type":"session.usage.updated","data":{"sessionID":"ses_fixture","tokens":{"input":20,"output":10,"reasoning":2,"cache":{"read":0,"write":0}},"cost":0}}
+{"type":"session.execution.interrupted","data":{"sessionID":"ses_fixture"}}
+{"type":"session.inbox.enqueued","data":{"sessionID":"ses_fixture","inboxID":"fixture_10"}}
+{"type":"session.execution.started","data":{"sessionID":"ses_fixture"}}
+{"type":"session.inbox.delivered","data":{"sessionID":"ses_fixture","inboxID":"fixture_10"}}
+{"type":"session.reasoning.delta","data":{"sessionID":"ses_fixture","assistantMessageID":"fixture_11","delta":"Local reply."}}
+{"type":"session.reasoning.ended","data":{"sessionID":"ses_fixture","assistantMessageID":"fixture_11","text":"Local reasoning."}}
+{"type":"session.execution.interrupted","data":{"sessionID":"ses_fixture"}}

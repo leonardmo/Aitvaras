@@ -401,15 +401,9 @@ audit. Discard clears reviewed changes only inside the selected owned worktree;
 it never force-removes a worktree or branch. Ordinary checkouts allow explicit
 Commit, with the user's message and native git hooks, without added attribution.
 
-Local chat continues to use the AgentLoop adapter by default. The explicit
-`AITVARAS_LOCAL_CHAT_BACKEND=codex-oss` switch enables an M4 candidate using
-`codex app-server` pinned to Ollama on loopback, with no subscription or cloud
-fallback. It discovers installed model metadata without loading weights and
-fails closed for missing service, implicit/cloud models or mismatched provider
-evidence. Local remains stateless: each Send starts a fresh ephemeral thread
-with completed chat context. The candidate advertises only its implemented
-capabilities; the host gate decides tool reliability, locality and memory
-before any default changes.
+Local chat now follows D33: sandboxed opencode with Ollama, with the tool-free
+AgentLoop adapter used only when opencode is not installed. The former
+Codex-on-Ollama candidate and its environment switch have been removed.
 
 ## D32 — Chat opens the unified composer; every new chat has a project ✅ (2026-11-06)
 
@@ -471,3 +465,56 @@ On Chat, the activity dock appears only while automatic work is actually running
 manual chat/provider failures remain inline and do not add dock attention. Other
 tabs retain their activity presentation. The dock reserves real layout height so
 native split views cannot draw the composer or error actions underneath it.
+
+## D33 — Local uses sandboxed opencode and Ollama ✅ (2026-11-07)
+
+Owner decision: Local must use an open source agent harness and keep file
+processing on this Mac. opencode (MIT) supplies tools, editing, context and
+permissions; building and maintaining another agent harness was rejected.
+Local no longer launches Codex or any OpenAI CLI. There is no cloud-provider,
+API-key or subscription fallback when Local is selected.
+
+Aitvaras launches one on-demand `opencode serve` process per profile through
+`StreamingProcess`, under a generated macOS `sandbox-exec` policy. Network is
+restricted to loopback, including descendants. Writes are limited to the chat's
+project folders (including its worktree and additional roots), isolated
+opencode XDG/home directories under `AitvarasPaths`, and the temp directory.
+The normal opencode home/config/plugins are not inherited; project config and
+external skills are disabled. Config admits only Ollama at loopback, disables
+sharing and auto-update, and starts with all tool permissions asking. The
+startup HTTP password is transient memory used only for Basic authentication;
+it never becomes a transcript event, diagnostic, DB value or activity field.
+
+A live server cannot acquire additional write roots. A different folder set
+restarts it only when its sessions are idle; conflicting active requests fail
+inline. Idle sessions resume from the same isolated data store. This keeps one
+server per profile without widening authority across simultaneous chats.
+
+Ask requires approval for shell and edits. Accept Edits and Auto permit typed
+reversible edits through the audited coordinator; shell remains confirmable in
+all modes. Read permissions pass policy and are audited automatically. Plan
+denies shell and edits (a shell command cannot be proved read-only from text).
+Web search is off; web fetch has an Ask permission but remote network requests
+are blocked by the sandbox. Local currently has no native plan/question cards,
+attachments, slash commands, file completion or effort control.
+
+Installed models are discovered from Ollama's loopback `/api/tags`, without
+loading/pulling weights. Remote/cloud model metadata is excluded. Missing
+Ollama or no eligible model reports unavailable. Missing opencode selects the
+existing text-only AgentLoop, and Providers says “Install opencode for tools”
+with the reason; there is no installer/download action. Errors after opencode
+selection fail visibly instead of selecting a different backend.
+
+opencode sessions persist native IDs and participate in the same acknowledged,
+revision-aware 16,000-byte catch-up as Claude and Codex, into and out of Local.
+This amends D30/D31's stateless Local rule only for opencode; text-only Local
+still reads completed context each turn. Changing providers sends nothing;
+Send authorizes that chat's catch-up. Native opencode history reconciliation is
+not advertised; the Aitvaras transcript remains authoritative.
+
+Host recordings from opencode 2.2.6 establish the HTTP/SSE protocol, Allow,
+Reject and Stop with a local model under a sandbox. They do not establish
+unified-app acceptance, the exact generated isolation config, model reliability
+or memory/voice coexistence. Host self-drive and manual sandbox-denial checks
+remain required. Exposing Aitvaras knowledge through a policy-gated MCP server
+is an open follow-up; it is not available to opencode in this batch.

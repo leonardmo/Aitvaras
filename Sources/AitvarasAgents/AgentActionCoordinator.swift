@@ -217,6 +217,12 @@ public actor AgentActionCoordinator: AgentRun {
         case .permission(let tool):
             if forbidden(tool) {
                 try await finish(request, response: .deny, decision: "forbidden")
+            } else if request.scope.session?.profile == OpencodeConfiguration.profile,
+                      request.scope.session?.provider == .local,
+                      risk(tool) == .read || ((mode == .acceptEdits || mode == .auto) && risk(tool) == .reversibleWrite) {
+                // Native Local permissions always ask, so policy and durable
+                // provenance are applied even when the app mode permits edits.
+                try await finish(request, response: .allow(updatedInput: nil), decision: "allowed by local mode")
             } else if policy.whitelist.contains("provider.\(tool.name)") {
                 try await finish(request, response: .allow(updatedInput: nil), decision: "allowed by whitelist")
             } else {

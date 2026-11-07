@@ -4,8 +4,7 @@ public enum ProviderLocator {
     public static func executable(for provider: AgentProvider, environment: [String: String],
                                   overrides: [AgentProvider: URL] = [:]) -> URL? {
         if let explicit = overrides[provider] { return executableFile(explicit) ? explicit : nil }
-        guard provider != .local else { return nil }
-        let name = provider.rawValue
+        let name = provider == .local ? "opencode" : provider.rawValue
         var directories = (environment["PATH"] ?? "").split(separator: ":").map(String.init)
         if let home = environment["HOME"], home.hasPrefix("/") {
             directories += [home + "/.local/bin", home + "/.claude/local"]

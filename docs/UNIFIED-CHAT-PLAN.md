@@ -2,7 +2,7 @@
 
 Goal: Aitvaras's Chat tab works like the Claude Code and Codex apps, with one
 click to switch between Claude, Codex and local models, and sign-in that is at
-most one click. Product intent comes from `docs/NEXT-WORKSPACE-PLAN.md`, D30, D32 and
+most one click. Product intent comes from `docs/NEXT-WORKSPACE-PLAN.md`, D30, D32, D33 and
 the maintainer's UI feedback. This document replaces the *technical* approach of
 `docs/CLAUDE-INTEGRATION.md` and `docs/CODEX-BIDIRECTIONAL-INTEGRATION.md`.
 
@@ -24,9 +24,11 @@ Implementation is not acceptance. These gates remain open:
   recordings and the signed-out sign-in row do not prove a Claude reply, live
   catch-up or completed browser sign-in. Earlier direct-CLI recordings below
   are protocol evidence, not unified-UI acceptance.
-- **Local:** the real Ollama gate has not run. AgentLoop remains the default;
-  the opt-in app-server/Ollama candidate still needs locality, tool reliability,
-  memory and voice/capture coexistence checks before adoption.
+- **Local:** D33 selects sandboxed opencode (MIT) with local Ollama. The host
+  recorded opencode 2.2.6 Allow/Reject/Stop and SSE under a sandbox. The generated
+  app configuration, unified switching/approval scenarios, model reliability,
+  memory and voice/capture coexistence still need host verification. Missing
+  opencode retains text-only AgentLoop with a visible installation hint.
 - **Native interaction:** native menus, file panels, drag and drop and real
   focus are covered only by XCUITest, which needs the owner's password. That
   gate has not passed. Self-drive cannot substitute for it.
@@ -73,7 +75,7 @@ The `AitvarasAgents` SwiftPM target (actors, Swift 6 strict, no Node):
 ```
 AgentChatView ─ ChatModel (@MainActor) ─ AgentSessionManager ─┬ ClaudeBackend  claude -p stream-json + control protocol
                      │                                   ├ CodexBackend   codex app-server, stdio JSON-RPC
-                     │                                   └ LocalBackend   AgentLoop; opt-in Codex/Ollama candidate
+                     │                                   └ OpencodeBackend sandboxed opencode/Ollama; AgentLoop fallback
                      └ transcript store, autonomy policy, activity log
 ```
 
@@ -131,26 +133,35 @@ user becomes an inline card, a `Suggestion` and activity-log entries with
 provenance (`read`, `reversibleWrite`, `confirmable`). Keeps D20, the Keychain
 rule and no API-key fallback.
 
-**Local models.** LocalBackend (the existing AgentLoop adapter) remains the
-default until the host M4 gate passes. `AITVARAS_LOCAL_CHAT_BACKEND=codex-oss`
-explicitly selects the candidate for Local; unset or `agent-loop` keeps the
-default. Unknown values fail startup. It launches `codex app-server` with
-`-c model_provider='"ollama"'`, `-c local_provider='"ollama"'`,
-`-c model_providers.ollama.base_url='"http://127.0.0.1:11434/v1"'` and
-`-c model_providers.ollama.requires_openai_auth=false`. These config overrides
-are the app-server equivalent of the interactive CLI's OSS selection.
+**Local models (D33).** Local uses `OpencodeBackend`, an MIT opencode harness
+behind Aitvaras's `AgentActionCoordinator`, with Ollama inference on loopback.
+There is no Codex-on-Ollama switch or OpenAI CLI on this path. If opencode is
+missing, `LocalBackend` keeps text-only AgentLoop working; Providers displays
+“Install opencode for tools” and the reason, with no download/install button.
+Missing Ollama/no eligible models reports unavailable; runtime failures never
+fall back silently.
 
-Status/model discovery reads only Ollama's local `/api/tags`; it never loads or
-pulls a model. Missing service or no eligible models reports unavailable.
-The model menu requires an explicit choice. Send requires an installed,
-explicitly named model, excludes cloud/remote models, and validates the server's
-model/provider before releasing input. There
-is no subscription login, implicit default model or cloud fallback on this path.
-The candidate uses ephemeral threads with Local's completed context on every
-Send; native history/resume, follow-ups, attachments, commands, file completion
-and reasoning-effort selection remain unsupported. Tools, approvals, thinking,
-plans and questions reuse the Codex protocol and action coordinator. The host
-gate must still establish actual tool reliability, locality and memory use.
+One server per profile starts on demand with a free loopback port, an in-memory
+Basic-auth password and isolated XDG/home directories under `AitvarasPaths`
+(respecting `AITVARAS_STATE_DIR`). Generated config disables sharing and
+updates, enables only loopback Ollama, disables project config/external skills
+and default plugins, and asks for tool permissions. The sandbox denies network
+except loopback and writes except project/worktree/additional folders, opencode
+data directories and temp. A different root set restarts an idle server; an
+active conflicting session is refused rather than gaining more roots.
+
+Ask prompts for shell and edits. Accept Edits/Auto allow reversible edits only
+through the audited policy boundary; shell stays confirmable. Plan denies shell
+and edits. Reads pass the coordinator and audit automatically. Web search is
+off because remote network is blocked. Local advertises thinking, tools,
+approvals and queued follow-ups; attachments, native plan/question cards,
+effort, slash commands, completion and native history import are not advertised.
+
+Model discovery reads only local Ollama `/api/tags` and excludes remote/cloud
+models without loading or pulling weights. Native opencode session IDs persist;
+acknowledged bounded catch-up and revision receipts work like Claude and Codex,
+including switching both into and out of Local. Text-only fallback stays
+stateless. An Aitvaras knowledge MCP bridge is an open follow-up.
 
 ## 4. UI rules (acceptance criteria)
 
@@ -251,7 +262,7 @@ Composer inputs (M3.7/M3.8): drag, paste or the paperclip adds removable file
 chips. Selection snapshots the bytes; subsequent source edits do not change a
 Send or a safe sign-in retry. Up to eight files share a 512 KiB budget to fit
 the bounded CLI frame. Both providers accept UTF-8 text and PNG/JPEG/GIF/WebP;
-Claude also accepts PDF. Local's current text-only adapter disables attachments.
+Claude also accepts PDF. Local (opencode and text-only fallback) currently disables attachments.
 Attachment bytes never enter a provider-switch handover. Unsent selections are
 scoped to the chat and provider.
 
@@ -313,7 +324,7 @@ unproven checks are listed at the top; M6.3 remains deferred for owner review.
 | **M1** | `ProviderEnvironment`, Claude and Codex backends, conformance suite, recordings, CLI schema check. No UI. | Live conformance passes for both from a launchd-style environment. |
 | **M2** | New Chat screen, vertical slice: sidebar, transcript, composer, provider switch, inline sign-in, gauges. | Golden path steps 1–5 on real CLIs; visual review. **Maintainer's one checkpoint: try it before the rest is built on it.** |
 | **M3** | All of section 5. | E2E for each action, both providers. |
-| **M4** | Local gate decided, `LocalBackend`. | Conformance plus golden path on a local model, within the memory budget. |
+| **M4** | D33: sandboxed `OpencodeBackend`, text-only fallback. | Recorded HTTP/SSE replay plus host switching, approvals/denials, sandbox and memory gates. |
 | **M5** | Native sessions in project lists, continue both ways, provider-switch catch-up, transcript migration. | Chat started here continues in the native CLI and back; DB-copy migration. |
 | **M6** | Remove old adapters, Node helpers, link and consent views, SDK download, old models. Update D14, D30, new D31, `TESTING.md`, `ARCHITECTURE.md`; mark the old integration docs as superseded. | Full golden path, full test suite, one PR. |
 
@@ -451,7 +462,7 @@ current UI; that path remains blocked by expired CLI login.
    unbounded buffers, the parser keeps only the first content block, unknown control
    requests get a false success, the git layer force-removes.
 6. M2's gate needed M4 and M5 parts, so minimal catch-up and today's Local path move
-   into M2. Note today's Local mode is text-only in project chats.
+   into M2. That initial text-only Local stage is superseded by D33's sandboxed opencode.
 7. Environment-only checks can't exclude configured credential helpers or endpoints.
    Check `apiKeySource: none` and first-party status at session start and refuse
    otherwise. Same for Codex's account type.

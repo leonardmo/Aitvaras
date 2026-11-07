@@ -15,7 +15,7 @@ public enum ChatSettings {
         var result = session
         result.model = model.id
         if !model.efforts.contains(result.effort ?? "") { result.effort = nil }
-        if session.provider == .local { result.effort = nil; result.mode = .ask }
+        if session.provider == .local { result.effort = nil }
         return result
     }
 
