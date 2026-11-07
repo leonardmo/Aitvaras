@@ -766,10 +766,16 @@ final class ChatModel {
         previewTask?.cancel()
         cancelSignIn(); stoppedSends.formUnion(sending.values)
         modelLoads.values.forEach { $0.task.cancel() }; modelLoads.removeAll()
-        try await manager.shutdown()
+        // Local cleanup must run even when journaling fails, and before a
+        // different backend's shutdown can throw. Await the process-group kill.
+        do { try await manager.shutdown() }
+        catch {
+            for case let opencode as OpencodeBackend in backends.values { await opencode.shutdown() }
+            throw error
+        }
         sidebarTasks.values.forEach { $0.cancel() }; sidebarTasks.removeAll()
-        for case let codex as CodexBackend in backends.values { try await codex.shutdown() }
         for case let opencode as OpencodeBackend in backends.values { await opencode.shutdown() }
+        for case let codex as CodexBackend in backends.values { try await codex.shutdown() }
     }
     func resumeAfterCancelledTermination() { terminating = false }
     func approvalContext(_ suggestion: AgentApprovalSuggestion) -> String {

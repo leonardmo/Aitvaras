@@ -146,9 +146,14 @@ import AitvarasCore
         #expect(switching.steps.filter { $0.action == .press && ($0.identifier?.hasPrefix("chat.provider.") ?? false) }
             .compactMap(\.identifier) == ["chat.provider.codex", "chat.provider.local", "chat.provider.claude"])
         #expect(switching.steps.contains { $0.action == .waitFor && $0.text == "PELICAN" && $0.within == "chat.transcript" && $0.caseSensitive == true })
-        #expect(switching.steps.contains { $0.action == .press && $0.anyOf == ["chat.request.0.allow", "chat.request.0.submit"] })
-        #expect(switching.steps.contains { $0.action == .type && $0.text?.contains("Use your question tool now") == true })
-        #expect(switching.steps.contains { $0.action == .waitFor && $0.identifier == "chat.question.0.0.option.0" })
+        #expect(switching.steps.contains { $0.action == .press && $0.identifier == "chat.request.0.allow" })
+        #expect(switching.steps.contains { $0.action == .type && $0.text?.contains("Ask me in plain text") == true })
+        #expect(switching.steps.contains { $0.action == .type && $0.text == "Blue" })
+        #expect(!switching.steps.contains { $0.identifier?.hasPrefix("chat.question.") == true || $0.identifier == "chat.request.0.submit" })
+        let firstType = try #require(scenario.steps.firstIndex { $0.action == .type })
+        let firstProvider = try #require(scenario.steps[..<firstType].lastIndex { $0.action == .press && $0.identifier == "chat.provider.codex" })
+        #expect(scenario.steps[firstProvider - 1].identifier == "chat.provider.codex")
+        #expect(scenario.steps[firstProvider - 1].enabled == true)
         #expect(switching.steps.contains { $0.action == .screenshot && $0.name == "local-question" })
         let names = scenario.steps.filter { $0.action == .screenshot }.compactMap(\.name)
         #expect(names == ["01-launch", "02-chat-empty", "03-new-chat", "04-codex-first-selected",

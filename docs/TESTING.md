@@ -86,14 +86,21 @@ AgentLoop when it is absent. No environment switch or OpenAI CLI is involved.
 `OpencodeBackendTests` replays a sanitized/coalesced opencode 2.2.6 recording
 through a fake transport: text/reasoning, tool success/failure, Allow (`once`),
 Reject (`reject`) and Stop (`interrupt`). Failure checks cover delivery barriers,
-unknown events, malformed/stale permission IDs, unavailable models/service,
-resume and write-root changes. `OpencodeConfigurationTests` verifies local-only
+informational/unknown non-blocking events, malformed/stale permission IDs,
+unavailable models/service, resume and write-root changes. `OpencodeConfigurationTests` verifies local-only
 config/catalogs, exact sandbox write roots, SSE framing and credential isolation.
 Form tests cover nested `form.created` routing, audited question permissions,
 option-label/value mapping, text and multiple answers, cancellation and failed
-replies. Unsupported controls are cancelled through DELETE; unknown requests
-interrupt through HTTP and release the turn and queued follow-ups even without
-a terminal SSE event. Neither path forwards unknown payloads to the transcript.
+replies. The question tool is denied globally and in every session mode; the form
+adapter remains defensive support. Unsupported blocking controls are cancelled
+through DELETE or interrupted through HTTP and release queued follow-ups even
+without terminal SSE. Informational and unknown non-blocking events are ignored;
+none of their payloads reaches the transcript. The replay uses the host's
+`.build/agent-recordings/opencode/session-allow-deny-stop.jsonl` when present,
+sanitizing it in memory; CI uses the matching public projection. It requires a
+completed first turn with text, no “Not supported” text, and recorded Allow/Deny.
+Process tests cover an isolated wrapper group, a TERM-ignoring child, two-second
+KILL escalation, stale PID identity/group checks, PID reuse and unrelated processes.
 The manager test sends Codex→Local→Claude in one chat, checks both catch-ups,
 and verifies a retained Local session does not receive its own transcript again.
 These offline tests do not load model weights or prove runtime tool reliability.
@@ -104,11 +111,11 @@ run `UITests/self-drive/switching.json` with
 is DEBUG-only, like `AITVARAS_SELF_DRIVE_CODEX_MODEL`, and never a preference.
 Set `AITVARAS_AGENT_TEST_PROVIDERS=real` when integrations are disabled. In one
 chat Codex answers the backwards-word prompt, Local receives it and answers in
-capitals, Local requests shell approval or asks through a question card and
-completes its tool row. A separate explicit question-tool prompt must show a
-question card, accept an option and finish before signed-out Claude shows its
-sign-in row. `golden-path.json` additionally checks Local Allow
-and Deny. Use a clean synthetic project without the generated filenames.
+capitals, Local requests shell approval and completes its tool row. Local then
+asks a plain-text color question, accepts a typed reply and finishes before
+signed-out Claude shows its sign-in row. The first golden chat explicitly waits
+for and presses the Codex provider control, regardless of the saved provider.
+`golden-path.json` additionally checks Local Allow and Deny. Use a clean synthetic project without the generated filenames.
 
 Verify the generated sandbox blocks outbound remote traffic and writes outside
 project/worktree/additional roots, isolated opencode directories and temp; permits
@@ -118,8 +125,11 @@ that no credentials/plugins/project config are inherited and no password reaches
 process diagnostics, logs, the DB or Activity. No Unix-socket network exception
 is granted. Web search is off; remote web fetch is blocked even after approval.
 Test Ask, Auto/Accept Edits and Plan, queued follow-ups, Stop, app restart/resume,
-and idle-root restart versus a conflicting active chat. Missing opencode must show
-“Install opencode for tools” with a text-only fallback and no installer button.
+and idle-root restart versus a conflicting active chat. Quit through the app's
+normal termination path and verify that no opencode server or sandbox wrapper
+survives, including when the server ignores TERM. Restart with a stale PID file
+and verify only a still-matching opencode serve group is terminated. Missing
+opencode must show “Install opencode for tools” with a text-only fallback and no installer button.
 Stop Ollama and confirm a plain unavailable reason with no provider fallback.
 Measure memory against the model budget, test coexistence with voice/capture,
 and review light/dark and minimum-window states. Exposing Aitvaras knowledge

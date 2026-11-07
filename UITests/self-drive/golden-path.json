@@ -41,6 +41,12 @@
       "timeout": 10
     },
     {
+      "action": "waitFor",
+      "identifier": "chat.provider.codex",
+      "enabled": true,
+      "timeout": 180
+    },
+    {
       "action": "press",
       "identifier": "chat.provider.codex"
     },

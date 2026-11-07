@@ -244,6 +244,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             do {
                 // Journal interruption and detach chat generations before
                 // waiting for unrelated installers or legacy operations.
+                // This also awaits Local's TERM/KILL of its entire server group.
                 try await AppModel.shared.shutdownAgentChats()
                 await AppModel.shared.nativeWorkspace.operations.stopBeforeTermination()
                 await AppModel.shared.shutdownMonitoring()

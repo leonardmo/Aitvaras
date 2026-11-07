@@ -22,6 +22,8 @@ actor OpencodeHTTPTransport: OpencodeTransport {
     private var password: String?
     private var baseURL: URL?
     private var session: URLSession?
+    private var closeTask: Task<Void, Never>?
+    private var recoveryTask: Task<Void, Error>?
 
     init(executable: URL, environment: [String: String], configuration: OpencodeConfiguration) {
         self.executable = executable; self.environment = environment; self.configuration = configuration
@@ -34,11 +36,17 @@ actor OpencodeHTTPTransport: OpencodeTransport {
         baseURL = URL(string: "http://127.0.0.1:\(port)")!
     }
     func open(projects: [URL], models: [AgentModel]) async throws {
-        guard process == nil else { throw AgentFailure.invalidTransition }
+        guard process == nil, closeTask == nil else { throw AgentFailure.invalidTransition }
+        let generation = UUID(); self.generation = generation
         let fm = FileManager.default
         for directory in configuration.dataDirectories + [configuration.temporaryDirectory] {
             try fm.createDirectory(at: directory, withIntermediateDirectories: true)
         }
+        let recovery = Task { [file = configuration.serverPIDFile] in try await OpencodeServerPID.recover(file: file) }
+        recoveryTask = recovery
+        do { try await recovery.value; recoveryTask = nil }
+        catch { recoveryTask = nil; throw error }
+        guard generation == self.generation else { throw AgentFailure.offline }
         let configURL = configuration.dataDirectories[0].appendingPathComponent("opencode/opencode.json")
         try fm.createDirectory(at: configURL.deletingLastPathComponent(), withIntermediateDirectories: true)
         try Data(configuration.config(models: models).jsonString.utf8).write(to: configURL, options: .atomic)
@@ -48,11 +56,12 @@ actor OpencodeHTTPTransport: OpencodeTransport {
         baseURL = URL(string: "http://127.0.0.1:\(port)")!
         let child = StreamingProcess(executable: URL(fileURLWithPath: "/usr/bin/sandbox-exec"),
             arguments: ["-f", sandboxURL.path, executable.path, "serve", "--hostname", "127.0.0.1", "--port", String(port)],
-            currentDirectory: projects.first, environment: configuration.environment(environment))
+            currentDirectory: projects.first, environment: configuration.environment(environment),
+            terminationDelay: .seconds(2))
         process = child
-        let generation = UUID(); self.generation = generation
         do {
             try child.start()
+            try Data(String(child.processIdentifier).utf8).write(to: configuration.serverPIDFile, options: .atomic)
             outputReader = Task { [weak self] in
                 do {
                     for try await line in child.lines { await self?.startupLine(line, generation: generation) }
@@ -64,9 +73,10 @@ actor OpencodeHTTPTransport: OpencodeTransport {
                 // Some builds emit startup banners on stderr. Read only in memory.
                 for line in child.stderrText.split(separator: "\n") { startupLine(String(line)) }
                 try Task.checkCancellation()
-                guard child.isRunning, ContinuousClock.now < deadline else { throw AgentFailure.offline }
+                guard generation == self.generation, child.isRunning, ContinuousClock.now < deadline else { throw AgentFailure.offline }
                 try await Task.sleep(for: .milliseconds(20))
             }
+            guard generation == self.generation, child.isRunning else { throw AgentFailure.offline }
             session = localHTTPSession()
         } catch { await close(); throw (error as? AgentFailure) ?? .offline }
     }
@@ -148,6 +158,7 @@ actor OpencodeHTTPTransport: OpencodeTransport {
         return stream
     }
     func close() async {
+        if let closeTask { await closeTask.value; return }
         generation = UUID(); listening = false
         password = nil; baseURL = nil
         session?.invalidateAndCancel(); session = nil
@@ -155,7 +166,19 @@ actor OpencodeHTTPTransport: OpencodeTransport {
         eventContinuation?.finish(); eventContinuation = nil
         outputReader?.cancel(); outputReader = nil
         let child = process; process = nil
-        try? await child?.shutdown(grace: .zero)
+        let recovery = recoveryTask
+        let cleanup = Task { [file = configuration.serverPIDFile] in
+            _ = try? await recovery?.value
+            if let child {
+                do {
+                    try await child.shutdown(grace: .zero)
+                    OpencodeServerPID.remove(file: file, matching: child.processIdentifier)
+                } catch { /* Keep the PID file so startup can retry verified cleanup. */ }
+            }
+        }
+        closeTask = cleanup
+        await cleanup.value
+        closeTask = nil
     }
     private static func freePort() throws -> UInt16 {
         let descriptor = socket(AF_INET, SOCK_STREAM, 0)
@@ -174,6 +197,57 @@ actor OpencodeHTTPTransport: OpencodeTransport {
         }
         guard status == 0 else { throw AgentFailure.offline }
         return UInt16(bigEndian: address.sin_port)
+    }
+}
+
+/// The PID is lifecycle metadata, never authority to signal an arbitrary process.
+/// Revalidate native argv and group ownership before each stale-group signal.
+enum OpencodeServerPID {
+    static func isServer(_ arguments: [String]) -> Bool {
+        arguments.count >= 2 && (arguments[0] as NSString).lastPathComponent == "opencode"
+            && arguments[1] == "serve"
+    }
+    static func arguments(for pid: Int32) -> [String]? {
+        var query = [CTL_KERN, KERN_PROCARGS2, pid]
+        var count = 0
+        guard sysctl(&query, 3, nil, &count, nil, 0) == 0, count > 4, count <= 1_048_576 else { return nil }
+        var bytes = [UInt8](repeating: 0, count: count)
+        guard sysctl(&query, 3, &bytes, &count, nil, 0) == 0 else { return nil }
+        let argc = bytes.withUnsafeBytes { $0.loadUnaligned(as: Int32.self) }
+        guard argc > 0, argc < 4096 else { return nil }
+        // KERN_PROCARGS2: argc, executable path, padding NULs, argv, environment.
+        var offset = MemoryLayout<Int32>.size
+        while offset < count, bytes[offset] != 0 { offset += 1 }
+        while offset < count, bytes[offset] == 0 { offset += 1 }
+        var result: [String] = []
+        for _ in 0..<argc {
+            let start = offset
+            while offset < count, bytes[offset] != 0 { offset += 1 }
+            guard offset < count, let value = String(bytes: bytes[start..<offset], encoding: .utf8) else { return nil }
+            result.append(value); offset += 1
+        }
+        return result
+    }
+    static func recover(file: URL,
+                        inspect: @Sendable (Int32) -> [String]? = { arguments(for: $0) },
+                        group: @Sendable (Int32) -> Int32 = { getpgid($0) },
+                        signal: @Sendable (Int32, Int32) -> Int32 = { kill($0, $1) }) async throws {
+        guard let text = try? String(contentsOf: file, encoding: .utf8),
+              let pid = Int32(text.trimmingCharacters(in: .whitespacesAndNewlines)), pid > 1,
+              let argv = inspect(pid), isServer(argv), group(pid) == pid else { return }
+        guard signal(-pid, SIGTERM) == 0 || errno == ESRCH else { throw AgentFailure.offline }
+        // Cleanup survives cancellation of the startup task.
+        await Task.detached { try? await Task.sleep(for: .seconds(2)) }.value
+        let remainingGroup = group(pid)
+        let leaderExited = remainingGroup == -1 && errno == ESRCH
+        if leaderExited || (remainingGroup == pid && inspect(pid).map(isServer) == true) {
+            guard signal(-pid, SIGKILL) == 0 || errno == ESRCH else { throw AgentFailure.offline }
+        }
+        remove(file: file, matching: pid)
+    }
+    static func remove(file: URL, matching pid: Int32) {
+        guard let text = try? String(contentsOf: file, encoding: .utf8), text == String(pid) else { return }
+        try? FileManager.default.removeItem(at: file)
     }
 }
 
