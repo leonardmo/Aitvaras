@@ -5,6 +5,8 @@
 # Usage: scripts/run-self-drive.sh [scenario] [timeout seconds] [--no-build]
 set -uo pipefail
 cd "$(dirname "$0")/.."
+# The app's children (opencode, CLIs) must not outlive the run, even on Ctrl-C.
+trap 'scripts/sweep-test-leftovers.sh' EXIT
 scenario="${1:-golden-path}"; limit="${2:-900}"; nobuild="${3:-}"
 derived=.build-e2e
 out="$PWD/$derived/self-drive/$scenario"
@@ -18,7 +20,7 @@ if [[ "$nobuild" != "--no-build" ]]; then
 fi
 app="$derived/Build/Products/Debug/Aitvaras.app/Contents/MacOS/Aitvaras"
 [[ -x "$app" ]] || { echo "No app build at $app"; exit 2; }
-state="$(mktemp -d)"; project="$(mktemp -d)"
+state="$(mktemp -d -t aitvaras-e2e-state)"; project="$(mktemp -d -t aitvaras-e2e-project)"
 rm -rf "$out"; mkdir -p "$out"
 git -C "$project" init -q
 echo "Throwaway test project" > "$project/README.md"
@@ -33,7 +35,7 @@ elapsed=0
 while kill -0 "$pid" 2>/dev/null && [[ $elapsed -lt $limit ]]; do
     /bin/sleep 2; elapsed=$((elapsed + 2))
 done
-if kill -0 "$pid" 2>/dev/null; then echo "Timed out after ${limit}s"; kill "$pid"; fi
+if kill -0 "$pid" 2>/dev/null; then echo "Timed out after ${limit}s"; kill "$pid"; /bin/sleep 12; kill -KILL "$pid" 2>/dev/null; fi
 wait "$pid" 2>/dev/null
 [[ -f "$out/startup-error.txt" ]] && { cat "$out/startup-error.txt"; echo; exit 1; }
 python3 - "$out/results.json" <<'PY'
