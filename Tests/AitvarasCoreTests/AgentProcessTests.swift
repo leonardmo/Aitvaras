@@ -26,7 +26,7 @@ struct AgentProcessTests {
     }
 
     @Test func timeoutDoesNotWaitForUncancellableExitContinuation() async throws {
-        let fixture = try AgentExecutableFixture("trap '' TERM; while :; do /bin/sleep 1; done")
+        let fixture = try AgentExecutableFixture("trap '' TERM; i=0; while [ $i -lt 60 ]; do /bin/sleep 1; i=$((i+1)); done")
         defer { fixture.remove() }
         let start = ContinuousClock.now
         let output = try await fixture.run(timeout: .milliseconds(100))
@@ -38,7 +38,7 @@ struct AgentProcessTests {
     @Test func shutdownKillsTermIgnoringChildrenAndInheritedPipes() async throws {
         let fixture = try AgentExecutableFixture("""
         trap '' TERM
-        /bin/sh -c 'trap "" TERM; echo $$ > child.pid; printf "ready\\n"; while :; do /bin/sleep 1; done' &
+        /bin/sh -c 'trap "" TERM; echo $$ > child.pid; printf "ready\\n"; i=0; while [ $i -lt 60 ]; do /bin/sleep 1; i=$((i+1)); done' &
         wait
         """)
         defer { fixture.remove() }
@@ -55,7 +55,7 @@ struct AgentProcessTests {
 
     @Test func serverGroupGetsTwoSecondsBeforeKillEvenWhenWrapperExits() async throws {
         let fixture = try AgentExecutableFixture("""
-        /bin/sh -c 'trap "" TERM; echo $$ > child.pid; printf "ready\\n"; while :; do /bin/sleep 1; done' &
+        /bin/sh -c 'trap "" TERM; echo $$ > child.pid; printf "ready\\n"; i=0; while [ $i -lt 60 ]; do /bin/sleep 1; i=$((i+1)); done' &
         wait
         """)
         defer { fixture.remove() }
@@ -78,7 +78,7 @@ struct AgentProcessTests {
 
     @Test func parentExitCleansUpGrandchildHoldingPipes() async throws {
         let fixture = try AgentExecutableFixture("""
-        /bin/sh -c 'trap "" TERM; echo $$ > child.pid; printf "ready\\n"; while :; do /bin/sleep 1; done' &
+        /bin/sh -c 'trap "" TERM; echo $$ > child.pid; printf "ready\\n"; i=0; while [ $i -lt 60 ]; do /bin/sleep 1; i=$((i+1)); done' &
         while test ! -f child.pid; do /bin/sleep 0.01; done
         exit 0
         """)
