@@ -25,6 +25,10 @@ struct BackendExecutableFixture {
     }
     func remove() { try? FileManager.default.removeItem(at: directory) }
     func assertComplete() throws {
+        // The script writes `done` just after its last reply, so the backend can
+        // act on that reply first. Wait briefly instead of racing it (slow CI).
+        let done = directory.appendingPathComponent("done")
+        for _ in 0..<100 where !FileManager.default.fileExists(atPath: done.path) { usleep(50_000) }
         let failure = directory.appendingPathComponent("failure")
         if FileManager.default.fileExists(atPath: failure.path) {
             let message = try String(contentsOf: failure, encoding: .utf8)
