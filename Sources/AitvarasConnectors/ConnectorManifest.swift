@@ -191,7 +191,7 @@ public struct ConnectorManifest: Codable, Sendable, Equatable {
     public struct Auth: Codable, Sendable, Equatable {
         public enum Kind: String, Codable, Sendable {
             case bearer     // Authorization: Bearer <secret>
-            case header     // <headerName>: [valuePrefix]<secret>   (e.g. Hypervisor APIToken=…)
+            case header     // <headerName>: [valuePrefix]<secret>   (e.g. Token=…)
             case query      // ?<queryParam>=<secret>
             case basic      // Authorization: Basic base64(<secret>), secret is "user:pass"
             case none
@@ -202,7 +202,7 @@ public struct ConnectorManifest: Codable, Sendable, Equatable {
         public var keychainKey: String?
         /// For `.header`: the header to set.
         public var headerName: String?
-        /// For `.header`: literal prefix before the secret, e.g. "APIToken=".
+        /// For `.header`: literal prefix before the secret, e.g. "Token=".
         public var valuePrefix: String?
         /// For `.query`: the query parameter name.
         public var queryParam: String?

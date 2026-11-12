@@ -93,7 +93,7 @@ than opening another chat tab.
   Aitvaras may offer one briefing at a chosen morning time, but individual
   stories never interrupt. Images, publisher summaries and original links stay
   in a dedicated reader and never become Activity events or long-term memory.
-  Paywalled articles links open in the normal signed-in browser without importing its
+  Paywalled links open in the normal signed-in browser without importing its
   cookies. X/Twitter is excluded until it can meet the same provenance bar.
 - **Phishing-aware mail triage** — reads new mail across accounts (leaves it
   unread), holds unknown senders before model access, and lets you approve
@@ -107,11 +107,9 @@ than opening another chat tab.
 - **Knowledge (RAG)** — add any folders (notes vault, code repos); hybrid
   semantic + keyword search grounds answers in your actual material.
 - **Moodle** — assignment deadlines and course events via the iCal export
-  (built against a Moodle, works with any instance that has calendar
-  export enabled).
-- **Homelab** — read-only status of Hypervisor and NAS plus verified,
-  searchable Home Assistant entity state and narrowly scoped idempotent light
-  on/off control via HTTP APIs (no SSH). Home Assistant connection details are
+  (works with any Moodle instance that has calendar export enabled).
+- **Homelab** — verified, searchable Home Assistant entity state and narrowly
+  scoped idempotent light on/off control via HTTP APIs (no SSH). Home Assistant connection details are
   installation-local: its token is Keychain-only and its URL stays in local app
   state. Arbitrary HTTP APIs can be added from a JSON manifest without writing
   Swift.
@@ -297,7 +295,7 @@ data inside a context- and tool-isolated execution profile.
 News is an explicit network feature: configured topic terms are sent to Google
 News for discovery and fixed publisher feeds are downloaded directly. The
 resulting cache stays in the local SQLite profile; browser credentials and
-Paywalled articles cookies never enter Aitvaras.
+subscription cookies never enter Aitvaras.
 Cloud CLI use is also explicit and independently selectable for delegation,
 nightly memory, connector creation and shortcut/automation review. Changes
 apply to the next call immediately. The Models screen explains the exact data

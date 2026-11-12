@@ -55,7 +55,7 @@ never matches `example.org.evil.test`. Unicode domains are not normalized into
 approval rules.
 
 Domain-wide approval is disabled for shared consumer mailbox providers,
-including `gmail.com`, Gmail, GMX, Web.de, iCloud, Proton and Yahoo.
+including Gmail, GMX, Web.de, iCloud, Proton and Yahoo.
 Approving `gmail.com` would approve every Gmail user, so individual
 addresses are the only safe usable scope there.
 

@@ -1,73 +1,18 @@
 import Foundation
 import AitvarasCore
 
-/// Built-in homelab connector capabilities (D10). Hypervisor and NAS run
-/// directly through GenericHTTPConnector. Home Assistant reuses its manifest
-/// metadata but has a constrained adapter for searchable state summaries and
-/// idempotent light writes. No connector exposes shell access.
+/// Built-in homelab connector capabilities (D10). Home Assistant reuses its
+/// manifest metadata but has a constrained adapter for searchable state
+/// summaries and idempotent light writes. Other homelab services are custom
+/// manifests on GenericHTTPConnector. No connector exposes shell access.
 ///
-/// Base URLs are runtime configuration (kv store, e.g. "hypervisor.baseURL"),
+/// Base URLs are runtime configuration (kv store, e.g. "homeassistant.baseURL"),
 /// so these are functions, not constants. Secrets live in the Keychain
 /// under the `keychainKey` each manifest names.
 public enum BundledManifests {
 
     /// Keychain keys the settings UI should populate.
-    public static let hypervisorTokenKey = "hypervisor.apiToken"
-    public static let nasTokenKey = "nas.apiKey"
     public static let homeAssistantTokenKey = "homeassistant.token"
-
-    /// Hypervisor. Token format is "user@realm!tokenname=uuid"; the API
-    /// wants it raw after a literal "APIToken=" prefix — hence auth type
-    /// `header` with `valuePrefix` instead of bearer.
-    public static func hypervisor(baseURL: String) -> ConnectorManifest {
-        ConnectorManifest(
-            id: "hypervisor",
-            displayName: "Hypervisor",
-            baseURL: baseURL,
-            auth: .init(type: .header, keychainKey: hypervisorTokenKey,
-                        headerName: "Authorization", valuePrefix: "APIToken="),
-            tools: [
-                .init(
-                    name: "cluster_status",
-                    description: "All Hypervisor cluster resources (VMs, containers, storage, nodes) with status, CPU and memory usage.",
-                    method: "GET",
-                    path: "/api/v1/cluster/resources",
-                    parametersJSON: #"{"type":"object","properties":{},"required":[],"additionalProperties":false}"#,
-                    risk: .read),
-                .init(
-                    name: "nodes",
-                    description: "Hypervisor nodes with uptime, load and status.",
-                    method: "GET",
-                    path: "/api/v1/nodes",
-                    parametersJSON: #"{"type":"object","properties":{},"required":[]}"#,
-                    risk: .read)
-            ])
-    }
-
-    /// NAS REST API v2.0, bearer token auth.
-    public static func nas(baseURL: String) -> ConnectorManifest {
-        ConnectorManifest(
-            id: "nas",
-            displayName: "NAS",
-            baseURL: baseURL,
-            auth: .init(type: .bearer, keychainKey: nasTokenKey),
-            tools: [
-                .init(
-                    name: "system_info",
-                    description: "NAS system information: version, uptime, hardware, memory.",
-                    method: "GET",
-                    path: "/api/v2.0/system/info",
-                    parametersJSON: #"{"type":"object","properties":{},"required":[]}"#,
-                    risk: .read),
-                .init(
-                    name: "pools",
-                    description: "NAS storage pools with health status, capacity and usage.",
-                    method: "GET",
-                    path: "/api/v2.0/pool",
-                    parametersJSON: #"{"type":"object","properties":{},"required":[]}"#,
-                    risk: .read)
-            ])
-    }
 
     /// Home Assistant REST API, long-lived access token (non-admin user).
     /// HomeAssistantConnector interprets these tools; it compacts the large

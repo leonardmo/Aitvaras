@@ -19,7 +19,7 @@ public enum StateFixtures {
         let uni = MemoryEntity(name: "Example University", kind: .org,
                                summary: "Alex's university; physics program, campus outside the city.")
         let homelab = MemoryEntity(name: "Homelab", kind: .system,
-                                   summary: "One mini-PC: Hypervisor with a NAS VM and Home Assistant.")
+                                   summary: "One mini-PC running a few virtual machines and Home Assistant.")
         let sarah = MemoryEntity(name: "Sarah", kind: .person,
                                  summary: "Lab partner in the electronics practical; usually books the lab slots.")
         for entity in [uni, homelab, sarah] { try stores.saveEntity(entity) }
@@ -28,7 +28,7 @@ public enum StateFixtures {
             ("Studies physics, currently 4th semester", .biography, 8, .userStated, [uni]),
             ("Prefers answers in German for casual chat, English for technical topics", .preference, 7, .userStated, []),
             ("Bikes to campus unless it rains", .rhythm, 6, .extracted, [uni]),
-            ("Runs Hypervisor with a NAS VM; tokens are read-only", .procedure, 6, .userStated, [homelab]),
+            ("Runs the homelab with read-only API tokens", .procedure, 6, .userStated, [homelab]),
             ("Deep-work blocks work best before noon", .rhythm, 7, .reflected, []),
             ("Shares electronics practical with Sarah on Wednesdays", .event, 5, .extracted, [sarah, uni])
         ]
@@ -41,8 +41,8 @@ public enum StateFixtures {
         }
 
         // One superseded pair so the validity timeline has history to show.
-        let old = MemoryFact(text: "Uses Notion for study notes", kind: .biography, source: .extracted)
-        let new = MemoryFact(text: "Uses notes-app for study notes", kind: .biography, source: .userStated)
+        let old = MemoryFact(text: "Uses a paper notebook for study notes", kind: .biography, source: .extracted)
+        let new = MemoryFact(text: "Uses Markdown files for study notes", kind: .biography, source: .userStated)
         try stores.saveFact(old)
         try stores.replaceFact(old.id, with: new)
 

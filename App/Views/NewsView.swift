@@ -240,7 +240,7 @@ struct NewsView: View {
 
                     if article.sourceDomain.hasSuffix("spiegel.de") {
                         Label(
-                            "Paywalled articles opens in your normal browser, where your subscription remains signed in. Aitvaras never imports browser cookies.",
+                            "Paywalled articles open in your normal browser, where your subscriptions stay signed in. Aitvaras never imports browser cookies.",
                             systemImage: "person.badge.key")
                             .font(.caption)
                             .foregroundStyle(.secondary)

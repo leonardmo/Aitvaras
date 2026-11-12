@@ -71,7 +71,7 @@ final class IntegrationCoordinator {
     private static let reservedConnectorIDs: Set<String> = [
         "calendar", "reminders", "mail", "telegram", "moodle", "delegate", "web", "news",
         "goals", "memory", "capture", "weather", "geocode", "notifications",
-        "hypervisor", "nas", "homeassistant"
+        "homeassistant"
     ]
     private static let maximumCustomManifestCount = 32
 
@@ -290,11 +290,8 @@ final class IntegrationCoordinator {
             phoneDeliveryWarning = nil
         case "moodle":
             try keychain.delete("moodle.icalURL")
-        case "hypervisor", "nas", "homeassistant":
-            let tokenKey = id == "hypervisor" ? BundledManifests.hypervisorTokenKey
-                : id == "nas" ? BundledManifests.nasTokenKey
-                : BundledManifests.homeAssistantTokenKey
-            try keychain.delete(tokenKey)
+        case "homeassistant":
+            try keychain.delete(BundledManifests.homeAssistantTokenKey)
             try stores.setValue("", forKey: "\(id).baseURL")
             await hub.unregister(id: id)
             homelabIDs.removeAll { $0 == id }
@@ -355,26 +352,9 @@ final class IntegrationCoordinator {
         startPhoneRetryLoop()
     }
 
-    /// Homelab connectors exist only when a base URL is configured (D10).
+    /// The built-in homelab connector exists only when a base URL is configured
+    /// (D10). Other homelab services are custom manifests.
     func registerHomelab() async throws {
-        let configs: [(kvKey: String, build: (String) -> ConnectorManifest)] = [
-            ("hypervisor.baseURL", BundledManifests.hypervisor),
-            ("nas.baseURL", BundledManifests.nas)
-        ]
-        for config in configs {
-            guard let base = try stores.value(forKey: config.kvKey), !base.isEmpty,
-                  base.hasPrefix("http") else { continue }
-            let manifest = config.build(base)
-            // Setup can be reopened to change a URL or token. Replace the live
-            // connector instead of leaving the old manifest registered.
-            await hub.unregister(id: manifest.id)
-            let connector = GenericHTTPConnector(manifest: manifest, keychain: keychain, stores: stores, reporter: reporter)
-            await hub.register(connector)
-            httpConnectors[manifest.id] = connector
-            if automaticAllowed(.connectors) { await connector.startTriggers() }
-            if !homelabIDs.contains(manifest.id) { homelabIDs.append(manifest.id) }
-        }
-
         if let base = try stores.value(forKey: "homeassistant.baseURL"), !base.isEmpty {
             try await registerHomeAssistant(baseURL: base)
         }

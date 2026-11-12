@@ -276,9 +276,7 @@ struct ConnectorsView: View {
             result.append(.init(id: "moodle", kind: .moodle, title: "Moodle",
                                 subtitle: "Deadlines via calendar export"))
         }
-        for (id, kind, name) in [("hypervisor", ConnectionKind.hypervisor, "Hypervisor"),
-                                 ("nas", .nas, "NAS"),
-                                 ("homeassistant", .homeassistant, "Home Assistant")] {
+        for (id, kind, name) in [("homeassistant", ConnectionKind.homeassistant, "Home Assistant")] {
             if let stores,
                let base = try? stores.value(forKey: "\(id).baseURL"),
                !base.isEmpty {
@@ -580,7 +578,7 @@ private struct MessageSafetySheet: View {
 // MARK: - Catalog
 
 enum ConnectionKind: String, Identifiable, CaseIterable {
-    case telegram, moodle, hypervisor, nas, homeassistant, weather, focus, notifications, custom
+    case telegram, moodle, homeassistant, weather, focus, notifications, custom
 
     var id: String { rawValue }
 
@@ -588,8 +586,6 @@ enum ConnectionKind: String, Identifiable, CaseIterable {
         switch self {
         case .telegram: "Telegram"
         case .moodle: "Moodle"
-        case .hypervisor: "Hypervisor"
-        case .nas: "NAS"
         case .homeassistant: "Home Assistant"
         case .weather: "Weather"
         case .focus: "Focus Coach"
@@ -602,8 +598,6 @@ enum ConnectionKind: String, Identifiable, CaseIterable {
         switch self {
         case .telegram: "Urgent notifications to your phone via a bot"
         case .moodle: "Assignment deadlines from the calendar export"
-        case .hypervisor: "Read-only cluster status"
-        case .nas: "Read-only system and pool status"
         case .homeassistant: "Search entity states and control exact lights"
         case .weather: "Forecasts via Open-Meteo — no account needed"
         case .focus: "Day goals, gentle drift nudges, break reminders"
@@ -616,8 +610,6 @@ enum ConnectionKind: String, Identifiable, CaseIterable {
         switch self {
         case .telegram: "paperplane"
         case .moodle: "graduationcap"
-        case .hypervisor: "server.rack"
-        case .nas: "externaldrive"
         case .homeassistant: "house"
         case .weather: "cloud.sun"
         case .focus: "target"

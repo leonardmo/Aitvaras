@@ -25,7 +25,7 @@ public struct NewsSourceAssessment: Sendable, Equatable {
 /// item enters the feed only when its publisher matches this catalogue.
 /// Primary sources are valuable for announcements; established reporting is
 /// preferred for interpretation. SPIEGEL receives a small preference boost
-/// because the intended user can open Paywalled articles links in their signed-in browser.
+/// as a German-language default.
 public enum NewsSourceCatalog {
     private struct Rule {
         var domains: [String]

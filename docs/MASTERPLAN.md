@@ -536,7 +536,7 @@ model will probably remember to do it".
 ## 14. New features (continuing Part I's F-numbering)
 
 - **F8, Curiosity Q&A** (§11).
-- **F9, Procedural memory**: "how-to" notes, how to reach the Hypervisor box,
+- **F9, Procedural memory**: "how-to" notes, how to reach the home server,
   how the user likes summaries structured, how Uni mails get filed, as
   markdown procedure files with name+description lazily injected and bodies
   read on demand. Written by consolidation from repeated corrections; the

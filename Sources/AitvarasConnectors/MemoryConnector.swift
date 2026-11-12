@@ -30,7 +30,7 @@ public actor MemoryConnector: Connector {
             risk: .read),
         ToolDefinition(
             name: "about",
-            description: "Everything currently known about one person, place, course or system, by name (e.g. 'Hypervisor', a lecturer, a friend).",
+            description: "Everything currently known about one person, place, course or system, by name (e.g. 'Homelab', a lecturer, a friend).",
             parametersJSON: #"{"type":"object","properties":{"entity":{"type":"string","maxLength":200}},"required":["entity"]}"#,
             risk: .read),
         ToolDefinition(

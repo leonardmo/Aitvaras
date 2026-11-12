@@ -70,9 +70,6 @@ struct ConnectionSetupSheet: View {
             SecureField("Calendar export URL", text: $field1)
             Text("Moodle → Preferences → Calendar → Export calendar → all events → copy URL.")
                 .font(.caption).foregroundStyle(.tertiary)
-        case .hypervisor, .nas:
-            TextField("Base URL, e.g. https://host:8006", text: $field1)
-            SecureField("API token (read-only account/role!)", text: $field2)
         case .homeassistant:
             TextField("Home Assistant URL, e.g. http://homeassistant.local:8123", text: $field1)
             SecureField(
@@ -172,7 +169,6 @@ struct ConnectionSetupSheet: View {
     private var isValid: Bool {
         switch kind {
         case .telegram, .moodle: !field1.isEmpty
-        case .hypervisor, .nas: !field1.isEmpty && !field2.isEmpty
         case .homeassistant:
             !field1.isEmpty && (!field2.isEmpty || hasExistingHomeAssistantToken)
         case .weather, .focus, .notifications: true
@@ -207,14 +203,6 @@ struct ConnectionSetupSheet: View {
                     onDone()
                 case .moodle:
                     try model.keychain.set(field1, forKey: "moodle.icalURL")
-                    onDone()
-                case .hypervisor, .nas:
-                    let id = kind.rawValue
-                    let tokenKey = id == "hypervisor" ? BundledManifests.hypervisorTokenKey
-                        : BundledManifests.nasTokenKey
-                    try model.keychain.set(field2, forKey: tokenKey)
-                    try stores.setValue(field1, forKey: "\(id).baseURL")
-                    try await integrations.registerHomelab()
                     onDone()
                 case .homeassistant:
                     status = "Verifying Home Assistant…"

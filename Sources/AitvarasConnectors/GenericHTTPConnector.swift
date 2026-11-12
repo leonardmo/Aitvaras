@@ -3,8 +3,8 @@ import AitvarasCore
 import AitvarasStore
 
 /// Interprets a `ConnectorManifest` (D17): arbitrary HTTP APIs become typed
-/// tools and polling triggers without any Swift code. The bundled Hypervisor /
-/// NAS / Home Assistant connectors (D10) run on this same engine, which
+/// tools and polling triggers without any Swift code. The bundled Home Assistant
+/// connector (D10) runs on this same engine, which
 /// keeps it honest.
 public actor GenericHTTPConnector: Connector {
     public let manifest: ConnectorManifest

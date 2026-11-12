@@ -52,7 +52,7 @@ Activity log store + UI with provenance; autonomy policy enforcement (risk level
 sqlite-vec + FTS5 hybrid store; embedding model bake-off (Qwen3-Embedding vs bge-m3); indexers for user-chosen note folders (md/pdf) and code repos (code-aware); FSEvents incremental reindex; personal memory with review UI.
 
 ## M5: External connectors
-Generic HTTP connector engine with declarative manifests + polling triggers (D17) and its settings UI (paste key → Keychain, review tools, activate); Hypervisor/NAS/Home Assistant as bundled manifests; Moodle: iCal deadline feed + session-cookie scraper with in-app SSO login; "how's the homelab" briefing.
+Generic HTTP connector engine with declarative manifests + polling triggers (D17) and its settings UI (paste key → Keychain, review tools, activate); Home Assistant as a bundled manifest; Moodle: iCal deadline feed + session-cookie scraper with in-app SSO login; "how's the homelab" briefing.
 
 ## M6: Delegation + polish
 Claude Code / Codex CLI delegate connector with streamed progress; onboarding flow (permissions: Mail automation, Calendar, Reminders, mic, speech); performance pass (model load/unload strategy, memory pressure); app icon, character refinement round.
