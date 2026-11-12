@@ -1,0 +1,763 @@
+import Foundation
+import Testing
+import AitvarasCore
+import AitvarasStore
+@testable import AitvarasAgents
+
+@Suite struct AgentSessionManagerTests {
+    @Test func fourSequentialChatsAllSend() async throws {
+        let stores = try inMemoryStores()
+        let backend = ManagerTestBackend()
+        let manager = try AgentSessionManager(persistence: stores, backend: { _ in backend }, audit: { _ in })
+        let chats = try (0..<4).map { _ in try agentStoreChat(stores).0.id }
+        for chat in chats {
+            let input = AgentInput(text: "Finish this turn")
+            try await manager.send(chatID: chat, provider: .claude, input: input)
+            let run = try #require(await backend.runs.last)
+            await run.emit(.turnEnded(.completed), input: input.id)
+            try await waitManager { try await manager.state(chatID: chat).outcome == .completed }
+            #expect(try stores.agentTurn(id: input.id)?.state == .completed)
+        }
+        #expect(await backend.totalWrites() == 4)
+        try await manager.shutdown()
+    }
+
+    @Test func leastRecentlyUsedIdleRunIsEvictedAndResumesNativeSession() async throws {
+        let stores = try inMemoryStores()
+        let backend = ManagerTestBackend()
+        let manager = try AgentSessionManager(persistence: stores, backend: { _ in backend }, audit: { _ in })
+        let chats = try (0..<9).map { _ in try agentStoreChat(stores).0.id }
+        for (index, chat) in chats.prefix(8).enumerated() {
+            let input = AgentInput(text: "Finish this turn")
+            try await manager.send(chatID: chat, provider: .claude, input: input)
+            let run = try #require(await backend.runs.last)
+            let native = AgentSessionID(provider: .claude, profile: "default", nativeID: "fixture-\(index)")
+            await run.emit(.sessionStarted(native), input: input.id)
+            await run.emit(.turnEnded(.completed), input: input.id)
+            try await waitManager { try await manager.state(chatID: chat).outcome == .completed }
+        }
+        let runs = await backend.runs
+        let native = try #require(try stores.agentSession(chatID: chats[1], provider: .claude)?.sessionID)
+        // Reusing the oldest chat makes the second chat the eviction candidate.
+        let revisit = AgentInput(text: "One more turn")
+        try await manager.send(chatID: chats[0], provider: .claude, input: revisit)
+        await runs[0].emit(.turnEnded(.completed), input: revisit.id)
+        try await waitManager { try await manager.state(chatID: chats[0]).outcome == .completed }
+        #expect(await backend.runs.count == 8)
+        try await manager.send(chatID: chats[8], provider: .claude, input: .init(text: "New chat"))
+        #expect(await runs[1].isShutdown)
+        #expect(await !runs[0].isShutdown)
+        #expect(try await manager.state(chatID: chats[1]).outcome == .completed)
+        #expect(try stores.agentSession(chatID: chats[1], provider: .claude)?.sessionID == native)
+
+        try await manager.send(chatID: chats[1], provider: .claude, input: .init(text: "Resume"))
+        #expect(await backend.runs.count == 10)
+        #expect(await backend.configurations.last?.resume == native)
+        #expect(await runs[2].isShutdown)
+        #expect(try await manager.state(chatID: chats[8]).isRunning)
+        try await manager.shutdown()
+    }
+
+    @Test func capacityEvictsIdleRunButNeverOlderRunningChat() async throws {
+        let stores = try inMemoryStores()
+        let backend = ManagerTestBackend()
+        let manager = try AgentSessionManager(persistence: stores, backend: { _ in backend }, audit: { _ in })
+        let chats = try (0..<9).map { _ in try agentStoreChat(stores).0.id }
+        for (index, chat) in chats.prefix(8).enumerated() {
+            let input = AgentInput(text: "Turn")
+            try await manager.send(chatID: chat, provider: .claude, input: input)
+            if index > 0 {
+                let run = try #require(await backend.runs.last)
+                await run.emit(.turnEnded(.completed), input: input.id)
+                try await waitManager { try await manager.state(chatID: chat).outcome == .completed }
+            }
+        }
+        let runs = await backend.runs
+        try await manager.send(chatID: chats[8], provider: .claude, input: .init(text: "New chat"))
+        #expect(await !runs[0].isShutdown)
+        #expect(await runs[1].isShutdown)
+        #expect(try await manager.state(chatID: chats[0]).isRunning)
+        try await manager.shutdown()
+    }
+
+    @Test func approvalWaitingChatCountsTowardEightRunningChats() async throws {
+        let stores = try inMemoryStores()
+        let backend = ManagerTestBackend()
+        let manager = try AgentSessionManager(persistence: stores, backend: { _ in backend }, audit: { _ in })
+        let chats = try (0..<9).map { _ in try agentStoreChat(stores).0.id }
+        let first = AgentInput(text: "Wait for approval")
+        try await manager.send(chatID: chats[0], provider: .claude, input: first)
+        let run = try #require(await backend.runs.first)
+        let request = AgentRequest(id: .integer(1), scope: .init(runID: run.id, inputID: first.id),
+                                   kind: .permission(.init(name: "Bash", input: .null)))
+        await run.emit(.request(request), input: first.id)
+        try await waitManager { try await manager.state(chatID: chats[0]).pendingCards == [request] }
+        for chat in chats[1..<8] {
+            try await manager.send(chatID: chat, provider: .claude, input: .init(text: "Keep running"))
+        }
+        let rejected = AgentInput(text: "Ninth running chat")
+        await #expect(throws: AgentSessionManagerError.runningChatLimit) {
+            try await manager.send(chatID: chats[8], provider: .claude, input: rejected)
+        }
+        #expect(await backend.runs.count == 8)
+        #expect(await !run.isShutdown)
+        #expect(try await manager.state(chatID: chats[0]).pendingCards == [request])
+        #expect(try await manager.state(chatID: chats[0]).isRunning)
+        #expect(try await manager.state(chatID: chats[8]).outcome == nil)
+        #expect(try stores.agentTurn(id: rejected.id) == nil)
+        // Resolving one turn frees capacity even with the approval still pending.
+        let other = try #require(await backend.runs.last)
+        let input = try #require(await other.inputs.last)
+        await other.emit(.turnEnded(.completed), input: input.id)
+        try await waitManager { try await manager.state(chatID: chats[7]).outcome == .completed }
+        try await manager.send(chatID: chats[8], provider: .claude, input: rejected)
+        #expect(await other.isShutdown)
+        #expect(try await manager.state(chatID: chats[0]).pendingCards == [request])
+        try await manager.shutdown()
+    }
+
+    @Test func activityStopUsesDurableInputAndIgnoresStaleClicks() async throws {
+        let fixture = try BackendExecutableFixture(script: managerClaudeScript)
+        defer { fixture.remove() }
+        let stores = try inMemoryStores()
+        let raw = ClaudeBackend(executable: fixture.executable, environment: fixture.environment)
+        let backend = AgentHistoryTestBackend(raw, stores: stores)
+        let manager = try AgentSessionManager(persistence: stores, backend: { _ in backend }, audit: { _ = try stores.record($0) })
+        let first = try agentStoreChat(stores, cwd: fixture.directory.path).0.id
+        let second = try agentStoreChat(stores, cwd: fixture.directory.path).0.id
+        let one = AgentInput(text: "hold"), two = AgentInput(text: "hold")
+        try await manager.send(chatID: first, provider: .claude, input: one)
+        try await manager.send(chatID: second, provider: .claude, input: two)
+        try await waitManager {
+            let one = try await manager.state(chatID: first)
+            let two = try await manager.state(chatID: second)
+            return one.streamingText == "partial" && two.streamingText == "partial"
+        }
+        let runs = try stores.currentActivityRuns().filter { $0.category == .chat }
+        #expect(Set(runs.map(\.id)) == [one.id, two.id])
+        #expect(runs.first { $0.id == one.id }?.referenceID == first.uuidString)
+        #expect(runs.first { $0.id == two.id }?.referenceID == second.uuidString)
+        #expect(try await !manager.stop(activityRunID: UUID()))
+        #expect(try await manager.stop(activityRunID: one.id))
+        #expect(try stores.activityRun(id: one.id)?.state == .interrupted)
+        #expect(try await manager.state(chatID: second).isRunning)
+        #expect(try stores.activityRun(id: two.id)?.state == .running)
+        let next = AgentInput(text: "hold again")
+        try await manager.send(chatID: first, provider: .claude, input: next)
+        #expect(try await !manager.stop(activityRunID: one.id))
+        #expect(try await manager.state(chatID: first).isRunning)
+        try await manager.shutdown()
+        #expect(try stores.activityRun(id: next.id)?.state == .interrupted)
+        #expect(try stores.activityRun(id: two.id)?.state == .interrupted)
+        #expect(try stores.currentActivityRuns().isEmpty)
+    }
+
+    @Test func twoExecutableChatsDetachStopAndCap() async throws {
+        let fixture = try BackendExecutableFixture(script: managerClaudeScript)
+        defer { fixture.remove() }
+        let stores = try inMemoryStores()
+        let backend = ClaudeBackend(executable: fixture.executable, environment: fixture.environment)
+        let manager = try AgentSessionManager(persistence: stores, backend: { _ in backend }, audit: { _ = try stores.record($0) })
+        let chats = try (0..<10).map { _ in try agentStoreChat(stores, cwd: fixture.directory.path).0.id }
+        // Merely attaching/detaching views must not create or dispose a process.
+        let view = Task {
+            for await _ in try await manager.updates(chatID: chats[0]) { if Task.isCancelled { break } }
+        }
+        let first = AgentInput(text: "hold")
+        let second = AgentInput(text: "hold")
+        async let one: Void = manager.send(chatID: chats[0], provider: .claude, input: first)
+        async let two: Void = manager.send(chatID: chats[1], provider: .claude, input: second)
+        _ = try await (one, two)
+        try await waitManager {
+            let one = try await manager.state(chatID: chats[0])
+            let two = try await manager.state(chatID: chats[1])
+            return one.streamingText == "partial" && two.streamingText == "partial"
+        }
+        view.cancel()
+        #expect(try await manager.state(chatID: chats[0]).isRunning)
+        #expect(try await manager.state(chatID: chats[0]).pendingCards.isEmpty)
+        try await manager.stop(chatID: chats[0])
+        try await waitManager { try await manager.state(chatID: chats[0]).outcome == .interrupted }
+        #expect(try await manager.state(chatID: chats[1]).isRunning)
+        #expect(try stores.agentTurn(id: second.id)?.state == .running)
+        for chat in chats[2..<9] {
+            try await manager.send(chatID: chat, provider: .claude, input: .init(text: "hold"))
+        }
+        await #expect(throws: AgentSessionManagerError.runningChatLimit) {
+            try await manager.send(chatID: chats[9], provider: .claude, input: .init(text: "hold"))
+        }
+        #expect(try await manager.state(chatID: chats[9]).outcome == nil)
+        let sessionOne = try #require(try stores.agentSession(chatID: chats[0], provider: .claude)?.sessionID)
+        let sessionTwo = try #require(try stores.agentSession(chatID: chats[1], provider: .claude)?.sessionID)
+        #expect(sessionOne != sessionTwo)
+        try await manager.shutdown()
+        #expect(try stores.agentTurn(id: second.id)?.state == .interrupted)
+        #expect(try stores.agentTurn(id: second.id)?.partialOutput == "partial")
+    }
+
+    @Test func idleExecutableResumesAndCancelledQuitCanSendAgain() async throws {
+        let fixture = try BackendExecutableFixture(script: managerClaudeScript)
+        defer { fixture.remove() }
+        let stores = try inMemoryStores()
+        let chat = try agentStoreChat(stores, cwd: fixture.directory.path).0.id
+        let backend = ClaudeBackend(executable: fixture.executable, environment: fixture.environment)
+        let starts = ManagerStartCounter(backend: backend)
+        let manager = try AgentSessionManager(persistence: stores, idleTimeout: .milliseconds(40), backend: { _ in AgentHistoryTestBackend(starts, stores: stores) }, audit: { _ = try stores.record($0) })
+        #expect(await starts.count == 0)
+        try await manager.send(chatID: chat, provider: .claude, input: .init(text: "finish"))
+        try await waitManager { try await manager.state(chatID: chat).outcome == .completed }
+        let native = try #require(try stores.agentSession(chatID: chat, provider: .claude)?.sessionID)
+        try await Task.sleep(for: .milliseconds(160))
+        try await manager.send(chatID: chat, provider: .claude, input: .init(text: "finish"))
+        try await waitManager { try await manager.state(chatID: chat).outcome == .completed }
+        #expect(await starts.count == 2)
+        #expect(try stores.agentSession(chatID: chat, provider: .claude)?.sessionID == native)
+        #expect(try stores.agentEntries(chatID: chat).filter { $0.kind == "assistant" }.count == 2)
+        try await manager.shutdown(timeout: .milliseconds(100))
+        try await manager.send(chatID: chat, provider: .claude, input: .init(text: "finish"))
+        try await waitManager { try await manager.state(chatID: chat).outcome == .completed }
+        #expect(await starts.count == 3)
+        try await manager.shutdown()
+    }
+
+    @Test func deliveryFailureBeforeAndAfterBarrierAndOneExplicitRetry() async throws {
+        let stores = try inMemoryStores()
+        let chat = try agentStoreChat(stores).0.id
+        let backend = ManagerTestBackend()
+        let manager = try AgentSessionManager(persistence: stores, backend: { _ in backend }, audit: { _ in })
+        await backend.setFailure(.before)
+        let prepared = AgentInput(text: "before barrier")
+        await #expect(throws: AgentFailure.offline) { try await manager.send(chatID: chat, provider: .claude, input: prepared) }
+        #expect(try stores.agentTurn(id: prepared.id)?.delivery == .prepared)
+        await backend.setFailure(.after)
+        await #expect(throws: AgentFailure.offline) { try await manager.resendPrepared(turnID: prepared.id) }
+        #expect(try stores.agentTurn(id: prepared.id)?.delivery == .deliveryUnknown)
+        #expect(try stores.agentTurn(id: prepared.id)?.resendCount == 1)
+        await #expect(throws: AgentFailure.invalidTransition) { try await manager.resendPrepared(turnID: prepared.id) }
+        let after = AgentInput(text: "after barrier")
+        await #expect(throws: AgentFailure.offline) { try await manager.send(chatID: chat, provider: .claude, input: after) }
+        #expect(try stores.agentTurn(id: after.id)?.delivery == .deliveryUnknown)
+        await #expect(throws: AgentFailure.invalidTransition) { try await manager.resendPrepared(turnID: after.id) }
+        await backend.setFailure(.none)
+        try await manager.send(chatID: chat, provider: .claude, input: .init(text: "new input"))
+        try await manager.shutdown()
+    }
+
+    @Test func journalBarrierFailurePreventsWriteAndDuplicateInputDoesNotDisturbLiveTurn() async throws {
+        let stores = try inMemoryStores()
+        let chat = try agentStoreChat(stores).0.id
+        let backend = ManagerTestBackend()
+        // An SQL trigger simulates a failed durable barrier rather than a pipe failure.
+        try await stores.db.queue.write { db in
+            try db.execute(sql: "CREATE TRIGGER testBarrierFailure BEFORE UPDATE OF delivery ON agentTurn WHEN NEW.delivery IS NOT OLD.delivery BEGIN SELECT RAISE(ABORT, 'fixture failure'); END")
+        }
+        let manager = try AgentSessionManager(persistence: stores, backend: { _ in backend }, audit: { _ in })
+        let input = AgentInput(text: "must not leave")
+        await #expect(throws: (any Error).self) { try await manager.send(chatID: chat, provider: .claude, input: input) }
+        #expect(await backend.totalWrites() == 0)
+        #expect(try stores.agentTurn(id: input.id)?.delivery == .prepared)
+        try await stores.db.queue.write { try $0.execute(sql: "DROP TRIGGER testBarrierFailure") }
+        try await manager.resendPrepared(turnID: input.id)
+        await #expect(throws: AgentSessionManagerError.chatBusy) { try await manager.send(chatID: chat, provider: .claude, input: input) }
+        #expect(try stores.agentTurn(id: input.id)?.state == .running)
+        try await manager.shutdown()
+    }
+
+    @Test func restartMarksRunningInterruptedWithoutStartingBackend() async throws {
+        let stores = try inMemoryStores()
+        let (chat, session) = try agentStoreChat(stores)
+        let input = AgentInput(text: "interrupted input")
+        try stores.prepareAgentTurn(.init(input: input, chatID: chat.id, sessionID: session.id))
+        try stores.advanceAgentDelivery(id: input.id, to: .deliveryUnknown)
+        try stores.saveAgentPartial(id: input.id, text: "kept")
+        _ = try stores.saveAgentEntry(.init(chatID: chat.id, provider: .claude, kind: "assistant", text: "kept", sessionID: session.id))
+        let backend = ManagerTestBackend()
+        let manager = try AgentSessionManager(persistence: stores, backend: { _ in backend }, audit: { _ in })
+        #expect(try stores.agentTurn(id: input.id)?.state == .interrupted)
+        #expect(try stores.agentTurn(id: input.id)?.delivery == .deliveryUnknown)
+        #expect(try await manager.state(chatID: chat.id).entries.first?.text == "kept")
+        #expect(await backend.runs.isEmpty)
+        #expect(try await manager.state(chatID: chat.id).outcome == .interrupted)
+        try await manager.shutdown()
+    }
+
+    @Test func staleCallbacksCannotEndNewInputOrPolluteTranscript() async throws {
+        let stores = try inMemoryStores()
+        let chat = try agentStoreChat(stores).0.id
+        let backend = ManagerTestBackend()
+        let manager = try AgentSessionManager(persistence: stores, backend: { _ in backend }, audit: { _ in })
+        let first = AgentInput(text: "first")
+        try await manager.send(chatID: chat, provider: .claude, input: first)
+        let old = try #require(await backend.runs.first)
+        await old.emit(.turnEnded(.completed), input: first.id)
+        try await waitManager { try await manager.state(chatID: chat).outcome == .completed }
+        let next = AgentInput(text: "next")
+        try await manager.send(chatID: chat, provider: .claude, input: next)
+        await old.emit(.textDelta("stale text"), input: first.id)
+        await old.emit(.turnEnded(.completed), input: first.id)
+        // Wrong generations are ignored by the coordinator too.
+        await old.emit(.textDelta("wrong generation"), input: next.id, run: UUID())
+        await old.emit(.textDelta("current"), input: next.id)
+        try await waitManager { try await manager.state(chatID: chat).streamingText == "current" }
+        #expect(try stores.agentTurn(id: next.id)?.state == .running)
+        try await manager.shutdown()
+        await old.emit(.textDelta("after shutdown"), input: next.id)
+        #expect(try await manager.state(chatID: chat).streamingText == "current")
+    }
+
+    @Test func boundedShutdownRecoversEvenWhenRunIgnoresCancellation() async throws {
+        let stores = try inMemoryStores()
+        let chat = try agentStoreChat(stores).0.id
+        let backend = ManagerTestBackend()
+        await backend.setHungShutdown(true)
+        let manager = try AgentSessionManager(persistence: stores, backend: { _ in backend }, audit: { _ in })
+        try await manager.send(chatID: chat, provider: .claude, input: .init(text: "first"))
+        let clock = ContinuousClock(); let began = clock.now
+        try await manager.shutdown(timeout: .milliseconds(30))
+        #expect(clock.now - began < .seconds(1))
+        await backend.setHungShutdown(false)
+        try await manager.send(chatID: chat, provider: .claude, input: .init(text: "after cancelled quit"))
+        #expect(try await manager.state(chatID: chat).isRunning)
+        for run in await backend.runs { await run.releaseShutdown() }
+        try await manager.shutdown()
+    }
+
+    @Test func stopDuringStartupRejectsLateRunWithoutTouchingReplacement() async throws {
+        let stores = try inMemoryStores()
+        let chat = try agentStoreChat(stores).0.id
+        let backend = ManagerTestBackend()
+        await backend.pauseNextStart()
+        let manager = try AgentSessionManager(persistence: stores, backend: { _ in backend }, audit: { _ in })
+        let first = AgentInput(text: "stop before startup finishes")
+        let task = Task { try await manager.send(chatID: chat, provider: .claude, input: first) }
+        try await waitManager { await backend.isStarting }
+        try await manager.stop(chatID: chat)
+        let second = AgentInput(text: "replacement")
+        try await manager.send(chatID: chat, provider: .claude, input: second)
+        await backend.releaseStart()
+        await #expect(throws: AgentSessionManagerError.staleRun) { try await task.value }
+        #expect(try stores.agentTurn(id: first.id)?.state == .interrupted)
+        #expect(try stores.agentTurn(id: first.id)?.delivery == .prepared)
+        #expect(try stores.agentTurn(id: second.id)?.state == .running)
+        #expect(await backend.totalWrites() == 1)
+        try await manager.shutdown()
+    }
+
+    @Test func cardsComeFromPendingCoordinatorRequestsAndExpire() async throws {
+        let stores = try inMemoryStores()
+        let chat = try agentStoreChat(stores).0.id
+        let backend = ManagerTestBackend()
+        let manager = try AgentSessionManager(persistence: stores, backend: { _ in backend }, audit: { _ in })
+        let input = AgentInput(text: "hooks and approvals")
+        try await manager.send(chatID: chat, provider: .claude, input: input)
+        let run = try #require(await backend.runs.first)
+        let scope = AgentEventScope(runID: run.id, inputID: input.id)
+        let hook = AgentRequest(id: .integer(1), scope: scope, kind: .preToolUse(.init(name: "Read", input: .null)))
+        await run.emit(.request(hook), input: input.id)
+        try await waitManager { await run.responses.count == 1 }
+        #expect(try await manager.state(chatID: chat).pendingCards.isEmpty)
+        let permission = AgentRequest(id: .integer(2), scope: scope, kind: .permission(.init(name: "Read", input: .null)))
+        await run.emit(.request(permission), input: input.id)
+        try await waitManager { try await manager.state(chatID: chat).pendingCards == [permission] }
+        try await manager.respond(chatID: chat, to: permission, with: .deny)
+        #expect(try await manager.state(chatID: chat).pendingCards.isEmpty)
+        await #expect(throws: AgentFailure.invalidRequest) { try await manager.respond(chatID: chat, to: permission, with: .deny) }
+        await run.emit(.turnEnded(.completed), input: input.id)
+        try await waitManager { try await manager.state(chatID: chat).outcome == .completed }
+        try await manager.shutdown()
+    }
+
+    @MainActor @Test func acceptedSendClearsDraftBeforeAuthFailureAndRetryUsesSavedInput() async throws {
+        let stores = try inMemoryStores()
+        let (chat, _) = try agentStoreChat(stores)
+        let backend = ManagerTestBackend()
+        await backend.setFailure(.auth)
+        let manager = try AgentSessionManager(persistence: stores, backend: { _ in backend }, audit: { _ in })
+        let composer = AcceptedComposer(chatID: chat.id, provider: .claude, draft: "Original message")
+        let input = AgentInput(text: composer.selection.draft)
+        await #expect(throws: AgentFailure.authRequired) {
+            try await manager.send(chatID: chat.id, provider: .claude, input: input, onAccepted: {
+                await composer.accept(input, chatID: chat.id)
+            })
+        }
+        #expect(composer.acceptances == 1)
+        #expect(composer.selection.draft.isEmpty)
+        #expect(try stores.agentTurn(id: input.id)?.delivery == .prepared)
+        #expect(try stores.agentEntries(chatID: chat.id).filter { $0.kind == "user" }.map(\.text) == [input.text])
+        // A new draft is independent of the saved sign-in retry.
+        composer.selection.draft = "Next message"
+        await backend.setFailure(.none)
+        try await manager.resendPrepared(turnID: input.id)
+        let run = try #require(await backend.runs.last)
+        #expect(await run.inputs.map(\.text) == [input.text])
+        #expect(composer.selection.draft == "Next message")
+        #expect(try stores.agentEntries(chatID: chat.id).filter { $0.kind == "user" }.count == 1)
+        try await manager.shutdown()
+    }
+
+    @MainActor @Test func rejectionBeforeAcceptanceKeepsDraftAndFailureAppearsInSidebar() async throws {
+        let stores = try inMemoryStores()
+        let (chat, _) = try agentStoreChat(stores)
+        let backend = ManagerTestBackend()
+        let manager = try AgentSessionManager(persistence: stores, backend: { _ in backend }, audit: { _ in })
+        let composer = AcceptedComposer(chatID: chat.id, provider: .claude, draft: "Keep this draft")
+        try stores.setWorkspaceChatArchived(id: chat.id, archived: true)
+        do {
+            try await manager.send(chatID: chat.id, provider: .claude, input: .init(text: composer.selection.draft), onAccepted: {
+                await composer.countAcceptance()
+            })
+            Issue.record("Archived chat accepted a Send")
+        } catch {
+            try await manager.reportSendFailure(chatID: chat.id, failure: .unsupported)
+        }
+        #expect(composer.acceptances == 0)
+        #expect(composer.selection.draft == "Keep this draft")
+        #expect(try await ChatSidebarStatus(manager.state(chatID: chat.id)) == .failed)
+        #expect(try stores.latestAgentTurn(chatID: chat.id) == nil)
+        try await manager.shutdown()
+    }
+
+    @Test func unavailableNativeHistoryDoesNotBlockSendOrReplaceTranscript() async throws {
+        for failure in [AgentFailure.unsupported, .offline, .notInstalled, .authRequired, .crashed(exitCode: 1)] {
+            let stores = try inMemoryStores()
+            var (chat, session) = try agentStoreChat(stores, provider: .codex)
+            session.sessionID = .init(provider: .codex, profile: "default", nativeID: "saved-thread")
+            try stores.saveAgentSession(session)
+            let saved = try stores.saveAgentEntry(.init(chatID: chat.id, provider: .codex,
+                kind: "assistant", text: "Saved answer", sessionID: session.id))
+            let backend = ManagerTestBackend()
+            await backend.setHistoryFailure(failure)
+            let manager = try AgentSessionManager(persistence: stores, backend: { _ in backend }, audit: { _ in })
+            let next = AgentInput(text: "Continue")
+            try await manager.send(chatID: chat.id, provider: .codex, input: next)
+            #expect(await backend.totalWrites() == 1)
+            #expect(try stores.agentEntries(chatID: chat.id).contains { $0.id == saved.id && $0.text == "Saved answer" })
+            #expect(try stores.agentTurn(id: next.id)?.state == .running)
+            try await manager.shutdown()
+        }
+    }
+
+    @Test func stopDuringAcceptanceNeverStartsProviderOrDeliversInput() async throws {
+        let stores = try inMemoryStores()
+        let (chat, _) = try agentStoreChat(stores)
+        let backend = ManagerTestBackend()
+        let manager = try AgentSessionManager(persistence: stores, backend: { _ in backend }, audit: { _ in })
+        let input = AgentInput(text: "Stop before startup")
+        await #expect(throws: AgentSessionManagerError.staleRun) {
+            try await manager.send(chatID: chat.id, provider: .claude, input: input, onAccepted: {
+                try? await manager.stop(chatID: chat.id)
+            })
+        }
+        #expect(await backend.runs.isEmpty)
+        #expect(try stores.agentTurn(id: input.id)?.delivery == .prepared)
+        #expect(try stores.agentTurn(id: input.id)?.state == .interrupted)
+        #expect(try await manager.state(chatID: chat.id).outcome == .interrupted)
+        try await manager.shutdown()
+    }
+
+    @Test(arguments: ["complete", "unavailable", "invalid"])
+    func sendAfterTurnEndWaitsForPassiveRefreshAndFailsClosedOnInvalidHistory(history: String) async throws {
+        let stores = try inMemoryStores()
+        var (chat, session) = try agentStoreChat(stores, provider: .codex)
+        session.sessionID = .init(provider: .codex, profile: "default", nativeID: "thread")
+        try stores.saveAgentSession(session)
+        let backend = ManagerTestBackend()
+        let manager = try AgentSessionManager(persistence: stores, backend: { _ in backend }, audit: { _ in })
+        let first = AgentInput(text: "First")
+        try await manager.send(chatID: chat.id, provider: .codex, input: first)
+        let run = try #require(await backend.runs.last)
+        await run.emit(.turnEnded(.completed), input: first.id)
+        try await waitManager { try await manager.state(chatID: chat.id).outcome == .completed }
+        await backend.pauseNextHistoryRead()
+        if history == "complete" { await backend.setHistoryFailure(nil) }
+        if history == "invalid" { await backend.setHistoryFailure(AgentNativeHistoryError.identityConflict) }
+        let owner = chat.id, chosenSession = session
+        let refresh = Task { try await manager.refreshNativeHistory(chatID: owner) }
+        try await waitManager { await backend.historyIsPaused }
+        let next = AgentInput(text: "Send immediately after Stop disappears")
+        let queued = Task {
+            do { try await manager.waitForNativeHistory(chatID: owner) }
+            catch where AgentSessionManager.historyUnavailable(error) { }
+            try await manager.configure(chosenSession)
+            try await manager.send(chatID: owner, provider: .codex, input: next)
+        }
+        #expect(await backend.totalWrites() == 1)
+        #expect(try stores.agentTurn(id: next.id) == nil)
+        await backend.releaseHistoryRead()
+        _ = await refresh.result
+        if history == "invalid" {
+            await #expect(throws: AgentNativeHistoryError.identityConflict) { try await queued.value }
+            #expect(await backend.totalWrites() == 1)
+            #expect(try stores.agentTurn(id: next.id) == nil)
+        } else {
+            try await queued.value
+            #expect(await backend.totalWrites() == 2)
+            #expect(try stores.agentEntries(chatID: chat.id).filter { $0.id == next.id }.count == 1)
+        }
+        try await manager.shutdown()
+    }
+
+    @Test func newChatDoesNotReadNativeHistoryWithoutSessionIdentity() async throws {
+        #expect(AgentSessionManager.historyUnavailable(AgentNativeHistoryError.notFound))
+        #expect(!AgentSessionManager.historyUnavailable(AgentNativeHistoryError.identityConflict))
+        #expect(!AgentSessionManager.historyUnavailable(AgentNativeHistoryError.malformedHistory))
+        let stores = try inMemoryStores()
+        let (chat, _) = try agentStoreChat(stores, provider: .codex)
+        let backend = ManagerTestBackend()
+        let manager = try AgentSessionManager(persistence: stores, backend: { _ in backend }, audit: { _ in })
+        try await manager.refreshNativeHistory(chatID: chat.id)
+        #expect(await backend.historyReads == 0)
+        try await manager.send(chatID: chat.id, provider: .codex, input: .init(text: "Hello"))
+        #expect(await backend.historyReads == 0)
+        try await manager.shutdown()
+    }
+
+    @Test func reducerStableMessagesToolsHooksUsageAndOutcome() {
+        let chat = UUID(); let input = AgentInput(text: "test")
+        let session = AgentChatSession(chatID: chat, provider: .claude, cwd: "/tmp", model: "test")
+        var state = ChatState(chatID: chat)
+        let assistant = UUID()
+        state.begin(input, session: session, outputID: assistant)
+        let scope = AgentEventScope(runID: UUID(), inputID: input.id, itemID: "item")
+        func event(_ kind: AgentEvent.Kind) -> AgentEvent { .init(scope: scope, kind: kind) }
+        state.reduce(event(.textDelta("partial")), newEntryID: UUID())
+        state.reduce(event(.thinkingDelta("reasoning")), newEntryID: UUID())
+        state.reduce(event(.toolStarted(.init(name: "Read", input: .null))), newEntryID: UUID())
+        state.reduce(event(.toolFinished(output: .string("read"), isError: false)), newEntryID: UUID())
+        state.reduce(event(.message(id: "native", role: "assistant", text: "complete")), newEntryID: UUID())
+        state.reduce(event(.message(id: "native", role: "assistant", text: "complete")), newEntryID: UUID())
+        state.reduce(event(.request(.init(id: .integer(1), scope: scope, kind: .preToolUse(.init(name: "Read", input: .null))))), newEntryID: UUID())
+        state.reduce(event(.usage(.init(scope: .turn, outputTokens: 5))), newEntryID: UUID())
+        state.reduce(event(.rateLimits([.init(id: "window", utilization: 0.5)])), newEntryID: UUID())
+        state.reduce(event(.turnEnded(.completed)), newEntryID: UUID())
+        #expect(state.entries.filter { $0.kind == "assistant" }.count == 1)
+        #expect(state.entries.first { $0.id == assistant }?.text == "complete")
+        #expect(state.thinking == "reasoning")
+        #expect(state.tools.first?.isFinished == true)
+        #expect(state.pendingCards.isEmpty)
+        #expect(state.usage?.outputTokens == 5)
+        #expect(state.rateLimits.first?.utilization == 0.5)
+        #expect(state.outcome == .completed)
+    }
+}
+
+private func waitManager(_ predicate: () async throws -> Bool) async throws {
+    for _ in 0..<400 {
+        if try await predicate() { return }
+        try await Task.sleep(for: .milliseconds(5))
+    }
+    throw AgentFailure.offline
+}
+
+private let managerClaudeScript = #"""
+claude_init()
+session = sys.argv[sys.argv.index('--resume')+1] if '--resume' in sys.argv else 'fixture-'+str(os.getpid())
+counter=0
+while True:
+    request=read()
+    if request.get('type')=='control_request':
+        assert request['request']['subtype']=='interrupt'
+        emit({'type':'control_response','response':{'subtype':'success','request_id':request['request_id'],'response':{}}})
+        emit({'type':'result','is_error':True,'subtype':'error_during_execution'})
+        continue
+    assert request['type']=='user'
+    counter+=1
+    emit({'type':'system','subtype':'init','apiKeySource':'none','session_id':session})
+    emit({'type':'stream_event','event':{'type':'content_block_delta','index':0,'delta':{'type':'text_delta','text':'partial'}}})
+    if request['message']['content']=='finish':
+        emit({'type':'assistant','uuid':'message-'+str(os.getpid())+'-'+str(counter),'message':{'role':'assistant','content':[{'type':'text','text':'complete'}]}})
+        emit({'type':'result','is_error':False,'subtype':'success'})
+"""#
+
+private actor ManagerStartCounter: AgentBackend {
+    let backend: any AgentBackend
+    private(set) var count = 0
+    init(backend: any AgentBackend) { self.backend = backend }
+    func status() async throws -> AgentStatus { try await backend.status() }
+    func signIn(onBrowserURL: @escaping @Sendable (URL) async -> Void) async throws { try await backend.signIn(onBrowserURL: onBrowserURL) }
+    func models() async throws -> [AgentModel] { try await backend.models() }
+    func start(_ configuration: AgentSessionConfiguration) async throws -> any AgentRun { count += 1; return try await backend.start(configuration) }
+    func listSessions(folder: URL, cursor: String?) throws -> AgentPage<AgentSessionSummary> { throw AgentFailure.unsupported }
+    func readHistory(session: AgentSessionID, cursor: String?) throws -> AgentPage<AgentEvent> { throw AgentFailure.unsupported }
+}
+
+private actor ManagerTestBackend: AgentBackend {
+    enum Failure: Sendable { case none, before, after, auth }
+    private var failure: Failure = .none
+    private var historyFailure: (any Error)? = AgentFailure.unsupported
+    private var pauseHistory = false
+    private var historyWaiter: CheckedContinuation<Void, Never>?
+    var historyIsPaused: Bool { historyWaiter != nil }
+    func pauseNextHistoryRead() { pauseHistory = true }
+    func releaseHistoryRead() { historyWaiter?.resume(); historyWaiter = nil }
+    private(set) var historyReads = 0
+    func setHistoryFailure(_ value: (any Error)?) { historyFailure = value }
+    private var hungShutdown = false
+    private var pauseStart = false
+    private var startWaiter: CheckedContinuation<Void, Never>?
+    var isStarting: Bool { startWaiter != nil }
+    func pauseNextStart() { pauseStart = true }
+    func releaseStart() { startWaiter?.resume(); startWaiter = nil }
+    private(set) var runs: [ManagerTestRun] = []
+    private(set) var configurations: [AgentSessionConfiguration] = []
+    func setFailure(_ failure: Failure) { self.failure = failure }
+    func setHungShutdown(_ value: Bool) { hungShutdown = value }
+    func totalWrites() async -> Int { var count = 0; for run in runs { count += await run.writes }; return count }
+    func status() -> AgentStatus { .init(installed: true, authentication: .subscription, capabilities: []) }
+    func signIn(onBrowserURL: @escaping @Sendable (URL) async -> Void) throws { throw AgentFailure.unsupported }
+    func models() -> [AgentModel] { [] }
+    func start(_ configuration: AgentSessionConfiguration) async throws -> any AgentRun {
+        if failure == .auth { throw AgentFailure.authRequired }
+        if pauseStart {
+            pauseStart = false
+            await withCheckedContinuation { startWaiter = $0 }
+        }
+        configurations.append(configuration)
+        let run = ManagerTestRun(failure: failure, hungShutdown: hungShutdown); runs.append(run); return run
+    }
+    func listSessions(folder: URL, cursor: String?) throws -> AgentPage<AgentSessionSummary> { throw AgentFailure.unsupported }
+    func readHistory(session: AgentSessionID, cursor: String?) async throws -> AgentPage<AgentEvent> {
+        historyReads += 1
+        if pauseHistory {
+            pauseHistory = false
+            await withCheckedContinuation { historyWaiter = $0 }
+        }
+        if let historyFailure { throw historyFailure }
+        return .init(items: [])
+    }
+}
+private actor ManagerTestRun: AgentRun {
+    nonisolated let id = UUID()
+    nonisolated let events: AsyncThrowingStream<AgentEvent, Error>
+    private let continuation: AsyncThrowingStream<AgentEvent, Error>.Continuation
+    private let failure: ManagerTestBackend.Failure
+    private let hungShutdown: Bool
+    private var shutdownWaiter: CheckedContinuation<Void, Never>?
+    private(set) var isShutdown = false
+    private(set) var writes = 0
+    private(set) var inputs: [AgentInput] = []
+    private(set) var responses: [AgentResponse] = []
+    init(failure: ManagerTestBackend.Failure, hungShutdown: Bool) {
+        self.failure = failure; self.hungShutdown = hungShutdown
+        (events, continuation) = AsyncThrowingStream.makeStream()
+    }
+    func send(_ input: AgentInput, willDeliver: @escaping @Sendable () async throws -> Void) async throws {
+        if failure == .before { throw AgentFailure.offline }
+        if failure == .auth { throw AgentFailure.authRequired }
+        try await willDeliver()
+        inputs.append(input)
+        writes += 1
+        if failure == .after { throw AgentFailure.offline }
+    }
+    func respond(to request: AgentRequest, with response: AgentResponse) { responses.append(response) }
+    func setMode(_ mode: AgentMode) {}
+    func interrupt() {}
+    func shutdown() async {
+        isShutdown = true
+        if hungShutdown { await withCheckedContinuation { shutdownWaiter = $0 } }
+        continuation.finish()
+    }
+    func releaseShutdown() { shutdownWaiter?.resume(); shutdownWaiter = nil }
+    func emit(_ kind: AgentEvent.Kind, input: UUID, run: UUID? = nil) {
+        continuation.yield(.init(scope: .init(runID: run ?? id, inputID: input), kind: kind))
+    }
+}
+
+@MainActor private final class AcceptedComposer {
+    var selection = ChatSelectionState()
+    private(set) var acceptances = 0
+    init(chatID: UUID, provider: AgentProvider, draft: String) {
+        selection.select(chatID, provider: provider); selection.draft = draft
+    }
+    func accept(_ input: AgentInput, chatID: UUID) {
+        acceptances += 1
+        selection.clearDraft(chatID: chatID, ifUnchanged: input.text)
+    }
+    func countAcceptance() { acceptances += 1 }
+}
+
+extension AgentSessionManagerTests {
+    @Test func codexLocalClaudeShareOneChatAndLocalResumesWithoutDuplicateContext() async throws {
+        let stores = try inMemoryStores()
+        let (chat, _) = try agentStoreChat(stores, provider: .codex, cwd: "/tmp/project")
+        let subscription = ManagerTestBackend()
+        let wire = OpencodeFakeTransport()
+        let local = localBackend(wire)
+        let manager = try AgentSessionManager(persistence: stores,
+            backend: { provider in
+                if provider == .local { return local }; return subscription
+            }, audit: { _ = try stores.record($0) })
+        let first = AgentInput(text: "Reply with only this word spelled backwards: nacilep")
+        try await manager.send(chatID: chat.id, provider: .codex, input: first)
+        let codex = try #require(await subscription.runs.last)
+        await codex.emit(.sessionStarted(.init(provider: .codex, profile: "default", nativeID: "codex-fixture")), input: first.id)
+        await codex.emit(.delivery(.acknowledged), input: first.id)
+        await codex.emit(.textDelta("pelican"), input: first.id)
+        await codex.emit(.turnEnded(.completed), input: first.id)
+        try await waitManager { try await manager.state(chatID: chat.id).outcome == .completed }
+
+        try await manager.configure(.init(chatID: chat.id, provider: .local, cwd: "/tmp/project", model: "test-model"))
+        let second = AgentInput(text: "Which word did you just reply with? Reply in capitals.")
+        try await manager.send(chatID: chat.id, provider: .local, input: second)
+        let intoLocal = try #require(await wire.calls.last?.body?["text"]?.stringValue)
+        #expect(intoLocal.contains("pelican")); #expect(intoLocal.contains("nacilep"))
+        await wire.emit(localEvent("session.text.delta", ["delta": .string("PELICAN")]))
+        await wire.emit(localEvent("session.execution.succeeded"))
+        try await waitManager { try await manager.state(chatID: chat.id).outcome == .completed }
+        #expect(try stores.agentSession(chatID: chat.id, provider: .local)?.sessionID == localSession)
+
+        try await manager.send(chatID: chat.id, provider: .local, input: .init(text: "Keep this native session"))
+        #expect(await wire.calls.last?.body?["text"] == .string("Keep this native session"))
+        #expect(await wire.calls.filter { $0.path == "api/session" && $0.method == "POST" }.count == 1)
+        await wire.emit(localEvent("session.text.delta", ["delta": .string("Session kept")]))
+        await wire.emit(localEvent("session.execution.succeeded"))
+        try await waitManager { try await manager.state(chatID: chat.id).outcome == .completed }
+
+        try await manager.configure(.init(chatID: chat.id, provider: .claude, cwd: "/tmp/project", model: "test"))
+        let fourth = AgentInput(text: "Continue with the earlier word")
+        try await manager.send(chatID: chat.id, provider: .claude, input: fourth)
+        let claude = try #require(await subscription.runs.last)
+        let intoClaude = try #require(await claude.inputs.last?.text)
+        #expect(intoClaude.contains("pelican")); #expect(intoClaude.contains("PELICAN"))
+        #expect(intoClaude.contains("Session kept")); #expect(intoClaude.contains("nacilep"))
+        #expect(intoClaude.components(separatedBy: "[Aitvaras context handover").count == 2)
+        await claude.emit(.delivery(.acknowledged), input: fourth.id)
+        await claude.emit(.turnEnded(.completed), input: fourth.id)
+        try await waitManager { try await manager.state(chatID: chat.id).outcome == .completed }
+        try await manager.shutdown(); await local.shutdown()
+    }
+}
+
+extension AgentSessionManagerTests {
+    @Test func missingOpencodeFallbackKeepsEarlierLocalRepliesInContext() async throws {
+        let stores = try inMemoryStores()
+        let (chat, original) = try agentStoreChat(stores, provider: .local, cwd: "/tmp/project")
+        let wire = OpencodeFakeTransport()
+        let native = localBackend(wire)
+        let firstManager = try AgentSessionManager(persistence: stores, backend: { _ in native }, audit: { _ in })
+        var selected = original; selected.model = "test-model"
+        try await firstManager.configure(selected)
+        try await firstManager.send(chatID: chat.id, provider: .local, input: .init(text: "Remember the earlier word"))
+        await wire.emit(localEvent("session.text.delta", ["delta": .string("PELICAN")]))
+        await wire.emit(localEvent("session.execution.succeeded"))
+        try await waitManager { try await firstManager.state(chatID: chat.id).outcome == .completed }
+        try await firstManager.shutdown(); await native.shutdown()
+        #expect(try stores.agentSession(chatID: chat.id, provider: .local)?.sessionID == localSession)
+
+        let recorder = LocalFallbackRecorder()
+        let fallback = LocalBackend { _, input in
+            await recorder.record(input.text)
+            return AsyncThrowingStream { $0.yield("Fallback reply"); $0.finish() }
+        }
+        let manager = try AgentSessionManager(persistence: stores, backend: { _ in fallback }, audit: { _ in })
+        try await manager.send(chatID: chat.id, provider: .local, input: .init(text: "Continue locally"))
+        try await waitManager { try await manager.state(chatID: chat.id).outcome == .completed }
+        #expect(await recorder.text?.contains("PELICAN") == true)
+        #expect(try stores.agentSession(chatID: chat.id, provider: .local)?.sessionID == nil)
+        try await manager.shutdown()
+    }
+}
+private actor LocalFallbackRecorder {
+    private(set) var text: String?
+    func record(_ value: String) { text = value }
+}

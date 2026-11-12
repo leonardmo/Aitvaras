@@ -3,10 +3,14 @@
 ## Layout
 
 ```
-Aitvaras.xcodeproj            — app target (SwiftUI, RealityKit character, windows)
+Aitvaras.xcodeproj            — app target (SwiftUI, SceneKit character, windows)
 Package.swift              — AitvarasKit: everything testable without the app
   Sources/
-    AitvarasCore/             — domain types, agent loop, activity log, memory
+    AitvarasCore/             — domain types, shared reducers, activity and memory contracts
+    AitvarasAgents/           — direct CLI backends, per-chat sessions, policy/audit,
+                             native history, git workspaces and sandboxed Local agent
+    AitvarasStore/            — GRDB records, migrations, chat journal and projections
+    AitvarasAgent/            — AgentLoop, connector dispatch, memory pipelines
     AitvarasEngines/          — InferenceEngine impls: MLX, Ollama, AppleFM  (added in M1)
     AitvarasVoice/            — STT (SpeechAnalyzer), TTS engines, conversation loop (M2)
     AitvarasConnectors/       — Mail, Calendar, Reminders, Moodle, Homelab,
@@ -19,7 +23,7 @@ Package.swift              — AitvarasKit: everything testable without the app
 ```
                     ┌──────────────────────────────────────────┐
                     │                App (SwiftUI)              │
-                    │  CompanionWindow (RealityKit character)   │
+                    │  CompanionWindow (SceneKit character)     │
                     │  MainWindow (chat, activity, settings)    │
                     └───────▲──────────────────────▲───────────┘
                             │ state                │ transcript/audio
@@ -46,10 +50,110 @@ Package.swift              — AitvarasKit: everything testable without the app
 
 ## Key mechanics
 
+- **Chat UI**: `MainWindow` opens `ProjectChatWorkspaceView`, whose
+  `AgentChatView` and `ChatModel` share one composer/transcript across Local,
+  Codex and Claude. New Chat is an unsaved composer; first Send creates a
+  project-owned chat. The flat project picker, optional default project,
+  sidebar status/read receipts and Setup → AI providers follow D32. Earlier
+  project-less conversations remain in `LocalChatView`. Normal scene content
+  has an 800 × 500-point minimum (`AitvarasApp`), with 1080 × 720 as default.
 - **AgentCore** runs the tool-use loop: user/voice/event input → context assembly (RAG retrieve + memories + activity) → model streams → typed tool calls into ConnectorHub → results back into the loop. Model choice per step: 4B/AppleFM for routing & triage, 30B for reasoning & conversation.
 - **Connectors** expose *typed* tools with declared risk levels (`read` / `reversibleWrite` / `confirmable`). AgentCore enforces D13 autonomy rules centrally; a connector can never bypass confirmation.
-- **CloudAgentService** is the single provider-neutral boundary for optional
-  Claude Code and Codex CLI use. Authentication is checked before each call;
+- **Direct chat actions** use `AitvarasAgents.AgentActionCoordinator`, an
+  `AgentRun` wrapper around each raw CLI run. The session owner must expose
+  the wrapper and supply the same initial mode plus a durable activity sink
+  (for example `Stores.record`). It reuses `AutonomyPolicy` and `ActivityEvent`
+  without a store dependency. Claude pre-tool hooks deny forbidden actions,
+  otherwise audit and continue without an approval card. Native permission
+  modes decide when to ask, including allowing internal bookkeeping and the
+  native plan-file write. Tool permission requests need a card unless the
+  user explicitly whitelisted `provider.<native tool name>` in the supplied
+  autonomy policy; forbidden actions cannot be whitelisted. Permission grants
+  also need a card in Plan mode. Risk remains audit metadata, not a second
+  permission decision. Codex's sandbox governs operations without requests,
+  whose item events are logged as observations. Pending requests retain
+  the full run/input scope and expire on interrupt, turn end, exit or shutdown.
+  Audit failure denies the request; audit failure on a Codex observation stops
+  the run without claiming that an observed side effect was prevented.
+  Service mail writes and unverified Calendar/Reminders mutations are denied,
+  as are recognizable mail-sending shell commands. Tool-name classification
+  does not establish arbitrary shell semantics.
+  Activity stores scope, decisions, risk and safe tool identifiers, with hashes
+  for native identifiers and custom tool names; it omits raw inputs and outputs.
+- **Direct chat lifetime and storage**: `AgentSessionManager` is an application
+  lifetime actor with independent per-chat runs, each wrapped by
+  `AgentActionCoordinator`. Sends start/resume lazily; views subscribe to bounded
+  per-chat `AsyncStream<ChatState>` snapshots and can detach without stopping work.
+  Up to eight chats can run, including approval waits. At eight retained
+  transports, a new chat evicts the least recently used idle run and later
+  resumes its saved native session. Idle runs close after ten minutes; Stop
+  is scoped to one chat. Shutdown detaches generations before bounded
+  cleanup and permits a new Send if application quit is cancelled.
+  `ChatState` reduces normalized events into transcript, streaming text, thinking,
+  tools, usage, rate limits and outcome. Cards come exclusively from the
+  coordinator's pending set, since automatically answered hooks also appear in
+  the event stream.
+  `AgentChatStore` and `AgentTurnStore` add normalized provider sessions, ordered
+  entries and a separate durable journal. The store implements the injected
+  `AgentSessionPersistence` interface; backend values remain independent of GRDB.
+  The journal is prepared before startup and commits `deliveryUnknown` at the
+  `willDeliver` barrier before input leaves. Provider acknowledgement advances it
+  separately. Startup marks running turns interrupted, retaining partial output
+  and sending nothing. An explicit retry can claim only prepared input, once.
+  `ChatModel` binds project-chat selection, provider settings and per-chat drafts
+  to this manager in the existing Chat tab. `AgentHandoverStore` selects completed
+  canonical user/assistant entries; `ChatContextProjection` retains the newest
+  entries in one labelled 16,000-byte UTF-8 block, explicitly clipping an
+  oversized newest message at a Unicode character boundary. Its exact text is saved
+  atomically with the prepared turn. Only acknowledged journal rows contribute
+  to a provider watermark. Text-only Local reads bounded completed context on every Send; opencode Local
+  retains a native session and acknowledged catch-up receipts
+  through a tool-free injected `AgentLoop` adapter.
+  Existing workspace project/chat/conversation identities and legacy execution
+  tables, triggers and readers remain intact. Legacy text projects into the
+  unified transcript without adopting old native identities or rewriting source
+  rows; imported evidence remains collapsed and read-only, outside catch-up.
+  Earlier project-less chat, voice, shortcuts, capture and memory archiving
+  retain their existing paths. M6.3 removal of obsolete chat code waits for the
+  owner's review; compatibility does not mean that removal is complete.
+  The companion's project-chat panel shares `AgentChatView`, `ChatModel` and
+  its retained drafts with the main window. Durable workspace selection drives
+  the companion even when the main window is closed; only that selected chat
+  drives its thinking animation. Unassigned local text uses `LocalChatView` and
+  shared message rows; voice and exact shortcuts keep their local paths.
+  Navigation, Activity Stop and quit no longer consult legacy provider owners.
+  Each managed input creates an Activity row atomically with its journal, and
+  provider audits reference that durable input. Activity Stop validates the
+  input against its live owner before stopping the chat, so a stale click cannot
+  stop a later turn. Local AgentLoop work appears beneath its managed input.
+  Chat Details reads linked captures directly from their immutable store targets;
+  opening a target changes selection without sending or attaching the capture.
+  Project membership still blocks global archiving, including its final
+  transaction check; normalized provider entries do not enter global learning.
+  Nightly consolidation also excludes project git and current/legacy provider
+  action audits while retaining them in Activity.
+- **Local project chat (D33)** uses MIT opencode with Ollama, with a text-only
+  `LocalBackend` AgentLoop fallback when opencode is absent. `OpencodeBackend`
+  owns one on-demand server per profile and durable native session IDs.
+  `OpencodeHTTPTransport` consumes the transient startup password without
+  logging or forwarding stdout and uses Basic auth over loopback HTTP/SSE.
+  Generated XDG/config/data/cache/state/home directories live under
+  `AitvarasPaths.opencodeDirectory`; user/project config, credentials and default
+  plugins are not inherited. Sharing and updates are off and only local Ollama
+  is enabled. Model discovery uses loopback `/api/tags` and excludes remote
+  model metadata. No OpenAI CLI or remote-provider fallback is used.
+  `sandbox-exec` restricts the server and descendants to loopback network and
+  writes only in project/worktree/additional roots, isolated opencode data and
+  temp. New roots restart an idle server; a conflicting active run is refused.
+  All permissions pass the action coordinator with provenance before approval:
+  Ask confirms shell/edits, Accept Edits/Auto allow reversible edits, Plan denies
+  shell/edits. Shell remains confirmable and reads are automatically audited.
+  Remote web search/fetch is blocked. Existing catch-up works both ways with
+  Claude/Codex; native opencode history import is not yet advertised. Knowledge
+  exposure through Aitvaras MCP remains a follow-up. Host tests must verify the
+  generated sandbox/config, tool reliability, memory and voice coexistence.
+- **CloudAgentService** is the provider-neutral boundary for the four optional
+  non-chat CLI features, separate from direct project Chat. Authentication is checked before each call;
   prompts travel over stdin in a sanitized environment and always begin with
   the same versioned Aitvaras policy. Personal MCP servers, hooks, skills and
   CLI configuration are disabled. For non-delegation tasks Claude's tools are
@@ -128,5 +232,51 @@ Package.swift              — AitvarasKit: everything testable without the app
   trigger, arguments, risk or activation fields.
 - **Trusted senders** are local routing rules, never an instruction or authentication boundary. External-origin turns have no Memory/RAG/history/read tools; ConnectorHub permits only confirmation-gated `calendar.create_event` and `reminders.create_reminder`. See [MESSAGE-TRUST.md](MESSAGE-TRUST.md).
 - **VoicePipeline**: AVAudioEngine voice-processing I/O (echo cancellation) → SpeechAnalyzer streaming partials → end-of-turn VAD → agent streams → sentence-chunked TTS with barge-in cancellation.
-- **Character states** (idle / listening / thinking / speaking, plus mood accents) are driven by a small state machine observing AgentCore + VoicePipeline; RealityKit animations subscribe to it.
+- **Character states** (idle / listening / thinking / speaking, plus mood accents) are driven by a small state machine observing AgentCore + VoicePipeline; SceneKit animations subscribe to it.
 - **Concurrency**: Swift 6 strict concurrency; engines and connectors are actors; UI observes via `@Observable` models.
+
+### Native chat discovery
+
+`AitvarasAgents` reads Claude Code's local `projects/*/<session>.jsonl`
+files directly (format label: 2.1.300), tolerating unknown records and content
+blocks. Codex discovery uses `thread/list`; text previews use `thread/read`
+with full legacy turns. Neither reader needs Node or an SDK. Claude archive
+status is unavailable; Codex supports active and archived lists. Malformed,
+truncated, oversized or unsupported partial histories fail without claiming
+complete coverage. Claude files are limited to 32 MiB each; Codex paginated
+history modes are explicitly unsupported by this full-history reader. Previews
+project user/assistant text, excluding tool-only and auxiliary records. Local
+preview cursors bind offsets to the query and snapshot.
+
+`AgentNativeSessionStore` maps metadata through the existing normalized session
+identity key (provider, host, profile, native ID), in one transaction after all
+list pages succeed. Canonical folder aliases share a project; the most specific
+registered root wins for nested roots, and durable worktree ownership wins over
+folder matching. Equal roots in different projects, changed ownership and
+conflicting worktree sessions fail without reassignment. Multiple registered
+folders contribute chats to one project. Discovery preserves local titles,
+archive state, settings, conversations and all legacy evidence tables.
+
+The sidebar discovers native chats automatically and offers one refresh icon.
+Opening a chat refreshes a complete native branch into the canonical projection;
+Send resumes its saved native identity and cwd. Reconciliation preserves streamed
+display IDs and retires superseded branch rows while retaining observations and
+journals. Failed/partial/inconsistent reads keep the prior projection; identity
+conflicts and malformed history fail closed. Unavailable readers can use retained
+context without blocking Send. A second observation detects changes during
+refresh but does not lock another native client out. Acknowledged handover
+receipts bind source identities and digests; corrections travel on the next Send.
+The compatibility `NativeBackendSessionReader` supplies saved-source
+views using the same backends and launch policy as Chat. Fake Claude launches
+use a history directory inside the isolated test profile.
+
+### Acceptance still open
+
+The Codex in-process UI path has run; Claude through this UI has never run live
+because its CLI login expired. Its signed-out row and replay tests do not prove
+a live reply or provider-switch catch-up. Native menus, file panels, drag and
+drop and real focus are covered only by XCUITest, which needs the owner's
+password; that gate remains open. Self-drive caches content inside a nonactivating
+window and cannot establish those interactions. Light/dark and minimum-size
+screenshots still need host execution and review. See [TESTING.md](TESTING.md)
+for the layout matrix and remaining live gates; M6.3 is awaiting owner review.

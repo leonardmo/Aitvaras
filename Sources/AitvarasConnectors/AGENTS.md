@@ -15,9 +15,9 @@
   `docs/MESSAGE-TRUST.md`).
 - **CLI sidecars** (`Resources/*.mjs`, Claude Code / Codex clients) run on
   the user's subscription. Never pass or accept API keys, never fall back to
-  pay-as-you-go. Start children with an allowlisted environment
-  (`cleanEnvironment` in the helpers), never an inherited one, so no API key
-  can leak in. Each helper has an offline contract test in `scripts/`;
+  pay-as-you-go. Existing helpers start children with an allowlisted environment
+  (`cleanEnvironment`). New chat backends in `AitvarasAgents` use
+  `ProviderEnvironment` instead (D31). Each helper has an offline contract test in `scripts/`;
   run `make node-test` after changing one.
 - Fixtures use synthetic accounts (`*.example.invalid`), reserved IPs
   (`192.0.2.x`) and fake tokens that do not look like real JWTs.

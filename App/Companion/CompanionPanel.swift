@@ -198,6 +198,9 @@ struct CompanionView: View {
                 model.toggleVoice()
             }
             .foregroundStyle(model.voiceEnabled ? ActivityGlassPalette.recording : Color.primary)
+            .disabled(model.selectedWorkspaceProjectID != nil && !model.voiceEnabled)
+            .help(model.selectedWorkspaceProjectID == nil ? "Local voice conversation" : "Voice is available in Unassigned")
+            .accessibilityIdentifier("chat.companion.voice")
             Spacer(minLength: 0)
             moreControls
             iconButton("rectangle.expand.diagonal", label: "Open Aitvaras") {
@@ -235,7 +238,17 @@ struct CompanionView: View {
         .accessibilityLabel("More companion controls")
     }
 
-    private var chat: some View {
+    @ViewBuilder private var chat: some View {
+        if !model.showingEarlierChat, let chat = model.chatModel {
+            AgentChatView(chat: chat, chatID: model.selectedWorkspaceChatID ?? chat.newChatID, canSend: model.selectedWorkspaceChat?.archivedAt == nil,
+                          compact: true)
+                .accessibilityIdentifier("chat.companion")
+        } else {
+            localChat
+        }
+    }
+
+    private var localChat: some View {
         VStack(spacing: 10) {
             Divider()
             ScrollViewReader { proxy in
@@ -262,21 +275,23 @@ struct CompanionView: View {
             HStack(alignment: .bottom, spacing: 9) {
                 TextField("Message Aitvaras…", text: $presentation.draft, axis: .vertical)
                     .textFieldStyle(.plain).lineLimit(2...5).focused($promptFocused)
-                    .onSubmit(send).padding(10)
+                    .onSubmit(send).accessibilityIdentifier("chat.companion.input").padding(10)
                     .background(.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 10))
                 Button(action: send) {
                     Image(systemName: "arrow.up.circle.fill").font(.title2)
                 }
                 .buttonStyle(.plain)
-                .disabled(model.isResponding || presentation.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .disabled(model.isResponding || model.microphoneInUseByVoice || model.localAgentReplyActive || model.selectedUnassignedVoiceHistory || model.selectedChatConversationID == nil || presentation.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 .help(model.isResponding ? "A reply is in progress; your draft is kept" : "Send message")
-                .accessibilityLabel("Send message")
+                .accessibilityLabel("Send message").accessibilityIdentifier("chat.companion.send")
             }
             if model.isResponding {
                 HStack(spacing: 6) {
                     ProgressView().controlSize(.mini)
                     Text("Reply in progress · collapsing chat keeps it running").font(.caption).foregroundStyle(.secondary)
                     Spacer(minLength: 0)
+                    Button("Stop", systemImage: "stop.fill") { model.cancelTurn() }
+                        .labelStyle(.iconOnly).accessibilityIdentifier("chat.companion.stop")
                 }
             }
         }.frame(maxHeight: .infinity)

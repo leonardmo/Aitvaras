@@ -7,7 +7,7 @@ XCODE_FLAGS := -project Aitvaras.xcodeproj -scheme Aitvaras \
 NODE_TESTS := scripts/test-claude-interactive.mjs scripts/check-codex-interactive.mjs \
 	scripts/check-codex-native.mjs scripts/check-codex-shared-runtime.mjs
 
-.PHONY: help setup test node-test project app release privacy commits check smoke install clean
+.PHONY: sweep help setup test node-test project app e2e ui live release privacy commits check smoke install clean
 
 help: ## List targets
 	@grep -E '^[a-z-]+:.*## ' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-10s %s\n", $$1, $$2}'
@@ -17,7 +17,10 @@ setup: ## Install the git hooks and the private denylist template (once per clon
 	@echo "Hooks enabled. Commit author: $$(git config user.email)"
 
 test: ## Package tests, serial like CI (the suite has timing tests that fail in parallel)
-	swift test --no-parallel
+	swift test --no-parallel; s=$$?; scripts/sweep-test-leftovers.sh; exit $$s
+
+sweep: ## Stop processes that test runs left behind (runs after every test target)
+	scripts/sweep-test-leftovers.sh
 
 node-test: ## Offline contract tests for the Node sidecar helpers
 	@set -e; for t in $(NODE_TESTS); do echo "── $$t"; node $$t; done
@@ -36,6 +39,25 @@ endef
 
 app: project ## Debug app build into .build-xcode
 	$(call xcodebuild_logged,Debug,.build-xcode)
+
+# Real clicks and real window screenshots. A separate bundle id keeps XCUITest
+# away from a running installed app. Screenshots land in .build-e2e/screenshots.
+e2e: project ## Real-app UI tests with an isolated profile and bundle id
+	scripts/run-e2e.sh $(E2E_FILTER); s=$$?; scripts/sweep-test-leftovers.sh; exit $$s
+
+# The same real app and real CLIs, driven from inside its own process: no permission,
+# no password, and the mouse and keyboard stay yours.
+ui: ## Real-app chat scenario with no system permission
+	scripts/run-self-drive.sh $(UI_SCENARIO)
+
+# Real CLIs on the real login. Runs from a launchd-style environment on purpose,
+# because a GUI app gets none of the shell's variables. Spends a little usage.
+live: ## Live provider checks against the installed CLIs
+	swift build --build-tests -q
+	env -i HOME="$$HOME" USER="$$USER" LOGNAME="$$USER" SHELL="$$SHELL" TMPDIR="$$TMPDIR" LANG=en_US.UTF-8 \
+		PATH=/usr/bin:/bin:/usr/sbin:/sbin AITVARAS_LIVE_AGENTS=1 \
+		"$$(xcrun -f swift)" test --skip-build --no-parallel --filter AgentLiveTests; \
+		s=$$?; scripts/sweep-test-leftovers.sh; exit $$s
 
 release: project ## Release app build into .build/DerivedData
 	$(call xcodebuild_logged,Release,.build/DerivedData)

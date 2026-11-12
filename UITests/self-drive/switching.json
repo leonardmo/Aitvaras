@@ -1,0 +1,261 @@
+{
+  "steps": [
+    {
+      "action": "press",
+      "identifier": "bubble.left.and.text.bubble.right"
+    },
+    {
+      "action": "press",
+      "identifier": "chat.new.$project"
+    },
+    {
+      "action": "waitFor",
+      "identifier": "chat.provider.codex",
+      "enabled": true,
+      "timeout": 180
+    },
+    {
+      "action": "press",
+      "identifier": "chat.provider.codex"
+    },
+    {
+      "action": "waitFor",
+      "identifier": "chat.composer.send",
+      "enabled": true,
+      "timeout": 180
+    },
+    {
+      "action": "type",
+      "text": "Reply with only this word spelled backwards: nacilep"
+    },
+    {
+      "action": "press",
+      "identifier": "chat.composer.send"
+    },
+    {
+      "action": "waitFor",
+      "text": "Reply with only this word spelled backwards: nacilep",
+      "within": "chat.composer.input",
+      "absent": true,
+      "timeout": 15
+    },
+    {
+      "action": "waitFor",
+      "text": "pelican",
+      "within": "chat.transcript",
+      "caseSensitive": true,
+      "timeout": 180
+    },
+    {
+      "action": "waitFor",
+      "identifier": "chat.composer.stop",
+      "timeout": 180,
+      "absent": true
+    },
+    {
+      "action": "dumpTree",
+      "name": "before-local-switch",
+      "delay": 3
+    },
+    {
+      "action": "press",
+      "identifier": "chat.provider.local"
+    },
+    {
+      "action": "waitFor",
+      "identifier": "chat.composer.send",
+      "enabled": true,
+      "timeout": 300
+    },
+    {
+      "action": "type",
+      "text": "Which word did you just reply with? Reply with only that word, in capitals."
+    },
+    {
+      "action": "press",
+      "identifier": "chat.composer.send"
+    },
+    {
+      "action": "waitFor",
+      "text": "Which word did you just reply with? Reply with only that word, in capitals.",
+      "within": "chat.composer.input",
+      "absent": true,
+      "timeout": 300
+    },
+    {
+      "action": "waitFor",
+      "text": "PELICAN",
+      "within": "chat.transcript",
+      "caseSensitive": true,
+      "timeout": 300
+    },
+    {
+      "action": "waitFor",
+      "identifier": "chat.composer.stop",
+      "timeout": 300,
+      "absent": true
+    },
+    {
+      "action": "waitFor",
+      "identifier": "chat.composer.send",
+      "enabled": true,
+      "timeout": 300
+    },
+    {
+      "action": "type",
+      "text": "Use your bash shell tool to run exactly: printf example > local-made.txt. Do not use an edit tool. Wait for approval."
+    },
+    {
+      "action": "press",
+      "identifier": "chat.composer.send"
+    },
+    {
+      "action": "waitFor",
+      "text": "Use your bash shell tool to run exactly: printf example > local-made.txt. Do not use an edit tool. Wait for approval.",
+      "within": "chat.composer.input",
+      "absent": true,
+      "timeout": 300
+    },
+    {
+      "action": "waitFor",
+      "identifier": "chat.request.0.allow",
+      "enabled": true,
+      "timeout": 300
+    },
+    {
+      "action": "screenshot",
+      "name": "local-approval"
+    },
+    {
+      "action": "press",
+      "identifier": "chat.request.0.allow"
+    },
+    {
+      "action": "waitFor",
+      "identifier": "chat.tool.completed",
+      "within": "chat.transcript",
+      "timeout": 300
+    },
+    {
+      "action": "waitFor",
+      "identifier": "chat.composer.stop",
+      "timeout": 300,
+      "absent": true
+    },
+    {
+      "action": "waitFor",
+      "identifier": "chat.composer.send",
+      "enabled": true,
+      "timeout": 300
+    },
+    {
+      "action": "type",
+      "text": "Ask me in plain text which color to use, offering Blue and Green. Start your question with \"Which\" and wait for my next message. After I answer, reply with only the words COLOR CHOICE DONE joined with hyphens."
+    },
+    {
+      "action": "press",
+      "identifier": "chat.composer.send"
+    },
+    {
+      "action": "waitFor",
+      "text": "Ask me in plain text which color to use, offering Blue and Green. Start your question with \"Which\" and wait for my next message. After I answer, reply with only the words COLOR CHOICE DONE joined with hyphens.",
+      "within": "chat.composer.input",
+      "absent": true,
+      "timeout": 300
+    },
+    {
+      "action": "waitFor",
+      "text": "Which color",
+      "within": "chat.transcript",
+      "timeout": 300,
+      "caseSensitive": true
+    },
+    {
+      "action": "waitFor",
+      "identifier": "chat.composer.stop",
+      "absent": true,
+      "timeout": 300
+    },
+    {
+      "action": "screenshot",
+      "name": "local-question"
+    },
+    {
+      "action": "waitFor",
+      "identifier": "chat.composer.send",
+      "enabled": true,
+      "timeout": 300
+    },
+    {
+      "action": "type",
+      "text": "Blue"
+    },
+    {
+      "action": "press",
+      "identifier": "chat.composer.send"
+    },
+    {
+      "action": "waitFor",
+      "text": "Blue",
+      "within": "chat.composer.input",
+      "absent": true,
+      "timeout": 300
+    },
+    {
+      "action": "waitFor",
+      "text": "COLOR-CHOICE-DONE",
+      "within": "chat.transcript",
+      "timeout": 300
+    },
+    {
+      "action": "waitFor",
+      "identifier": "chat.composer.stop",
+      "absent": true,
+      "timeout": 300
+    },
+    {
+      "action": "press",
+      "identifier": "chat.provider.claude"
+    },
+    {
+      "action": "waitFor",
+      "identifier": "chat.composer.send",
+      "enabled": true,
+      "timeout": 180
+    },
+    {
+      "action": "type",
+      "text": "Which word did Local reply with? Reply with only that word."
+    },
+    {
+      "action": "press",
+      "identifier": "chat.composer.send"
+    },
+    {
+      "action": "waitFor",
+      "text": "Which word did Local reply with? Reply with only that word.",
+      "within": "chat.composer.input",
+      "absent": true,
+      "timeout": 15
+    },
+    {
+      "action": "waitFor",
+      "text": "Sign in to Claude",
+      "within": "chat.error",
+      "timeout": 30
+    },
+    {
+      "action": "waitFor",
+      "identifier": "chat.signin",
+      "timeout": 30
+    },
+    {
+      "action": "screenshot",
+      "name": "switching-claude-signin"
+    },
+    {
+      "action": "dumpTree",
+      "name": "switching-tree"
+    }
+  ]
+}

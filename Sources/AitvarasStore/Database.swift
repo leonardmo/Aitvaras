@@ -875,6 +875,120 @@ public final class AitvarasDatabase: Sendable {
                 BEGIN SELECT RAISE(ABORT, 'Claude history observations are immutable'); END;
                 """)
         }
+        m.registerMigration("v28-agent-chat-journal") { db in
+            try db.create(table: "agentChatSession") { t in
+                t.primaryKey("id", .text)
+                t.column("chatID", .text).notNull().references("workspaceChat", onDelete: .restrict)
+                t.column("provider", .text).notNull()
+                t.column("host", .text)
+                t.column("profile", .text)
+                t.column("nativeID", .text)
+                t.column("cwd", .text).notNull()
+                t.column("model", .text).notNull()
+                t.column("effort", .text)
+                t.column("mode", .text).notNull()
+                t.uniqueKey(["chatID", "provider"])
+                t.uniqueKey(["provider", "host", "profile", "nativeID"])
+                t.uniqueKey(["id", "chatID", "provider"])
+                t.check(sql: "(host IS NULL AND profile IS NULL AND nativeID IS NULL) OR (host IS NOT NULL AND profile IS NOT NULL AND nativeID IS NOT NULL)")
+            }
+            try db.create(table: "agentTranscriptEntry") { t in
+                t.primaryKey("id", .text)
+                t.column("chatID", .text).notNull().references("workspaceChat", onDelete: .restrict)
+                t.column("provider", .text).notNull()
+                t.column("kind", .text).notNull()
+                t.column("text", .text).notNull()
+                t.column("payloadJSON", .text)
+                t.column("sessionID", .text)
+                t.column("nativeMessageID", .text)
+                t.column("position", .integer).notNull().check { $0 >= 0 }
+                t.uniqueKey(["chatID", "position"])
+                t.uniqueKey(["sessionID", "nativeMessageID"])
+                t.foreignKey(["sessionID", "chatID", "provider"], references: "agentChatSession", columns: ["id", "chatID", "provider"], onDelete: .restrict)
+                t.check(sql: "nativeMessageID IS NULL OR sessionID IS NOT NULL")
+            }
+            try db.create(table: "agentTurn") { t in
+                t.primaryKey("id", .text)
+                t.column("chatID", .text).notNull().references("workspaceChat", onDelete: .restrict)
+                t.column("sessionID", .text).notNull().references("agentChatSession", onDelete: .restrict)
+                t.column("prompt", .text).notNull()
+                t.column("delivery", .text).notNull().check { ["prepared", "deliveryUnknown", "acknowledged"].contains($0) }
+                t.column("state", .text).notNull().check { ["running", "completed", "interrupted", "failed"].contains($0) }
+                t.column("resendCount", .integer).notNull().check { (0...1).contains($0) }
+                t.column("partialOutput", .text).notNull()
+                t.column("startedAt", .datetime).notNull()
+                t.column("endedAt", .datetime)
+            }
+            try db.execute(sql: """
+                CREATE UNIQUE INDEX agentRunningTurn ON agentTurn(chatID) WHERE state = 'running';
+                CREATE TRIGGER agentTurnChat BEFORE INSERT ON agentTurn
+                WHEN NOT EXISTS (SELECT 1 FROM agentChatSession WHERE id = NEW.sessionID AND chatID = NEW.chatID)
+                BEGIN SELECT RAISE(ABORT, 'Turn must belong to its chat session'); END;
+                """)
+        }
+        m.registerMigration("v29-agent-handover") { db in
+            try db.alter(table: "agentChatSession") { t in
+                t.add(column: "instructions", .text).notNull().defaults(to: "")
+            }
+            try db.create(table: "agentHandover") { t in
+                t.primaryKey("turnID", .text).references("agentTurn", onDelete: .restrict)
+                t.column("contextJSON", .text).notNull()
+            }
+        }
+        m.registerMigration("v30-agent-followup-inputs") { db in
+            try db.alter(table: "agentTurn") { t in
+                t.add(column: "parentInputID", .text).references("agentTurn", onDelete: .restrict)
+            }
+            try db.execute(sql: """
+                DROP INDEX agentRunningTurn;
+                CREATE UNIQUE INDEX agentRunningTurn ON agentTurn(chatID)
+                    WHERE state = 'running' AND parentInputID IS NULL;
+                CREATE TRIGGER agentFollowupScope BEFORE INSERT ON agentTurn
+                WHEN NEW.parentInputID IS NOT NULL AND NOT EXISTS (
+                    SELECT 1 FROM agentTurn WHERE id = NEW.parentInputID
+                        AND chatID = NEW.chatID AND sessionID = NEW.sessionID AND state = 'running')
+                BEGIN SELECT RAISE(ABORT, 'Follow-up must belong to an active input'); END;
+                CREATE TRIGGER agentRootTurnExclusive BEFORE INSERT ON agentTurn
+                WHEN NEW.parentInputID IS NULL AND EXISTS (
+                    SELECT 1 FROM agentTurn WHERE chatID = NEW.chatID AND state = 'running')
+                BEGIN SELECT RAISE(ABORT, 'Chat already has an active input'); END;
+                """)
+        }
+        m.registerMigration("v31-agent-worktrees") { db in
+            try db.alter(table: "agentChatSession") { t in
+                t.add(column: "additionalRootsJSON", .text).notNull().defaults(to: "[]")
+            }
+            try db.create(table: "agentWorktree") { t in
+                t.primaryKey("chatID", .text).references("workspaceChat", onDelete: .restrict)
+                t.column("projectID", .text).notNull().references("workspaceProject", onDelete: .restrict)
+                t.column("repositoryPath", .text).notNull()
+                t.column("worktreePath", .text).notNull().unique()
+                t.column("cwdPath", .text).notNull()
+                t.column("branch", .text).notNull()
+                t.column("additionalRootsJSON", .text).notNull()
+                t.column("state", .text).notNull().check { ["creating", "ready", "failed"].contains($0) }
+            }
+            try db.execute(sql: """
+                CREATE TRIGGER agentWorktreeIdentity BEFORE UPDATE ON agentWorktree
+                WHEN OLD.chatID IS NOT NEW.chatID OR OLD.projectID IS NOT NEW.projectID
+                  OR OLD.repositoryPath IS NOT NEW.repositoryPath OR OLD.worktreePath IS NOT NEW.worktreePath
+                  OR OLD.cwdPath IS NOT NEW.cwdPath OR OLD.branch IS NOT NEW.branch OR OLD.additionalRootsJSON IS NOT NEW.additionalRootsJSON
+                  OR OLD.state != 'creating' OR NEW.state = 'creating'
+                BEGIN SELECT RAISE(ABORT, 'Worktree ownership is immutable'); END;
+                """)
+        }
+        m.registerMigration("v32-agent-history-reconciliation") { db in
+            try db.alter(table: "agentTranscriptEntry") { t in
+                t.add(column: "isActive", .boolean).notNull().defaults(to: true)
+            }
+            // Immutable observations preserve replaced/deleted native evidence.
+            try db.create(table: "agentHistoryObservation") { t in
+                t.autoIncrementedPrimaryKey("id")
+                t.column("sessionID", .text).notNull().references("agentChatSession", onDelete: .restrict)
+                t.column("identityJSON", .text).notNull()
+                t.column("snapshotJSON", .text).notNull()
+            }
+        }
         return m
     }
 }

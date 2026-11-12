@@ -129,6 +129,7 @@ extension View {
 @MainActor
 struct ActivityPresentation {
     let model: AppModel
+    var excludesChatFailures = false
     var roots: [ActivityRun] {
         model.topLevelCurrentActivity.sorted {
             $0.startedAt == $1.startedAt ? $0.id.uuidString < $1.id.uuidString : $0.startedAt < $1.startedAt
@@ -158,7 +159,8 @@ struct ActivityPresentation {
     var waiting: Int { roots.filter { [.waiting, .queued, .cancellationRequested].contains($0.state) }.count }
     var problems: Int {
         model.monitoredServices.filter { $0.enabled && $0.problem != nil }.count
-        + model.recentActivityRuns.filter { [.failed, .interrupted, .outcomeUnknown].contains($0.state) && $0.acknowledgedAt == nil }.count
+        + model.recentActivityRuns.filter { [.failed, .interrupted, .outcomeUnknown].contains($0.state) && $0.acknowledgedAt == nil
+            && (!excludesChatFailures || !($0.category == .chat || ($0.category == .cloud && $0.trigger == .manual))) }.count
         + (model.capture?.durabilityWarning == nil ? 0 : 1)
     }
     var needsAttention: Bool { model.monitoringError != nil || problems > 0 || approvals > 0 || (model.captureActive && model.capture?.isActive != true && model.capture?.isFinishing != true) }

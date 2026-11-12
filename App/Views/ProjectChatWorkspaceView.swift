@@ -1,524 +1,266 @@
 import SwiftUI
 import AppKit
 import AitvarasStore
+import AitvarasAgents
 
-/// The project rail. It is the lower half of the app sidebar, so the window
-/// carries one navigation surface rather than two stacked rails.
+/// Projects and their chats share the app's single sidebar.
 struct WorkspaceRailView: View {
-    /// Snapshot seam: lets a synthetic scenario open on the shared view.
     var initialRecent = false
     @Environment(AppModel.self) private var model
-    @State private var showingArchived = false
-    @State private var showingNewProject = false
+    @State private var expandedProjects: Set<UUID> = []
+    @State private var earlierExpanded = false
     @State private var showingProjectManager = false
-    @State private var settingsProject: WorkspaceProject?
-    @State private var showingNewChat = false
-    @State private var editingChat: WorkspaceChat?
+    @State private var editingProject: WorkspaceProject?
+    @State private var renamingChat: WorkspaceChat?
+    @State private var newTitle = ""
     @State private var assigningConversation: Conversation?
-    @State private var showingNativeImport = false
-    /// Recent is a view across projects, not a selection, so opening one of
-    /// its chats keeps the list in place instead of snapping to that project.
-    @State private var showingRecent = false
-
-    private var selectedProject: WorkspaceProject? {
-        model.workspaceProjects.first { $0.id == model.selectedWorkspaceProjectID }
-    }
-
-    private var visibleProjects: [WorkspaceProject] {
-        model.workspaceProjects.filter { $0.isVisible || $0.id == model.selectedWorkspaceProjectID }
-    }
 
     var body: some View {
-        workspaceRail
-        .task {
-            if initialRecent { showingRecent = true }
-            model.refreshWorkspaces()
+        VStack(alignment: .leading, spacing: 8) {
+            Button("New Chat", systemImage: "square.and.pencil") { model.startNewAgentChat() }
+                .buttonStyle(.plain).padding(10)
+                .accessibilityIdentifier("chat.new.unassigned")
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    ForEach(model.workspaceProjects.filter(\.isVisible)) { project in
+                        projectGroup(project)
+                    }
+                    if !model.unassignedChatConversations.isEmpty {
+                        VStack(alignment: .leading, spacing: 5) {
+                            Text("Earlier chats").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                            if earlierExpanded {
+                                ForEach(model.unassignedChatConversations) { conversation in
+                                    Button { model.openUnassignedConversation(conversation.id) } label: {
+                                        Label(conversation.title, systemImage: conversation.title == "Voice" ? "waveform" : "bubble.left")
+                                            .lineLimit(1).frame(maxWidth: .infinity, alignment: .leading)
+                                    }
+                                    .accessibilityIdentifier("chat.sidebar.\(conversation.id)")
+                                    .contextMenu {
+                                        if conversation.title != "Voice" {
+                                            Button("Move to project…") { assigningConversation = conversation }
+                                        }
+                                    }
+                                }
+                            }
+                            Button(earlierExpanded ? "Show less" : "Show more") { earlierExpanded.toggle() }
+                                .accessibilityIdentifier("chat.earlier.more")
+                        }.font(.callout).buttonStyle(.plain)
+                    }
+                }.padding(10)
+            }
+            Divider()
+            HStack {
+                Button("New project", systemImage: "folder.badge.plus") { model.chooseChatProjectFolder() }
+                    .accessibilityIdentifier("chat.project.new")
+                Spacer()
+                Button("Refresh native chats", systemImage: model.chatModel?.nativeDiscoveryFailed == true ? "exclamationmark.circle" : "arrow.clockwise") {
+                    Task { await refreshNativeChats() }
+                }
+                .disabled(model.chatModel?.discoveringNativeSessions == true)
+                .help(model.chatModel?.nativeDiscoveryError ?? "Refresh native chats")
+                .accessibilityIdentifier("chat.native.refresh")
+                Menu {
+                    Button("Manage projects…") { showingProjectManager = true }
+                } label: { Image(systemName: "ellipsis") }
+                .accessibilityLabel("Projects").accessibilityIdentifier("chat.projects.menu")
+                .menuStyle(.borderlessButton).fixedSize()
+            }.buttonStyle(.borderless).labelStyle(.iconOnly).padding(10)
         }
-        .sheet(isPresented: $showingNativeImport) { NativeSessionImportView() }
-        .sheet(isPresented: $showingNewProject) {
-            WorkspaceProjectEditor { title, instructions, folders in
-                model.createWorkspaceProject(title: title, instructions: instructions, folderURLs: folders)
+        .disabled(model.isWorkspaceSelectionBusy || model.chatModel?.creatingChat == true)
+        .task { model.refreshWorkspaces() }
+        .task(id: model.workspaceProjects.map { "\($0.id):\($0.updatedAt)" }.joined() + String(model.chatModel != nil)) {
+            await refreshNativeChats()
+        }
+        .sheet(item: $editingProject) { project in
+            WorkspaceProjectEditor(project: project) { title, instructions, _ in
+                var updated = project; updated.title = title; updated.instructions = instructions
+                return model.updateWorkspaceProject(updated)
             }
         }
         .sheet(isPresented: $showingProjectManager) { WorkspaceProjectManager() }
-        .sheet(item: $settingsProject) { project in
-            WorkspaceBoundaryReviewView(projectID: project.id)
-        }
-        .sheet(isPresented: $showingNewChat) {
-            WorkspaceChatEditor { title, purpose, kind in
-                model.createWorkspaceChat(title: title, kind: kind, purpose: purpose)
+        .sheet(item: $assigningConversation) { WorkspaceConversationAssignmentEditor(conversation: $0) }
+        .alert("Rename chat", isPresented: Binding(get: { renamingChat != nil }, set: { if !$0 { renamingChat = nil } })) {
+            TextField("Title", text: $newTitle)
+                .accessibilityIdentifier("chat.rename.title")
+            Button("Save") {
+                if let chat = renamingChat { model.renameWorkspaceChat(chat.id, title: newTitle) }
+                renamingChat = nil
             }
-        }
-        .sheet(item: $editingChat) { chat in
-            WorkspaceChatEditor(chat: chat) { title, purpose, kind in
-                var updated = chat
-                updated.title = title
-                updated.purpose = purpose
-                updated.kind = kind
-                return model.updateWorkspaceChat(updated)
-            }
-        }
-        .sheet(item: $assigningConversation) { conversation in
-            WorkspaceConversationAssignmentEditor(conversation: conversation)
+            .disabled(newTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            .accessibilityIdentifier("chat.rename.save")
+            Button("Cancel", role: .cancel) { renamingChat = nil }
+                .accessibilityIdentifier("chat.rename.cancel")
         }
     }
 
-    private var workspaceRail: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            // Scope, new chat and the list are one block: the chats you can
-            // open sit directly under the scope that holds them.
-            HStack(spacing: 2) {
-                Menu {
-                    Button {
-                        showingRecent = true
-                    } label: {
-                        Label("Recent across projects", systemImage: showingRecent ? "checkmark" : "clock.arrow.circlepath")
-                    }
-                    Divider()
-                    Button("Unassigned") { showingRecent = false; model.selectWorkspaceProject(nil) }
-                    ForEach(visibleProjects) { project in
-                        Button {
-                            showingRecent = false
-                            model.selectWorkspaceProject(project.id)
-                        } label: {
-                            Label(project.title, systemImage: !showingRecent && project.id == model.selectedWorkspaceProjectID ? "checkmark" : "folder")
-                        }
-                    }
-                    Divider()
-                    if let selectedProject {
-                        Button("Project settings…", systemImage: "gearshape") { settingsProject = selectedProject }
-                            .disabled(model.isWorkspaceSelectionBusy)
-                    }
-                    Button("New project…", systemImage: "folder.badge.plus") { showingNewProject = true }
-                    Button("Manage projects…", systemImage: "slider.horizontal.3") { showingProjectManager = true }
-                } label: {
-                    HStack(spacing: 5) {
-                        Image(systemName: showingRecent ? "clock.arrow.circlepath" : selectedProject == nil ? "tray" : "folder")
-                            .font(.caption)
-                            .foregroundStyle(showingRecent ? ActivityGlassPalette.ember
-                                             : selectedProject == nil ? Color.secondary : ActivityGlassPalette.violet)
-                        Text(showingRecent ? "Recent" : selectedProject?.title ?? "Unassigned")
-                            .font(.callout.weight(.semibold)).lineLimit(1)
-                        Image(systemName: "chevron.down").font(.system(size: 9, weight: .semibold))
-                            .foregroundStyle(.secondary)
-                        Spacer(minLength: 0)
-                    }
-                    .contentShape(Rectangle())
-                }
-                .menuStyle(.borderlessButton)
-                .menuIndicator(.hidden)
-                .help(showingRecent ? "The latest chats from every project, each one showing where it lives"
-                      : selectedProject.map { "Project · \($0.instructions.isEmpty ? "No project instructions" : $0.instructions)" }
-                      ?? "Chats and voice records that belong to no project")
-                .disabled(model.isWorkspaceSelectionBusy)
-                Button("New chat", systemImage: "square.and.pencil") {
-                    if selectedProject == nil { model.newChat() } else { showingNewChat = true }
-                }
-                .labelStyle(.iconOnly)
-                .buttonStyle(.borderless)
-                .help(selectedProject == nil ? "Start a new chat" : "New chat in this project")
-                .disabled(model.isWorkspaceSelectionBusy)
-            }
-            .padding(.horizontal, 9).padding(.top, 7).padding(.bottom, 5)
+    private func refreshNativeChats() async {
+        guard !model.workspaceProjects.isEmpty, let chat = model.chatModel else { return }
+        await chat.discoverNativeSessions()
+        model.refreshWorkspaces()
+    }
 
-            ScrollView {
-                VStack(alignment: .leading, spacing: 9) {
-                    if showingRecent {
-                        recentSection
-                    } else if selectedProject != nil {
-                        chatSection("Primary", kind: .primary)
-                        chatSection("Temporary", kind: .temporary)
-                        let archived = model.workspaceChats.filter { $0.archivedAt != nil }
-                        if !archived.isEmpty {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Button {
-                                    showingArchived.toggle()
-                                } label: {
-                                    HStack(spacing: 4) {
-                                        Image(systemName: showingArchived ? "chevron.down" : "chevron.right")
-                                            .font(.system(size: 8, weight: .bold))
-                                        sectionTitle("Archived", count: archived.count)
-                                        Spacer(minLength: 0)
-                                    }
-                                    .contentShape(Rectangle())
-                                }
-                                .buttonStyle(.plain)
-                                .help("Archived chats keep every message; nothing is deleted")
-                                if showingArchived {
-                                    ForEach(archived) { chat in chatRow(chat) }
-                                }
-                            }
-                        }
-                    } else {
-                        VStack(alignment: .leading, spacing: 2) {
-                            sectionTitle("Saved", count: model.unassignedChatConversations.count)
-                            if model.unassignedChatConversations.isEmpty { emptyList("Nothing saved here yet") }
-                            ForEach(model.unassignedChatConversations) { conversation in
-                                let voice = conversation.title == "Voice"
-                                railRow(title: conversation.title,
-                                        trailing: conversation.updatedAt.formatted(.dateTime.day().month(.abbreviated)),
-                                        symbol: voice ? "waveform" : "bubble.left",
-                                        tint: voice ? ActivityGlassPalette.ember : ActivityGlassPalette.slate,
-                                        selected: model.selectedChatConversationID == conversation.id,
-                                        hint: voice ? "Saved voice history · read-only" : "Saved conversation, no project") {
-                                    model.openUnassignedConversation(conversation.id)
-                                }
-                                .contextMenu {
-                                    if !voice {
-                                        Button("Move to project…", systemImage: "folder") {
-                                            assigningConversation = conversation
-                                        }
-                                        .disabled(model.isWorkspaceSelectionBusy)
-                                    }
-                                }
-                            }
-                        }
-                    }
+    private func projectGroup(_ project: WorkspaceProject) -> some View {
+        let all = model.workspaceSidebarChats.filter { $0.projectID == project.id }
+        let statuses = Dictionary(uniqueKeysWithValues: all.map { ($0.id, model.chatModel?.sidebarStatus($0.id) ?? .idle) })
+        let visible = ProjectChatVisibility.visible(all, statuses: statuses, selectedID: model.selectedWorkspaceChatID,
+                                                     expanded: expandedProjects.contains(project.id))
+        return VStack(alignment: .leading, spacing: 5) {
+            HStack {
+                Label(project.title, systemImage: "folder").font(.caption.weight(.semibold)).lineLimit(1)
+                if model.defaultChatProjectID == project.id {
+                    Image(systemName: "star.fill").font(.caption2)
+                        .accessibilityLabel("Default project")
                 }
-                .padding(.horizontal, 7).padding(.vertical, 4)
-            }
-
-            if let message = model.workspaceMessage {
-                Text(message)
-                    .font(.caption2)
-                    .foregroundStyle(.orange)
-                    .textSelection(.enabled)
-                    .padding(.horizontal, 10).padding(.vertical, 7)
-            }
-            if model.isWorkspaceSelectionBusy {
-                Label("Finish the current turn to switch chats.", systemImage: "hourglass")
-                    .font(.caption2).foregroundStyle(.secondary)
-                    .padding(.horizontal, 10).padding(.bottom, 6)
-            }
-            Divider()
-            HStack(spacing: 10) {
-                Button("Manage projects…", systemImage: "slider.horizontal.3") { showingProjectManager = true }
-                    .help("Rename, hide or edit projects and their folders")
-                Button("Import native chats…", systemImage: "square.and.arrow.down") { showingNativeImport = true }
-                    .help("Review and save supported Codex or Claude Code text locally. No agent control or file access.")
                 Spacer(minLength: 0)
-            }
-            .labelStyle(.iconOnly)
-            .buttonStyle(.borderless)
-            .disabled(model.isWorkspaceSelectionBusy)
-            // Breathing room under the last control, so the activity dock never
-            // sits directly against it.
-            .padding(.horizontal, 10).padding(.top, 7).padding(.bottom, 9)
-        }
-    }
-
-    /// Chats from several projects in one list. Each row carries its project,
-    /// so the scope is visible without leaving the shared view.
-    private var recentSection: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            sectionTitle("Recent", count: model.recentWorkspaceChats.count)
-                .help("The latest chats across every visible project")
-            if model.recentWorkspaceChats.isEmpty {
-                emptyList("No project chats yet")
-            }
-            ForEach(model.recentWorkspaceChats) { recent in
-                railRow(
-                    title: recent.chat.title,
-                    trailing: nil,
-                    chip: Self.chipLabel(recent.project.title),
-                    chipTint: Self.projectTint(recent.project),
-                    symbol: recent.chat.kind == .primary ? "pin.fill" : "bubble.left",
-                    tint: Self.projectTint(recent.project),
-                    selected: model.selectedWorkspaceChatID == recent.chat.id,
-                    hint: "\(recent.project.title) · \(recent.chat.purpose.isEmpty ? "No purpose set" : recent.chat.purpose) · \(recent.chat.lastActivityAt.formatted(date: .abbreviated, time: .shortened))"
-                ) {
-                    model.openWorkspaceChat(recent.chat.id)
+                Button("New Chat", systemImage: "plus") {
+                    model.startNewAgentChat(projectID: project.id)
                 }
-                .contextMenu {
-                    Button("Show this project", systemImage: "folder") {
-                        showingRecent = false
-                        model.selectWorkspaceProject(recent.project.id)
-                    }
-                    .disabled(model.isWorkspaceSelectionBusy)
-                    Button("Edit workspace title or purpose…", systemImage: "pencil") { editingChat = recent.chat }
+                .labelStyle(.iconOnly).buttonStyle(.borderless)
+                .accessibilityIdentifier("chat.new.\(project.id)")
+            }
+            .foregroundStyle(.secondary)
+            .contextMenu {
+                Button(model.defaultChatProjectID == project.id ? "Remove as default" : "Set as default") {
+                    model.setDefaultChatProject(model.defaultChatProjectID == project.id ? nil : project.id)
                 }
+                Button("Edit project…") { editingProject = project }
+                Button("Hide project") { var updated = project; updated.isVisible = false; model.updateWorkspaceProject(updated) }
+            }
+            ForEach(visible) { chat in chatRow(chat) }
+            if all.count > visible.count || expandedProjects.contains(project.id) {
+                Button(expandedProjects.contains(project.id) ? "Show less" : "Show more") {
+                    if !expandedProjects.insert(project.id).inserted { expandedProjects.remove(project.id) }
+                }
+                .buttonStyle(.plain).font(.caption).foregroundStyle(.secondary)
+                .accessibilityIdentifier("chat.project.\(project.id).more")
             }
         }
     }
-
-    /// Project names are clipped here, not by the layout, so the chip has one
-    /// predictable width and the chat title keeps the rest of the row.
+    private func chatRow(_ chat: WorkspaceChat) -> some View {
+        SidebarChatRow(chat: chat, selected: model.selectedWorkspaceChatID == chat.id,
+                       status: model.chatModel?.sidebarStatus(chat.id) ?? .idle, open: { model.openWorkspaceChat(chat.id) })
+        .contextMenu {
+            Button("Rename") { newTitle = chat.title; renamingChat = chat }
+                .accessibilityIdentifier("chat.rename.\(chat.id)")
+            Button(chat.kind == .primary ? "Unpin" : "Pin") {
+                var updated = chat; updated.kind = chat.kind == .primary ? .temporary : .primary
+                model.updateWorkspaceChat(updated)
+            }
+            Button(chat.archivedAt == nil ? "Archive" : "Restore") {
+                model.setWorkspaceChatArchived(chat.id, archived: chat.archivedAt == nil)
+            }
+            .accessibilityIdentifier("chat.\(chat.archivedAt == nil ? "archive" : "restore").\(chat.id)")
+        }
+    }
     static func chipLabel(_ title: String, limit: Int = 14) -> String {
         title.count <= limit ? title : String(title.prefix(limit - 1)) + "…"
     }
+}
 
-    /// A stable hue per project, taken from the first byte of its identifier so
-    /// the same project keeps its colour across launches.
-    private static func projectTint(_ project: WorkspaceProject) -> Color {
-        let palette: [Color] = [ActivityGlassPalette.violet, ActivityGlassPalette.slate, .cyan,
-                                ActivityGlassPalette.ember, ActivityGlassPalette.attention, .mint]
-        return palette[Int(project.id.uuid.0) % palette.count]
-    }
-
-    private func chatSection(_ title: String, kind: WorkspaceChat.Kind) -> some View {
-        let chats = model.workspaceChats.filter { $0.kind == kind && $0.archivedAt == nil }
-        return VStack(alignment: .leading, spacing: 2) {
-            sectionTitle(title, count: chats.count)
-                .help(kind == .temporary
-                      ? "Temporary chats archive after seven inactive days; their messages stay saved"
-                      : "Primary chats stay pinned to this project")
-            if chats.isEmpty { emptyList(kind == .primary ? "No primary chats" : "No temporary chats") }
-            ForEach(chats) { chat in chatRow(chat) }
-        }
-    }
-
-    private func chatRow(_ chat: WorkspaceChat) -> some View {
-        let archived = chat.archivedAt != nil
-        return railRow(
-            title: chat.title,
-            trailing: chat.lastActivityAt.formatted(.dateTime.day().month(.abbreviated)),
-            symbol: archived ? "archivebox" : chat.kind == .primary ? "pin.fill" : "bubble.left",
-            tint: archived ? .secondary : chat.kind == .primary ? ActivityGlassPalette.violet : ActivityGlassPalette.slate,
-            selected: model.selectedWorkspaceChatID == chat.id,
-            hint: chat.purpose.isEmpty ? (archived ? "Archived · read-only" : nil) : chat.purpose
-        ) {
-            model.openWorkspaceChat(chat.id)
-        }
-        .contextMenu {
-            Button("Edit workspace title or purpose…", systemImage: "pencil") { editingChat = chat }
-            Button(chat.kind == .primary ? "Make temporary" : "Make primary", systemImage: chat.kind == .primary ? "pin.slash" : "pin") {
-                var updated = chat
-                updated.kind = chat.kind == .primary ? .temporary : .primary
-                model.updateWorkspaceChat(updated)
-            }
-            Divider()
-            Button(archived ? "Restore chat" : "Archive chat", systemImage: archived ? "arrow.uturn.backward" : "archivebox") {
-                model.setWorkspaceChatArchived(chat.id, archived: !archived)
-            }
-        }
-    }
-
-    /// Every chat in this rail is one line: symbol, title, and the last date.
-    /// The purpose and state are on hover, so the list stays dense.
-    private func railRow(title: String, trailing: String?, chip: String? = nil,
-                         chipTint: Color = .secondary, symbol: String, tint: Color,
-                         selected: Bool, hint: String?, open: @escaping () -> Void) -> some View {
+private struct SidebarChatRow: View {
+    let chat: WorkspaceChat
+    let selected: Bool
+    let status: ChatSidebarStatus
+    let open: () -> Void
+    var body: some View {
         Button(action: open) {
-            HStack(spacing: 6) {
-                Image(systemName: symbol)
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(selected ? tint : Color.secondary)
-                    .frame(width: 13)
-                Text(title).font(.callout).lineLimit(1).truncationMode(.tail)
-                Spacer(minLength: 4)
-                if let chip {
-                    // Sized by its own text, never by a flexible frame: a short
-                    // project name must not cost the title any width.
-                    Text(chip)
-                        .font(.system(size: 9, weight: .medium))
-                        .lineLimit(1)
-                        .fixedSize()
-                        .foregroundStyle(chipTint)
-                        .padding(.horizontal, 5).padding(.vertical, 1)
-                        .background(Capsule().fill(chipTint.opacity(0.16)))
-                        .layoutPriority(1)
-                }
-                if let trailing {
-                    Text(trailing).font(.system(size: 10)).foregroundStyle(.tertiary).lineLimit(1)
-                }
+            HStack(spacing: 7) {
+                statusIcon
+                Text(chat.title).lineLimit(1)
+                Spacer(minLength: 0)
+                if chat.kind == .primary { Image(systemName: "pin.fill").font(.caption2).foregroundStyle(.secondary) }
             }
-            .padding(.horizontal, 7).padding(.vertical, 4)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(RoundedRectangle(cornerRadius: 6, style: .continuous)
-                .fill(tint.opacity(selected ? 0.18 : 0)))
+            .font(.callout).padding(.horizontal, 7).padding(.vertical, 6)
+            .background(selected ? Color.accentColor.opacity(0.18) : .clear, in: RoundedRectangle(cornerRadius: 7))
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .disabled(model.isWorkspaceSelectionBusy)
-        .help(hint ?? title)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("chat.sidebar.\(chat.id)")
+        .accessibilityLabel(chat.title)
+        .accessibilityAddTraits(selected ? [.isSelected] : [])
     }
-
-    private func sectionTitle(_ title: String, count: Int) -> some View {
-        HStack(spacing: 5) {
-            Text(title.uppercased()).font(.system(size: 10, weight: .semibold)).foregroundStyle(.secondary)
-            Text("\(count)").font(.system(size: 10)).foregroundStyle(.tertiary).monospacedDigit()
+    @ViewBuilder private var statusIcon: some View {
+        if status != .idle {
+            Group {
+                switch status {
+                case .running: ProgressView().controlSize(.mini).scaleEffect(0.65).frame(width: 12, height: 12)
+                case .needsYou: Image(systemName: "exclamationmark.bubble.fill").foregroundStyle(Color.accentColor)
+                case .finishedUnseen: Image(systemName: "circle.fill").font(.system(size: 7)).foregroundStyle(Color.accentColor)
+                case .failed: Image(systemName: "exclamationmark.circle").foregroundStyle(.red)
+                case .interrupted: Image(systemName: "pause.circle").foregroundStyle(.secondary)
+                case .idle: EmptyView()
+                }
+            }
+            .accessibilityLabel(statusLabel)
+            .accessibilityIdentifier("chat.sidebar.\(chat.id).status.\(status.rawValue)")
         }
-        .padding(.horizontal, 7).padding(.top, 2)
     }
-
-    private func emptyList(_ text: String) -> some View {
-        Text(text).font(.caption2).foregroundStyle(.tertiary).padding(.horizontal, 7).padding(.vertical, 3)
+    private var statusLabel: String {
+        switch status {
+        case .idle: "Seen"
+        case .running: "Running"
+        case .needsYou: "Needs you"
+        case .finishedUnseen: "Finished, not yet seen"
+        case .failed: "Failed"
+        case .interrupted: "Interrupted"
+        }
     }
-
 }
 
-/// Local chat, app-owned Codex conversations, and imported read-only evidence
-/// remain separate sources. Changing source never adopts a native identity.
+/// Project chats use the unified screen; unassigned and voice history keep
+/// their existing local reader. Native imports remain read-only evidence.
 struct ChatDetailView: View {
     @Environment(AppModel.self) private var model
-    @State private var backend: WorkspaceChatBackend = .local
-    @State private var pendingBackend: WorkspaceChatBackend?
-    @State private var pendingBackendChatID: UUID?
-    @State private var confirmingCloud = false
-    @State private var showingSettings = false
-    @State private var showingInspector = false
     @State private var importedHistory: WorkspaceSessionLink?
-    @State private var selectionError: String?
+    @State private var showingDetails = false
 
     private var nativeLinks: [WorkspaceSessionLink] {
         model.selectedWorkspaceChatID.map { model.nativeSessionLinks(for: $0) } ?? []
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            if model.selectedWorkspaceChatID != nil {
-                HStack(spacing: 10) {
-                    HStack(spacing: 3) {
-                        ForEach([WorkspaceChatBackend.claude, .codex, .local]) { provider in
-                            Button { requestBackend(provider) } label: {
-                                Text(provider.title)
-                                    .font(.system(size: 13, weight: .medium))
-                                    .padding(.horizontal, 10)
-                                    .frame(height: 26)
-                                    .foregroundStyle(backend == provider ? Color.accentColor : .secondary)
-                                    .background(RoundedRectangle(cornerRadius: 7).fill(backend == provider ? Color.accentColor.opacity(0.17) : .clear))
-                            }
-                            .accessibilityLabel(provider.title)
-                            .accessibilityAddTraits(backend == provider ? .isSelected : [])
-                            .help(provider.title)
-                            .disabled(model.isWorkspaceSelectionBusy)
-                        }
-                        Divider().frame(height: 17).padding(.horizontal, 2)
-                        Button { showingSettings = true } label: {
-                            Image(systemName: "gearshape").frame(width: 30, height: 26)
-                        }
-                        .accessibilityLabel("AI Settings")
-                        .help("Settings for \(backend.title)")
+        if model.showingEarlierChat {
+            LocalChatView()
+        } else if let chatModel = model.chatModel {
+            let chatID = model.selectedWorkspaceChatID ?? chatModel.newChatID
+            AgentChatView(chat: chatModel, chatID: chatID,
+                          canSend: model.selectedWorkspaceChat?.archivedAt == nil,
+                          workspaceError: model.workspaceMessage.map { _ in "Chat changes could not be saved." })
+                .navigationTitle(model.selectedWorkspaceChat?.title ?? "Chat")
+                .toolbar {
+                    if model.selectedWorkspaceChatID != nil {
+                        Button("Chat details", systemImage: "info.circle") { showingDetails = true }
+                            .accessibilityIdentifier("chat.details")
                     }
-                    .buttonStyle(.plain)
-                    .padding(4)
-                    .background(RoundedRectangle(cornerRadius: 11).fill(.quaternary.opacity(0.5)))
-                    .overlay(RoundedRectangle(cornerRadius: 11).strokeBorder(.primary.opacity(0.08)))
-                    Spacer()
+                    Button("New Chat", systemImage: "square.and.pencil") {
+                        model.startNewAgentChat()
+                    }
+                    .disabled(model.isWorkspaceSelectionBusy).accessibilityIdentifier("chat.new")
                     if !nativeLinks.isEmpty {
-                        Menu {
+                        Menu("Imported History", systemImage: "clock.arrow.circlepath") {
                             ForEach(nativeLinks) { link in
-                                Button("\(link.provider == .codex ? "Codex" : "Claude") · \(link.displayName)") { importedHistory = link }
+                                Button(link.displayName) { importedHistory = link }
+                                    .accessibilityIdentifier("chat.import.\(link.id)")
                             }
-                        } label: { Label("Imported History", systemImage: "clock.arrow.circlepath") }
-                        .help("Read-only imported chats; never attached automatically")
+                        }.accessibilityIdentifier("chat.imports")
                     }
-                    Button("Chat Details", systemImage: "info.circle") { showingInspector = true }
-                        .labelStyle(.iconOnly).help("Chat context and captures")
-                }.padding(.horizontal, 16).padding(.vertical, 9)
-                Divider()
-            }
-            if let selectionError { Text(selectionError).font(.caption).foregroundStyle(.orange).padding(8) }
-            ChatView(backend: backend, openBackendSettings: { showingSettings = true })
+                }
+                .sheet(isPresented: $showingDetails) {
+                    WorkspaceInspectorView(chatID: chatID, provider: chatModel.provider)
+                }
+                .sheet(item: $importedHistory) { link in
+                    VStack {
+                        Button("Done") { importedHistory = nil }
+                            .keyboardShortcut(.cancelAction).accessibilityIdentifier("chat.import.done")
+                        NativeSessionSourceView(link: link)
+                    }.padding().frame(width: 760, height: 600)
+                }
+        } else {
+            ProgressView().accessibilityLabel("Loading chat")
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .sheet(isPresented: $showingSettings, onDismiss: {
-            NotificationCenter.default.post(name: .init("aitvaras.chatBackendSettingsChanged"), object: nil)
-        }) {
-            if let id = model.selectedWorkspaceChatID {
-                ChatBackendSettingsView(chatID: id, initialBackend: backend)
-            }
-        }
-        .sheet(isPresented: $showingInspector) {
-            if let id = model.selectedWorkspaceChatID { WorkspaceInspectorView(chatID: id, backend: backend) }
-        }
-        .sheet(item: $importedHistory) { link in
-            VStack(spacing: 0) {
-                HStack { Text("Imported History · Read Only").font(.headline); Spacer()
-                    Button("Done") { importedHistory = nil }.keyboardShortcut(.cancelAction)
-                }.padding()
-                NativeSessionSourceView(link: link)
-            }.frame(width: 760, height: 600)
-        }
-        .confirmationDialog("Share this chat's history with \(pendingBackend == .codex ? "OpenAI" : "Anthropic")?",
-                            isPresented: $confirmingCloud, titleVisibility: .visible) {
-            Button("Share History and Use \(pendingBackend?.title ?? "Cloud")") { resolvePendingBackend(shareHistory: true) }
-            Button("Use \(pendingBackend?.title ?? "Cloud") Without History") { resolvePendingBackend(shareHistory: false) }
-            Button("Cancel", role: .cancel) { pendingBackend = nil; pendingBackendChatID = nil }
-        } message: {
-            Text(consentMessage)
-        }
-        .onChange(of: model.selectedWorkspaceChatID, initial: true) { restoreBackend() }
     }
 
-    /// The history decision is asked once per chat and remembered either way;
-    /// it decides whether Codex is caught up on Send (D30), in both modes.
-    private func requestBackend(_ next: WorkspaceChatBackend) {
-        guard !model.isWorkspaceSelectionBusy, next != backend else { return }
-        if next == .claude, !model.claudeWorkspace.authenticated {
-            // The first Send checks the account before asking a history choice.
-            // Selecting a provider alone never manufactures account consent.
-            applyBackend(next, shareHistory: nil)
-            return
-        }
-        if WorkspaceChatBackend.requiresHistoryConfirmation(from: backend, to: next), historyDecision(for: next) == nil {
-            pendingBackend = next; pendingBackendChatID = model.selectedWorkspaceChatID; confirmingCloud = true
-        } else { applyBackend(next, shareHistory: nil) }
-    }
-    private func resolvePendingBackend(shareHistory: Bool) {
-        if let pendingBackend, pendingBackendChatID == model.selectedWorkspaceChatID {
-            applyBackend(pendingBackend, shareHistory: shareHistory)
-        }
-        pendingBackend = nil
-        pendingBackendChatID = nil
-    }
-    private func historyDecision(for provider: WorkspaceChatBackend) -> Bool? {
-        guard let id = model.selectedWorkspaceChatID,
-              let value = try? model.stores?.value(forKey: WorkspaceChatBackend.key(id, "shareHistory.\(provider.rawValue)")) else { return nil }
-        if provider == .claude {
-            guard model.claudeWorkspace.authenticated, let namespace = model.claudeWorkspace.profileNamespace,
-                  (try? model.stores?.value(forKey: WorkspaceChatBackend.key(id, "shareHistory.claude.profile"))) == namespace else { return nil }
-        }
-        return value == "1"
-    }
-    private var consentMessage: String {
-        let budget = Stores.workspaceSharedHistoryCharacters.formatted()
-        let provider = pendingBackend ?? .codex
-        let native = provider == .codex && (model.selectedWorkspaceChatID.map { model.codexNativeWorkspace.prefersNative(chatID: $0) } ?? false)
-        let excluded = "Imported histories, captures, other chats and memories are never included. Switching itself sends nothing; you can change this in AI Settings."
-        return native
-            ? "With each Send, the linked Codex desktop chat is caught up on messages from this chat it has not seen (up to \(budget) characters). They travel inside your message, so they also appear in Codex desktop. \(excluded)"
-            : "With each Send, \(provider.title) is caught up on messages from this chat it has not seen (up to \(budget) characters), along with the project title, instructions and chat purpose. If Project settings allow it, \(provider.title) can also read approved folders. \(excluded)"
-    }
-    private func applyBackend(_ next: WorkspaceChatBackend, shareHistory: Bool?) {
-        guard let id = model.selectedWorkspaceChatID, let stores = model.stores else { return }
-        do {
-            var values = [WorkspaceChatBackend.key(id, "backend"): next.rawValue]
-            if let shareHistory {
-                if next == .claude {
-                    guard model.claudeWorkspace.authenticated, let namespace = model.claudeWorkspace.profileNamespace else {
-                        selectionError = "Check the Claude account before choosing history sharing. Nothing was sent."
-                        return
-                    }
-                    values[WorkspaceChatBackend.key(id, "shareHistory.claude")] = shareHistory ? "1" : "0"
-                    values[WorkspaceChatBackend.key(id, "shareHistory.claude.profile")] = namespace
-                } else { values[WorkspaceChatBackend.key(id, "shareHistory.\(next.rawValue)")] = shareHistory ? "1" : "0" }
-            }
-            try stores.setValues(values)
-            backend = next
-            selectionError = nil
-            model.codexWorkspace.load(chatID: id)
-            model.codexNativeWorkspace.load(chatID: id)
-            model.claudeWorkspace.load(chatID: id)
-        } catch { selectionError = "Provider choice could not be saved. Nothing was sent." }
-    }
-    private func restoreBackend() {
-        confirmingCloud = false; pendingBackend = nil; pendingBackendChatID = nil
-        guard let id = model.selectedWorkspaceChatID else { backend = .local; return }
-        do {
-            let saved = try model.stores?.value(forKey: WorkspaceChatBackend.key(id, "backend"))
-            let restored = saved.flatMap(WorkspaceChatBackend.init(rawValue:)) ?? .local
-            // Either answer to the history question is a decision; only an
-            // Aitvaras-only Codex chat that was never asked falls back to Local.
-            let decided = try model.stores?.value(forKey: WorkspaceChatBackend.key(id, "shareHistory.\(restored.rawValue)")) != nil
-            let native = restored == .codex && model.codexNativeWorkspace.prefersNative(chatID: id)
-            backend = restored == .codex && !decided && !native ? .local : restored
-            model.codexWorkspace.load(chatID: id)
-            model.codexNativeWorkspace.load(chatID: id)
-            model.claudeWorkspace.load(chatID: id)
-            selectionError = nil
-        } catch { backend = .local; selectionError = "Provider choice could not be restored. Nothing was sent." }
-    }
 }
 
 /// Rail and chat side by side. The window composes these two itself; this
@@ -559,7 +301,7 @@ private struct WorkspaceProjectEditor: View {
                     .font(.body)
                     .frame(height: 115)
                     .overlay(RoundedRectangle(cornerRadius: 5).stroke(.quaternary))
-                Text("Saved with this project. Shared project knowledge is not connected yet.")
+                Text("Used for chats in this project.")
                     .font(.caption).foregroundStyle(.secondary)
             }
             if existingProject == nil {
@@ -573,7 +315,7 @@ private struct WorkspaceProjectEditor: View {
                                 .labelStyle(.iconOnly).buttonStyle(.plain)
                         }.font(.caption)
                     }
-                    Text("Optional, read-only registration. No file tools or indexing are active yet. Cloud access is not enabled.")
+                    Text("Optional working folders for this project.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
             }
@@ -613,16 +355,21 @@ private struct WorkspaceProjectManager: View {
 
     var body: some View {
         if let project = reviewingProject {
-            WorkspaceBoundaryReviewView(projectID: project.id, onDone: { reviewingProject = nil })
+            WorkspaceProjectEditor(project: project) { title, instructions, _ in
+                var updated = project; updated.title = title; updated.instructions = instructions
+                let saved = model.updateWorkspaceProject(updated)
+                if saved { reviewingProject = nil }
+                return saved
+            }
         } else {
             VStack(alignment: .leading, spacing: 16) {
                 Text("Manage projects").font(.title2.weight(.semibold))
-                Text("Hiding a project keeps its chats and folders. Open Settings to change instructions and AI providers.")
+                Text("Hidden projects keep their chats and folders.")
                     .font(.callout).foregroundStyle(.secondary)
                 ScrollView {
                     VStack(alignment: .leading, spacing: 14) {
                         if model.workspaceProjects.isEmpty {
-                            Text("No projects yet. Create one from the workspace selector.")
+                            Text("No projects yet.")
                                 .foregroundStyle(.secondary)
                         }
                         ForEach(model.workspaceProjects) { project in
@@ -648,7 +395,7 @@ private struct WorkspaceProjectManager: View {
                                     Text("No registered folders").font(.caption).foregroundStyle(.tertiary)
                                 } else {
                                     ForEach(registration.paths, id: \.self) { path in
-                                        Label("\(path) · read-only registration", systemImage: "folder")
+                                        Label(path, systemImage: "folder")
                                             .font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
                                     }
                                 }
@@ -658,8 +405,6 @@ private struct WorkspaceProjectManager: View {
                         }
                     }
                 }
-                Text("Imported histories stay read-only. Codex supports text chat; file tools and shared knowledge are not available yet.")
-                    .font(.caption).foregroundStyle(.secondary)
                 WorkspaceValidationMessage()
                 HStack { Spacer(); Button("Done") { dismiss() }.keyboardShortcut(.cancelAction) }
             }
@@ -675,54 +420,6 @@ private struct WorkspaceProjectManager: View {
         } catch {
             return ([], true)
         }
-    }
-}
-
-private struct WorkspaceChatEditor: View {
-    @Environment(\.dismiss) private var dismiss
-    @State private var title: String
-    @State private var purpose: String
-    @State private var kind: WorkspaceChat.Kind
-    private let editing: Bool
-    let save: (String, String, WorkspaceChat.Kind) -> Bool
-
-    init(chat: WorkspaceChat? = nil, save: @escaping (String, String, WorkspaceChat.Kind) -> Bool) {
-        _title = State(initialValue: chat?.title ?? "")
-        _purpose = State(initialValue: chat?.purpose ?? "")
-        _kind = State(initialValue: chat?.kind ?? .temporary)
-        editing = chat != nil
-        self.save = save
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Text(editing ? "Edit chat" : "New chat").font(.title2.weight(.semibold))
-            TextField("Chat title", text: $title).textFieldStyle(.roundedBorder)
-            TextField("Purpose (optional)", text: $purpose, axis: .vertical)
-                .textFieldStyle(.roundedBorder).lineLimit(2...4)
-            Picker("Chat type", selection: $kind) {
-                Text("Primary").tag(WorkspaceChat.Kind.primary)
-                Text("Temporary").tag(WorkspaceChat.Kind.temporary)
-            }.pickerStyle(.segmented)
-            Label(kind == .primary ? "Primary chats stay pinned to this project." : "Temporary chats archive after 7 days of inactivity.", systemImage: kind == .primary ? "pin.fill" : "clock")
-                .font(.caption).foregroundStyle(.secondary)
-            Text("Text-only local chat. Project files, shared knowledge and native sessions connect in the next checkpoints.")
-                .font(.caption).foregroundStyle(.secondary)
-            WorkspaceValidationMessage()
-            HStack {
-                Spacer()
-                Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
-                Button(editing ? "Save" : "Create chat") {
-                    if save(title.trimmingCharacters(in: .whitespacesAndNewlines), purpose, kind) {
-                        dismiss()
-                    }
-                }
-                .keyboardShortcut(.defaultAction)
-                .disabled(title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-            }
-        }
-        .padding(24)
-        .frame(width: 440)
     }
 }
 
@@ -763,7 +460,7 @@ private struct WorkspaceConversationAssignmentEditor: View {
                 Text(kind == .primary ? "Primary chats stay pinned to this project." : "Temporary chats archive after 7 days of inactivity.")
                     .font(.caption).foregroundStyle(.secondary)
             }
-            Text("Preserves the original messages. This organizes an existing local conversation; it does not import native sessions or index files.")
+            Text("Keeps all messages in this chat.")
                 .font(.caption).foregroundStyle(.secondary)
             WorkspaceValidationMessage()
             HStack {

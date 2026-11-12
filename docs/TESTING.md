@@ -2,14 +2,143 @@
 
 ## Unified chat and provider controls
 
-One workspace chat now displays local and app-owned Codex/Claude messages in one
-bounded timeline. Backend thread IDs are internal, not another user-facing
-conversation selector. The chat-level Local/Codex/Claude segmented control has
-an adjacent settings gear; its single panel initially selects that backend and
-can switch tabs without changing the active provider. Claude uses the selected
-official subscription profile and must never silently route to another backend.
+Current app wiring is `ProjectChatWorkspaceView` → `AgentChatView`/`ChatModel`
+→ `AgentSessionManager` → direct CLI backends (D31/D32). New Chat is an unsaved,
+project-scoped composer; first Send creates the chat. Provider settings are in
+Setup → AI providers and the Providers tab. Earlier project-less conversations
+use the retained `LocalChatView`; the adapter checkpoints below are historical
+compatibility checks, not the current UI flow.
 
-## Claude subscription adapter checkpoint
+**Acceptance still open:** Codex has run through the in-process UI driver, but
+the Claude path through this UI has never run live because its CLI login
+expired. Signed-out UI coverage and earlier direct-CLI recordings do not prove
+a live Claude reply, cross-provider catch-up or browser completion. The real
+Ollama Local gate has not run; AgentLoop remains the default. Old chat code is
+not yet removed: M6.3 waits for the owner's review. Native menus, file panels,
+drag and drop and real focus are covered only by XCUITest, which needs the
+owner's password; that gate remains open. Light/dark and minimum-size layout
+have not been checked in the real app; the matrix below still requires host
+execution and screenshot review.
+
+The direct CLI backends in `AitvarasAgents` have offline executable replay tests
+(`ClaudeBackendTests`, `CodexBackendTests`). Every sanitized recording under
+`Tests/AitvarasCoreTests/Fixtures/agents` is replayed through the real process
+transport, comparing outgoing JSON frames. Additional cases cover complete
+Claude content blocks and native IDs, subscription refusal, browser login,
+Codex thread multiplexing, mode changes, rate limits, stale approvals, exact
+integer/string request IDs, duplicate and late replies, disconnect/reconnect,
+malformed output and oversized lines. These tests neither launch installed
+providers nor send model prompts. Native discovery and canonical history
+reconciliation are implemented and connected to the app; their coverage is
+described below, separately from live-provider acceptance.
+
+`AgentConformanceTests` exercises `AgentActionCoordinator` with both fake
+providers, including executable hook/approval replies and real Claude
+recording replays: Ask offers one native permission card, Accept edits
+continues Write/Bash without cards, and Plan allows its plan-file write and
+internal ToolSearch before requesting plan approval. Recorded hook envelopes
+with injected forbidden tools are denied in every mode. Additional cases
+cover bookkeeping tools, explicit whitelists, permission grants in Plan, modes,
+approve/deny, duplicate requests and answers, stale scopes, audit failures,
+shutdown during pending approvals and audit writes, forbidden service actions,
+unknown requests and uncertain outcomes. A real in-memory Store is also used
+as the audit sink. Claude interruption tests put an assistant execution error
+and terminal result before the interrupt acknowledgement to reproduce Stop
+races. The supervisor runs live-provider and host-only checks separately.
+
+`AgentChatStoreTests` and `AgentTurnStoreTests` exercise fresh and upgraded
+schemas, UUID foreign keys, duplicate native identities, cross-chat rejection,
+legacy identity preservation, monotonic delivery, partial output and recovery
+without replay. `AgentSessionManagerTests` use both generated provider executables
+and controllable runs: two same-provider chats, view detachment, scoped Stop,
+capacity, idle resume, failures before/after the durable barrier, duplicate input,
+stale input/generation callbacks, startup interruption and bounded shutdown with
+subsequent sends. Reducer checks include stable canonical message IDs, tools,
+thinking, hook observations, usage, rate limits and outcomes. Snapshot streams
+coalesce updates; provider event streams remain lossless.
+
+Capacity regression tests cover four sequential completed chats,
+eight running turns (including approval waits), least-recently-used idle eviction,
+native-session resume after eviction, and preservation of running turns and
+pending approvals. Capacity rejection creates no failed turn or transcript entry.
+Composer error tests cover specific provider/session/history/project failures
+and the safe fallback for unknown diagnostics.
+
+Host acceptance for this foundation still needs a private database copy upgrade,
+a real force-quit during delivery, parallel real chats, idle resume, and application
+quit cancellation through the wired UI. The package tests do not
+establish those UI or live-provider properties.
+
+Live acceptance still needs the official CLIs and an isolated synthetic project
+to verify subscription authentication, browser completion, native persistence,
+hook coverage and sandbox enforcement. Offline replay cannot establish those.
+
+One project chat displays Local, Codex and Claude entries in one canonical
+timeline. Native thread IDs are internal. The composer contains the provider,
+project, model, effort and permission controls; provider segments collapse into
+a menu at narrow widths. Setup's AI providers card opens the Providers page.
+Direct Chat uses the official default CLI login/store and never silently routes
+to another provider. Switching sends nothing; Send authorizes bounded catch-up
+under D31. The earlier adapter sharing-consent checks below remain legacy-only.
+
+Local now selects sandboxed opencode when installed (D33), with text-only
+AgentLoop when it is absent. No environment switch or OpenAI CLI is involved.
+`OpencodeBackendTests` replays a sanitized/coalesced opencode 2.2.6 recording
+through a fake transport: text/reasoning, tool success/failure, Allow (`once`),
+Reject (`reject`) and Stop (`interrupt`). Failure checks cover delivery barriers,
+informational/unknown non-blocking events, malformed/stale permission IDs,
+unavailable models/service, resume and write-root changes. `OpencodeConfigurationTests` verifies local-only
+config/catalogs, exact sandbox write roots, SSE framing and credential isolation.
+Form tests cover nested `form.created` routing, audited question permissions,
+option-label/value mapping, text and multiple answers, cancellation and failed
+replies. The question tool is denied globally and in every session mode; the form
+adapter remains defensive support. Unsupported blocking controls are cancelled
+through DELETE or interrupted through HTTP and release queued follow-ups even
+without terminal SSE. Informational and unknown non-blocking events are ignored;
+none of their payloads reaches the transcript. The replay uses the host's
+`.build/agent-recordings/opencode/session-allow-deny-stop.jsonl` when present,
+sanitizing it in memory; CI uses the matching public projection. It requires a
+completed first turn with text, no “Not supported” text, and recorded Allow/Deny.
+Process tests cover an isolated wrapper group, a TERM-ignoring child, two-second
+KILL escalation, stale PID identity/group checks, PID reuse and unrelated processes.
+The manager test sends Codex→Local→Claude in one chat, checks both catch-ups,
+and verifies a retained Local session does not receive its own transcript again.
+These offline tests do not load model weights or prove runtime tool reliability.
+
+Host gate: build the App, use an isolated profile and a synthetic project, and
+run `UITests/self-drive/switching.json` with
+`AITVARAS_SELF_DRIVE_LOCAL_MODEL` set to an installed Ollama model. The override
+is DEBUG-only, like `AITVARAS_SELF_DRIVE_CODEX_MODEL`, and never a preference.
+Set `AITVARAS_AGENT_TEST_PROVIDERS=real` when integrations are disabled. In one
+chat Codex answers the backwards-word prompt, Local receives it and answers in
+capitals, Local requests shell approval and completes its tool row. Local then
+asks a plain-text color question, accepts a typed reply and finishes before
+signed-out Claude shows its sign-in row. The first golden chat explicitly waits
+for and presses the Codex provider control, regardless of the saved provider.
+`golden-path.json` additionally checks Local Allow and Deny. Use a clean synthetic project without the generated filenames.
+
+Verify the generated sandbox blocks outbound remote traffic and writes outside
+project/worktree/additional roots, isolated opencode directories and temp; permits
+local Ollama; and continues after the blocked model-catalog fetch at startup.
+Check the exact isolated XDG/config with the installed opencode version, including
+that no credentials/plugins/project config are inherited and no password reaches
+process diagnostics, logs, the DB or Activity. No Unix-socket network exception
+is granted. Web search is off; remote web fetch is blocked even after approval.
+Test Ask, Auto/Accept Edits and Plan, queued follow-ups, Stop, app restart/resume,
+and idle-root restart versus a conflicting active chat. Quit through the app's
+normal termination path and verify that no opencode server or sandbox wrapper
+survives, including when the server ignores TERM. Restart with a stale PID file
+and verify only a still-matching opencode serve group is terminated. Missing
+opencode must show “Install opencode for tools” with a text-only fallback and no installer button.
+Stop Ollama and confirm a plain unavailable reason with no provider fallback.
+Measure memory against the model budget, test coexistence with voice/capture,
+and review light/dark and minimum-window states. Exposing Aitvaras knowledge
+through a policy-gated MCP server remains an open follow-up.
+
+## Legacy Claude subscription adapter checkpoint
+
+Historical adapter coverage retained until M6.3; superseded for current Chat
+by D31/D32 and [UNIFIED-CHAT-PLAN.md](UNIFIED-CHAT-PLAN.md).
 
 Run `node scripts/test-claude-interactive.mjs` for no-provider helper contracts,
 then package tests and an app build. `--claude-workspace-check --uishot <path>`
@@ -226,6 +355,21 @@ installed-app review is still required before claiming appearance is verified.
 
 ## One chat transcript and handover (D30)
 
+`AgentHistoryReconciliationTests` covers native open/resume with executable
+Claude and Codex fixtures, streamed-row identity, external continuation,
+parent-branch selection, corrections/deletions, atomic rollback, duplicate IDs
+and failed/inconsistent refreshes. `AgentHandoverTests` covers normalized and
+legacy context beyond a UI page, UTF-8 byte limits and omission counts, revision
+receipts, exact-envelope stripping, and unknown delivery. Lifecycle/Stop tests
+retain their transport scripts and inject journal-backed history fixtures.
+
+Host acceptance for this path: open a native chat, Send, continue it in its CLI,
+reopen it in Chat, then switch providers and Send again. Verify one copy of every
+message and inspect the collapsed handover. Repeat after a native edit or branch
+change, with light/dark appearance and the minimum window size. The sandbox
+package suite cannot compile or visually verify `App/ChatModel.swift` or
+`App/Views/AgentChatView.swift`.
+
 `WorkspaceHandoverTests` cover what a thread has not seen: a new thread is
 caught up on everything other threads wrote; after a delivered handover only
 newer messages travel; undelivered and uncertain turns never do; over budget
@@ -249,7 +393,10 @@ inside a native message, its record after acknowledgement, and that Aitvaras
 shows only the typed text. `--codex-ui-fixture --open-chat` renders a chat with
 a handover line. All use synthetic transports; no provider is contacted.
 
-## Native history checkpoint A2 (in progress)
+## Legacy native history checkpoint A2
+
+Historical adapter/import checkpoint. Current unified discovery and canonical
+reconciliation use `AitvarasAgents`; see the D30 and M5 coverage sections here.
 
 Read-only native Codex and Claude Code history: discovery, preview, reviewed
 import and separate read-only source panes. The reader suites drive synthetic
@@ -265,8 +412,9 @@ project.
 
 Live discovery against installed Codex and Claude Code and provider pagination
 over real histories remain separate from these synthetic checks. Reviewed
-folder/provider ceilings are covered by A2b below; enforced execution sandboxing
-and native trust review are not implemented yet.
+folder/provider ceilings are covered by A2b below. The execution/trust work was
+not part of this checkpoint; current direct Chat uses D31's action coordinator
+and native permissions, with the live gates listed above still open.
 
 ### Native import hardening
 
@@ -536,6 +684,266 @@ to the respective subsystem, with the app installed normally:
 | Cloud routine review | In an isolated profile, enable Claude and then Codex for Shortcut & automation review. Create a fictional candidate and verify only its title/explanation gain a reviewed badge; phrase, schedule, tools, arguments, risk and approval state remain byte-for-byte unchanged. Local-only must create the same executable candidate without any cloud call. |
 | Permissions | Fresh macOS user: Setup checklist flows through mic/speech/calendar/reminders/mail grants in order |
 
+## Unified project-chat shell (M2)
+
+The Chat tab uses `ChatModel` and the application-owned `AgentSessionManager`
+for project chats. Opening or switching chats/providers sends no message;
+status checks and the authenticated backend model list never prompt or sign in.
+Send persists the exact wire input and bounded catch-up before delivery. Its
+acceptance callback clears the original composer immediately after the journal and
+transcript are saved, before provider startup; auth failure never restores that
+text into the draft. Sign-in retries use the saved entry (including attachments).
+An unavailable native-history reader retains the canonical transcript without
+blocking Send; passive read failures do not create an inline alarm. Malformed or
+conflicting history still blocks a send that cannot safely reconcile it.
+`AgentSessionManagerTests` covers acceptance, auth failure/retry, preflight
+rejection/sidebar failure, and missing or unavailable native history.
+`ChatSettingsTests` sends after provider and chat switches using a cached catalog.
+Restart restores the transcript and provider choice; drafts remain per chat for the app lifetime. Model, effort
+and mode are saved when chosen; restored models and efforts are validated against
+the provider catalog on each selection and before Send. Existing unassigned chat, voice, shortcuts,
+capture targets and memory archiving keep their legacy paths. Legacy project
+history migration is still M5 work.
+
+For provider E2E, always set `AITVARAS_STATE_DIR` to a disposable profile.
+`AITVARAS_AGENT_TEST_PROVIDERS=real` enables the new real backends even with
+`AITVARAS_DISABLE_EXTERNAL_INTEGRATIONS=1` or `AITVARAS_UI_TEST_MODE=1`.
+Personal connectors remain disabled by the provider-test configuration itself.
+`AITVARAS_FAKE_CLAUDE` and `AITVARAS_FAKE_CODEX` may instead name absolute fake
+executable paths. A fake-only configuration enables only the named providers;
+it never falls back to a real provider. These overrides require isolation and
+do not relax any legacy client guard. Normal launches need none of these flags.
+
+Host verification: generate/build the app, create a project chat, send through
+Claude, switch to Codex without sending, then Send and inspect the single
+catch-up disclosure. Switch to Local and reply, stop a streaming turn, revisit
+another chat to check draft retention, quit/reopen to check transcript/provider
+restoration, and verify imported history remains reachable.
+Check both appearance modes at 800×500, a long Markdown/code reply, collapsed
+thinking/tools, Return to send and Shift-Return for a newline. Scroll upward
+during streaming: new text must not pull the transcript back to the bottom.
+Projects list their chats directly, with primary chats pinned first and scoped
+running/needs-you/failed dots. Rename, pin, archive and restore from row menus.
+Project chats expose no context inspector, boundary review or setup flow.
+Review section 4 of `UNIFIED-CHAT-PLAN.md` in empty, streaming, approval, failed and
+signed-out states, in light/dark and at 800×500. The composer card and transcript
+must share a centred column; assistant text has no bubble. Check visible paperclip,
+worktree and Send/Stop symbols, ring-only gauges with tooltips, stationary control
+slots and keyboard access to the horizontal strip at minimum width. Inline errors
+and Sign in must fit above the window edge. Chat's dock must remain absent on an
+idle fresh profile and after a manual provider failure; start automatic work to
+check that the visible dock consumes height without covering the composer. Other
+tabs retain their dock and attention presentation; their scroll views must end
+above the dock, including its padding. On Setup, scroll to the final settings
+row and confirm it stays readable and reachable at 800×500.
+Verify readable composer messages (including sign-in, archived and interrupted)
+in both appearances. With no message, the card ends below its controls without
+an empty status row. Eight genuinely running chats show “8 chats are running.
+Stop one or wait.” inline on another Send, with no failed sidebar status.
+
+Settings → Providers has one row per provider: status icon, known usage gauge
+and Sign in (Local needs no login). Model choices come from the backend; effort
+is hidden for models without it, and Local omits effort; sandboxed opencode exposes permission modes. Unknown gauges
+are absent. In a signed-out temporary profile, Send must show one inline sign-in
+action. Verify the browser URL, Cancel, a five-minute timeout and successful
+completion followed by one automatic send. The maintainer must complete the
+real browser login once for each provider. Accepted text stays in the transcript
+through cancellation and restart; opening Chat never initiates login. Only a journal entry still
+`prepared`, never `deliveryUnknown` or `acknowledged`, is eligible for retry.
+A single durable intent per profile is bounded to 64 KiB and five minutes;
+changing chat/provider, settings or the draft invalidates it. Native profile,
+session and any opaque account ID exposed by the CLI must still match. An
+existing native session without an exposed account identity requires an explicit
+Send after login; its account cannot be proven unchanged.
+`ChatSettingsTests` and `ProviderSignInTests` cover these policies against an
+in-memory store, including cancellation, timeout, drift, failed persistence and
+duplicate completion. The sandbox package checks do not compile the app or verify real authentication, Liquid Glass or accessibility.
+
+Thinking and tool rows (M3.1) stay collapsed to one line by default. Expanding a
+row shows a scrollable detail area capped at 240 points. Each thinking item,
+tool input, partial argument preview and output retains at most 32 KiB of UTF-8
+text, with an explicit truncation marker. Streaming output accumulates per
+native item; final output replaces its preview. Complete thinking replaces its
+streamed text. `TranscriptReducerTests` replays both providers and checks
+interleaving, multi-block replies, stable identities and bounds.
+
+Native permission requests (M3.2) create one inline Allow/Deny card each and
+mark the originating chat with its needs-you dot. The command or file is
+visible without expanding JSON. Home attention and Chat Suggestions project
+the same live pending requests; either surface answers through the coordinator
+and cannot execute the action independently. Hooks alone never create cards.
+Permission, plan and question cards have no automatic timeout. They stay pending
+until answered, cancelled or resolved by the provider (including turn end),
+denied by Stop, or cleared on exit or restart. Raw provider requests are not
+persisted as executable Suggestions; Activity keeps scoped provenance without
+raw arguments. `AgentApprovalTests`
+covers cross-chat replies, concurrent clicks, cancellation through fake
+executables, waiting past the former accelerated expiry deadline, Stop, rejected
+replies, restart and failed durable audit writes.
+
+Host verification for M3.1/M3.2: with each real provider in an isolated profile,
+expand thinking and two interleaved tools while output streams, then collapse
+and scroll upward. Check stable rows, bounded details, keyboard expansion and
+Allow/Deny at minimum window size in light/dark appearances. Request a harmless
+file edit and command; Deny must prevent execution, Allow must execute once,
+and the pending card/dot must clear from transcript, Suggestions and Home.
+Leave a permission, plan or question card unanswered for more than ten minutes;
+it must remain actionable, and Stop must still deny it and record the ending.
+Navigate to another running chat while answering; verify only the originating
+request changes. Check Activity provenance and expiry on provider exit/restart.
+App compilation, real CLI behavior and these visual checks require the host.
+
+Plan and question cards (M3.3/M3.4) use the same scoped coordinator. Plans
+render Markdown with Approve and Keep planning. Claude's recorded
+`PostToolUse` for the approved `ExitPlanMode` reports `permission_mode: default`;
+only that acknowledgement changes the saved mode to Ask. Codex's completed
+native `plan` item creates a review card after its read-only turn; approval
+starts an implementation turn with Ask permissions, and `turn/start` must
+acknowledge it before the saved mode changes. Informational `turn/plan/updated`
+and ordinary assistant replies never authorize execution. The available Codex
+schema has no collaboration-mode field on `turn/start`; host verification must
+check that the installed CLI actually produces a native plan item in this path.
+Keep planning preserves Plan mode; Stop interrupts a pending review.
+
+Question cards show option buttons and a request-local draft. Every question
+requires an answer before Submit. Claude supports multiple selections and free
+text; Codex allows free text for `isOther` or a question without options, and
+preserves `isBlocking`. Secret free text uses a secure field. Replies are
+validated again at the coordinator and backend; malformed questions, unknown
+IDs, empty required answers, stale cards and duplicate replies are rejected.
+For Claude and Codex, Cancel closes the native request with an unsupported
+response because neither protocol defines a question-denial payload. Local's
+opencode forms use `POST /api/session/{id}/form/{formID}/reply` with a keyed
+`answer` object, and Cancel uses `DELETE /api/session/{id}/form/{formID}`.
+Conditional, external and constrained fields that the shared card cannot
+represent are cancelled with a visible “Not supported here” transcript line.
+
+`AgentPlanTests` covers the recorded Claude acknowledgement and both fake
+executables for approve/reject, failed transitions, Stop and stale plans.
+`AgentQuestionTests` covers draft validation, schema flags, multiple questions,
+both reply formats, cancellation and late answers. On the host, build the app
+and check both cards with real providers: keyboard selection/Submit/Cancel,
+free text and multiple selections, minimum size, light/dark, chat switching,
+and a failed approval. Confirm no execution before approval and one continuation
+afterwards, with the composer mode and saved settings following acknowledgement.
+
+Follow-ups and Stop (M3.5/M3.6): Send and Stop remain adjacent during a turn;
+Return and Command-Return submit follow-ups. Claude writes them to native stdin
+in order and shows Queued on each pending message. Codex uses `turn/steer` with
+`expectedTurnId` and a local message ID; output stays with the original active
+turn. Every input has its own delivery barrier and journal row linked to the
+active input. Duplicate IDs, wrong providers and busy plan reviews cannot replace
+that turn. A rejection before delivery leaves its active approval card intact.
+
+Stop denies pending approval cards and waits at most 1.4 seconds for the native
+turn end.
+If that does not arrive, transport disposal has a further 300 ms grace. Partial
+output and native session IDs survive, queued inputs become interrupted, and the
+next explicit Send continues the same native session without replaying them.
+Codex shares one app-server: forced transport disposal interrupts all its runs;
+an acknowledged Stop affects only its own chat. `AgentFollowupTests`,
+`AgentInterruptTests` and `AgentTurnStoreTests` cover ordering, duplicate/scoped
+inputs, busy providers, failed barriers, fast completion, stale steer responses,
+Stop before delivery/during output/approval, absent acknowledgements/results,
+queued cancellation and continuation through real process pipes.
+
+Host verification: on both real providers, send two follow-ups during a long
+turn and verify native queue/steer behavior, delivery labels and output ownership.
+Stop during output and while an approval is pending; measure under two seconds,
+then Send and verify the same native session. Repeat with two background chats,
+a queued Claude input, and a provider that stops responding. Check Send/Stop and
+keyboard shortcuts at minimum size in light/dark, queued labels after restart,
+and that interrupted inputs are never resent without another explicit Send.
+
+Attachments and completions (M3.7/M3.8): `AgentAttachmentTests` covers immutable
+snapshots, size/count/type limits, cancellation before delivery, native text/image
+encoding on initial and follow-up sends, failed snapshot saves, exact retry and
+no attachment transfer through context handover. `AgentComposerInputTests` covers
+absent/malformed catalogs, duplicate/disabled skills, project search boundaries,
+filename quoting and explicit selection through fake CLI pipes. The checked-in
+Claude initialize recordings omit commands; a missing catalog must stay unavailable.
+
+Host verification: build the app and use an isolated profile. Drag and paste files
+and images, attach through the paperclip, remove chips, cancel the file picker,
+send an image alone, and reject oversized/unsupported files. Change a source file
+after selection and verify the original bytes arrive on both real providers,
+including follow-ups and a sign-in retry. Switch chat/provider before imports
+finish and verify the originating composer retains ownership. Type `@` and `/`,
+search, use arrows/Return/Escape and Tab, and verify one popover level, filename
+escaping, installed command/skill lists and native invocation. Confirm native MCP
+and project instructions remain available. Review minimum size, light/dark,
+accessibility identifiers and streaming layout. These checks require the host;
+package tests do not compile App views or establish live CLI conformance.
+
+Git workspaces and changes (M3.9–M3.11): `AgentWorktreeTests`,
+`AgentChangesTests`, `AgentGitActionTests` and `AgentGitProviderMappingTests` use
+disposable repositories and fake executables to cover durable creation, failed
+preflight/collisions, duplicate creation, foreign ownership, multi-folder mapping,
+provider resume arguments, staged/untracked/deleted/renamed files, unusual names,
+binary/large previews, stale bytes/index state, native hook failure, policy/audit
+failure and cancellation during a commit. Commit/discard use literal pathspecs
+and leave unrelated checkouts intact. Failed hooks may leave reviewed files
+staged; interrupted operations are reported, never automatically retried.
+
+Host verification: build the App target, then in an isolated profile create a
+project on a disposable committed git repository. Confirm worktree defaults off,
+is offered only for git, and both providers resume the recorded cwd after restart.
+Test multiple folders and failed creation without any fallback edits. Make real
+edits and verify the inspector appears only with changes, file selection, colored
+unified diffs, keyboard navigation and narrow-window layout in light/dark. Commit
+with a user message and verify the intended files and normal hooks. Cancel and
+accept the single native Discard confirmation in an owned worktree; confirm the
+original checkout, foreign worktrees, ignored files, branch and worktree survive.
+Confirm Discard is disabled on ordinary checkouts. Edit externally between review
+and click, fail a hook and interrupt git; verify a single inline error and safe
+refresh. These checks need the host and do not follow from package tests alone.
+
+Background chat lifecycle (M3.12): `AgentLifecycleTests` replays the checked-in
+Claude/Codex interrupt recordings and uses fake executables for parallel running
+chats, scoped approval/status, subscriber detach/reattach, active archive,
+restore/continuation, invalid IDs and metadata, failed writes, activity ordering
+and automatic-expiry protection. A disk-backed database is reopened after quit;
+startup launches no provider, keeps partial output and native identity, and only
+the next explicit Send resumes. Crash recovery covers prepared, uncertain and
+acknowledged inputs without replay. Queued Claude inputs retain interrupted
+labels durably.
+
+Host verification: build the App target and use an isolated profile. On both
+real providers, run two chats, switch between them, close/reopen the main window
+and verify output and approval dots continue independently. Rename an active
+chat; archive one while streaming and one awaiting approval, then answer or
+Stop from Archived. Confirm the composer blocks Send until Restore. Quit during
+streaming and with a queued follow-up, relaunch and verify interrupted status,
+partial output, retained title/archive state and same-session continuation on
+the next Send without replay. Cancel quit through a failed capture save and
+confirm Send works again. Check keyboard and VoiceOver access to rename,
+archive/restore and status at minimum window size in light/dark; confirm no
+streaming layout jumps. Native rename/archive propagation is not claimed.
+
+Native history discovery (M5.1/M5.2): `AgentNativeHistoryTests` exercises
+Claude JSONL with recorded message content in synthetic persisted envelopes,
+version labels, unknown records/blocks, pagination, corrupt/truncated files,
+missing directories and wrong profiles. Fake Codex executables assert read-only
+`thread/list`/`thread/read` requests, native archive filters and cursors, unknown
+items, unavailable executables, malformed results and unsupported partial
+history. `AgentNativeIdentityTests` covers repeated discovery, provider/profile/
+host collisions, symlink aliases, nested and ambiguous roots, folder boundaries,
+worktree ownership, atomic failure and preservation of existing chats/settings
+and legacy evidence. Manager discovery must read every page before mapping and
+must never start a run.
+
+Host verification: build the app, use an isolated app profile and disposable
+native sessions, and verify that sessions from every registered project folder
+appear once without a link/import step. Check aliases, overlapping roots and
+owned worktrees, restart discovery, read a preview and Send on both providers;
+confirm native identity and cwd remain the same. Verify the sidebar refresh and
+inline preview Retry with keyboard and VoiceOver in light/dark and at minimum
+window size. Compare existing saved evidence before/after discovery on a private
+DB copy. Real Claude persisted-file envelopes and installed Codex history
+responses require host conformance; the stream recordings alone do not prove
+those on-disk envelopes. M5.3 canonical reconciliation is implemented; see
+`AgentHistoryReconciliationTests` in the D30 section for its offline coverage.
+
 ## What an agent session should do
 
 For Claude Code (or any agent) working on this repo: Layers 1–2 after every
@@ -544,3 +952,249 @@ launch the app against the default profile; never store test tokens in the
 Keychain. The demo persona is fictional on purpose; assertions in agent-run
 live tests should reference it (Alex/Example University/homelab), which doubles as a
 guard that the real profile was not loaded.
+
+## Unified chat legacy compatibility (M5.5)
+
+`UnifiedChatMigrationTests` reconstructs a populated pre-unified v27 database,
+opens it through the current migrations twice and compares legacy rows, IDs,
+revisions, conversation ownership and capture targets. It also covers saved reads
+with a missing separate provider profile/executable, imports beyond one page,
+read-only projections, uncertain outcomes, archive reads and context/memory scope
+guards. No test opens credentials or migrates provider profiles.
+
+Host gate: migrate a local private DB copy, check owned and linked text plus
+collapsed imported sources in Chat, and inspect saved-source details. Check both
+appearances and keyboard expansion at minimum window size. Confirm unavailable
+old provider profiles do not block saved reads. Keep the copy and screenshots
+local; package tests do not compile the App target or verify this visual gate.
+
+
+## Companion, Activity and capture compatibility (M6.1–M6.2)
+
+`AgentSessionManagerTests` drives fake CLI processes to verify Activity Stop by
+input identity with two chats running, including a stale click after continuation.
+`AgentTurnStoreTests` covers atomic Activity/journal failure, recovery and the
+single explicit resend identity. `AgentApprovalTests` checks that provider audits
+appear under that input's Activity row and Stop expires its Suggestions and cards.
+`CommandRoutineTests` checks both typed and voice shortcuts with provenance.
+
+`WorkspaceScopeTests` runs managed Local through AgentLoop with fake inference,
+including a fabricated tool request. It checks that captures and shared facts
+never reach the prompt, tools never execute, capture targets survive rename and
+archive, and global archiving/recovery never learns from the managed chat.
+`WorkspacePolicyTests` and `UnifiedChatMigrationTests` retain the existing
+capture-target, scope-failure and upgrade checks. `ConsolidatorTests` excludes
+project git and current/legacy provider audits from nightly personal-memory evidence.
+
+Host checks in an isolated profile (package tests do not compile App):
+
+- Open a project chat in the companion with the main window closed. Check its
+  shared transcript, draft, provider controls, approvals and Stop. Collapse and
+  reopen while streaming; switch chats and confirm only the selected chat drives
+  the thinking animation. Review narrow layout, keyboard focus and both appearances.
+- Run two provider chats, switch to another chat, and Stop one from Activity.
+  The other must keep running. Stop a managed Local turn from Activity too.
+- In Unassigned, check typed and voice shortcuts, microphone/typed speech,
+  barge-in and saved voice history. Project voice remains unavailable; a hotkey
+  or typed speech action must not send project text to global voice history.
+  Local replies, voice and capture second-pass inference must respect contention.
+- Open Chat Details → Captures, reopen a saved capture, and use its Open Chat
+  control while another provider chat runs. Include an archived target. Opening
+  must retain target IDs and must not attach or send the transcript.
+- Check capture checkpoint/final-save retry and failed quit cancellation. After
+  cancelling quit, send new input explicitly; old input and approvals must not
+  replay. Run the existing capture synthetic checks and private DB-copy gate.
+
+Legacy adapters and their diagnostic views are not yet removed. M6.3 waits for
+the owner's review; M6.1–M6.2 compatibility does not complete the cleanup gate.
+
+## Debug in-process chat self-drive
+
+On the host, `make ui` runs `scripts/run-self-drive.sh`. Screenshots land in
+`.build-e2e/self-drive/<scenario>`.
+
+Set `AITVARAS_SELF_DRIVE` to a scenario JSON file and
+`AITVARAS_SELF_DRIVE_OUTPUT` to a local artifact directory. Also set
+`AITVARAS_STATE_DIR` to a disposable profile and
+`AITVARAS_DISABLE_EXTERNAL_INTEGRATIONS=1`; missing isolation refuses startup.
+Launch the Debug executable in the background without `open` or an activation
+request. Release builds exclude the driver and helpers. Self-drive bypasses the
+normal scene, companion and hotkeys, prohibits application activation and hosts
+MainWindow in a nonactivating panel at alpha zero with mouse events ignored.
+
+Optional debug-only window controls:
+
+- `AITVARAS_SELF_DRIVE_APPEARANCE=light` or `dark` sets only the driver window's
+  AppKit appearance, after bootstrap. Unset inherits the app/system appearance.
+- `AITVARAS_SELF_DRIVE_SIZE=WIDTHxHEIGHT` sets the content size in points,
+  defaulting to **1080 × 720**. The real normal-scene content minimum is
+  **800 × 500**, declared in `App/AitvarasApp.swift`; the driver uses the same
+  minimum. Malformed, non-finite or smaller dimensions and unknown appearance
+  values fail startup with `startup-error.txt` instead of silently substituting
+  another layout. Size excludes the native title bar.
+
+`UITests/self-drive/layout.json` opens Chat/new composer, sends one Codex
+message, verifies `pelican` inside `chat.transcript`, then uses a fresh chat for
+a signed-out Claude Send and waits for `Sign in to Claude` plus `chat.signin`
+inside `chat.error`. It captures five distinct `layout-*` PNGs: new composer,
+Codex reply, Claude sign-in row, Setup and Providers. It presses Settings
+(`gearshape`) before waiting for its AI providers card, then presses that card
+(`settings.providers`) before waiting for `settings.providers.page`.
+Codex must be signed in and Claude signed out; an unexpected Claude reply
+does not establish the signed-out layout. This scenario never initiates browser
+login or logout.
+At minimum width the provider switch is a native menu. The scenario briefly
+hides the sidebar with `sidebar.left` to try to expose the provider segments,
+then restores it before Send and every screenshot. The segment waits/presses and
+provider-dependent reply/sign-in checks are optional: at 800×500 the native menu
+may remain collapsed, so those steps can be skipped. A skipped check does not
+verify that provider or its sign-in layout; review the result reasons and PNGs.
+This assumes a fresh profile with the sidebar initially visible and does not
+establish native provider-menu interaction at minimum width.
+
+Run this **unverified** matrix on the host with a fresh disposable profile and
+project for each invocation (the runner supplies both). Use a separate artifact
+directory per run because the runner replaces its scenario output. Start with
+the real **800×500 minimum**; 1080×720 is a larger comparison size:
+
+```sh
+AITVARAS_SELF_DRIVE_APPEARANCE=light AITVARAS_SELF_DRIVE_SIZE=800x500 scripts/run-self-drive.sh layout
+mv .build-e2e/self-drive/layout .build-e2e/self-drive/layout-light-minimum
+AITVARAS_SELF_DRIVE_APPEARANCE=dark AITVARAS_SELF_DRIVE_SIZE=800x500 scripts/run-self-drive.sh layout
+mv .build-e2e/self-drive/layout .build-e2e/self-drive/layout-dark-minimum
+AITVARAS_SELF_DRIVE_APPEARANCE=light AITVARAS_SELF_DRIVE_SIZE=1080x720 scripts/run-self-drive.sh layout
+mv .build-e2e/self-drive/layout .build-e2e/self-drive/layout-light-default
+AITVARAS_SELF_DRIVE_APPEARANCE=dark AITVARAS_SELF_DRIVE_SIZE=1080x720 scripts/run-self-drive.sh layout
+mv .build-e2e/self-drive/layout .build-e2e/self-drive/layout-dark-default
+```
+
+Use fresh artifact destinations if repeating the matrix. Require all mandatory
+steps to pass and review optional skips, then inspect all PNGs for clipped
+controls, sign-in contrast, text and background colors. Screenshot caching skips the native window background;
+`SelfDriveSurface` fills it with `windowBackgroundColor` resolved under the
+content view's effective appearance on every capture. Keep that drawing step
+for both light and dark. These cached content images do not prove native
+title-bar rendering or system interaction. The commands are a procedure, not
+a record of completed runs.
+
+**Host gate first:** run `UITests/self-drive/probe.json` without VoiceOver or
+Accessibility, Automation or Screen Recording grants. Inspect its results and
+trees for identifier discovery, a successful press, and a typed composer value
+observed by the text wait. Check `probe-composer.png` for rendered content.
+Independently watch another app retain keyboard focus and the pointer stay still
+through launch and termination; no permission or password prompt may appear.
+The driver sets `AXEnhancedUserInterface` on its own application object, which makes
+SwiftUI build its accessibility tree inside this process; it reads SwiftUI's nodes by
+selector because they do not formally adopt the protocol. Screenshots draw the window
+background themselves. Package tests do not prove these runtime assumptions. A failed probe blocks
+relying on self-drive coverage; preserve the artifacts to fix the adapter.
+
+The format is `{"steps":[{"action":"press","identifier":"chat.new"}]}`.
+Actions: `press` by identifier or an `anyOf` identifier array (first available,
+enabled target); `type` appends `text` to the composer;
+`waitFor` takes exactly one `identifier`, an `anyOf` identifier array, or case-insensitive visible `text`,
+a `timeout` in seconds, optional `absent:true`, `enabled:true` (or `false`), `within` subtree identifier and
+`caseSensitive:true`; `screenshot` and `dumpTree`
+take a safe artifact `name`. Every step accepts an optional settling `delay`.
+Results contain one index/action/status/reason entry per step and checkpoint
+atomically after each step; failures continue. Press uses in-process accessibility
+then window-local mouse events; a later wait must verify its effect. Typing goes through the
+field's own editor, because the accessibility setter skips the SwiftUI binding. PNGs cache
+the content view, and dumps walk only the window's accessibility children.
+Setup/output errors write `startup-error.txt` when possible. Missing results,
+startup errors or failed steps fail a run regardless of process exit status.
+A step with `optional: true` records an error as `skipped` and continues without
+failing the run; required steps still record `failed`.
+Keep artifacts local: they can contain chat content.
+
+Local waits in the golden and switching scenarios allow 300 seconds for small
+models. Switching waits for enabled Send before typing each prompt. An idle
+composer exposes enabled Send even when empty; pressing it with no input does
+nothing. After a turn, Send accepts input while native history is refreshing
+and waits for reconciliation before preparing delivery. Invalid history still
+blocks delivery. Verify this on the host by sending immediately after Stop
+disappears, without an extra settling delay.
+
+Local reasoning creates the same collapsed Thinking row as the other providers
+on its first event, including while the prompt HTTP acknowledgement is pending.
+Expand it during a slow turn to verify incremental updates and stable identity;
+the delivery journal still waits for acknowledgement.
+
+`UITests/self-drive/golden-path.json` uses transcript-scoped reply checks and
+case-sensitive catch-up checks. Prompts spell the expected word backwards or refer
+to the previous answer, so composer text cannot satisfy them.
+`AITVARAS_AGENT_TEST_PROVIDERS=real` enables real CLI subscription turns with
+personal integrations disabled. Set debug-only `AITVARAS_SELF_DRIVE_PROJECT` to an
+existing disposable folder: SelfDriver registers the project before the scenario,
+without creating chats. Set optional debug-only `AITVARAS_SELF_DRIVE_CODEX_MODEL`
+to a cheap model ID advertised by the installed CLI; only new Codex sessions use
+that choice. Codex steps run before the final Claude steps. Every Send checks
+that its text is absent within `chat.composer.input`; the shell step waits for its
+Allow card and then for a completed or unconfirmed tool row in the transcript.
+Four optional wait/Allow pairs accommodate a provider's follow-up commands. The
+after-approval screenshot checks that Changes is still closed; the next step
+explicitly presses `chat.changes` so the running screenshot covers the narrow pane.
+The final signed-out screenshot checks that Changes is closed again.
+Providers navigation presses the
+native `cpu` tab and waits for `settings.providers.page`; `settings.providers`
+remains the Setup card button, not a press target for the page container.
+The shell approval uses a fresh third chat and the explicit prompt “Use your shell
+tool to create an empty file named e2e-made.txt in the current folder.” Its
+needs-you sidebar status and Chat badge must appear before Allow. The final
+Claude step uses another new chat and expects “Sign in to Claude” plus `chat.signin`
+inside `chat.error`, rather than a reply from a signed-out provider.
+The scenario sends seven Codex chats plus a final Claude chat, checks one-click switching,
+Show more and a real waiting-approval sidebar icon plus the Chat badge. `$project`
+and `$chat1`/`$chat2`/`$chat3` resolve IDs observed during the scenario. Settings uses
+the in-window `gearshape` button and the native Providers tab (`cpu`).
+
+`picker-probe.json` separately dumps the new composer's tree and attempts the
+project menu. Native menu presses report unsupported failures; they are excluded
+from the golden path rather than presented as successful interaction. The host
+must inspect the provider segments' identifiers and press effects and the project
+menu's real accessibility subtree. Use XCUITest for native menu selection.
+The original XCUITest stays as the final check for native
+menus, file panels, drag and drop, real focus and system-rendered screenshots.
+It is the only coverage for those interactions and needs the owner's password;
+the native-interaction gate has not passed.
+Self-drive covers in-process chat controls, bindings, turns, approvals and Stop
+only after the host gate passes. The supervisor must regenerate/build the App
+on the host; the recursive App source entry includes the new file without a
+project configuration change.
+
+
+For chat layout review, check light and dark appearances with Changes closed and
+open, resize to the minimum width, and type while running or waiting for approval.
+Stop must have a visible square, Sign in must have contrast, Allow must be prominent,
+and Send must appear beside Stop with input. The provider menu must replace the
+segments first, then project becomes an icon menu, then effort and mode become
+icon menus. Every collapsed menu keeps its chevron, including project, provider,
+model, effort and mode; mode remains reachable wherever supported. Provider shows
+the provider name and model shows the actual model name, including Local's assigned
+chat model or available Ollama fallback. Check the full model name in its tooltip
+and menu when the row truncates it. The controls stay on one row, including at
+minimum width with Changes open and both Stop and Send visible. The project menu
+stays plain at every width;
+its compact menu includes the new-chat worktree toggle. Changes must
+stay closed until requested, with file statuses and diff together at the top and
+Commit/Discard at the bottom. A new empty file reads “Empty file”; Commit remains
+disabled for a blank message. Signed-in providers show no Sign in action. Usage
+and context rings show a static full track and percentage, including low values.
+Tool summaries use Running/Ran and Reading/Read, Editing/Edited, Writing/Wrote;
+expanding a tool retains its full command. Successful tool completion exposes
+`chat.tool.completed` before turn completion; errors do not advertise success.
+If a tool never reports completion, ending the turn closes its row as “Ended
+without a result”; it must not remain Running or advertise a successful completion.
+When Codex omits a started tool's completion, the backend first reads that turn
+with `thread/read` (`includeTurns: true`), allowing up to two seconds. Recovered
+terminal items complete their rows before the turn ends; command details retain
+the exit code and output, and non-zero exits show failure. Failed, missing or
+timed-out reads leave the row unconfirmed without failing the turn or disconnecting
+other chats. `TranscriptReducerTests` exercises recovery and these fallback paths
+through a fake app-server, including a late reply and a subsequent turn.
+
+During a turn, a later tool item or assistant message closes earlier tool rows
+without a result as unconfirmed, showing the plain command. Rows with pending
+approval stay unchanged. A later real result upgrades the same row to success or
+failure; progress alone never advertises success. `ChatStateTests` covers these
+transitions, pending approvals and late results.

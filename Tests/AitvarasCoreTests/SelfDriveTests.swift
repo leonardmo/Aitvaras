@@ -1,0 +1,287 @@
+#if DEBUG
+import Foundation
+import Testing
+import AitvarasCore
+
+@Suite struct SelfDriveTests {
+    @Test func parsesEveryActionAndUnicodeText() throws {
+        let scenario = try SelfDriveScenario.parse(Data(#"""
+        {"steps":[
+          {"action":"press","identifier":"chat.new"},
+          {"action":"type","text":"Hello 🐉\nsecond line"},
+          {"action":"waitFor","text":"Hello","timeout":0.1,"within":"chat.transcript","caseSensitive":true},
+          {"action":"waitFor","identifier":"chat.request.1.allow","absent":true,"timeout":0},
+          {"action":"screenshot","name":"01-launch","delay":3},
+          {"action":"dumpTree","name":"01-launch-tree"}
+        ]}
+        """#.utf8))
+        #expect(scenario.steps.count == 6)
+        #expect(scenario.steps[1].text == "Hello 🐉\nsecond line")
+        #expect(scenario.steps[3].absent == true)
+        #expect(scenario.steps[2].within == "chat.transcript")
+        #expect(scenario.steps[2].caseSensitive == true)
+        #expect(SelfDriveText.matches("pelican", text: "PELICAN", caseSensitive: false))
+        #expect(!SelfDriveText.matches("pelican", text: "PELICAN", caseSensitive: true))
+        #expect(SelfDriveText.matches("PELICAN", text: "PELICAN", caseSensitive: true))
+    }
+
+    @Test(arguments: [true, false])
+    func enabledWaitRoundTrips(enabled: Bool) throws {
+        let data = Data("{\"steps\":[{\"action\":\"waitFor\",\"identifier\":\"chat.composer.send\",\"enabled\":\(enabled),\"timeout\":300}]}".utf8)
+        let step = try #require(SelfDriveScenario.parse(data).steps.first)
+        #expect(step.enabled == enabled)
+        let restored = try JSONDecoder().decode(SelfDriveStep.self, from: JSONEncoder().encode(step))
+        #expect(restored.enabled == enabled)
+    }
+
+    @Test(arguments: ["chat.tool.completed", "chat.tool.unconfirmed"])
+    func waitsForEitherToolOutcome(identifier: String) throws {
+        let scenario = try SelfDriveScenario.parse(Data(#"{"steps":[{"action":"waitFor","anyOf":["chat.tool.completed","chat.tool.unconfirmed"],"timeout":0,"within":"chat.transcript"}]}"#.utf8))
+        let step = try #require(scenario.steps.first)
+        #expect(step.matchesIdentifier(identifier))
+        #expect(!step.matchesIdentifier("chat.entry.running"))
+        #expect(!step.matchesIdentifier(nil))
+        let restored = try JSONDecoder().decode(SelfDriveStep.self, from: JSONEncoder().encode(step))
+        #expect(restored.anyOf == step.anyOf)
+        #expect(restored.matchesIdentifier(identifier))
+    }
+
+    @Test(arguments: [
+        #"{"steps":[{"action":"unknown"}]}"#,
+        #"{"steps":[{"action":"press"}]}"#,
+        #"{"steps":[{"action":"type"}]}"#,
+        #"{"steps":[{"action":"waitFor","identifier":"x","text":"y"}]}"#,
+        #"{"steps":[{"action":"waitFor","text":""}]}"#,
+        #"{"steps":[{"action":"waitFor","text":"x","timeout":-1}]}"#,
+        #"{"steps":[{"action":"press","identifier":"x","delay":301}]}"#,
+        #"{"steps":[{"action":"screenshot","name":"../escape"}]}"#,
+        #"{"steps":[{"action":"dumpTree","name":"/absolute"}]}"#,
+        #"{"steps":[{"action":"dumpTree","name":".."}]}"#,
+        #"{"steps":[{"action":"waitFor","text":"x","within":""}]}"#,
+        #"{"steps":[{"action":"press","identifier":"x","within":"chat.transcript"}]}"#,
+        #"{"steps":[{"action":"press","identifier":"x","enabled":true}]}"#,
+        #"{"steps":[{"action":"waitFor","anyOf":[]}]}"#,
+        #"{"steps":[{"action":"waitFor","anyOf":[""]}]}"#,
+        #"{"steps":[{"action":"waitFor","anyOf":["x","x"]}]}"#,
+        #"{"steps":[{"action":"waitFor","anyOf":["x"],"identifier":"y"}]}"#,
+        #"{"steps":[{"action":"waitFor","anyOf":["x"],"text":"y"}]}"#,
+        #"{"steps":[{"action":"press","anyOf":["x"],"identifier":"y"}]}"#,
+        #"{"steps":[{"action":"press","anyOf":["x"],"text":"y"}]}"#,
+        #"{"steps":[{"action":"type","anyOf":["x"],"text":"y"}]}"#,
+        "not json"
+    ]) func rejectsMalformedScenarios(json: String) {
+        #expect(throws: (any Error).self) { try SelfDriveScenario.parse(Data(json.utf8)) }
+    }
+
+    @Test func approvalScenarioCanPressCommandOrQuestionCard() throws {
+        let scenario = try SelfDriveScenario.parse(Data(#"{"steps":[{"action":"press","anyOf":["chat.request.0.allow","chat.request.0.submit"]}]}"#.utf8))
+        let step = try #require(scenario.steps.first)
+        #expect(step.matchesIdentifier("chat.request.0.allow"))
+        #expect(step.matchesIdentifier("chat.request.0.submit"))
+        let restored = try JSONDecoder().decode(SelfDriveStep.self, from: JSONEncoder().encode(step))
+        #expect(restored.anyOf == step.anyOf)
+    }
+
+    @MainActor @Test func failureContinuesAndCheckpointsRoundTrip() async throws {
+        let scenario = try SelfDriveScenario.parse(Data(#"""
+        {"steps":[{"action":"press","identifier":"missing"},
+                  {"action":"type","text":"still runs"},
+                  {"action":"screenshot","name":"after-failure"}]}
+        """#.utf8))
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("results.json")
+        var checkpoints: [Int] = []
+        var actions: [SelfDriveStep.Action] = []
+        let results = try await SelfDriveRecorder.run(scenario, perform: { step in
+            actions.append(step.action)
+            if step.action == .press { throw SelfDriveFailure("Identifier unavailable") }
+            return "Observed success"
+        }, checkpoint: { results in
+            checkpoints.append(results.count)
+            try JSONEncoder().encode(results).write(to: url, options: .atomic)
+        })
+        #expect(actions == [.press, .type, .screenshot])
+        #expect(checkpoints == [0, 1, 2, 3])
+        #expect(results.map(\.status) == ["failed", "passed", "passed"])
+        let saved = try JSONDecoder().decode([SelfDriveResult].self, from: Data(contentsOf: url))
+        #expect(saved.map(\.index) == [0, 1, 2])
+        #expect(saved[0].reason == "Identifier unavailable")
+        #expect(saved[2].action == "screenshot")
+    }
+
+    @MainActor @Test func optionalFailuresAreSkippedAndRequiredFailuresStillFail() async throws {
+        let scenario = try SelfDriveScenario.parse(Data(#"""
+        {"steps":[{"action":"press","identifier":"missing","optional":true},
+                  {"action":"press","identifier":"missing","optional":false},
+                  {"action":"press","identifier":"present","optional":true},
+                  {"action":"type","text":"continue"}]}
+        """#.utf8))
+        var saved: [SelfDriveResult] = []
+        let results = try await SelfDriveRecorder.run(scenario, perform: { step in
+            if step.identifier == "missing" { throw SelfDriveFailure("Identifier unavailable") }
+            return "Observed success"
+        }, checkpoint: { saved = $0 })
+        #expect(results.map(\.status) == ["skipped", "failed", "passed", "passed"])
+        #expect(saved.map(\.status) == results.map(\.status))
+        #expect(results[0].reason == "Identifier unavailable")
+        let restored = try JSONDecoder().decode([SelfDriveResult].self, from: JSONEncoder().encode(saved))
+        #expect(restored[0].status == "skipped")
+    }
+
+    @MainActor @Test func checkpointFailureIsSurfaced() async throws {
+        let scenario = try SelfDriveScenario.parse(Data(#"{"steps":[]}"#.utf8))
+        await #expect(throws: SelfDriveFailure.self) {
+            try await SelfDriveRecorder.run(scenario, perform: { _ in "unused" },
+                                           checkpoint: { _ in throw SelfDriveFailure("Output unavailable") })
+        }
+    }
+
+    @Test func checkedInScenariosParseAndKeepGoldenScreenshotNames() throws {
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        let scenario = try SelfDriveScenario.parse(Data(contentsOf: root.appendingPathComponent("UITests/self-drive/golden-path.json")))
+        let switching = try SelfDriveScenario.parse(Data(contentsOf: root.appendingPathComponent("UITests/self-drive/switching.json")))
+        #expect(switching.steps.filter { $0.action == .press && $0.identifier == "chat.new.$project" }.count == 1)
+        #expect(switching.steps.filter { $0.action == .press && ($0.identifier?.hasPrefix("chat.provider.") ?? false) }
+            .compactMap(\.identifier) == ["chat.provider.codex", "chat.provider.local", "chat.provider.claude"])
+        #expect(switching.steps.contains { $0.action == .waitFor && $0.text == "PELICAN" && $0.within == "chat.transcript" && $0.caseSensitive == true })
+        #expect(switching.steps.contains { $0.action == .press && $0.identifier == "chat.request.0.allow" })
+        #expect(switching.steps.contains { $0.action == .type && $0.text?.contains("Ask me in plain text") == true })
+        #expect(switching.steps.contains { $0.action == .type && $0.text == "Blue" })
+        #expect(!switching.steps.contains { $0.identifier?.hasPrefix("chat.question.") == true || $0.identifier == "chat.request.0.submit" })
+        let firstType = try #require(scenario.steps.firstIndex { $0.action == .type })
+        let firstProvider = try #require(scenario.steps[..<firstType].lastIndex { $0.action == .press && $0.identifier == "chat.provider.codex" })
+        #expect(scenario.steps[firstProvider - 1].identifier == "chat.provider.codex")
+        #expect(scenario.steps[firstProvider - 1].enabled == true)
+        #expect(switching.steps.contains { $0.action == .screenshot && $0.name == "local-question" })
+        let names = scenario.steps.filter { $0.action == .screenshot }.compactMap(\.name)
+        #expect(names == ["01-launch", "02-chat-empty", "03-new-chat", "04-codex-first-selected",
+                          "05-codex-first-streaming", "06-codex-first-replied", "07-codex-selected", "08-codex-replied",
+                          "09-approval-card", "10-after-approval", "11-running", "12-stopped", "13-local-selected",
+                          "local-approval", "local-denial", "14-composer-controls", "15-settings", "16-settings-providers",
+                          "17-claude-send", "18-claude-replied"])
+        let replies = scenario.steps.filter { $0.action == .waitFor && $0.text != nil && $0.absent != true }
+        #expect(replies.allSatisfy { $0.within == "chat.transcript" || $0.within == "chat.tool.completed" || $0.within == "chat.error" })
+        #expect(replies.filter { $0.text == "PELICAN" }.allSatisfy { $0.caseSensitive == true })
+        #expect(scenario.steps.contains { $0.identifier == "chat.project.$project.more" })
+        #expect(scenario.steps.contains { $0.identifier == "chat.sidebar.$chat3.status.needsYou" })
+        let claude = try #require(scenario.steps.firstIndex { $0.identifier == "chat.provider.claude" })
+        let approval = try #require(scenario.steps.firstIndex { $0.action == .press && $0.identifier == "chat.request.0.allow" })
+        let secondApproval = try #require(scenario.steps[(approval + 1)..<claude].first {
+            $0.action == .press && $0.identifier == "chat.request.0.allow"
+        })
+        #expect(secondApproval.optional == true)
+        let panelShot = try #require(scenario.steps.firstIndex { $0.name == "10-after-approval" })
+        #expect(scenario.steps[panelShot - 1].action == .waitFor
+            && scenario.steps[panelShot - 1].identifier == "chat.changes.refresh"
+            && scenario.steps[panelShot - 1].absent == true)
+        #expect(scenario.steps[panelShot + 1].action == .press && scenario.steps[panelShot + 1].identifier == "chat.changes")
+        let claudeShot = try #require(scenario.steps.firstIndex { $0.name == "18-claude-replied" })
+        #expect(scenario.steps[claudeShot - 1].action == .waitFor
+            && scenario.steps[claudeShot - 1].identifier == "chat.changes.refresh"
+            && scenario.steps[claudeShot - 1].absent == true)
+        #expect(scenario.steps.contains { $0.action == .press && $0.identifier == "cpu" })
+        #expect(scenario.steps.contains { $0.action == .waitFor && $0.identifier == "settings.providers.page" })
+        #expect(approval < claude)
+        #expect(scenario.steps[..<approval].contains { $0.action == .waitFor && $0.identifier == "chat.request.0.allow" })
+        #expect(scenario.steps[(approval + 1)..<claude].contains {
+            $0.action == .waitFor && $0.anyOf == ["chat.tool.completed", "chat.tool.unconfirmed"] && $0.within == "chat.transcript"
+        })
+        let shell = try #require(scenario.steps.firstIndex {
+            $0.action == .type && $0.text == "Use your shell tool to create an empty file named e2e-made.txt in the current folder."
+        })
+        let freshShellChat = try #require(scenario.steps[..<shell].lastIndex {
+            $0.action == .press && $0.identifier == "chat.new.$project"
+        })
+        #expect(!scenario.steps[(freshShellChat + 1)..<shell].contains { $0.action == .type || $0.identifier == "chat.composer.send" })
+        #expect(scenario.steps[shell..<approval].contains { $0.identifier == "chat.needsYou" })
+        #expect(scenario.steps[claude - 1].identifier == "chat.new.$project")
+        #expect(scenario.steps[(claude + 1)...].contains {
+            $0.action == .waitFor && $0.text == "Sign in to Claude" && $0.within == "chat.error"
+        })
+        #expect(scenario.steps[(claude + 1)...].contains {
+            $0.action == .waitFor && $0.identifier == "chat.signin" && $0.within == "chat.error"
+        })
+        #expect(!scenario.steps[(claude + 1)...].contains {
+            $0.action == .waitFor && $0.within == "chat.transcript" && $0.absent != true
+        })
+        var lastTyped: String?
+        for (index, step) in scenario.steps.enumerated() {
+            if step.action == .type { lastTyped = step.text }
+            if step.action == .press, step.identifier == "chat.composer.send" {
+                let check = try #require(scenario.steps.dropFirst(index + 1).first)
+                #expect(check.action == .waitFor && check.absent == true)
+                #expect(check.within == "chat.composer.input" && check.text == lastTyped)
+            }
+        }
+        #expect(!scenario.steps[(claude + 1)...].contains { $0.identifier == "chat.provider.codex" })
+        _ = try SelfDriveScenario.parse(Data(contentsOf: root.appendingPathComponent("UITests/self-drive/probe.json")))
+        _ = try SelfDriveScenario.parse(Data(contentsOf: root.appendingPathComponent("UITests/self-drive/picker-probe.json")))
+    }
+
+    @Test func localWaitsAllowSlowModelsAndSwitchingWaitsBeforeTyping() throws {
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        for name in ["golden-path", "switching"] {
+            let scenario = try SelfDriveScenario.parse(Data(contentsOf: root.appendingPathComponent("UITests/self-drive/\(name).json")))
+            var local = false
+            for (index, step) in scenario.steps.enumerated() {
+                if step.action == .press, let id = step.identifier, id.hasPrefix("chat.provider.") {
+                    local = id == "chat.provider.local"
+                }
+                if local, step.action == .waitFor { #expect(step.timeout == 300) }
+                if name == "switching", step.action == .type {
+                    let readiness = scenario.steps[index - 1]
+                    #expect(readiness.action == .waitFor)
+                    #expect(readiness.identifier == "chat.composer.send" && readiness.enabled == true)
+                }
+            }
+        }
+    }
+
+    @Test func layoutScenarioKeepsNarrowScreenshotsWithoutProviderSegments() throws {
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        let scenario = try SelfDriveScenario.parse(Data(contentsOf: root.appendingPathComponent("UITests/self-drive/layout.json")))
+        let golden = try SelfDriveScenario.parse(Data(contentsOf: root.appendingPathComponent("UITests/self-drive/golden-path.json")))
+        let names = scenario.steps.filter { $0.action == .screenshot }.compactMap(\.name)
+        #expect(names.count == 5 && Set(names).count == names.count)
+        #expect(Set(names).isDisjoint(with: golden.steps.compactMap(\.name)))
+        let reply = try #require(scenario.steps.firstIndex { $0.action == .waitFor && $0.text == "pelican" })
+        let goldenReply = try #require(golden.steps.first { $0.action == .waitFor && $0.text == "pelican" })
+        #expect(scenario.steps[reply].within == goldenReply.within)
+        #expect(scenario.steps[reply].timeout == goldenReply.timeout)
+        #expect(scenario.steps[reply + 1].name == "layout-02-codex-reply")
+        let signIn = try #require(scenario.steps.firstIndex { $0.action == .waitFor && $0.identifier == "chat.signin" })
+        #expect(scenario.steps[signIn].within == "chat.error")
+        #expect(scenario.steps[signIn - 1].text == "Sign in to Claude")
+        #expect(scenario.steps[signIn - 1].within == "chat.error")
+        #expect(scenario.steps[signIn + 1].name == "layout-03-claude-signin")
+        #expect(reply < signIn)
+        var typed: String?
+        var sidebarVisible = true
+        for (index, step) in scenario.steps.enumerated() {
+            if step.action == .press, step.identifier == "sidebar.left" { sidebarVisible.toggle() }
+            if step.action == .screenshot { #expect(sidebarVisible) }
+            if step.action == .press, let identifier = step.identifier,
+               ["chat.provider.codex", "chat.provider.claude"].contains(identifier) {
+                #expect(!sidebarVisible)
+            }
+            let needsProviderSegments = ["chat.provider.codex", "chat.provider.claude", "chat.signin"].contains(step.identifier ?? "")
+                || step.text == "pelican" || step.text == "Sign in to Claude"
+            #expect((step.optional == true) == needsProviderSegments)
+            if step.action == .type { typed = step.text }
+            if step.action == .press, step.identifier == "chat.composer.send" {
+                let check = try #require(scenario.steps.dropFirst(index + 1).first)
+                #expect(check.action == .waitFor && check.absent == true)
+                #expect(check.text == typed && check.within == "chat.composer.input")
+            }
+        }
+        let setup = try #require(scenario.steps.firstIndex { $0.action == .waitFor && $0.identifier == "settings.providers" })
+        #expect(scenario.steps[setup - 1].action == .press && scenario.steps[setup - 1].identifier == "gearshape")
+        #expect(scenario.steps.contains { $0.action == .press && $0.identifier == "settings.providers" })
+        #expect(!scenario.steps.contains { $0.identifier == "checklist" })
+        #expect(scenario.steps.contains { $0.action == .waitFor && $0.identifier == "settings.providers.page" })
+        #expect(!scenario.steps.contains { $0.identifier == "chat.signin" && $0.action == .press })
+    }
+}
+#endif

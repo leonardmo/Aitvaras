@@ -9,7 +9,7 @@ struct AitvarasApp: App {
         Window("Aitvaras", id: "main") {
             MainWindow()
                 .environment(AppModel.shared)
-                .frame(minWidth: 900, maxWidth: .infinity, minHeight: 600, maxHeight: .infinity, alignment: .topLeading)
+                .frame(minWidth: 800, maxWidth: .infinity, minHeight: 500, maxHeight: .infinity, alignment: .topLeading)
                 .overlay {
                     if UIShot.requestedPath != nil, CommandLine.arguments.contains("--single-window-check") {
                         SingleMainWindowProbe()
@@ -18,6 +18,9 @@ struct AitvarasApp: App {
                 .task {
                     // Diagnostic modes own their lifecycle and must not race a
                     // second, normal bootstrap against the same temporary DB.
+                    #if DEBUG
+                    guard !SelfDriver.requested else { return }
+                    #endif
                     guard !SelfTest.requested,
                           AvatarShot.requestedPath == nil,
                           AvatarShot.liveshotPath == nil,
@@ -32,7 +35,11 @@ struct AitvarasApp: App {
                 }
         }
         .defaultSize(width: 1080, height: 720)
+        #if DEBUG
+        .defaultLaunchBehavior(SelfDriver.requested ? .suppressed : .presented)
+        #else
         .defaultLaunchBehavior(.presented)
+        #endif
         .commands {
             CommandGroup(after: .appVisibility) {
                 Button("Toggle Companion") {
@@ -67,7 +74,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var wakeBriefingPending = false
     private var terminationPending = false
 
+    func applicationWillFinishLaunching(_ notification: Notification) {
+        #if DEBUG
+        if SelfDriver.requested { SelfDriver.prepareLaunch() }
+        #endif
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
+        #if DEBUG
+        if SelfDriver.requested {
+            Task { await SelfDriver.run() }
+            return
+        }
+        #endif
         // Set the running app's Dock icon from the bundled artwork as well as
         // its Info.plist, avoiding a stale generic icon after local updates.
         if let iconURL = Bundle.main.url(forResource: "AppIcon", withExtension: "icns"),
@@ -215,33 +234,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
-        false   // companion keeps living in the corner
+        false   // application-owned chats and the companion keep running
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         guard !terminationPending else { return .terminateLater }
         terminationPending = true
         Task {
-            await AppModel.shared.codexWorkspace.stopBeforeTermination()
-            await AppModel.shared.claudeWorkspace.stopBeforeTermination()
-            await AppModel.shared.codexNativeWorkspace.stopBeforeTermination()
-            await AppModel.shared.nativeWorkspace.operations.stopBeforeTermination()
-            await AppModel.shared.shutdownMonitoring()
-            await AppModel.shared.captureRefinement.stopBeforeTermination()
-            AppModel.shared.modelDownloads.cancelActive()
-            AppModel.shared.neuralVoiceInstaller.cancelActive()
-            await AppModel.shared.modelDownloads.stopBeforeTermination()
-            await AppModel.shared.neuralVoiceInstaller.stopBeforeTermination()
-            await SpeechAssetReadiness.shared.stopBeforeTermination(reporter: AppModel.shared.activityReporter)
             do {
+                // Journal interruption and detach chat generations before
+                // waiting for unrelated installers or legacy operations.
+                // This also awaits Local's TERM/KILL of its entire server group.
+                try await AppModel.shared.shutdownAgentChats()
+                await AppModel.shared.nativeWorkspace.operations.stopBeforeTermination()
+                await AppModel.shared.shutdownMonitoring()
+                await AppModel.shared.captureRefinement.stopBeforeTermination()
+                AppModel.shared.modelDownloads.cancelActive()
+                AppModel.shared.neuralVoiceInstaller.cancelActive()
+                await AppModel.shared.modelDownloads.stopBeforeTermination()
+                await AppModel.shared.neuralVoiceInstaller.stopBeforeTermination()
+                await SpeechAssetReadiness.shared.stopBeforeTermination(reporter: AppModel.shared.activityReporter)
                 try await AppModel.shared.capture?.stopBeforeTermination()
                 sender.reply(toApplicationShouldTerminate: true)
             } catch {
                 terminationPending = false
+                AppModel.shared.chatModel?.resumeAfterCancelledTermination()
                 AppModel.shared.nativeWorkspace.operations.resumeAfterCancelledTermination()
-                AppModel.shared.codexWorkspace.resumeAfterCancelledTermination()
-                AppModel.shared.claudeWorkspace.resumeAfterCancelledTermination()
-                AppModel.shared.codexNativeWorkspace.resumeAfterCancelledTermination()
                 CaptureWindows.shared.showSaveError(error)
                 sender.reply(toApplicationShouldTerminate: false)
             }

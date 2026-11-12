@@ -435,6 +435,7 @@ private struct CaptureResultView: View {
                         onClose()
                     }
                     .disabled(!linkedTarget.canOpen || model.isWorkspaceSelectionBusy)
+                    .accessibilityIdentifier("chat.capture.open")
                 }
             } else {
                 Text(targetLookupError ?? "Lokal gespeicherte Aitvaras-Aufnahme · keinem Projekt zugeordnet. Kein automatischer Export.")
