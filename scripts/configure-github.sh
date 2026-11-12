@@ -23,6 +23,10 @@ gh api -X PATCH "repos/$REPO" --input - >/dev/null <<'JSON'
 JSON
 gh api -X PUT "repos/$REPO/vulnerability-alerts" >/dev/null
 gh api -X PUT "repos/$REPO/automated-security-fixes" >/dev/null
+# CI on any PR from outside the repo waits for the maintainer's approval, even
+# from people who already had a contribution merged.
+gh api -X PUT "repos/$REPO/actions/permissions/fork-pr-contributor-approval" \
+    -f approval_policy=all_external_contributors >/dev/null
 
 echo "── Ruleset for main: PR + green CI, no force-push or deletion (admins may bypass)"
 RULESET=$(cat <<'JSON'
