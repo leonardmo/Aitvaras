@@ -35,7 +35,8 @@ Use `make` targets so every agent runs the same thing:
 | `make node-test` | Offline contract tests for the Node sidecar helpers. |
 | `make app` | `xcodegen generate` plus a Debug app build into `.build-xcode`. |
 | `make privacy` | Privacy and secret sweep over tracked files, including the private denylist. |
-| `make check` | privacy + node-test + test. Run it before every commit. |
+| `make rules` | The hard rules a script can check: no cloud LLM endpoints, no email sending, no edits to migrations already on `main`. |
+| `make check` | privacy + rules + node-test + test. Run it before every commit. |
 | `make smoke` | check + app. Run it before every PR that touches `App/` or `project.yml`. |
 
 Run a single suite with `swift test --filter <Suite>`. The app needs full
@@ -159,7 +160,7 @@ Parallel branches tend to collide in a few places. Rules for each:
 - **DB migrations** (`Sources/AitvarasStore/Database.swift`) are numbered
   `vN-topic` and run in registration order. Take the next free number
   *when you rebase*, append at the end, and never renumber or edit a
-  migration that is already on `main`.
+  migration that is already on `main` (`make rules` and CI enforce this).
 - **Decisions.** A new `D<n>` entry takes the next free number at rebase
   time. If someone else took it first, renumber yours and its references.
 - **`project.yml` / `Package.swift`:** keep the diff minimal; one dependency
@@ -169,9 +170,30 @@ Parallel branches tend to collide in a few places. Rules for each:
   notes and checkpoint diaries don't belong in docs. Put them in the PR
   description or the issue.
 
+### Review grades
+
+AI reviewers always find one more thing, so every finding from any source
+(the `reviewer` agent, a supervising agent, a human, a bot) gets exactly one
+grade, and review ends when nothing graded Must fix is left:
+
+| Grade | When | Effect |
+|---|---|---|
+| Must fix | Certain, in the diff, with a concrete case someone will realistically hit: a hard rule broken, data lost or leaked, private data committed, a crash or hang, build or tests broken. | Blocks the PR. |
+| Should fix | Real but unlikely or small, or not certain. | The author decides once; never raised again. |
+| Question | Needs information the reviewer doesn't have. | The author answers. |
+| Dropped | Style, "could be cleaner", "might", inputs nothing produces, anything lint or `make check` catches. | Not reported. |
+
+- At most 3 Should fix and 3 Questions per round. More than 5 Must fix means
+  the change isn't ready for review; say so instead of listing them.
+- Problems in code the diff doesn't touch become an issue, never part of the
+  PR.
+- A review ends with `Reviewed up to <sha>`. The next round reviews only
+  `git diff <sha>..HEAD`; from round three, Must fix only.
+
 ## Definition of done
 
 - `make check` passes locally and CI is green.
+- No review finding graded Must fix is open.
 - New behavior has tests, including the failure path (engine down, garbage
   output, duplicate input, bogus IDs). A pipeline test that covers only the
   happy path is incomplete.
