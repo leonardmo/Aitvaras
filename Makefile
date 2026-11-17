@@ -7,7 +7,7 @@ XCODE_FLAGS := -project Aitvaras.xcodeproj -scheme Aitvaras \
 NODE_TESTS := scripts/test-claude-interactive.mjs scripts/check-codex-interactive.mjs \
 	scripts/check-codex-native.mjs scripts/check-codex-shared-runtime.mjs
 
-.PHONY: help setup test node-test project app release privacy commits check smoke install clean
+.PHONY: help setup test node-test project app release privacy rules commits check smoke install clean
 
 help: ## List targets
 	@grep -E '^[a-z-]+:.*## ' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-10s %s\n", $$1, $$2}'
@@ -43,10 +43,13 @@ release: project ## Release app build into .build/DerivedData
 privacy: ## Privacy and secret sweep over tracked files
 	scripts/check-privacy.sh
 
+rules: ## Hard rules a script can check (cloud endpoints, mail sending, edited migrations)
+	scripts/check-rules.sh
+
 commits: ## Check commit metadata on this branch against origin/main
 	scripts/check-commits.sh origin/main..HEAD
 
-check: privacy node-test test ## Everything except the app build (before every commit)
+check: privacy rules node-test test ## Everything except the app build (before every commit)
 
 smoke: check app ## check + app build (before PRs touching App/ or project.yml)
 
