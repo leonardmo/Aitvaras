@@ -98,6 +98,8 @@ struct WorkspaceBoundaryReviewView: View {
     @Environment(\.dismiss) private var dismiss
     let projectID: UUID
     var onDone: (() -> Void)? = nil
+    var agentDirectory: URL? = nil
+    var initialTab = "general"
     @State private var review: WorkspacePolicyReview?
     @State private var policyRevision: Int?
     @State private var title = ""
@@ -117,10 +119,13 @@ struct WorkspaceBoundaryReviewView: View {
             Picker("Project settings", selection: $settingsTab) {
                 Text("General").tag("general")
                 Text("Codex link").tag("codex")
+                Text("Agent setup").tag("agent")
             }.pickerStyle(.segmented)
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
-                    if settingsTab == "codex" {
+                    if settingsTab == "agent" {
+                        AgentSetupSection(projectID: projectID, directory: agentDirectory)
+                    } else if settingsTab == "codex" {
                         CodexProjectLinkView(projectID: projectID)
                     } else if review != nil {
                         TextField("Project name", text: $title).textFieldStyle(.roundedBorder)
@@ -191,7 +196,7 @@ struct WorkspaceBoundaryReviewView: View {
                 }
             }
         }.padding(24).frame(width: 620, height: 620)
-        .task { reload() }
+        .task { settingsTab = initialTab; reload() }
         .onChange(of: folderDrafts.isEmpty) { if folderDrafts.isEmpty { allowCodexFileRead = false; allowClaudeFileRead = false } }
         .onChange(of: allowCodex) { if !allowCodex { allowCodexFileRead = false } }
         .onChange(of: allowClaude) { if !allowClaude { allowClaudeFileRead = false } }

@@ -16,10 +16,13 @@ final class ChatModel {
     private(set) var gitBusy = false
     private(set) var canDiscardChanges = false
     private let backends: [AgentProvider: any AgentBackend]
+    private let agentSetup: AgentSetupCoordinator?
+    private var catalogRevision = UUID()
+    private(set) var agentSetupRevision = UUID()
     private let signInCoordinator: ProviderSignIn
     private var selection = ChatSelectionState()
     private(set) var newChatID = UUID()
-    var newProjectID: UUID? { didSet { if newProjectID != oldValue { useWorktree = false } } }
+    var newProjectID: UUID? { didSet { if newProjectID != oldValue { useWorktree = false; invalidateCommandCatalog() } } }
     var useWorktree = false
     private(set) var creatingChat = false
     var didCreateChat: ((UUID) -> Void)?
@@ -53,6 +56,12 @@ final class ChatModel {
                         guard !Task.isCancelled, let self else { return }
                         let previous = self.sidebarStates[id]
                         self.sidebarStates[id] = value
+                        if let snapshot = value.agentSetup, previous?.agentSetup != snapshot,
+                           let projectID = try? self.stores.agentProjectID(chatID: id),
+                           let session = try? self.stores.agentSession(chatID: id, provider: snapshot.provider) {
+                            await self.agentSetup?.report(snapshot, projectID: projectID, directory: URL(fileURLWithPath: session.cwd), revision: value.mcpSetup?.revision)
+                            self.agentSetupRevision = UUID()
+                        }
                         if self.visibleChats.values.contains(id) { try? self.stores.markChatSeen(id) }
                         if (try? self.stores.chatHasUnseenCompletion(id)) == true { self.unseenChats.insert(id) }
                         else { self.unseenChats.remove(id) }
@@ -152,8 +161,9 @@ final class ChatModel {
     private(set) var providerLimits: [AgentProvider: [AgentRateLimitWindow]] = [:]
     private var modelLoads: [AgentProvider: (token: UUID, task: Task<[AgentModel], Error>)] = [:]
 
-    init(manager: AgentSessionManager, stores: Stores, backends: [AgentProvider: any AgentBackend]) {
+    init(manager: AgentSessionManager, stores: Stores, backends: [AgentProvider: any AgentBackend], agentSetup: AgentSetupCoordinator? = nil) {
         self.manager = manager; self.stores = stores; self.backends = backends
+        self.agentSetup = agentSetup
         signInCoordinator = ProviderSignIn(persistence: stores)
         gitActions = AgentGitActionCoordinator(persistence: stores, audit: { _ = try stores.record($0) })
         approvalSubscription = Task { [weak self, manager] in
@@ -173,6 +183,18 @@ final class ChatModel {
         }
     }
     var composerOwnerID: UUID { chatID ?? newChatID }
+    var currentProjectID: UUID? {
+        if let chatID { return try? stores.agentProjectID(chatID: chatID) }
+        return newProjectID
+    }
+    var commandCatalogContext: AgentCommandCatalogContext {
+        .init(ownerID: composerOwnerID, projectID: currentProjectID, directory: projectDirectory, provider: provider, revision: catalogRevision)
+    }
+    func invalidateCommandCatalog() {
+        catalogRevision = UUID()
+        agentSetupRevision = UUID()
+        composerSelections[composerOwnerID, provider].command = nil
+    }
     var composerSelection: AgentComposerSelection {
         get { composerSelections[composerOwnerID, provider] }
         set {
@@ -224,6 +246,7 @@ final class ChatModel {
     func commands() async throws -> [AgentCommand] {
         guard let directory = projectDirectory, let backend = backends[provider] else { throw AgentFailure.unsupported }
         let owner = composerOwnerID, chosenProvider = provider
+        let context = commandCatalogContext
         let projectID = try chatID.map { try stores.agentProjectID(chatID: $0) } ?? newProjectID
         let commands: [AgentCommand]
         let setupNotice: String?
@@ -238,6 +261,8 @@ final class ChatModel {
             if composerOwnerID == owner, provider == chosenProvider, projectDirectory == directory,
                currentProject == projectID { error = notice }
         }
+        try Task.checkCancellation()
+        guard context == commandCatalogContext else { throw CancellationError() }
         return commands
     }
     func files(query: String) async throws -> [AgentFileMention] {
@@ -778,6 +803,7 @@ final class ChatModel {
     }
     func shutdown() async throws {
         terminating = true
+        await agentSetup?.shutdown()
         previewTask?.cancel()
         cancelSignIn(); stoppedSends.formUnion(sending.values)
         modelLoads.values.forEach { $0.task.cancel() }; modelLoads.removeAll()

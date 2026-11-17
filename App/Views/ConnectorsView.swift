@@ -140,6 +140,9 @@ struct ConnectorsView: View {
             Section("Autonomy whitelist") {
                 WhitelistEditor()
             }
+            Section("MCP servers (all projects)") {
+                AgentSetupSection(projectID: nil)
+            }
         }
         .id(refresh)
         .navigationTitle("Connections")

@@ -43,6 +43,7 @@ struct AgentComposerCompletionView: View {
                                             .lineLimit(1).truncationMode(.middle)
                                         if trigger.kind == .command {
                                             Text(filteredCommands[index].description).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                                            if let hint = filteredCommands[index].argumentHint { Text(hint).font(.caption.monospaced()).foregroundStyle(.tertiary).lineLimit(1) }
                                         }
                                     }
                                     .frame(maxWidth: .infinity, alignment: .leading).padding(6)
@@ -60,9 +61,16 @@ struct AgentComposerCompletionView: View {
         .padding(12).frame(width: 340)
         .accessibilityIdentifier("chat.completion")
         .onAppear { query = trigger.query; searching = true }
-        .task(id: "\(chat.chatID?.uuidString ?? "").\(chat.provider.rawValue)") {
+        .task(id: chat.commandCatalogContext) {
             if trigger.kind == .command {
-                do { commands = try await chat.commands(); loading = false }
+                loading = true; unavailable = false; commands = []; selected = 0
+                let context = chat.commandCatalogContext
+                do {
+                    let values = try await chat.commands()
+                    try Task.checkCancellation()
+                    guard context == chat.commandCatalogContext else { return }
+                    commands = values; loading = false
+                }
                 catch { if !Task.isCancelled { unavailable = true; loading = false } }
             }
         }

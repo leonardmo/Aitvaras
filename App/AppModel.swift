@@ -70,6 +70,7 @@ final class AppModel {
     private(set) var hub: ConnectorHub?
     private(set) var agentLoop: AgentLoop?
     private(set) var agentSessionManager: AgentSessionManager?
+    private(set) var agentSetupCoordinator: AgentSetupCoordinator?
     private(set) var chatModel: ChatModel?
     private(set) var localAgentReplyActive = false
     private(set) var voice: ConversationController?
@@ -430,10 +431,11 @@ final class AppModel {
         let mcpPolicy = AgentMCPLaunchPolicy(load: { directory, projectID in
             try stores.agentMCPLaunchContext(directory: directory, projectID: projectID)
         }, audit: { _ = try stores.record($0) }, resolveSecret: { key in try keychain.get(key) })
+        let claudeOverrides = isolated && inherited["AITVARAS_FAKE_CLAUDE"] != nil
+            ? ["CLAUDE_CONFIG_DIR": AitvarasPaths.stateDirectory.appendingPathComponent("FakeProviders/claude").path] : [:]
         let claude = ClaudeBackend(executable: AgentProviderLaunchPolicy.executable(.claude,
             environment: inherited, isolated: isolated), environment: environment,
-            overrides: isolated && inherited["AITVARAS_FAKE_CLAUDE"] != nil
-                ? ["CLAUDE_CONFIG_DIR": AitvarasPaths.stateDirectory.appendingPathComponent("FakeProviders/claude").path] : [:], mcpPolicy: mcpPolicy)
+            overrides: claudeOverrides, mcpPolicy: mcpPolicy)
         let codex = CodexBackend(executable: AgentProviderLaunchPolicy.executable(.codex,
             environment: inherited, isolated: isolated), environment: environment)
         let local = LocalChatBackendFactory.make(environment: environment, mcpPolicy: mcpPolicy) { [weak self] configuration, input in
@@ -442,6 +444,14 @@ final class AppModel {
         }
         let backends: [AgentProvider: any AgentBackend] = [.claude: claude, .codex: codex, .local: local]
         let available = backends.filter { AgentProviderLaunchPolicy.allows($0.key, environment: inherited, isolated: isolated) }
+        let metadataUserDirectory = available[.claude] == nil ? nil
+            : (claudeOverrides["CLAUDE_CONFIG_DIR"] ?? environment["CLAUDE_CONFIG_DIR"]).map { URL(fileURLWithPath: $0) }
+                ?? environment["HOME"].map { URL(fileURLWithPath: $0).appendingPathComponent(".claude") }
+        let setup = AgentSetupCoordinator(persistence: stores,
+            secrets: .init(set: { value, key in try keychain.set(value, forKey: key) }, delete: { key in try keychain.delete(key) }),
+            backends: available, metadataUserDirectory: metadataUserDirectory,
+            audit: { _ = try stores.record($0) })
+        agentSetupCoordinator = setup
         let manager = try AgentSessionManager(persistence: stores, backend: { provider in
             guard let backend = available[provider] else { throw AgentFailure.offline }
             return backend
@@ -450,7 +460,7 @@ final class AppModel {
             NativeBackendSessionReader(provider: provider, backend: available[provider == .claude ? .claude : .codex])
         }
         agentSessionManager = manager
-        chatModel = ChatModel(manager: manager, stores: stores, backends: available)
+        chatModel = ChatModel(manager: manager, stores: stores, backends: available, agentSetup: setup)
         chatModel?.didCreateChat = { [weak self] id in self?.openWorkspaceChat(id) }
         chatModel?.activityChanged = { [weak self] in self?.refreshWorkspaces() }
         chatModel?.observeSidebar(workspaceSidebarChats)

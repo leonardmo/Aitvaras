@@ -6,6 +6,7 @@ public actor ClaudeBackend: AgentBackend {
     private let profile: String
     private let mcpPolicy: AgentMCPLaunchPolicy
     private let probeDirectory: URL
+    private var mcpLoginInProgress = false
     public private(set) var mcpSetup: AgentMCPLaunchStatus?
 
     public init(executable: URL? = nil, environment: [String: String] = ProcessInfo.processInfo.environment,
@@ -101,6 +102,15 @@ public actor ClaudeBackend: AgentBackend {
         let snapshot = await run.availableSetup
         try await run.shutdown()
         return snapshot
+    }
+    public func signInMCP(name: String, directory: URL, timeout: Duration = .seconds(300),
+                          onBrowserURL: @escaping @Sendable (URL) async -> Void) async throws {
+        guard let executable else { throw AgentFailure.notInstalled }
+        guard !mcpLoginInProgress else { throw AgentFailure.invalidTransition }
+        mcpLoginInProgress = true
+        defer { mcpLoginInProgress = false }
+        try await AgentMCPLogin.run(executable: executable, name: name, directory: directory,
+            environment: environment, timeout: timeout, onBrowserURL: onBrowserURL)
     }
     public func files(query: String, directory: URL) async throws -> [AgentFileMention] {
         let task = Task.detached { try AgentFileMention.localSearch(query: query, directory: directory) }

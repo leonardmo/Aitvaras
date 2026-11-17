@@ -4,6 +4,11 @@ import UniformTypeIdentifiers
 import AitvarasAgents
 import AitvarasStore
 
+private struct AgentSetupDestination: Identifiable {
+    let id: UUID
+    let directory: URL?
+}
+
 /// One transcript and composer, observing the application-owned chat manager.
 struct AgentChatView: View {
     @Environment(AppModel.self) private var model
@@ -16,6 +21,7 @@ struct AgentChatView: View {
     var compact = false
 
     @State private var showingChanges = false
+    @State private var agentSetupDestination: AgentSetupDestination?
     @State private var visibilityID = UUID()
     @State private var gitProject = false
     @State private var atBottom = true
@@ -69,6 +75,10 @@ struct AgentChatView: View {
         }
         .onChange(of: scenePhase) { _, phase in
             if phase == .active { Task { await chat.refreshNativePreview() } }
+        }
+        .sheet(item: $agentSetupDestination) { destination in
+            WorkspaceBoundaryReviewView(projectID: destination.id, agentDirectory: destination.directory, initialTab: "agent")
+                .environment(model)
         }
     }
 
@@ -194,7 +204,16 @@ struct AgentChatView: View {
                 .lineLimit(2...6).textFieldStyle(.plain)
                 .focused($composerFocused)
                 .disabled(!canSend)
+                .background(alignment: .topLeading) {
+                    if let command = chat.composerSelection.command, let hint = command.argumentPlaceholder(in: chat.draft) {
+                        HStack(spacing: 0) {
+                            Text(command.insertion + " ").hidden()
+                            Text(hint).foregroundStyle(.tertiary).lineLimit(1)
+                        }.allowsHitTesting(false).accessibilityHidden(true)
+                    }
+                }
                 .accessibilityIdentifier("chat.composer.input")
+                .accessibilityHint(chat.composerSelection.command?.argumentPlaceholder(in: chat.draft) ?? "")
                 .onPasteCommand(of: [.fileURL, .png, .jpeg, .tiff]) { providers in _ = receiveAttachments(providers) }
                 .onChange(of: chat.draft) {
                     completion = chat.provider == .local ? nil : AgentComposerTrigger.detect(chat.draft)
@@ -276,12 +295,19 @@ struct AgentChatView: View {
             Menu {
                 ForEach(model.workspaceProjects.filter(\.isVisible)) { project in
                     Button { chat.newProjectID = project.id } label: {
-                        if chat.newProjectID == project.id { Label(project.title, systemImage: "checkmark") }
+                        if chat.currentProjectID == project.id { Label(project.title, systemImage: "checkmark") }
                         else { Text(project.title) }
                     }
+                    .disabled(chat.chatID != nil || chat.creatingChat)
                 }
                 Divider()
                 Button("Add project…") { model.chooseChatProjectFolder() }
+                    .disabled(chat.chatID != nil || chat.creatingChat)
+                Button("Agent setup…") {
+                    if let projectID = chat.currentProjectID { agentSetupDestination = .init(id: projectID, directory: chat.projectDirectory) }
+                }
+                    .disabled(chat.currentProjectID == nil)
+                    .accessibilityIdentifier("chat.project.agentSetup")
                 if iconOnly, chat.chatID == nil, gitProject {
                     Toggle("Use worktree", isOn: $chat.useWorktree)
                         .disabled(chat.creatingChat)
@@ -301,7 +327,6 @@ struct AgentChatView: View {
             .frame(width: iconOnly ? 32 : 100).help(projectTitle)
             .accessibilityLabel("Project").accessibilityValue(projectTitle)
             .accessibilityIdentifier("chat.project")
-            .disabled(chat.chatID != nil || chat.creatingChat)
             if !iconOnly {
                 Button { chat.useWorktree.toggle() } label: {
                     Image(systemName: "arrow.triangle.branch")

@@ -15,6 +15,9 @@ public actor CodexBackend: AgentBackend {
     private var runs: [String: CodexRun] = [:]
     private var loginResults: [String: Bool] = [:]
     private var loginInProgress = false
+    private var mcpLogin: (name: String, generation: UUID)?
+    private var mcpLoginResult: Bool?
+    private var mcpLoginInProgress = false
 
     public init(executable: URL? = nil, environment: [String: String] = ProcessInfo.processInfo.environment,
                 profile: String = "default", overrides: [String: String] = [:]) {
@@ -115,6 +118,77 @@ public actor CodexBackend: AgentBackend {
             cursor = next
         } while cursor != nil
         return models
+    }
+
+    public func signInMCP(name: String, directory: URL, timeout: Duration = .seconds(300),
+                          onBrowserURL: @escaping @Sendable (URL) async -> Void) async throws {
+        guard !mcpLoginInProgress else { throw AgentFailure.invalidTransition }
+        mcpLoginInProgress = true
+        defer { mcpLoginInProgress = false }
+        // A dedicated login connection can be closed on cancellation without
+        // interrupting the backend's existing chat threads.
+        let login = CodexBackend(executable: executable, environment: environment, profile: profile)
+        let deadline = ContinuousClock.now.advanced(by: min(timeout, .seconds(300)))
+        do {
+            try await withThrowingTaskGroup(of: Void.self) { group in
+                group.addTask {
+                    try await withTaskCancellationHandler {
+                        try await login.performMCPLogin(name: name, timeout: timeout, onBrowserURL: onBrowserURL)
+                    } onCancel: { Task { try? await login.shutdown() } }
+                }
+                group.addTask {
+                    try await Task.sleep(for: min(timeout, .seconds(300)))
+                    try? await login.shutdown()
+                    throw ProviderSignInError.timedOut
+                }
+                defer { group.cancelAll() }
+                _ = try await group.next()
+            }
+            try await login.shutdown()
+        } catch {
+            try? await login.shutdown()
+            if Task.isCancelled { throw CancellationError() }
+            if ContinuousClock.now >= deadline { throw ProviderSignInError.timedOut }
+            throw error
+        }
+    }
+
+    private func performMCPLogin(name: String, timeout: Duration,
+                                 onBrowserURL: @escaping @Sendable (URL) async -> Void) async throws {
+        try AgentMCPConfiguration.validateName(name)
+        guard mcpLogin == nil else { throw AgentFailure.invalidTransition }
+        let deadline = ContinuousClock.now.advanced(by: min(timeout, .seconds(300)))
+        let connection = try await connection()
+        guard mcpLogin == nil else { throw AgentFailure.invalidTransition }
+        let generation = self.generation
+        mcpLogin = (name, generation); mcpLoginResult = nil
+        defer { mcpLogin = nil; mcpLoginResult = nil }
+        do {
+            let result = try await connection.request("mcpServer/oauth/login", .object(["name": .string(name),
+                "timeoutSecs": .number(max(1, min(300, Double(timeout.components.seconds))))]),
+                timeout: min(timeout, .seconds(300)), failOnTimeout: false)
+            guard generation == self.generation, let raw = result["authorizationUrl"]?.stringValue,
+                  let url = URL(string: raw) else { throw AgentFailure.authRequired }
+            try ProviderSignIn.validate(url)
+            try Task.checkCancellation()
+            await onBrowserURL(url)
+            while ContinuousClock.now < deadline {
+                try Task.checkCancellation()
+                guard generation == self.generation, wire === connection else { throw AgentFailure.offline }
+                if let success = mcpLoginResult {
+                    guard success else { throw AgentFailure.authRequired }
+                    return
+                }
+                try await Task.sleep(for: .milliseconds(25))
+            }
+            throw ProviderSignInError.timedOut
+        } catch {
+            // This protocol has no MCP OAuth cancel method. Dispose the owned
+            // connection so an abandoned local login listener cannot survive.
+            if generation == self.generation { try? await shutdown() }
+            if Task.isCancelled { throw CancellationError() }
+            throw error
+        }
     }
     public func rateLimits() async throws -> [AgentRateLimitWindow] {
         let result = try await rpc("account/rateLimits/read")
@@ -218,6 +292,13 @@ public actor CodexBackend: AgentBackend {
             return
         }
         let parameters = value["params"] ?? .null
+        if method == "mcpServer/oauthLogin/completed", id == nil {
+            if let login = mcpLogin, login.generation == generation,
+               parameters["name"]?.stringValue == login.name, mcpLoginResult == nil {
+                mcpLoginResult = parameters["success"]?.boolValue ?? false
+            }
+            return
+        }
         if method == "account/login/completed", loginInProgress, let loginID = parameters["loginId"]?.stringValue {
             if loginResults.count < 16 { loginResults[loginID] = parameters["success"]?.boolValue ?? false }
             return

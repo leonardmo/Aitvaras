@@ -11,6 +11,25 @@ public struct AgentCommand: Codable, Sendable, Equatable, Identifiable {
     public init(name: String, description: String, argumentHint: String? = nil, skillPath: String? = nil) {
         self.name = name; self.description = description; self.argumentHint = argumentHint; self.skillPath = skillPath
     }
+    public func argumentPlaceholder(in text: String) -> String? {
+        guard text.trimmingCharacters(in: .whitespacesAndNewlines) == insertion,
+              let argumentHint, !argumentHint.isEmpty else { return nil }
+        return AgentTranscriptContent.bounded(argumentHint, limit: 512)
+    }
+}
+
+/// A catalog belongs to a composer, project directory and setup revision.
+/// Equality also guards responses from cancelled, older project requests.
+public struct AgentCommandCatalogContext: Sendable, Hashable {
+    public let ownerID: UUID
+    public let projectID: UUID?
+    public let directory: URL?
+    public let provider: AgentProvider
+    public let revision: UUID
+    public init(ownerID: UUID, projectID: UUID?, directory: URL?, provider: AgentProvider, revision: UUID) {
+        self.ownerID = ownerID; self.projectID = projectID; self.directory = directory
+        self.provider = provider; self.revision = revision
+    }
 }
 
 /// No built-in command guesses: an absent catalog is explicitly unavailable.

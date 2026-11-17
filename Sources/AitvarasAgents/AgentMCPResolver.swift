@@ -53,6 +53,10 @@ public struct AgentMCPResolution: Sendable, Equatable {
 }
 
 public enum AgentMCPResolver {
+    public static func repositoryInventory(directory: URL) -> (entries: [String: AgentMCPRepositoryServer], unreadable: Bool) {
+        let entries = readRepository(directory: directory)
+        return (entries ?? [:], entries == nil)
+    }
     /// Call immediately before each launch. No inventory cache: approval is checked
     /// against a fresh, bounded read at the actual run cwd (including worktrees).
     /// The CLI reads again later; callers must not claim this removes that residual window.

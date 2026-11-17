@@ -119,6 +119,8 @@ public protocol AgentBackend: Actor {
     func commands(directory: URL) async throws -> [AgentCommand]
     func commands(directory: URL, projectID: UUID?) async throws -> [AgentCommand]
     func setup(directory: URL, projectID: UUID?) async throws -> AgentSetupSnapshot
+    func signInMCP(name: String, directory: URL, timeout: Duration,
+                   onBrowserURL: @escaping @Sendable (URL) async -> Void) async throws
     func files(query: String, directory: URL) async throws -> [AgentFileMention]
     /// Starts or resumes a session without sending a user message.
     func start(_ configuration: AgentSessionConfiguration) async throws -> any AgentRun
@@ -136,6 +138,8 @@ extension AgentBackend {
     public func commands(directory: URL) async throws -> [AgentCommand] { throw AgentFailure.unsupported }
     public func commands(directory: URL, projectID: UUID?) async throws -> [AgentCommand] { try await commands(directory: directory) }
     public func setup(directory: URL, projectID: UUID?) async throws -> AgentSetupSnapshot { throw AgentFailure.unsupported }
+    public func signInMCP(name: String, directory: URL, timeout: Duration = .seconds(300),
+                          onBrowserURL: @escaping @Sendable (URL) async -> Void) async throws { throw AgentFailure.unsupported }
     public func files(query: String, directory: URL) async throws -> [AgentFileMention] { throw AgentFailure.unsupported }
 }
 

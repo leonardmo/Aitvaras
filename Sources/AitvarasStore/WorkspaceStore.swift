@@ -232,6 +232,59 @@ extension Stores {
     }
 }
 
+extension Stores: AgentSetupPersistence {
+    public func agentSetupProject(projectID: UUID) throws -> AgentSetupProject {
+        guard let folder = try workspaceFolders(projectID: projectID).first else { throw WorkspaceStoreError.projectNotFound }
+        let directory = URL(fileURLWithPath: folder.path, isDirectory: true)
+        return .init(directory: directory, context: try agentMCPLaunchContext(directory: directory, projectID: projectID))
+    }
+
+    public func editAgentSetup(projectID: UUID, edit: AgentSetupEdit) throws {
+        try db.queue.write { dbc in
+            guard try WorkspaceProject.fetchOne(dbc, key: projectID)?.isVisible == true else { throw WorkspaceStoreError.projectNotFound }
+            var setup = try (WorkspaceAgentSetup.fetchOne(dbc, key: projectID) ?? .init(projectID: projectID)).validated()
+            switch edit {
+            case .approve(let name, let fingerprint):
+                setup.approvedProjectServers.append(name)
+                setup.approvedProjectServerFingerprints[name] = fingerprint
+                setup.deniedProjectServers.removeAll { $0 == name }
+            case .deny(let name):
+                setup.deniedProjectServers.append(name)
+                setup.approvedProjectServers.removeAll { $0 == name }
+                setup.approvedProjectServerFingerprints.removeValue(forKey: name)
+            case .globalEnabled(let name, let enabled):
+                if enabled { setup.disabledGlobalServers.removeAll { $0 == name } }
+                else { setup.disabledGlobalServers.append(name) }
+            case .permissionSource(let source): setup.permissionSource = source
+            case .localMayUseMCP(let allowed): setup.localMayUseMCP = allowed
+            case .server(let name, let definition):
+                try AgentMCPConfiguration.validateName(name)
+                var servers = try AgentMCPConfiguration.decodeServers(setup.extraServersJSON)
+                if definition != nil, servers[name] != nil { throw AgentMCPError.invalidName }
+                servers[name] = definition
+                setup.extraServersJSON = try AgentMCPConfiguration.encode(servers)
+            }
+            setup = try setup.validated()
+            try Self.agentSetupAudit(projectID: projectID).insert(dbc)
+            try setup.save(dbc)
+        }
+    }
+
+    public func editGlobalAgentMCPServer(name: String, definition: AgentMCPServer?) throws {
+        try AgentMCPConfiguration.validateName(name)
+        try db.queue.write { dbc in
+            var servers = try AgentMCPConfiguration.decodeServers(String.fetchOne(dbc,
+                sql: "SELECT value FROM kv WHERE key = ?", arguments: ["agent.mcp.global"]) ?? "{}")
+            if definition != nil, servers[name] != nil { throw AgentMCPError.invalidName }
+            servers[name] = definition
+            try AgentMCPConfiguration.validate(servers)
+            try Self.agentSetupAudit(projectID: nil).insert(dbc)
+            try dbc.execute(sql: "INSERT INTO kv(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                arguments: ["agent.mcp.global", try AgentMCPConfiguration.encode(servers)])
+        }
+    }
+}
+
 public struct WorkspaceFolderDraft: Codable, Sendable, Equatable {
     public var path: String
     public var access: WorkspaceFolderAccess
