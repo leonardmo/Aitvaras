@@ -127,10 +127,12 @@ jobs:
           key: spm-${{ runner.os }}-${{ hashFiles('Package.resolved', 'Package.swift') }}-${{ github.sha }}
       # Hosted runners have 3 cores; the subprocess-heavy suites starve each
       # other when run in parallel, so CI runs them serially.
+      # Unbuffered output, and a watchdog that names the test and samples its
+      # stack when nothing moves for 5 minutes instead of idling for an hour.
       - name: swift test
         if: env.CODE == 'true'
         timeout-minutes: 60
-        run: swift test --skip-build --no-parallel
+        run: scripts/ci-swift-test.sh --skip-build --no-parallel
 
   app:
     name: App build
