@@ -502,7 +502,9 @@ struct AgentChatView: View {
                 await chat.respond(chatID: owner, to: request, with: response)
             }
         default:
-            AgentApprovalCard(request: request, identifier: "chat.request.\(index)") { [owner = chatID] response in
+            AgentApprovalCard(request: request, identifier: "chat.request.\(index)", alwaysAllow: { [owner = chatID] in
+                await chat.alwaysAllow(chatID: owner, request: request)
+            }) { [owner = chatID] response in
                 await chat.respond(chatID: owner, to: request, with: response)
             }
         }

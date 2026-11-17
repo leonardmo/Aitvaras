@@ -125,6 +125,34 @@ public struct WorkspaceAgentSetup: Codable, Sendable, Equatable, FetchableRecord
 }
 
 extension Stores {
+    public func agentAlwaysAllowedTools(chatID: UUID) throws -> Set<String> {
+        guard let chat = try workspaceChat(id: chatID) else { throw AgentStoreError.missingChat }
+        return Set(try workspaceAgentSetup(projectID: chat.projectID).alwaysAllowedTools)
+    }
+
+    /// Called only after the coordinator reserves a current, explicit approval.
+    /// Record APIs retain GRDB's UUID encoding; the audit contains no arguments.
+    public func allowAgentTool(chatID: UUID, request: AgentRequest) throws {
+        guard AgentToolPolicy.canAlwaysAllow(request), case .permission(let tool) = request.kind,
+              let provider = request.scope.session?.provider, let inputID = request.scope.inputID else { throw AgentFailure.invalidRequest }
+        let key = try AgentToolPolicy.grantKey(provider: provider, tool: tool.name)
+        try db.queue.write { dbc in
+            guard let chat = try WorkspaceChat.fetchOne(dbc, key: chatID),
+                  try WorkspaceProject.fetchOne(dbc, key: chat.projectID) != nil,
+                  let turn = try AgentJournalTurn.fetchOne(dbc, key: inputID), turn.chatID == chatID, turn.state == .running,
+                  let session = try AgentChatSession.fetchOne(dbc, key: turn.sessionID), session.provider == provider,
+                  session.sessionID == request.scope.session else { throw AgentFailure.invalidRequest }
+            var setup = try (WorkspaceAgentSetup.fetchOne(dbc, key: chat.projectID) ?? .init(projectID: chat.projectID)).validated()
+            setup.alwaysAllowedTools.append(key); setup = try setup.validated()
+            try ActivityEvent(kind: .toolExecuted, connectorID: "agent.setup", summary: "Allow agent tool in project",
+                detailJSON: JSONValue.object(["projectID": .string(chat.projectID.uuidString), "chatID": .string(chatID.uuidString),
+                    "provider": .string(provider.rawValue), "tool": .string(StableIdentifier.short([tool.name])),
+                    "request": .string(StableIdentifier.short([request.identity])), "risk": .string(ActionRisk.confirmable.rawValue),
+                    "decision": .string("approved")]).jsonString, runID: inputID).insert(dbc)
+            try setup.save(dbc)
+        }
+    }
+
     /// One read transaction supplies project/global setup for launches and probes.
     /// Explicit chat ownership wins; directory-only probes resolve the most specific
     /// registered root and fail rather than borrow an ambiguous project's approvals.

@@ -318,7 +318,9 @@ public actor AgentSessionManager {
                     await Self.close(raw, timeout: .seconds(2)); throw AgentSessionManagerError.staleRun
                 }
                 coordinator = AgentActionCoordinator(run: raw, mode: session.mode,
-                    provenance: .init(chatID: chatID), audit: { [audit] event in
+                    provenance: .init(chatID: chatID), projectGrants: { [persistence] in
+                        try persistence.agentAlwaysAllowedTools(chatID: chatID)
+                    }, audit: { [audit] event in
                         var value = event
                         // Coordinator IDs identify a transport that can serve many
                         // turns. Activity is owned by the durable input instead.
@@ -570,6 +572,17 @@ public actor AgentSessionManager {
         let pending = await run.pendingRequests()
         guard live[chatID]?.token == slot.token else { return }
         states[chatID]?.pendingCards = pending; publish(chatID)
+    }
+    public func alwaysAllow(chatID: UUID, request: AgentRequest) async throws {
+        guard let slot = live[chatID], let run = slot.coordinator,
+              try persistence.agentProjectID(chatID: chatID) != nil else { throw AgentFailure.invalidRequest }
+        do {
+            try await run.alwaysAllow(to: request) { [persistence] in try persistence.allowAgentTool(chatID: chatID, request: request) }
+        } catch {
+            if live[chatID]?.token == slot.token { states[chatID]?.pendingCards = await run.pendingRequests(); publish(chatID) }
+            throw error
+        }
+        if live[chatID]?.token == slot.token { states[chatID]?.pendingCards = await run.pendingRequests(); publish(chatID) }
     }
 
     /// Detach generations first. Bounded cleanup never poisons the owner: if

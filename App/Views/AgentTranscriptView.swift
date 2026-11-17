@@ -8,7 +8,9 @@ struct AgentTranscriptView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            if entry.kind == "importedHistory" {
+            if entry.kind == "hook" {
+                hookRow(payload ?? .null)
+            } else if entry.kind == "importedHistory" {
                 importedHistory
             } else if ["handover", "thinking", "tool"].contains(entry.kind) {
                 DisclosureGroup(isExpanded: $expanded) {
@@ -31,6 +33,11 @@ struct AgentTranscriptView: View {
                         Text(title).lineLimit(1).truncationMode(.middle)
 
                     }.font(.caption).foregroundStyle(.secondary)
+                }
+                if entry.kind == "tool" {
+                    ForEach(Array((payload?["hooks"]?.arrayValue ?? []).enumerated()), id: \.offset) { _, hook in
+                        hookRow(hook)
+                    }.padding(.leading, 12)
                 }
             } else if entry.kind == "user" {
                 HStack {
@@ -61,6 +68,25 @@ struct AgentTranscriptView: View {
         // Give completion a fresh AX container as well as a new identifier,
         // keeping the row identity stable throughout streaming.
         .id(entry.presentationIdentifier)
+    }
+    @ViewBuilder private func hookRow(_ hook: JSONValue) -> some View {
+        let phase = hook["phase"]?.stringValue ?? "interrupted"
+        let label = hook["statusMessage"]?.stringValue ?? hook["name"]?.stringValue ?? "Hook"
+        let reason = hook["reason"]?.stringValue ?? ""
+        if phase == "success" {
+            DisclosureGroup {
+                Text(hook["name"]?.stringValue ?? "Hook").font(.caption).textSelection(.enabled)
+            } label: { Label(label, systemImage: "checkmark.circle").font(.caption).foregroundStyle(.secondary) }
+        } else {
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 6) {
+                    if phase == "running" { ProgressView().controlSize(.mini) }
+                    else { Image(systemName: phase == "blocked" ? "hand.raised" : "exclamationmark.circle") }
+                    Text(label)
+                }.font(.caption)
+                if !reason.isEmpty { Text(reason).font(.caption.monospaced()).textSelection(.enabled) }
+            }.foregroundStyle(phase == "blocked" || phase == "error" ? Color.orange : Color.secondary)
+        }
     }
     private var importedHistory: some View {
         DisclosureGroup(isExpanded: $expanded) {
@@ -100,6 +126,9 @@ struct AgentTranscriptView: View {
     private var title: String {
         if entry.kind == "handover" { return "Context sent to \(entry.provider.rawValue.capitalized)" }
         if entry.kind == "thinking" { return "Thinking" }
+        if entry.kind == "tool", entry.text.isEmpty, let hook = payload?["hooks"]?.arrayValue?.first {
+            return hook["name"]?.stringValue ?? "Hook"
+        }
         let input = payload?["input"] ?? .null
         return AgentActionPresentation.toolSummary(.init(name: entry.text, input: input),
             finished: payload?["finished"]?.boolValue == true,

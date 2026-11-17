@@ -803,4 +803,10 @@ final class ChatModel {
         do { try await manager.respond(chatID: chatID, to: request, with: response); return true }
         catch { return false }
     }
+    func alwaysAllow(chatID: UUID, request: AgentRequest) async -> Bool {
+        guard respondingRequests.insert(request.identity).inserted else { return false }
+        defer { respondingRequests.remove(request.identity) }
+        do { try await manager.alwaysAllow(chatID: chatID, request: request); return true }
+        catch { return false }
+    }
 }

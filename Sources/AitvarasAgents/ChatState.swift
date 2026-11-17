@@ -22,6 +22,7 @@ public struct ChatState: Sendable, Equatable {
     public private(set) var tools: [AgentToolState] = []
     public var pendingCards: [AgentRequest] = []
     public var mcpSetup: AgentMCPLaunchStatus?
+    public private(set) var agentSetup: AgentSetupSnapshot?
     public private(set) var usage: AgentUsage?
     public private(set) var rateLimits: [AgentRateLimitWindow] = []
     public private(set) var outcome: AgentTurnOutcome?
@@ -32,6 +33,8 @@ public struct ChatState: Sendable, Equatable {
     private var thinkingIDs: [String: UUID] = [:]
     private var textIDs: [String: UUID] = [:]
     private var toolEntryIDs: [String: UUID] = [:]
+    private var hookEntryIDs: [String: UUID] = [:]
+    private var hooks: [String: AgentHookEvent] = [:]
     private var provider: AgentProvider?
     private var sessionID: UUID?
 
@@ -44,6 +47,7 @@ public struct ChatState: Sendable, Equatable {
         acknowledgedMode = session.mode
         streamingText = ""; thinking = ""; thinkingIDs = [:]; textIDs = [:]; toolEntryIDs = [:]
         tools = []; pendingCards = []; usage = nil; outcome = nil; isRunning = true
+        hookEntryIDs = [:]; hooks = [:]
         if !entries.contains(where: { $0.id == input.id }) {
             if let context {
                 entries.append(.init(chatID: chatID, provider: session.provider, kind: "handover",
@@ -71,6 +75,10 @@ public struct ChatState: Sendable, Equatable {
     /// Caller supplies IDs, keeping the reducer deterministic and testable.
     public mutating func reduce(_ event: AgentEvent, newEntryID: UUID) {
         switch event.kind {
+        case .setupReported(let snapshot): agentSetup = snapshot
+        case .hook(let hook):
+            guard isRunning, event.scope.inputID == nil || event.scope.inputID == inputID else { return }
+            putHook(hook, newEntryID: newEntryID)
         case .modeChanged(let mode):
             guard event.scope.inputID == nil || event.scope.inputID == inputID else { return }
             acknowledgedMode = mode
@@ -150,6 +158,10 @@ public struct ChatState: Sendable, Equatable {
     }
     mutating func awaitingQueuedInput() { isRunning = true; outcome = nil }
     public mutating func end(_ value: AgentTurnOutcome) {
+        for hook in Array(hooks.values) where hook.phase == .running {
+            putHook(.init(id: hook.id, name: hook.name, event: hook.event, phase: .interrupted,
+                          statusMessage: hook.statusMessage, reason: "Hook ended without a response.", toolUseID: hook.toolUseID), newEntryID: hookEntryIDs[hook.id] ?? inputID ?? chatID)
+        }
         // A summary-only turn/completed need not repeat its tool items. Stop,
         // disconnect and missing item completions must still close their rows,
         // without inventing a successful command result.
@@ -198,7 +210,33 @@ public struct ChatState: Sendable, Equatable {
                 "completionUnconfirmed": .bool(tool.completionUnconfirmed),
                 "turnCompletedNormally": .bool(tool.turnCompletedNormally), "isDenied": .bool(tool.isDenied)
             ]).jsonString
+            let related = hooks.values.filter { $0.toolUseID == tool.id }.sorted { $0.id < $1.id }
+            if !related.isEmpty, var payload = entries[entry].payloadJSON.flatMap(JSONValue.parse)?.objectValue {
+                payload["hooks"] = .array(related.map(Self.hookPayload)); entries[entry].payloadJSON = JSONValue.object(payload).jsonString
+            }
         }
+    }
+    private static func hookPayload(_ hook: AgentHookEvent) -> JSONValue {
+        .object(["hookID": .string(hook.id), "name": .string(hook.name), "event": .string(hook.event),
+            "phase": .string(hook.phase.rawValue), "statusMessage": hook.statusMessage.map(JSONValue.string) ?? .null,
+            "reason": hook.reason.map(JSONValue.string) ?? .null])
+    }
+    private mutating func putHook(_ hook: AgentHookEvent, newEntryID: UUID) {
+        if let prior = hooks[hook.id], prior.phase != .running { return }
+        guard hooks.count < 2048 || hooks[hook.id] != nil else { return }
+        hooks[hook.id] = hook
+        // Correlation is explicit only. Same-name parallel tools never share hook rows.
+        if let tool = hook.toolUseID {
+            let index = toolIndex(tool)
+            if hook.phase == .blocked {
+                tools[index].isDenied = true; tools[index].isFinished = true; tools[index].isError = true
+            }
+            putTool(index, newEntryID: newEntryID); return
+        }
+        let id = hookEntryIDs[hook.id] ?? newEntryID
+        hookEntryIDs[hook.id] = id
+        put(id: id, kind: "hook", text: hook.statusMessage ?? hook.name)
+        if let index = entries.firstIndex(where: { $0.id == id }) { entries[index].payloadJSON = Self.hookPayload(hook).jsonString }
     }
     private mutating func put(id: UUID, kind: String, text: String, nativeID: String? = nil) {
         guard let provider else { return }

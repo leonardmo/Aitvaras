@@ -97,6 +97,8 @@ public struct AgentJournalTurn: Codable, Sendable, Equatable {
 /// The application injects its single store into its single manager.
 public protocol AgentSessionPersistence: Sendable {
     func agentProjectID(chatID: UUID) throws -> UUID?
+    func agentAlwaysAllowedTools(chatID: UUID) throws -> Set<String>
+    func allowAgentTool(chatID: UUID, request: AgentRequest) throws
     func requireAgentChatAvailable(chatID: UUID) throws
     func renameAgentChat(chatID: UUID, title: String) throws
     func archiveAgentChat(chatID: UUID, archived: Bool) throws
@@ -119,6 +121,8 @@ public protocol AgentSessionPersistence: Sendable {
 
 extension AgentSessionPersistence {
     public func agentProjectID(chatID: UUID) throws -> UUID? { nil }
+    public func agentAlwaysAllowedTools(chatID: UUID) throws -> Set<String> { [] }
+    public func allowAgentTool(chatID: UUID, request: AgentRequest) throws { throw AgentFailure.unsupported }
 }
 
 public protocol AgentNativeSessionPersistence: Sendable {

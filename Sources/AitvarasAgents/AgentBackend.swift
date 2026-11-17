@@ -118,6 +118,7 @@ public protocol AgentBackend: Actor {
     func models() async throws -> [AgentModel]
     func commands(directory: URL) async throws -> [AgentCommand]
     func commands(directory: URL, projectID: UUID?) async throws -> [AgentCommand]
+    func setup(directory: URL, projectID: UUID?) async throws -> AgentSetupSnapshot
     func files(query: String, directory: URL) async throws -> [AgentFileMention]
     /// Starts or resumes a session without sending a user message.
     func start(_ configuration: AgentSessionConfiguration) async throws -> any AgentRun
@@ -134,6 +135,7 @@ extension AgentBackend {
     }
     public func commands(directory: URL) async throws -> [AgentCommand] { throw AgentFailure.unsupported }
     public func commands(directory: URL, projectID: UUID?) async throws -> [AgentCommand] { try await commands(directory: directory) }
+    public func setup(directory: URL, projectID: UUID?) async throws -> AgentSetupSnapshot { throw AgentFailure.unsupported }
     public func files(query: String, directory: URL) async throws -> [AgentFileMention] { throw AgentFailure.unsupported }
 }
 
@@ -141,6 +143,7 @@ public protocol AgentRun: Actor {
     /// One live connection generation. Reconnection must allocate a new ID.
     nonisolated var id: UUID { get }
     nonisolated var mcpSetup: AgentMCPLaunchStatus? { get }
+    nonisolated var permissionSource: AgentPermissionSource { get }
     /// Subscribe before send. Losing events must fail the run, never drop silently.
     nonisolated var events: AsyncThrowingStream<AgentEvent, Error> { get }
     /// Await this durable journal barrier before the first write of this input.
@@ -161,6 +164,7 @@ public protocol AgentRun: Actor {
 
 extension AgentRun {
     public nonisolated var mcpSetup: AgentMCPLaunchStatus? { nil }
+    public nonisolated var permissionSource: AgentPermissionSource { .repo }
     public func followup(_ input: AgentInput, willDeliver: @escaping @Sendable () async throws -> Void) async throws {
         throw AgentFailure.unsupported
     }

@@ -96,6 +96,12 @@ public actor ClaudeBackend: AgentBackend {
         guard let commands else { throw AgentFailure.unsupported }
         return (commands, run.mcpSetup)
     }
+    public func setup(directory: URL, projectID: UUID?) async throws -> AgentSetupSnapshot {
+        let run = try await makeRun(.init(directory: directory, model: "default", projectID: projectID))
+        let snapshot = await run.availableSetup
+        try await run.shutdown()
+        return snapshot
+    }
     public func files(query: String, directory: URL) async throws -> [AgentFileMention] {
         let task = Task.detached { try AgentFileMention.localSearch(query: query, directory: directory) }
         return try await withTaskCancellationHandler { try await task.value } onCancel: { task.cancel() }
@@ -126,7 +132,11 @@ public actor ClaudeBackend: AgentBackend {
         launch.strictMCPConfig = snapshot.resolution.repositoryUnreadable
         launch.includeHookEvents = true
         let run = ClaudeRun(executable: executable, environment: environment, profile: profile, configuration: launch,
-                            id: runID, runtimeFile: file, mcpSetup: snapshot.status)
+                            id: runID, runtimeFile: file, mcpSetup: snapshot.status, permissionSource: snapshot.permissionSource,
+                            metadataReader: AgentProjectMetadataReader(projectDirectory: configuration.directory,
+                                userDirectory: environment["CLAUDE_CONFIG_DIR"].map { URL(fileURLWithPath: $0) }
+                                    ?? environment["HOME"].map { URL(fileURLWithPath: $0).appendingPathComponent(".claude") },
+                                environment: environment))
         do { try await run.initialize(); return run }
         catch { try? await run.shutdown(); throw error }
     }

@@ -12,6 +12,7 @@ public actor AgentMCPRuntimeFile {
     private let projectID: UUID
     private let runID: UUID
     private let audit: AgentActionCoordinator.Audit
+    private var redactions: [String]
 
     private struct Location: Sendable {
         let directory: Int32
@@ -21,8 +22,9 @@ public actor AgentMCPRuntimeFile {
     }
 
     private init(url: URL, location: Location, projectID: UUID, runID: UUID,
-                 audit: @escaping AgentActionCoordinator.Audit) {
+                 audit: @escaping AgentActionCoordinator.Audit, redactions: [String]) {
         self.url = url; self.location = location; self.projectID = projectID; self.runID = runID; self.audit = audit
+        self.redactions = redactions
     }
     deinit { if let location { try? Self.erase(location) } }
 
@@ -104,7 +106,7 @@ public actor AgentMCPRuntimeFile {
                 try? erase(location)
                 throw error
             }
-            return AgentMCPRuntimeFile(url: url, location: location, projectID: projectID, runID: runID, audit: audit)
+            return AgentMCPRuntimeFile(url: url, location: location, projectID: projectID, runID: runID, audit: audit, redactions: Array(secrets.values))
         } catch {
             try? await record(error is CancellationError ? "cancelled" : "failed", projectID: projectID, runID: runID, audit: audit)
             throw error
@@ -118,8 +120,13 @@ public actor AgentMCPRuntimeFile {
         do { try Self.erase(location) }
         catch { throw AgentMCPError.runtimeFile }
         self.location = nil
+        redactions.removeAll()
         try await Self.record("removed", projectID: projectID, runID: runID, audit: audit)
     }
+
+    // The metadata reader applies the final bound after both sources of
+    // credentials have been removed.
+    func redacted(_ text: String) -> String { AgentHookText.safe(text, secrets: redactions, limit: Int.max) }
 
     private static func record(_ result: String, projectID: UUID, runID: UUID,
                                audit: AgentActionCoordinator.Audit) async throws {

@@ -5,6 +5,7 @@ struct AgentApprovalCard: View {
     let request: AgentRequest
     let identifier: String
     var context: String? = nil
+    var alwaysAllow: (() async -> Bool)? = nil
     let respond: (AgentResponse) async -> Bool
     @State private var responding = false
     @State private var failed = false
@@ -32,6 +33,15 @@ struct AgentApprovalCard: View {
                     .accessibilityIdentifier("\(identifier).deny")
                 if responding { ProgressView().controlSize(.mini) }
             }.disabled(responding || failed)
+            if request.canAlwaysAllowInProject, let alwaysAllow {
+                Button("Always allow in this project") {
+                    guard !responding, !failed else { return }
+                    responding = true
+                    Task { failed = !(await alwaysAllow()); responding = false }
+                }
+                .accessibilityIdentifier("\(identifier).alwaysAllow")
+                .disabled(responding || failed)
+            }
             if failed { Text("This request is no longer available.").font(.caption).foregroundStyle(.secondary) }
         }
         .padding(12).frame(maxWidth: .infinity, alignment: .leading)
@@ -54,7 +64,9 @@ struct AgentApprovalSuggestionsView: View {
             switch suggestion.request.kind {
             case .permission, .permissions:
                 AgentApprovalCard(request: suggestion.request, identifier: "chat.suggestion.\(suggestion.id)",
-                                  context: chat.approvalContext(suggestion)) { response in
+                                  context: chat.approvalContext(suggestion), alwaysAllow: {
+                    await chat.alwaysAllow(chatID: suggestion.chatID, request: suggestion.request)
+                }) { response in
                     await chat.respond(chatID: suggestion.chatID, to: suggestion.request, with: response)
                 }
             default: EmptyView()

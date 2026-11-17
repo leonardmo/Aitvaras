@@ -31,6 +31,7 @@ public struct AgentMCPLaunchSnapshot: Sendable {
     public let projectID: UUID
     public let resolution: AgentMCPResolution
     public let status: AgentMCPLaunchStatus
+    public let permissionSource: AgentPermissionSource
 }
 
 /// Shared by the manager's reuse check and each backend's actual startup/probes.
@@ -74,7 +75,7 @@ public struct AgentMCPLaunchPolicy: Sendable {
         return .init(projectID: context.projectID, resolution: resolution,
             status: .init(revision: revision, repositoryUnreadable: resolution.repositoryUnreadable,
                 unsupportedRepositoryServers: resolution.repositoryEntries.filter { $0.value.server == nil }.keys.sorted(),
-                unavailableForLocal: resolution.unavailableForLocal))
+                unavailableForLocal: resolution.unavailableForLocal), permissionSource: context.permissionSource)
     }
 
     public func runtimeFile(snapshot: AgentMCPLaunchSnapshot, runID: UUID,

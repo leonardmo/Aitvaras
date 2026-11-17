@@ -86,6 +86,7 @@ public enum AgentResponse: Sendable, Equatable {
     case deny
     case answers([String: [String]])
     case continueHook
+    case askHook
     case unsupported
 }
 
@@ -126,6 +127,8 @@ public struct AgentRateLimitWindow: Sendable, Equatable {
 public struct AgentEvent: Sendable, Equatable {
     public enum Kind: Sendable, Equatable {
         case sessionStarted(AgentSessionID)
+        case setupReported(AgentSetupSnapshot)
+        case hook(AgentHookEvent)
         case delivery(AgentDeliveryState)
         /// A queued Claude input becomes the output/approval owner.
         case inputActivated
