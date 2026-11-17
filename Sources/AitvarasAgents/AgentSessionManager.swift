@@ -12,6 +12,7 @@ public actor AgentSessionManager {
         let token: UUID
         var session: AgentChatSession
         var coordinator: AgentActionCoordinator?
+        var startup: Task<any AgentRun, Error>?
         var reader: Task<Void, Never>?
         var idle: Task<Void, Never>?
         var inputID: UUID?
@@ -26,6 +27,7 @@ public actor AgentSessionManager {
     private let backend: BackendFactory
     private let audit: AgentActionCoordinator.Audit
     private let idleTimeout: Duration
+    private let mcpPolicy: AgentMCPLaunchPolicy
     private var live: [UUID: Live] = [:]
     private var states: [UUID: ChatState] = [:]
     private var subscribers: [UUID: [UUID: AsyncStream<ChatState>.Continuation]] = [:]
@@ -37,13 +39,16 @@ public actor AgentSessionManager {
 
     /// Startup recovery is synchronous and must finish before any backend starts.
     public init(persistence: any AgentSessionPersistence, idleTimeout: Duration = .seconds(600),
-                backend: @escaping BackendFactory, audit: @escaping AgentActionCoordinator.Audit) throws {
+                backend: @escaping BackendFactory, audit: @escaping AgentActionCoordinator.Audit,
+                mcpPolicy: AgentMCPLaunchPolicy = .default) throws {
         self.persistence = persistence; self.idleTimeout = idleTimeout; self.backend = backend; self.audit = audit
+        self.mcpPolicy = mcpPolicy
         try persistence.recoverAgentTurns()
     }
     deinit {
         for slot in live.values {
             slot.reader?.cancel(); slot.idle?.cancel()
+            slot.startup?.cancel()
             if let coordinator = slot.coordinator { Task { try? await coordinator.shutdown() } }
         }
         approvalSubscribers.values.forEach { $0.finish() }
@@ -257,11 +262,17 @@ public actor AgentSessionManager {
             ? live.filter { !$0.value.isRunning }.min { $0.value.lastUsed < $1.value.lastUsed } : nil
         // Reserve this chat and capacity before any await, including startup.
         let old = live[chatID]
-        let token = session.usesThreadContext && old?.session == session ? old!.token : UUID()
+        var configuration = session.configuration
+        configuration.projectID = try persistence.agentProjectID(chatID: chatID)
+        let revision = try (provider == .claude || provider == .local)
+            ? mcpPolicy.snapshot(directory: configuration.directory, projectID: configuration.projectID).status.revision : nil
+        let setupMatches = old?.coordinator?.mcpSetup.map { $0.revision == revision } ?? true
+        let canReuse = session.usesThreadContext && old?.session == session && setupMatches
+        let token = canReuse ? old!.token : UUID()
         old?.idle?.cancel()
         // Native Local sessions reuse their transport and acknowledged handover
         // receipts, just like the subscription providers. AgentLoop stays fresh.
-        let reusable = session.usesThreadContext && old?.session == session ? old?.coordinator : nil
+        let reusable = canReuse ? old?.coordinator : nil
         live[chatID] = Live(token: token, session: session, coordinator: reusable, inputID: input.id)
         do {
             if retry { _ = try persistence.claimAgentResend(id: input.id) }
@@ -286,12 +297,23 @@ public actor AgentSessionManager {
                   live[chatID]?.stopping == false, !closing else { throw AgentSessionManagerError.staleRun }
             let coordinator: AgentActionCoordinator
             if let reusable {
+                // Acceptance can yield to UI/storage. A revoked setup must not
+                // authorize another turn on an already initialized transport.
+                if let setup = reusable.mcpSetup,
+                   try mcpPolicy.snapshot(directory: configuration.directory, projectID: configuration.projectID).status.revision != setup.revision {
+                    throw AgentFailure.invalidTransition
+                }
                 coordinator = reusable
                 live[chatID]?.reader = old?.reader
             } else {
                 old?.reader?.cancel()
                 if let run = old?.coordinator { await Self.close(run, timeout: .seconds(2)) }
-                let raw = try await backend(provider).start(session.configuration)
+                let launchConfiguration = configuration
+                let factory = backend
+                let startup = Task { try await factory(provider).start(launchConfiguration) }
+                live[chatID]?.startup = startup
+                let raw = try await withTaskCancellationHandler { try await startup.value } onCancel: { startup.cancel() }
+                if live[chatID]?.token == token { live[chatID]?.startup = nil }
                 guard live[chatID]?.token == token, !closing else {
                     await Self.close(raw, timeout: .seconds(2)); throw AgentSessionManagerError.staleRun
                 }
@@ -304,6 +326,7 @@ public actor AgentSessionManager {
                         try await audit(value)
                     })
                 live[chatID]?.coordinator = coordinator
+                states[chatID]?.mcpSetup = raw.mcpSetup
                 live[chatID]?.reader = Task { [weak self] in
                     do {
                         for try await event in coordinator.events {
@@ -509,6 +532,7 @@ public actor AgentSessionManager {
     }
     private func retire(_ chat: UUID, slot: Live, outcome: AgentTurnOutcome) async throws {
         guard live[chat]?.token == slot.token else { return }
+        slot.startup?.cancel()
         live.removeValue(forKey: chat); slot.reader?.cancel(); slot.idle?.cancel()
         var storageFailed = false
         for id in [slot.inputID].compactMap({ $0 }) + slot.followups.map(\.id) {
@@ -558,6 +582,7 @@ public actor AgentSessionManager {
         var storageFailed = false
         for (chat, slot) in slots {
             slot.reader?.cancel(); slot.idle?.cancel()
+            slot.startup?.cancel()
             for followup in slot.followups {
                 do {
                     if try persistence.agentTurn(id: followup.id)?.state == .running {
@@ -577,10 +602,14 @@ public actor AgentSessionManager {
         }
         // All closes share one deadline, including a misbehaving injected run.
         let runs = slots.values.compactMap(\.coordinator)
+        let startups = slots.values.compactMap(\.startup)
         let (stream, continuation) = AsyncStream<Void>.makeStream()
         let cleanup = Task {
             await withTaskGroup(of: Void.self) { group in
                 for run in runs { group.addTask { try? await run.shutdown() } }
+                for startup in startups {
+                    group.addTask { if let run = try? await startup.value { try? await run.shutdown() } }
+                }
             }
             continuation.yield(()); continuation.finish()
         }

@@ -472,7 +472,7 @@ struct AgentChatView: View {
     private var composerMessageColor: Color {
         colorScheme == .dark ? Color(white: 0.92) : Color(white: 0.12)
     }
-    private var composerMessage: String? { chat.error ?? workspaceError ?? outcomeError }
+    private var composerMessage: String? { chat.error ?? workspaceError ?? outcomeError ?? chat.state?.mcpSetup?.notice }
     private var outcomeError: String? {
         if case .failed(let failure) = chat.state?.outcome {
             return AgentFailure.sendMessage(for: failure, provider: chat.state?.entries.last?.provider ?? chat.provider)

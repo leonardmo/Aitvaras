@@ -30,6 +30,7 @@ public actor AgentMCPRuntimeFile {
     /// a synthetic resolver. No resolved value is returned to configuration/storage.
     public static func create(stateDirectory: URL, projectID: UUID, runID: UUID,
                               servers: [String: AgentMCPServer], format: Format = .claude,
+                              baseConfiguration: JSONValue? = nil,
                               policy: AutonomyPolicy = .init(), audit: @escaping AgentActionCoordinator.Audit,
                               resolveSecret: @escaping SecretResolver) async throws -> AgentMCPRuntimeFile {
         try AgentMCPConfiguration.validate(servers)
@@ -89,7 +90,9 @@ public actor AgentMCPRuntimeFile {
                 }
             }
             let key = format == .claude ? "mcpServers" : "mcp"
-            let data = Data(JSONValue.object([key: .object(entries)]).jsonString.utf8)
+            var configuration = baseConfiguration?.objectValue ?? [:]
+            configuration[key] = .object(entries)
+            let data = Data(JSONValue.object(configuration).jsonString.utf8)
             guard data.count <= AgentMCPConfiguration.maximumBytes else { throw AgentMCPError.runtimeFile }
             try Task.checkCancellation()
             let (url, location) = try write(data, stateDirectory: stateDirectory, projectID: projectID, runID: runID)

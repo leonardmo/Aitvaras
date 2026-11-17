@@ -9,6 +9,9 @@ public actor OpencodeBackend: AgentBackend {
     private let catalog: @Sendable () async throws -> [AgentModel]
     private var roots: [String]?
     private var serverModels: [AgentModel] = []
+    private let mcpPolicy: AgentMCPLaunchPolicy
+    private var serverMCPRevision: String?
+    private var serverRuntimeFile: AgentMCPRuntimeFile?
     private var runs: [String: OpencodeRun] = [:]
     private var reader: Task<Void, Never>?
     private var starting = false
@@ -16,7 +19,8 @@ public actor OpencodeBackend: AgentBackend {
     private var shutdownTask: Task<Void, Never>?
 
     public init(executable: URL? = nil, environment: [String: String] = ProcessInfo.processInfo.environment,
-                configuration: OpencodeConfiguration = .init()) {
+                configuration: OpencodeConfiguration = .init(), mcpPolicy: AgentMCPLaunchPolicy = .default) {
+        self.mcpPolicy = mcpPolicy
         let found = ProviderLocator.executable(for: .local, environment: environment,
             overrides: executable.map { [.local: $0] } ?? [:])
         self.executable = found
@@ -24,7 +28,9 @@ public actor OpencodeBackend: AgentBackend {
             environment: environment, configuration: configuration)
         catalog = { try await OpencodeConfiguration.installedModels() }
     }
-    init(transport: any OpencodeTransport, catalog: @escaping @Sendable () async throws -> [AgentModel]) {
+    init(transport: any OpencodeTransport, mcpPolicy: AgentMCPLaunchPolicy = .default,
+         catalog: @escaping @Sendable () async throws -> [AgentModel]) {
+        self.mcpPolicy = mcpPolicy
         executable = URL(fileURLWithPath: "/usr/bin/true"); self.transport = transport; self.catalog = catalog
     }
     public func status() async throws -> AgentStatus {
@@ -41,6 +47,12 @@ public actor OpencodeBackend: AgentBackend {
     public func start(_ configuration: AgentSessionConfiguration) async throws -> any AgentRun {
         guard executable != nil else { throw AgentFailure.notInstalled }
         guard !starting, shutdownTask == nil else { throw AgentFailure.invalidTransition }
+        if let resume = configuration.resume {
+            guard resume.provider == .local else { throw AgentFailure.invalidRequest }
+            if resume.profile == OpencodeConfiguration.profile {
+                guard resume.host == "local", Self.validID(resume.nativeID), runs[resume.nativeID] == nil else { throw AgentFailure.invalidRequest }
+            }
+        }
         starting = true
         defer { starting = false }
         let startGeneration = generation
@@ -49,16 +61,26 @@ public actor OpencodeBackend: AgentBackend {
         guard configuration.effort == nil, models.contains(where: { $0.id == configuration.model }) else { throw AgentFailure.unsupported }
         let projects = [configuration.directory] + configuration.additionalDirectories
         let requestedRoots = try OpencodeConfiguration.writeRoots(projects)
-        if roots != requestedRoots || serverModels != models {
+        let snapshot = try mcpPolicy.snapshot(directory: configuration.directory, projectID: configuration.projectID)
+        if roots != requestedRoots || serverModels != models || serverMCPRevision != snapshot.status.revision {
             for run in runs.values where await run.isActive { throw AgentFailure.invalidTransition }
             if roots != nil { await shutdown() }
             let openingGeneration = generation
             do {
-                try await transport.open(projects: projects, models: models)
+                let file = try await mcpPolicy.runtimeFile(snapshot: snapshot, runID: UUID(), format: .opencode,
+                    baseConfiguration: OpencodeConfiguration.generatedConfig(models: models))
+                guard openingGeneration == generation, !Task.isCancelled else {
+                    try? await file?.remove(); throw AgentFailure.invalidTransition
+                }
+                serverRuntimeFile = file
+                guard try mcpPolicy.snapshot(directory: configuration.directory, projectID: configuration.projectID).status.revision == snapshot.status.revision else {
+                    throw AgentFailure.invalidTransition
+                }
+                try await transport.open(projects: projects, models: models, mcpConfigPath: file?.url)
                 guard openingGeneration == generation else { throw AgentFailure.invalidTransition }
                 let events = try await transport.subscribe()
                 guard openingGeneration == generation else { throw AgentFailure.invalidTransition }
-                roots = requestedRoots; serverModels = models
+                roots = requestedRoots; serverModels = models; serverMCPRevision = snapshot.status.revision
                 let generation = self.generation
                 reader = Task { [weak self] in
                     do {
@@ -66,8 +88,15 @@ public actor OpencodeBackend: AgentBackend {
                         await self?.disconnected(generation: generation)
                     } catch { await self?.disconnected(generation: generation) }
                 }
-            } catch { await transport.close(); throw (error as? AgentFailure) ?? .offline }
+            } catch { await shutdown(); throw (error as? AgentFailure) ?? .offline }
         }
+        do { return try await startSession(configuration, setup: snapshot.status) }
+        catch {
+            if runs.isEmpty { await shutdown() }
+            throw error
+        }
+    }
+    private func startSession(_ configuration: AgentSessionConfiguration, setup: AgentMCPLaunchStatus) async throws -> any AgentRun {
         let sessionGeneration = generation
         let nativeID: String
         let model: JSONValue = .object(["id": .string(configuration.model), "providerID": .string("ollama")])
@@ -91,7 +120,7 @@ public actor OpencodeBackend: AgentBackend {
         }
         guard sessionGeneration == generation else { throw AgentFailure.invalidTransition }
         let session = AgentSessionID(provider: .local, profile: OpencodeConfiguration.profile, nativeID: nativeID)
-        let run = OpencodeRun(transport: transport, session: session, configuration: configuration,
+        let run = OpencodeRun(transport: transport, session: session, configuration: configuration, mcpSetup: setup,
             release: { [weak self] id in await self?.release(nativeID, id: id) })
         runs[nativeID] = run
         await run.started()
@@ -125,8 +154,12 @@ public actor OpencodeBackend: AgentBackend {
         guard starting || roots != nil || reader != nil || !runs.isEmpty else { return }
         generation = UUID()
         reader?.cancel(); reader = nil
-        let current = runs; runs.removeAll(); roots = nil
-        let cleanup = Task { [transport] in await transport.close() }
+        let current = runs; runs.removeAll(); roots = nil; serverMCPRevision = nil
+        let file = serverRuntimeFile; serverRuntimeFile = nil
+        let cleanup = Task { [transport] in
+            await transport.close()
+            try? await file?.remove()
+        }
         shutdownTask = cleanup
         for run in current.values { await run.disconnected() }
         await cleanup.value
@@ -140,6 +173,7 @@ public actor OpencodeBackend: AgentBackend {
 
 actor OpencodeRun: AgentRun {
     nonisolated let id = UUID()
+    nonisolated let mcpSetup: AgentMCPLaunchStatus?
     nonisolated let events: AsyncThrowingStream<AgentEvent, Error>
     private let continuation: AsyncThrowingStream<AgentEvent, Error>.Continuation
     private let transport: any OpencodeTransport
@@ -161,8 +195,10 @@ actor OpencodeRun: AgentRun {
     var isActive: Bool { inputID != nil || sending || !queued.isEmpty }
 
     init(transport: any OpencodeTransport, session: AgentSessionID, configuration: AgentSessionConfiguration,
+         mcpSetup: AgentMCPLaunchStatus? = nil,
          release: @escaping @Sendable (UUID) async -> Void) {
         self.transport = transport; self.session = session; self.configuration = configuration; self.release = release
+        self.mcpSetup = mcpSetup
         mode = configuration.mode
         (events, continuation) = AsyncThrowingStream.makeStream(bufferingPolicy: .bufferingOldest(4096))
     }

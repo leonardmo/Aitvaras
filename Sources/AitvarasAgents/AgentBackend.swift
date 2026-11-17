@@ -54,11 +54,21 @@ public struct AgentSessionConfiguration: Sendable {
     public let effort: String?
     public let mode: AgentMode
     public let instructions: String
+    /// Ephemeral launch options; AgentChatSession never persists these.
+    public var projectID: UUID?
+    public var settingsJSON: String?
+    public var mcpConfigPath: URL?
+    public var includeHookEvents: Bool
+    public var strictMCPConfig: Bool
 
     public init(directory: URL, resume: AgentSessionID? = nil, model: String,
-                effort: String? = nil, mode: AgentMode = .ask, instructions: String = "", additionalDirectories: [URL] = []) {
+                effort: String? = nil, mode: AgentMode = .ask, instructions: String = "", additionalDirectories: [URL] = [],
+                projectID: UUID? = nil, settingsJSON: String? = nil, mcpConfigPath: URL? = nil,
+                includeHookEvents: Bool = true, strictMCPConfig: Bool = false) {
         self.directory = directory; self.resume = resume; self.model = model
         self.effort = effort; self.mode = mode; self.instructions = instructions; self.additionalDirectories = additionalDirectories
+        self.projectID = projectID; self.settingsJSON = settingsJSON; self.mcpConfigPath = mcpConfigPath
+        self.includeHookEvents = includeHookEvents; self.strictMCPConfig = strictMCPConfig
     }
 }
 
@@ -107,6 +117,7 @@ public protocol AgentBackend: Actor {
     func signIn(onBrowserURL: @escaping @Sendable (URL) async -> Void) async throws
     func models() async throws -> [AgentModel]
     func commands(directory: URL) async throws -> [AgentCommand]
+    func commands(directory: URL, projectID: UUID?) async throws -> [AgentCommand]
     func files(query: String, directory: URL) async throws -> [AgentFileMention]
     /// Starts or resumes a session without sending a user message.
     func start(_ configuration: AgentSessionConfiguration) async throws -> any AgentRun
@@ -122,12 +133,14 @@ extension AgentBackend {
         return try await listSessions(folder: folder, cursor: cursor)
     }
     public func commands(directory: URL) async throws -> [AgentCommand] { throw AgentFailure.unsupported }
+    public func commands(directory: URL, projectID: UUID?) async throws -> [AgentCommand] { try await commands(directory: directory) }
     public func files(query: String, directory: URL) async throws -> [AgentFileMention] { throw AgentFailure.unsupported }
 }
 
 public protocol AgentRun: Actor {
     /// One live connection generation. Reconnection must allocate a new ID.
     nonisolated var id: UUID { get }
+    nonisolated var mcpSetup: AgentMCPLaunchStatus? { get }
     /// Subscribe before send. Losing events must fail the run, never drop silently.
     nonisolated var events: AsyncThrowingStream<AgentEvent, Error> { get }
     /// Await this durable journal barrier before the first write of this input.
@@ -147,6 +160,7 @@ public protocol AgentRun: Actor {
 }
 
 extension AgentRun {
+    public nonisolated var mcpSetup: AgentMCPLaunchStatus? { nil }
     public func followup(_ input: AgentInput, willDeliver: @escaping @Sendable () async throws -> Void) async throws {
         throw AgentFailure.unsupported
     }

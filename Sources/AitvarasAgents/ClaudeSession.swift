@@ -1,7 +1,9 @@
 import Foundation
 
 actor ClaudeRun: AgentRun {
-    nonisolated let id = UUID()
+    nonisolated let id: UUID
+    nonisolated let mcpSetup: AgentMCPLaunchStatus?
+    private var runtimeFile: AgentMCPRuntimeFile?
     nonisolated let events: AsyncThrowingStream<AgentEvent, Error>
     private let continuation: AsyncThrowingStream<AgentEvent, Error>.Continuation
     private let wire: AgentWire
@@ -22,7 +24,9 @@ actor ClaudeRun: AgentRun {
     private(set) var availableModels: [AgentModel] = []
     private(set) var availableCommands: [AgentCommand]?
 
-    init(executable: URL, environment: [String: String], profile: String, configuration: AgentSessionConfiguration) {
+    init(executable: URL, environment: [String: String], profile: String, configuration: AgentSessionConfiguration,
+         id: UUID = UUID(), runtimeFile: AgentMCPRuntimeFile? = nil, mcpSetup: AgentMCPLaunchStatus? = nil) {
+        self.id = id; self.runtimeFile = runtimeFile; self.mcpSetup = mcpSetup
         self.profile = profile; session = configuration.resume; modeState = AgentModeState(configuration.mode)
         var arguments = ["-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose",
                          "--include-partial-messages", "--permission-prompt-tool", "stdio", "--permission-mode",
@@ -32,6 +36,10 @@ actor ClaudeRun: AgentRun {
         if let resume = configuration.resume { arguments += ["--resume", resume.nativeID] }
         if let effort = configuration.effort { arguments += ["--effort", effort] }
         if !configuration.instructions.isEmpty { arguments += ["--append-system-prompt", configuration.instructions] }
+        if let settings = configuration.settingsJSON { arguments += ["--settings", settings] }
+        if let file = configuration.mcpConfigPath { arguments += ["--mcp-config", file.path] }
+        if configuration.includeHookEvents { arguments += ["--include-hook-events"] }
+        if configuration.strictMCPConfig { arguments += ["--strict-mcp-config"] }
         wire = AgentWire(process: StreamingProcess(executable: executable, arguments: arguments,
             currentDirectory: configuration.directory, environment: environment), format: .claude)
         (events, continuation) = AsyncThrowingStream.makeStream(bufferingPolicy: .bufferingOldest(4096))
@@ -113,6 +121,7 @@ actor ClaudeRun: AgentRun {
         switch value["type"]?.stringValue {
         case "system" where value["subtype"]?.stringValue == "init":
             if value["apiKeySource"]?.stringValue != "none" { await disconnected(.unsupported) }
+        case "system": break // Hook event parsing belongs to B2; never render raw system payloads.
         case "control_request":
             guard let requestID, case .string = requestID, let raw = value["request"] else { await disconnected(.invalidRequest); return }
             guard !seenRequests.contains(requestID), seenRequests.count < 100_000 else { await disconnected(.invalidRequest); return }
@@ -230,15 +239,21 @@ actor ClaudeRun: AgentRun {
         closed = true; requests.removeAll()
         if input != nil { emit(.turnEnded(.failed(error))); input = nil }
         continuation.finish(throwing: error)
-        Task { try? await wire.close() }
+        await closeTransport()
     }
     func abort() async {
         closed = true; input = nil; queue.removeAll(); requests.removeAll(); continuation.finish()
-        try? await wire.close()
+        await closeTransport()
     }
     func shutdown() async throws {
         if !closed { closed = true; requests.removeAll(); continuation.finish(); input = nil }
-        try await wire.close()
+        await closeTransport()
+    }
+
+    private func closeTransport() async {
+        try? await wire.close()
+        let file = runtimeFile; runtimeFile = nil
+        try? await file?.remove()
     }
 
     private var streamingMessageID: String?

@@ -4,13 +4,19 @@ public actor ClaudeBackend: AgentBackend {
     private let environment: [String: String]
     private let executable: URL?
     private let profile: String
+    private let mcpPolicy: AgentMCPLaunchPolicy
+    private let probeDirectory: URL
+    public private(set) var mcpSetup: AgentMCPLaunchStatus?
 
     public init(executable: URL? = nil, environment: [String: String] = ProcessInfo.processInfo.environment,
-                profile: String = "default", overrides: [String: String] = [:]) {
+                profile: String = "default", overrides: [String: String] = [:], mcpPolicy: AgentMCPLaunchPolicy = .default,
+                probeDirectory: URL = FileManager.default.temporaryDirectory) {
         self.environment = ProviderEnvironment.make(inherited: environment, overrides: overrides)
         self.executable = ProviderLocator.executable(for: .claude, environment: self.environment,
             overrides: executable.map { [.claude: $0] } ?? [:])
         self.profile = profile
+        self.mcpPolicy = mcpPolicy
+        self.probeDirectory = probeDirectory
     }
 
     public func status() async throws -> AgentStatus {
@@ -70,7 +76,7 @@ public actor ClaudeBackend: AgentBackend {
     }
 
     public func models() async throws -> [AgentModel] {
-        let run = try await makeRun(AgentSessionConfiguration(directory: FileManager.default.temporaryDirectory, model: "default"))
+        let run = try await makeRun(AgentSessionConfiguration(directory: probeDirectory, model: "default"))
         let models = await run.availableModels
         try await run.shutdown()
         return models
@@ -78,11 +84,17 @@ public actor ClaudeBackend: AgentBackend {
 
     public func start(_ configuration: AgentSessionConfiguration) async throws -> any AgentRun { try await makeRun(configuration) }
     public func commands(directory: URL) async throws -> [AgentCommand] {
-        let run = try await makeRun(.init(directory: directory, model: "default"))
+        try await commands(directory: directory, projectID: nil)
+    }
+    public func commands(directory: URL, projectID: UUID?) async throws -> [AgentCommand] {
+        try await commandCatalog(directory: directory, projectID: projectID).commands
+    }
+    public func commandCatalog(directory: URL, projectID: UUID?) async throws -> (commands: [AgentCommand], setup: AgentMCPLaunchStatus?) {
+        let run = try await makeRun(.init(directory: directory, model: "default", projectID: projectID))
         let commands = await run.availableCommands
         try await run.shutdown()
         guard let commands else { throw AgentFailure.unsupported }
-        return commands
+        return (commands, run.mcpSetup)
     }
     public func files(query: String, directory: URL) async throws -> [AgentFileMention] {
         let task = Task.detached { try AgentFileMention.localSearch(query: query, directory: directory) }
@@ -97,7 +109,24 @@ public actor ClaudeBackend: AgentBackend {
         if let resume = configuration.resume {
             guard resume.provider == .claude, resume.profile == profile, resume.host == "local" else { throw AgentFailure.invalidRequest }
         }
-        let run = ClaudeRun(executable: executable, environment: environment, profile: profile, configuration: configuration)
+        let snapshot = try mcpPolicy.snapshot(directory: configuration.directory, projectID: configuration.projectID)
+        mcpSetup = snapshot.status
+        let runID = UUID()
+        let file = try await mcpPolicy.runtimeFile(snapshot: snapshot, runID: runID, format: .claude)
+        var launch = configuration
+        do {
+            try Task.checkCancellation()
+            // Secret resolution can yield. Re-read once more before process startup.
+            guard try mcpPolicy.snapshot(directory: configuration.directory, projectID: configuration.projectID).status.revision == snapshot.status.revision else {
+                throw AgentFailure.invalidTransition
+            }
+        } catch { try? await file?.remove(); throw error }
+        launch.settingsJSON = snapshot.resolution.settingsJSON
+        launch.mcpConfigPath = file?.url
+        launch.strictMCPConfig = snapshot.resolution.repositoryUnreadable
+        launch.includeHookEvents = true
+        let run = ClaudeRun(executable: executable, environment: environment, profile: profile, configuration: launch,
+                            id: runID, runtimeFile: file, mcpSetup: snapshot.status)
         do { try await run.initialize(); return run }
         catch { try? await run.shutdown(); throw error }
     }

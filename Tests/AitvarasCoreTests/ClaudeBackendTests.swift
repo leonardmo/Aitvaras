@@ -70,7 +70,7 @@ done()
 
     @Test func twoTurnsAllBlocksNativeIDsAndJournalBarrier() async throws {
         let fixture = try BackendExecutableFixture(script: #"""
-assert sys.argv[1:]==['-p','--input-format','stream-json','--output-format','stream-json','--verbose','--include-partial-messages','--permission-prompt-tool','stdio','--permission-mode','auto','--model','test-model','--resume','session-test','--effort','high']
+assert sys.argv[1:]==['-p','--input-format','stream-json','--output-format','stream-json','--verbose','--include-partial-messages','--permission-prompt-tool','stdio','--permission-mode','auto','--model','test-model','--resume','session-test','--effort','high','--settings','{"disabledMcpjsonServers":[]}','--include-hook-events']
 claude_init()
 for n in range(2):
     assert read()['message']['content']=='hello'

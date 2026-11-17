@@ -78,6 +78,7 @@ public struct AgentChatStore: Sendable {
 }
 
 extension Stores: AgentSessionPersistence {
+    public func agentProjectID(chatID: UUID) throws -> UUID? { try workspaceChat(id: chatID)?.projectID }
     public func requireAgentChatAvailable(chatID: UUID) throws {
         try db.queue.read { dbc in
             guard let chat = try WorkspaceChat.fetchOne(dbc, key: chatID), chat.archivedAt == nil,

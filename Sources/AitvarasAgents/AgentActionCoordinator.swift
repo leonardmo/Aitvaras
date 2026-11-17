@@ -18,6 +18,7 @@ public actor AgentActionCoordinator: AgentRun {
     }
 
     public nonisolated let id: UUID
+    public nonisolated let mcpSetup: AgentMCPLaunchStatus?
     public nonisolated let events: AsyncThrowingStream<AgentEvent, Error>
     private let continuation: AsyncThrowingStream<AgentEvent, Error>.Continuation
     private let run: any AgentRun
@@ -43,6 +44,7 @@ public actor AgentActionCoordinator: AgentRun {
     public init(run: any AgentRun, mode: AgentMode, provenance: Provenance,
                 policy: AutonomyPolicy = AutonomyPolicy(), audit: @escaping Audit) {
         self.run = run; id = run.id; self.mode = mode
+        mcpSetup = run.mcpSetup
         self.provenance = provenance; self.policy = policy; self.audit = audit
         (events, continuation) = AsyncThrowingStream.makeStream(bufferingPolicy: .bufferingOldest(4096))
     }

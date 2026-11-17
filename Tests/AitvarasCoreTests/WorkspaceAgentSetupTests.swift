@@ -79,6 +79,22 @@ import AitvarasAgents
         #expect(try saved.mcpConfiguration().approvedServers.isEmpty)
     }
 
+    @Test func launchContextUsesExplicitChatOwnershipAndRejectsAmbiguousProbes() throws {
+        let stores = try inMemoryStores()
+        let root = "/synthetic/example"
+        let one = try stores.createWorkspaceProject(title: "Example one", folders: [.init(path: root)])
+        let two = try stores.createWorkspaceProject(title: "Example two", folders: [.init(path: root)])
+        var setup = WorkspaceAgentSetup(projectID: two.id)
+        setup.extraServersJSON = try AgentMCPConfiguration.encode(["helper": AgentMCPServer(command: "echo")])
+        try stores.saveWorkspaceAgentSetup(setup)
+        let directory = URL(fileURLWithPath: root)
+        #expect(throws: AgentStoreError.identityConflict) { try stores.agentMCPLaunchContext(directory: directory, projectID: nil) }
+        #expect(try stores.agentMCPLaunchContext(directory: directory, projectID: one.id).setup.projectServers.isEmpty)
+        #expect(try stores.agentMCPLaunchContext(directory: directory, projectID: two.id).setup.projectServers.keys.sorted() == ["helper"])
+        let chat = try stores.createWorkspaceChat(projectID: two.id, title: "Example")
+        #expect(try stores.agentProjectID(chatID: chat.id) == two.id)
+    }
+
     @Test func v32UpgradeIsAdditiveAndPreservesExistingRows() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("setup-upgrade-" + UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)

@@ -125,6 +125,43 @@ public struct WorkspaceAgentSetup: Codable, Sendable, Equatable, FetchableRecord
 }
 
 extension Stores {
+    /// One read transaction supplies project/global setup for launches and probes.
+    /// Explicit chat ownership wins; directory-only probes resolve the most specific
+    /// registered root and fail rather than borrow an ambiguous project's approvals.
+    public func agentMCPLaunchContext(directory: URL, projectID requested: UUID?) throws -> AgentMCPLaunchContext {
+        try db.queue.read { dbc in
+            let projectID: UUID?
+            if let requested { projectID = requested }
+            else {
+                let path = directory.standardizedFileURL.path
+                func contains(_ root: String) -> Bool {
+                    let root = URL(fileURLWithPath: root).standardizedFileURL.path
+                    return path == root || path.hasPrefix(root == "/" ? "/" : root + "/")
+                }
+                let worktrees = try AgentWorktree.fetchAll(dbc).filter { contains($0.worktreePath) }
+                if !worktrees.isEmpty {
+                    guard worktrees.count == 1, worktrees[0].state == .ready else { throw AgentStoreError.identityConflict }
+                    projectID = worktrees[0].projectID
+                } else {
+                    let folders = try WorkspaceFolder.fetchAll(dbc).filter { contains($0.path) }
+                    let depth = folders.map { $0.path.count }.max()
+                    let ids = Set(folders.filter { $0.path.count == depth }.map(\.projectID))
+                    guard ids.count <= 1 else { throw AgentStoreError.identityConflict }
+                    projectID = ids.first
+                }
+            }
+            let global = try AgentMCPConfiguration.decodeServers(String.fetchOne(dbc,
+                sql: "SELECT value FROM kv WHERE key = ?", arguments: ["agent.mcp.global"]) ?? "{}")
+            guard let projectID else {
+                return .init(projectID: UUID(uuid: (0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0)), globalServers: global)
+            }
+            guard try WorkspaceProject.fetchOne(dbc, key: projectID)?.isVisible == true else { throw WorkspaceStoreError.projectNotFound }
+            let setup = try (WorkspaceAgentSetup.fetchOne(dbc, key: projectID) ?? .init(projectID: projectID)).validated()
+            return .init(projectID: projectID, setup: try setup.mcpConfiguration(), globalServers: global,
+                         permissionSource: setup.permissionSource, alwaysAllowedTools: setup.alwaysAllowedTools)
+        }
+    }
+
     public func workspaceAgentSetup(projectID: UUID) throws -> WorkspaceAgentSetup {
         try db.queue.read { dbc in
             guard try WorkspaceProject.fetchOne(dbc, key: projectID) != nil else { throw WorkspaceStoreError.projectNotFound }

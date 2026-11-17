@@ -3,7 +3,7 @@ import Darwin
 
 /// Injection boundary used by offline recordings. Credentials never cross it.
 protocol OpencodeTransport: Actor {
-    func open(projects: [URL], models: [AgentModel]) async throws
+    func open(projects: [URL], models: [AgentModel], mcpConfigPath: URL?) async throws
     func subscribe() async throws -> AsyncThrowingStream<JSONValue, Error>
     func request(_ path: String, method: String, body: JSONValue?) async throws -> JSONValue
     func close() async
@@ -35,7 +35,7 @@ actor OpencodeHTTPTransport: OpencodeTransport {
         self.session = session; self.password = password
         baseURL = URL(string: "http://127.0.0.1:\(port)")!
     }
-    func open(projects: [URL], models: [AgentModel]) async throws {
+    func open(projects: [URL], models: [AgentModel], mcpConfigPath: URL? = nil) async throws {
         guard process == nil, closeTask == nil else { throw AgentFailure.invalidTransition }
         let generation = UUID(); self.generation = generation
         let fm = FileManager.default
@@ -56,7 +56,7 @@ actor OpencodeHTTPTransport: OpencodeTransport {
         baseURL = URL(string: "http://127.0.0.1:\(port)")!
         let child = StreamingProcess(executable: URL(fileURLWithPath: "/usr/bin/sandbox-exec"),
             arguments: ["-f", sandboxURL.path, executable.path, "serve", "--hostname", "127.0.0.1", "--port", String(port)],
-            currentDirectory: projects.first, environment: configuration.environment(environment),
+            currentDirectory: projects.first, environment: configuration.environment(environment, runtimeConfig: mcpConfigPath),
             terminationDelay: .seconds(2))
         process = child
         do {

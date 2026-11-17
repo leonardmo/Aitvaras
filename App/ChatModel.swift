@@ -223,7 +223,22 @@ final class ChatModel {
     }
     func commands() async throws -> [AgentCommand] {
         guard let directory = projectDirectory, let backend = backends[provider] else { throw AgentFailure.unsupported }
-        return try await backend.commands(directory: directory)
+        let owner = composerOwnerID, chosenProvider = provider
+        let projectID = try chatID.map { try stores.agentProjectID(chatID: $0) } ?? newProjectID
+        let commands: [AgentCommand]
+        let setupNotice: String?
+        if let claude = backend as? ClaudeBackend {
+            let catalog = try await claude.commandCatalog(directory: directory, projectID: projectID)
+            commands = catalog.commands; setupNotice = catalog.setup?.notice
+        } else {
+            commands = try await backend.commands(directory: directory, projectID: projectID); setupNotice = nil
+        }
+        if let notice = setupNotice {
+            let currentProject = try chatID.map { try stores.agentProjectID(chatID: $0) } ?? newProjectID
+            if composerOwnerID == owner, provider == chosenProvider, projectDirectory == directory,
+               currentProject == projectID { error = notice }
+        }
+        return commands
     }
     func files(query: String) async throws -> [AgentFileMention] {
         guard let directory = projectDirectory, let backend = backends[provider] else { throw AgentFailure.unsupported }

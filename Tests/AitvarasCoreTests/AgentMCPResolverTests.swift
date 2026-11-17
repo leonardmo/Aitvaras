@@ -8,7 +8,7 @@ import Testing
         defer { fixture.remove() }
         try writeRepo(#"{"mcpServers":{"echo":{"command":"echo","env":{"MODE":"example"}}}}"#, in: fixture.directory)
         let first = try AgentMCPResolver.prepare(directory: fixture.directory, setup: .init())
-        try writeRepo(#"{"mcpServers":{"echo":{"env":{"MODE":"example"},"args":[],"type":"stdio","command":"echo"}}}"#, in: fixture.directory)
+        try writeRepo(#"{"otherTool":true,"mcpServers":{"echo":{"env":{"MODE":"example"},"command":"echo"}}}"#, in: fixture.directory)
         let reordered = try AgentMCPResolver.prepare(directory: fixture.directory, setup: .init())
         let fingerprint = try #require(first.repositoryFingerprints["echo"])
         #expect(fingerprint == reordered.repositoryFingerprints["echo"])
@@ -96,16 +96,12 @@ import Testing
         #expect(try AgentMCPResolver.prepare(directory: other, setup: .init()).disabledProjectServers == ["child"])
     }
 
-    @Test(arguments: ["garbage", #"{}"#, #"{"mcpServers":[]}"#, #"{"mcpServers":{"bad name":{"command":"echo"}}}"#,
-        #"{"mcpServers":{"echo":{"command":"echo","args":[1]}}}"#,
-        #"{"mcpServers":{"echo":{"command":"echo","env":{"MODE":1}}}}"#,
-        #"{"mcpServers":{"echo":{"type":"unknown","command":"echo"}}}"#,
-        #"{"mcpServers":{"echo":{"command":"echo","unsupported":true}}}"#])
+    @Test(arguments: ["garbage", #"{}"#, #"{"mcpServers":[]}"#])
     func malformedRepositoryFailsClosed(json: String) throws {
         let fixture = try AgentExecutableFixture("exit 0")
         defer { fixture.remove() }
         try writeRepo(json, in: fixture.directory)
-        #expect(throws: AgentMCPError.invalidRepository) { try AgentMCPResolver.prepare(directory: fixture.directory, setup: .init()) }
+        #expect(try AgentMCPResolver.prepare(directory: fixture.directory, setup: .init()).repositoryUnreadable)
     }
 
     @Test func oversizedSymlinkAndNonRegularInventoriesFailClosed() throws {
@@ -113,16 +109,43 @@ import Testing
         defer { fixture.remove() }
         let file = fixture.directory.appendingPathComponent(".mcp.json")
         try writeRepo(String(repeating: "x", count: AgentMCPConfiguration.maximumBytes + 1), in: fixture.directory)
-        #expect(throws: AgentMCPError.invalidRepository) { try AgentMCPResolver.prepare(directory: fixture.directory, setup: .init()) }
+        #expect(try AgentMCPResolver.prepare(directory: fixture.directory, setup: .init()).repositoryUnreadable)
         try FileManager.default.removeItem(at: file)
         try FileManager.default.createSymbolicLink(at: file, withDestinationURL: fixture.executable)
-        #expect(throws: AgentMCPError.invalidRepository) { try AgentMCPResolver.prepare(directory: fixture.directory, setup: .init()) }
+        #expect(try AgentMCPResolver.prepare(directory: fixture.directory, setup: .init()).repositoryUnreadable)
         try FileManager.default.removeItem(at: file)
         try FileManager.default.createDirectory(at: file, withIntermediateDirectories: true)
-        #expect(throws: AgentMCPError.invalidRepository) { try AgentMCPResolver.prepare(directory: fixture.directory, setup: .init()) }
-        #expect(throws: AgentMCPError.invalidRepository) {
-            try AgentMCPResolver.prepare(directory: fixture.directory.appendingPathComponent("missing"), setup: .init())
-        }
+        #expect(try AgentMCPResolver.prepare(directory: fixture.directory, setup: .init()).repositoryUnreadable)
+        #expect(try AgentMCPResolver.prepare(directory: fixture.directory.appendingPathComponent("missing"), setup: .init()).repositoryUnreadable)
+    }
+
+    @Test func unknownServerFieldsArePreservedAndFingerprintChangesRequireReview() throws {
+        let fixture = try AgentExecutableFixture("exit 0")
+        defer { fixture.remove() }
+        try writeRepo(#"{"otherTool":{},"mcpServers":{"echo":{"command":"echo","timeout":12,"oauth":{"mode":"example"}}}}"#, in: fixture.directory)
+        let first = try AgentMCPResolver.prepare(directory: fixture.directory, setup: .init())
+        #expect(!first.repositoryUnreadable)
+        #expect(first.repositoryEntries["echo"]?.canonicalJSON.contains("oauth") == true)
+        let approved = AgentMCPProjectConfiguration(approvedServers: first.repositoryFingerprints)
+        #expect(try AgentMCPResolver.prepare(directory: fixture.directory, setup: approved).disabledProjectServers.isEmpty)
+        try writeRepo(#"{"mcpServers":{"echo":{"command":"echo","timeout":13,"oauth":{"mode":"example"}}}}"#, in: fixture.directory)
+        let changed = try AgentMCPResolver.prepare(directory: fixture.directory, setup: approved)
+        #expect(changed.repositoryFingerprints != first.repositoryFingerprints)
+        #expect(changed.disabledProjectServers == ["echo"])
+    }
+
+    @Test func unsupportedServersAreListedAndCannotBeApproved() throws {
+        let fixture = try AgentExecutableFixture("exit 0")
+        defer { fixture.remove() }
+        try writeRepo(#"{"mcpServers":{"echo":{"command":"echo"},"bad":{"command":"echo","args":[1]},"future":{"type":"future"},"scalar":7}}"#, in: fixture.directory)
+        let inventory = try AgentMCPResolver.prepare(directory: fixture.directory, setup: .init())
+        #expect(inventory.repositoryEntries.count == 4)
+        #expect(inventory.repositoryEntries["bad"]?.unsupportedReason == "Unsupported MCP server configuration.")
+        let approved = try AgentMCPResolver.prepare(directory: fixture.directory,
+            setup: .init(approvedServers: inventory.repositoryFingerprints))
+        #expect(!approved.repositoryUnreadable)
+        #expect(approved.disabledProjectServers == ["bad", "future", "scalar"])
+        #expect(Set(approved.effectiveServers.keys) == ["echo"])
     }
 
     @Test func appConfigurationRejectsInvalidTransportsValuesAndNames() throws {
