@@ -241,6 +241,7 @@ public actor CodexBackend: AgentBackend {
         return snapshot
     }
     public func start(_ configuration: AgentSessionConfiguration) async throws -> any AgentRun {
+        guard !configuration.forkSession, configuration.resumeSessionAt == nil else { throw AgentFailure.unsupported }
         let authentication = try await status().authentication
         guard authentication == .subscription else {
             throw authentication == .signedOut ? AgentFailure.authRequired : AgentFailure.unsupported

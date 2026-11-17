@@ -42,9 +42,10 @@ public actor GitWorkspace {
             throw AgentGitError.ownershipConflict
         }
     }
-    public func create(_ value: AgentWorktree) async throws {
+    public func create(_ value: AgentWorktree, startingAt revision: String = "HEAD") async throws {
         guard value.state == .creating, !FileManager.default.fileExists(atPath: value.worktreePath) else { throw AgentGitError.ownershipConflict }
-        _ = try await command(["worktree", "add", "-b", value.branch, value.worktreePath, "HEAD"], in: URL(fileURLWithPath: value.repositoryPath))
+        guard revision == "HEAD" || ([40, 64].contains(revision.count) && revision.allSatisfy(\.isHexDigit)) else { throw AgentGitError.invalidOutput }
+        _ = try await command(["worktree", "add", "-b", value.branch, value.worktreePath, revision], in: URL(fileURLWithPath: value.repositoryPath))
     }
     public func changes(in directory: URL) async throws -> ChangesState {
         let root = try await repository(at: directory)

@@ -1,9 +1,14 @@
 import SwiftUI
+import AppKit
 import AitvarasAgents
 
 /// Each row keeps its identity as deltas arrive; details start collapsed.
 struct AgentTranscriptView: View {
     let entry: AgentTranscriptEntry
+    var quote: ((String?) -> Void)? = nil
+    var fork: (() -> Void)? = nil
+    var forkEnabled = false
+    var edit: (() -> Void)? = nil
     @State private var expanded = false
 
     var body: some View {
@@ -57,10 +62,20 @@ struct AgentTranscriptView: View {
                     }
                     .padding(12).background(.quaternary, in: RoundedRectangle(cornerRadius: 14))
                 }
+                .contextMenu {
+                    Button("Copy") { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(entry.text, forType: .string) }
+                    if let edit { Button("Edit & resend", action: edit) }
+                }
             } else {
-                ChatMarkdown(text: entry.text).frame(maxWidth: .infinity, alignment: .leading)
-                    .accessibilityElement(children: .combine)
-                    .accessibilityLabel(entry.text)
+                if entry.kind == "assistant", let quote {
+                    SelectableMessageText(text: entry.text, quote: quote, fork: fork, forkEnabled: forkEnabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .accessibilityLabel(entry.text)
+                } else {
+                    ChatMarkdown(text: entry.text).frame(maxWidth: .infinity, alignment: .leading)
+                        .accessibilityElement(children: .combine)
+                        .accessibilityLabel(entry.text)
+                }
             }
         }
         .accessibilityElement(children: .contain)

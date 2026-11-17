@@ -45,6 +45,7 @@ public actor OpencodeBackend: AgentBackend {
     public func models() async throws -> [AgentModel] { try await catalog().filter { OpencodeConfiguration.isLocalModel($0.id) } }
     public func signIn(onBrowserURL: @escaping @Sendable (URL) async -> Void) throws { throw AgentFailure.unsupported }
     public func start(_ configuration: AgentSessionConfiguration) async throws -> any AgentRun {
+        guard !configuration.forkSession, configuration.resumeSessionAt == nil else { throw AgentFailure.unsupported }
         guard executable != nil else { throw AgentFailure.notInstalled }
         guard !starting, shutdownTask == nil else { throw AgentFailure.invalidTransition }
         if let resume = configuration.resume {

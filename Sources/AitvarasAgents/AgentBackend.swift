@@ -60,15 +60,22 @@ public struct AgentSessionConfiguration: Sendable {
     public var mcpConfigPath: URL?
     public var includeHookEvents: Bool
     public var strictMCPConfig: Bool
+    public var forkSession = false
+    public var resumeSessionAt: String?
 
     public init(directory: URL, resume: AgentSessionID? = nil, model: String,
                 effort: String? = nil, mode: AgentMode = .ask, instructions: String = "", additionalDirectories: [URL] = [],
                 projectID: UUID? = nil, settingsJSON: String? = nil, mcpConfigPath: URL? = nil,
-                includeHookEvents: Bool = true, strictMCPConfig: Bool = false) {
+                includeHookEvents: Bool = true, strictMCPConfig: Bool = false,
+                forkSession: Bool = false, resumeSessionAt: String? = nil) {
         self.directory = directory; self.resume = resume; self.model = model
         self.effort = effort; self.mode = mode; self.instructions = instructions; self.additionalDirectories = additionalDirectories
         self.projectID = projectID; self.settingsJSON = settingsJSON; self.mcpConfigPath = mcpConfigPath
         self.includeHookEvents = includeHookEvents; self.strictMCPConfig = strictMCPConfig
+        self.forkSession = forkSession; self.resumeSessionAt = resumeSessionAt
+    }
+    func forking(at message: String?) -> Self {
+        var value = self; value.forkSession = message != nil; value.resumeSessionAt = message; return value
     }
 }
 
@@ -122,6 +129,7 @@ public protocol AgentBackend: Actor {
     func signInMCP(name: String, directory: URL, timeout: Duration,
                    onBrowserURL: @escaping @Sendable (URL) async -> Void) async throws
     func files(query: String, directory: URL) async throws -> [AgentFileMention]
+    func sideQuestion(configuration: AgentSessionConfiguration, question: String, timeout: Duration) async throws -> String
     /// Starts or resumes a session without sending a user message.
     func start(_ configuration: AgentSessionConfiguration) async throws -> any AgentRun
     func listSessions(folder: URL, cursor: String?) async throws -> AgentPage<AgentSessionSummary>
@@ -141,6 +149,7 @@ extension AgentBackend {
     public func signInMCP(name: String, directory: URL, timeout: Duration = .seconds(300),
                           onBrowserURL: @escaping @Sendable (URL) async -> Void) async throws { throw AgentFailure.unsupported }
     public func files(query: String, directory: URL) async throws -> [AgentFileMention] { throw AgentFailure.unsupported }
+    public func sideQuestion(configuration: AgentSessionConfiguration, question: String, timeout: Duration) async throws -> String { throw AgentFailure.unsupported }
 }
 
 public protocol AgentRun: Actor {

@@ -14,6 +14,7 @@ public actor LocalBackend: AgentBackend {
     public func models() -> [AgentModel] { availableModels }
     public func signIn(onBrowserURL: @escaping @Sendable (URL) async -> Void) {}
     public func start(_ configuration: AgentSessionConfiguration) throws -> any AgentRun {
+        guard !configuration.forkSession, configuration.resumeSessionAt == nil else { throw AgentFailure.unsupported }
         if let resume = configuration.resume, resume.provider != .local { throw AgentFailure.invalidRequest }
         return LocalRun(configuration: configuration, reply: reply)
     }

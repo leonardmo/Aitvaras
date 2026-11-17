@@ -14,6 +14,7 @@ public struct AgentChatSession: Codable, Sendable, Equatable {
     public var mode: AgentMode
     public var instructions: String
     public var additionalRootsJSON: String = "[]"
+    public var forkOrigin: AgentForkOrigin?
 
     public init(id: UUID = UUID(), chatID: UUID, provider: AgentProvider, cwd: String,
                 model: String, effort: String? = nil, mode: AgentMode = .ask, instructions: String = "") {
@@ -22,7 +23,7 @@ public struct AgentChatSession: Codable, Sendable, Equatable {
         self.instructions = instructions
     }
     private enum CodingKeys: String, CodingKey {
-        case id, chatID, provider, host, profile, nativeID, cwd, model, effort, mode, instructions, additionalRootsJSON
+        case id, chatID, provider, host, profile, nativeID, cwd, model, effort, mode, instructions, additionalRootsJSON, forkOrigin
     }
     public init(from decoder: any Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -34,6 +35,7 @@ public struct AgentChatSession: Codable, Sendable, Equatable {
         effort = try c.decodeIfPresent(String.self, forKey: .effort); mode = try c.decode(AgentMode.self, forKey: .mode)
         instructions = try c.decodeIfPresent(String.self, forKey: .instructions) ?? ""
         additionalRootsJSON = try c.decodeIfPresent(String.self, forKey: .additionalRootsJSON) ?? "[]"
+        forkOrigin = try c.decodeIfPresent(AgentForkOrigin.self, forKey: .forkOrigin)
     }
     public var sessionID: AgentSessionID? {
         get {
@@ -46,8 +48,9 @@ public struct AgentChatSession: Codable, Sendable, Equatable {
     public var usesThreadContext: Bool { provider != .local || profile == OpencodeConfiguration.profile }
 
     public var configuration: AgentSessionConfiguration {
-        .init(directory: URL(fileURLWithPath: cwd), resume: sessionID, model: model, effort: effort, mode: mode,
+        .init(directory: URL(fileURLWithPath: cwd), resume: forkOrigin?.pending == true ? forkOrigin?.native : sessionID, model: model, effort: effort, mode: mode,
               instructions: instructions, additionalDirectories: (try? JSONDecoder().decode([String].self, from: Data(additionalRootsJSON.utf8)))?.map { URL(fileURLWithPath: $0) } ?? [])
+            .forking(at: forkOrigin?.pending == true ? forkOrigin?.assistantMessageID : nil)
     }
 }
 

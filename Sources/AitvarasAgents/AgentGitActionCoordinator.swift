@@ -13,7 +13,7 @@ public actor AgentGitActionCoordinator {
                 policy: AutonomyPolicy = .init(), audit: @escaping AgentActionCoordinator.Audit) {
         self.git = git; self.persistence = persistence; self.policy = policy; self.audit = audit
     }
-    public func create(chatID: UUID, projectID: UUID, folders: [URL], storage: URL) async throws -> AgentWorktree {
+    public func create(chatID: UUID, projectID: UUID, folders: [URL], storage: URL, startingAt revision: String = "HEAD") async throws -> AgentWorktree {
         guard !busy else { throw AgentGitError.busy }; busy = true; defer { busy = false }
         if let old = try persistence.agentWorktree(chatID: chatID) {
             guard old.projectID == projectID else { throw AgentGitError.ownershipConflict }
@@ -51,7 +51,7 @@ public actor AgentGitActionCoordinator {
         do {
             try Task.checkCancellation()
             try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
-            try await git.create(value)
+            try await git.create(value, startingAt: revision)
             var ready = value; ready.state = .ready
             try await git.verify(ready)
             try persistence.finishAgentWorktree(chatID: chatID, state: .ready)
@@ -64,6 +64,20 @@ public actor AgentGitActionCoordinator {
             try? await record("createWorktree", chatID: chatID, result: "failed", risk: .reversibleWrite)
             throw error
         }
+    }
+    public func fork(chatID: UUID, sourceChatID: UUID, projectID: UUID, storage: URL) async throws -> AgentWorktree {
+        guard let source = try await mapping(chatID: sourceChatID), source.projectID == projectID else { throw AgentGitError.ownershipConflict }
+        let tip = try await git.command(["rev-parse", "HEAD"], in: URL(fileURLWithPath: source.worktreePath))
+        func original(_ directory: URL) -> URL {
+            let path = directory.standardizedFileURL.path
+            if path == source.worktreePath { return URL(fileURLWithPath: source.repositoryPath) }
+            if path.hasPrefix(source.worktreePath + "/") {
+                return URL(fileURLWithPath: source.repositoryPath).appendingPathComponent(String(path.dropFirst(source.worktreePath.count + 1)))
+            }
+            return directory
+        }
+        let folders = ([URL(fileURLWithPath: source.cwdPath)] + source.additionalRoots).map(original)
+        return try await create(chatID: chatID, projectID: projectID, folders: folders, storage: storage, startingAt: tip)
     }
     public func mapping(chatID: UUID) async throws -> AgentWorktree? {
         guard let value = try persistence.agentWorktree(chatID: chatID) else {

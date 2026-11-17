@@ -28,6 +28,14 @@ public struct AgentChatStore: Sendable {
         }
         guard let roots = try? JSONDecoder().decode([String].self, from: Data(value.additionalRootsJSON.utf8)),
               roots.allSatisfy({ $0.hasPrefix("/") && !$0.contains("\0") }) else { throw AgentStoreError.invalidValue }
+        if let origin = value.forkOrigin {
+            guard value.provider == .claude, origin.native.provider == .claude,
+                  origin.chatID != value.chatID, origin.sessionID != value.id,
+                  UUID(uuidString: origin.native.nativeID) != nil,
+                  UUID(uuidString: origin.assistantMessageID) != nil,
+                  (origin.pending ? value.sessionID == nil : value.sessionID.flatMap({ UUID(uuidString: $0.nativeID) }) != nil
+                    && value.sessionID.flatMap({ UUID(uuidString: $0.nativeID) }) != UUID(uuidString: origin.native.nativeID)) else { throw AgentStoreError.invalidValue }
+        }
         try db.queue.write { dbc in
             guard try WorkspaceChat.fetchOne(dbc, key: value.chatID) != nil else { throw AgentStoreError.missingChat }
             if let old = try AgentChatSession.fetchOne(dbc, key: value.id) {

@@ -13,6 +13,7 @@ actor ClaudeRun: AgentRun {
     private let wire: AgentWire
     private let profile: String
     private var session: AgentSessionID?
+    private let forkSource: AgentSessionID?
     private var input: UUID?
     private var queue: [UUID] = []
     private var writing = false
@@ -34,13 +35,16 @@ actor ClaudeRun: AgentRun {
         self.id = id; self.runtimeFile = runtimeFile; self.mcpSetup = mcpSetup
         self.permissionSource = permissionSource
         self.metadataReader = metadataReader ?? AgentProjectMetadataReader(projectDirectory: configuration.directory)
-        self.profile = profile; session = configuration.resume; modeState = AgentModeState(configuration.mode)
+        self.profile = profile; session = configuration.forkSession ? nil : configuration.resume; modeState = AgentModeState(configuration.mode)
+        forkSource = configuration.forkSession ? configuration.resume : nil
         var arguments = ["-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose",
                          "--include-partial-messages", "--permission-prompt-tool", "stdio", "--permission-mode",
                          configuration.mode.claudePermission]
         for root in configuration.additionalDirectories { arguments += ["--add-dir", root.path] }
         if configuration.model != "default" { arguments += ["--model", configuration.model] }
         if let resume = configuration.resume { arguments += ["--resume", resume.nativeID] }
+        if configuration.forkSession { arguments += ["--fork-session"] }
+        if let message = configuration.resumeSessionAt { arguments += ["--resume-session-at", message] }
         if let effort = configuration.effort { arguments += ["--effort", effort] }
         if !configuration.instructions.isEmpty { arguments += ["--append-system-prompt", configuration.instructions] }
         if let settings = configuration.settingsJSON { arguments += ["--settings", settings] }
@@ -126,6 +130,9 @@ actor ClaudeRun: AgentRun {
     private func receive(_ value: JSONValue, requestID: AgentRequestID?) async {
         guard !closed else { return }
         if let native = value["session_id"]?.stringValue, session == nil {
+            if let source = forkSource, UUID(uuidString: native) == nil || UUID(uuidString: native) == UUID(uuidString: source.nativeID) {
+                await disconnected(.invalidRequest); return
+            }
             session = AgentSessionID(provider: .claude, profile: profile, nativeID: native)
             emit(.sessionStarted(session!))
         }

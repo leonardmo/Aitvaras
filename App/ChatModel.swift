@@ -12,6 +12,7 @@ final class ChatModel {
     let manager: AgentSessionManager
     private let stores: Stores
     let gitActions: AgentGitActionCoordinator
+    let conversationActions: AgentConversationActions
     private(set) var changes: ChangesState?
     private(set) var gitBusy = false
     private(set) var canDiscardChanges = false
@@ -19,6 +20,12 @@ final class ChatModel {
     private let agentSetup: AgentSetupCoordinator?
     private var catalogRevision = UUID()
     private(set) var agentSetupRevision = UUID()
+    private(set) var conversationBusy = false
+    private(set) var sideQuestionAnswer: String?
+    private(set) var sideQuestionVisible = false
+    private(set) var sideQuestionBusy = false
+    private var sideQuestionTask: Task<Void, Never>?
+    private var sideQuestionToken = UUID()
     private let signInCoordinator: ProviderSignIn
     private var selection = ChatSelectionState()
     private(set) var newChatID = UUID()
@@ -166,6 +173,10 @@ final class ChatModel {
         self.agentSetup = agentSetup
         signInCoordinator = ProviderSignIn(persistence: stores)
         gitActions = AgentGitActionCoordinator(persistence: stores, audit: { _ = try stores.record($0) })
+        conversationActions = AgentConversationActions(persistence: stores, git: gitActions,
+            worktreeStorage: AitvarasPaths.stateDirectory.appendingPathComponent("AgentWorktrees", isDirectory: true), backend: { provider in
+                guard let backend = backends[provider] else { throw AgentFailure.notInstalled }; return backend
+            }, audit: { _ = try stores.record($0) })
         approvalSubscription = Task { [weak self, manager] in
             for await suggestions in await manager.approvalUpdates() {
                 guard !Task.isCancelled, let self else { return }
@@ -186,6 +197,74 @@ final class ChatModel {
     var currentProjectID: UUID? {
         if let chatID { return try? stores.agentProjectID(chatID: chatID) }
         return newProjectID
+    }
+    var canAskSideQuestion: Bool {
+        guard provider == .claude, !isBusy, let chatID,
+              let session = try? stores.agentSession(chatID: chatID, provider: .claude) else { return false }
+        return session.sessionID != nil && session.forkOrigin?.pending != true
+    }
+    func prepareSideQuestion() {
+        guard canAskSideQuestion else { error = AgentConversationText.sideQuestionUnavailable; return }
+        if AgentConversationText.sideQuestion(in: draft) == nil { draft = "/btw " + draft }
+    }
+    func askSideQuestion(_ question: String) {
+        guard canAskSideQuestion, let owner = chatID else { error = AgentConversationText.sideQuestionUnavailable; return }
+        guard !question.isEmpty else { error = "Write a question after /btw."; return }
+        dismissSideQuestion()
+        let token = UUID(); sideQuestionToken = token
+        sideQuestionVisible = true; sideQuestionBusy = true; sideQuestionAnswer = nil
+        if AgentConversationText.sideQuestion(in: draft) == question { draft = "" }
+        sideQuestionTask = Task {
+            defer { if sideQuestionToken == token { sideQuestionBusy = false; sideQuestionTask = nil } }
+            do {
+                let answer = try await conversationActions.sideQuestion(chatID: owner, question: question)
+                guard !Task.isCancelled, sideQuestionToken == token, chatID == owner else { return }
+                sideQuestionAnswer = answer
+            } catch {
+                guard !Task.isCancelled, sideQuestionToken == token, chatID == owner else { return }
+                sideQuestionAnswer = "The side question could not be answered. Try again."
+                if draft.isEmpty { draft = "/btw " + question }
+            }
+        }
+    }
+    func dismissSideQuestion() {
+        sideQuestionToken = UUID(); sideQuestionTask?.cancel(); sideQuestionTask = nil
+        sideQuestionVisible = false; sideQuestionAnswer = nil; sideQuestionBusy = false
+    }
+    func replyWithQuote(_ entry: AgentTranscriptEntry, selection: String?) {
+        guard chatID == entry.chatID else { return }
+        draft = AgentConversationText.appending(AgentConversationText.quote(entry.text, selection: selection), to: draft)
+    }
+    func addDiffContext(_ context: String, owner: UUID) {
+        guard chatID == owner else { return }
+        draft = AgentConversationText.appending(context, to: draft)
+    }
+    @discardableResult func fork(_ entry: AgentTranscriptEntry, editedText: String? = nil) async -> Bool {
+        guard chatID == entry.chatID, !isBusy, !gitBusy, !conversationBusy else { return false }
+        let owner = entry.chatID
+        conversationBusy = true
+        do {
+            let result = try await conversationActions.fork(chatID: owner, messageID: entry.id, editedText: editedText)
+            guard chatID == owner, !terminating, !Task.isCancelled else { conversationBusy = false; activityChanged?(); return false }
+            select(result.chatID); didCreateChat?(result.chatID)
+            conversationBusy = false
+            if let input = result.input {
+                draft = input.text
+                composerSelection = .init()
+                composerSelection.attachments = input.attachments; composerSelection.mentions = input.mentions; composerSelection.command = input.command
+                await send()
+            }
+            return true
+        } catch {
+            conversationBusy = false
+            guard chatID == owner, !terminating, !Task.isCancelled else { return false }
+            if case AgentConversationError.worktreeUnavailable(let child) = error {
+                select(child); didCreateChat?(child)
+                if let editedText { draft = editedText }
+                self.error = "The fork's worktree could not be prepared. Its isolation intent has been retained."
+                return true
+            } else { self.error = "This message could not be forked. Choose a completed Claude assistant message."; return false }
+        }
     }
     var commandCatalogContext: AgentCommandCatalogContext {
         .init(ownerID: composerOwnerID, projectID: currentProjectID, directory: projectDirectory, provider: provider, revision: catalogRevision)
@@ -327,6 +406,7 @@ final class ChatModel {
             var value = session
             // The manager may have bound a native identity since the last Send.
             value.sessionID = try stores.agentSession(chatID: value.chatID, provider: value.provider)?.sessionID
+            value.forkOrigin = try stores.agentSession(chatID: value.chatID, provider: value.provider)?.forkOrigin
             if chatID != nil { try stores.saveAgentSession(value) }
             settings[settingsKey] = value; invalidatePending()
         } catch { self.error = "Chat settings could not be saved." }
@@ -334,6 +414,7 @@ final class ChatModel {
 
     func select(_ id: UUID?) {
         guard id != chatID else { return }
+        dismissSideQuestion()
         subscription?.cancel()
         previewTask?.cancel()
         // View changes cancel a browser flow and invalidate its automatic send.
@@ -535,6 +616,10 @@ final class ChatModel {
 
     func send() async {
         guard hasInput else { return }
+        if let question = AgentConversationText.sideQuestion(in: draft) {
+            askSideQuestion(question)
+            return
+        }
         #if DEBUG
         if provider == .codex, let selfDriveCodexModel {
             await loadModels()
@@ -620,6 +705,7 @@ final class ChatModel {
             _ = try await gitActions.mapping(chatID: id)
             session.instructions = try stores.workspaceContextPacket(chatID: id).promptText
             session.sessionID = try stores.agentSession(chatID: id, provider: provider)?.sessionID
+            session.forkOrigin = try stores.agentSession(chatID: id, provider: provider)?.forkOrigin
             guard !stoppedSends.contains(input.id) else { return }
             if session.cwd == fallbackDirectory(id).path {
                 try FileManager.default.createDirectory(atPath: session.cwd, withIntermediateDirectories: true)
@@ -803,6 +889,8 @@ final class ChatModel {
     }
     func shutdown() async throws {
         terminating = true
+        dismissSideQuestion()
+        await conversationActions.shutdown()
         await agentSetup?.shutdown()
         previewTask?.cancel()
         cancelSignIn(); stoppedSends.formUnion(sending.values)

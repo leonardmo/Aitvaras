@@ -52,6 +52,12 @@ extension Stores: AgentHistoryPersistence {
                 let sameTurn = nativeTurn.map { old.payloadJSON.flatMap(JSONValue.parse)?["nativeTurnID"]?.stringValue == $0 } ?? false
                 guard old.kind == value.kind else { throw AgentNativeHistoryError.identityConflict }
                 value.id = old.id
+                // A fork retains the exact acknowledged envelope's digest,
+                // including through later forks, without duplicating prompts.
+                if value.kind == "user", session.forkOrigin != nil,
+                   let inherited = old.payloadJSON.flatMap(JSONValue.parse),
+                   inherited["forkInheritedForSession"]?.stringValue == session.id.uuidString,
+                   inherited["forkWireDigest"]?.stringValue == conversationWireDigest(incoming.text) { value.text = old.text }
                 // Strip only the exact acknowledged send, tied to its native
                 // message identity. Marker-looking or edited text is untouched.
                 if value.kind == "user", let turn = try AgentJournalTurn.fetchOne(dbc, key: old.id),

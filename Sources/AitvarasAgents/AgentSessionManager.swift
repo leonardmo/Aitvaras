@@ -385,7 +385,13 @@ public actor AgentSessionManager {
                 live[chatID]?.session = session
             case .sessionStarted(let native):
                 guard native.provider == slot.session.provider else { throw AgentFailure.invalidRequest }
-                var session = slot.session; session.sessionID = native
+                var session = slot.session
+                if let origin = session.forkOrigin, origin.pending {
+                    guard native.provider == .claude, let identity = UUID(uuidString: native.nativeID),
+                          identity != UUID(uuidString: origin.native.nativeID) else { throw AgentFailure.invalidRequest }
+                    session.forkOrigin?.pending = false
+                }
+                session.sessionID = native
                 try persistence.saveAgentSession(session)
                 live[chatID]?.session = session
             case .message(let nativeID, "user", _) where event.scope.inputID != slot.inputID:

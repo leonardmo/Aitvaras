@@ -21,6 +21,7 @@ struct AgentChatView: View {
     var compact = false
 
     @State private var showingChanges = false
+    @State private var editingMessage: AgentTranscriptEntry?
     @State private var agentSetupDestination: AgentSetupDestination?
     @State private var visibilityID = UUID()
     @State private var gitProject = false
@@ -50,6 +51,12 @@ struct AgentChatView: View {
                 .accessibilityValue("\(chat.changes?.files.count ?? 0) changed files")
                 .accessibilityIdentifier("chat.changes")
             }
+            Button { chat.prepareSideQuestion(); composerFocused = true } label: {
+                Label("Side question", systemImage: "questionmark.bubble").labelStyle(.iconOnly)
+            }
+            .disabled(!chat.canAskSideQuestion)
+            .help(chat.canAskSideQuestion ? "Ask about this chat without adding a message" : AgentConversationText.sideQuestionUnavailable)
+            .accessibilityIdentifier("chat.sideQuestion.action")
         }
         .task(id: chatID) {
             showingChanges = false
@@ -80,6 +87,13 @@ struct AgentChatView: View {
             WorkspaceBoundaryReviewView(projectID: destination.id, agentDirectory: destination.directory, initialTab: "agent")
                 .environment(model)
         }
+        .sheet(item: $editingMessage) { entry in
+            AgentEditMessageSheet(text: entry.text) { text in
+                let completed = await chat.fork(entry, editedText: text)
+                if completed { editingMessage = nil }
+                return completed
+            }
+        }
     }
 
     private var transcript: some View {
@@ -88,7 +102,9 @@ struct AgentChatView: View {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 18) {
                         ForEach(chat.displayEntries) { entry in
-                            if !planCardShows(entry) { AgentTranscriptView(entry: entry).id(entry.id) }
+                            if !planCardShows(entry) {
+                                transcriptRow(entry).id(entry.id)
+                            }
                         }
                         ForEach(Array((chat.state?.pendingCards ?? []).enumerated()), id: \.element.identity) { index, request in
                             requestCard(request, index: index)
@@ -122,6 +138,24 @@ struct AgentChatView: View {
             VStack(spacing: 6) {
                 if chat.chatID == nil, model.workspaceProjects.allSatisfy({ !$0.isVisible }) {
                     Text("Choose a project to send a message.").font(.caption).foregroundStyle(composerMessageColor)
+                }
+                if chat.sideQuestionVisible {
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack {
+                            Text("Side question").font(.caption.weight(.semibold))
+                            if chat.sideQuestionBusy { ProgressView().controlSize(.mini) }
+                            Spacer()
+                            Button { chat.dismissSideQuestion() } label: { Image(systemName: "xmark") }
+                                .buttonStyle(.plain).accessibilityLabel("Dismiss side question")
+                                .accessibilityIdentifier("chat.sideQuestion.dismiss")
+                        }
+                        if let answer = chat.sideQuestionAnswer {
+                            ScrollView { ChatMarkdown(text: answer).frame(maxWidth: .infinity, alignment: .leading) }
+                                .frame(maxHeight: 180).accessibilityIdentifier("chat.sideQuestion.answer")
+                        }
+                    }.padding(12).background(.quaternary, in: RoundedRectangle(cornerRadius: 10))
+                        .frame(maxWidth: 760).padding(.horizontal, 16)
+                        .accessibilityIdentifier("chat.sideQuestion.panel")
                 }
                 composer
                 if composerMessage != nil || !canSend || chat.state?.outcome == .interrupted {
@@ -176,6 +210,20 @@ struct AgentChatView: View {
         }
         .task(id: chatID) { await chat.refreshStatus() }
         .task(id: "\(chatID).\(chat.provider.rawValue).\(chat.signingIn == nil)") { await chat.loadModels() }
+    }
+    private func transcriptRow(_ entry: AgentTranscriptEntry) -> some View {
+        let fork: (() -> Void)?
+        if entry.provider == .claude, entry.kind == "assistant" { fork = { _ = Task { await chat.fork(entry) } } }
+        else { fork = nil }
+        let edit: (() -> Void)?
+        let previous = chat.displayEntries.prefix { $0.id != entry.id }.last { $0.kind == "assistant" }
+        let editableAnchor = previous.map { $0.provider == .claude && $0.sessionID == entry.sessionID && $0.nativeMessageID.flatMap(UUID.init(uuidString:)) != nil } ?? true
+        if entry.provider == .claude, entry.kind == "user", entry.sessionID != nil, editableAnchor,
+           !chat.isBusy, !chat.gitBusy, !chat.conversationBusy { edit = { editingMessage = entry } }
+        else { edit = nil }
+        return AgentTranscriptView(entry: entry, quote: { chat.replyWithQuote(entry, selection: $0); composerFocused = true },
+            fork: fork, forkEnabled: !chat.isBusy && !chat.gitBusy && !chat.conversationBusy && entry.sessionID != nil && entry.nativeMessageID.flatMap(UUID.init(uuidString:)) != nil,
+            edit: edit)
     }
 
     private var composer: some View {

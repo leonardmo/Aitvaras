@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 import AitvarasAgents
 
 /// Explicitly opened inspector for the selected checkout.
@@ -9,6 +10,8 @@ struct AgentChangesView: View {
     @State private var selectedPath: String?
     @State private var message = ""
     @State private var discarding: ChangesState?
+    @State private var selectedLines = Set<Int>()
+    @State private var lineAnchor: Int?
     private var selected: AgentFileChange? {
         changes.files.first { $0.path == selectedPath } ?? changes.files.first
     }
@@ -47,16 +50,31 @@ struct AgentChangesView: View {
                                 if selected.diffUnavailable {
                                     Text("Binary or large file — preview unavailable.").foregroundStyle(.secondary)
                                 } else {
-                                    ForEach(Array(selected.diff.components(separatedBy: "\n").enumerated()), id: \.offset) { _, line in
-                                        Text(line.isEmpty ? " " : line)
-                                            .foregroundStyle(line.hasPrefix("+") ? Color.green : line.hasPrefix("-") ? Color.red : Color.primary)
+                                    ForEach(AgentDiffContext.lines(selected.diff)) { line in
+                                        if line.kind == .header { Text(line.text.isEmpty ? " " : line.text).foregroundStyle(.secondary) }
+                                        else {
+                                            Button { selectLine(line, diff: selected.diff) } label: {
+                                                HStack(spacing: 8) {
+                                                    Text(String(line.newLine ?? line.oldLine ?? 0)).foregroundStyle(.secondary).frame(minWidth: 28, alignment: .trailing)
+                                                    Text((line.kind == .added ? "+" : line.kind == .removed ? "-" : " ") + line.text)
+                                                        .foregroundStyle(line.kind == .added ? Color.green : line.kind == .removed ? Color.red : Color.primary)
+                                                }.padding(.horizontal, 4).contentShape(Rectangle())
+                                                    .background(selectedLines.contains(line.id) ? Color.accentColor.opacity(0.18) : .clear)
+                                            }.buttonStyle(.plain)
+                                            .contextMenu {
+                                                Button("Add to message") { addLines(selectedLines.contains(line.id) ? selectedLines : [line.id], file: selected) }
+                                            }
+                                        }
                                     }
                                 }
                             }
-                            .font(.caption.monospaced()).textSelection(.enabled)
+                            .font(.caption.monospaced())
                             .fixedSize(horizontal: true, vertical: false)
                             .padding(.vertical, 4).frame(maxWidth: .infinity, alignment: .topLeading)
                         }.accessibilityIdentifier("chat.changes.diff")
+                        Button("Add to message") { addLines(selectedLines, file: selected) }
+                            .disabled(selectedLines.isEmpty || selected.diffUnavailable)
+                            .accessibilityIdentifier("chat.changes.addToMessage")
                     } else {
                         Text("No changes").foregroundStyle(.secondary).padding(.vertical, 12)
                     }
@@ -81,6 +99,8 @@ struct AgentChangesView: View {
         }
         .padding(12).frame(minWidth: 230, idealWidth: 270, maxWidth: 320)
         .accessibilityIdentifier("chat.changes.panel")
+        .onChange(of: selected?.path) { selectedLines = []; lineAnchor = nil }
+        .onChange(of: selected?.diff) { selectedLines = []; lineAnchor = nil }
         .confirmationDialog("Discard changes in this chat’s worktree?", isPresented: Binding(
             get: { discarding != nil }, set: { if !$0 { discarding = nil } }), titleVisibility: .visible) {
             Button("Discard changes", role: .destructive) {
@@ -90,5 +110,17 @@ struct AgentChangesView: View {
             }.accessibilityIdentifier("chat.changes.discard.confirm")
             Button("Cancel", role: .cancel) { discarding = nil }
         }
+    }
+    private func selectLine(_ line: AgentDiffLine, diff: String) {
+        if NSEvent.modifierFlags.contains(.shift), let anchor = lineAnchor {
+            let range = min(anchor, line.id)...max(anchor, line.id)
+            selectedLines = Set(AgentDiffContext.lines(diff).filter { range.contains($0.id) && $0.kind != .header }.map(\.id))
+        } else if NSEvent.modifierFlags.contains(.command) {
+            if selectedLines.contains(line.id) { selectedLines.remove(line.id) } else { selectedLines.insert(line.id) }
+            lineAnchor = line.id
+        } else { selectedLines = [line.id]; lineAnchor = line.id }
+    }
+    private func addLines(_ lines: Set<Int>, file: AgentFileChange) {
+        if let context = AgentDiffContext.message(path: file.path, diff: file.diff, selected: lines) { chat.addDiffContext(context, owner: owner) }
     }
 }

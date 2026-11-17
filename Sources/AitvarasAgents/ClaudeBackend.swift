@@ -116,6 +116,23 @@ public actor ClaudeBackend: AgentBackend {
         let task = Task.detached { try AgentFileMention.localSearch(query: query, directory: directory) }
         return try await withTaskCancellationHandler { try await task.value } onCancel: { task.cancel() }
     }
+    public func sideQuestion(configuration: AgentSessionConfiguration, question: String, timeout: Duration = .seconds(120)) async throws -> String {
+        guard let executable, let session = configuration.resume, session.host == "local", session.profile == profile else { throw AgentConversationError.unavailable }
+        let environment = environment
+        return try await withThrowingTaskGroup(of: String.self) { group in
+            group.addTask {
+                guard try await self.status().authentication == .subscription else { throw AgentFailure.authRequired }
+                return try await ClaudeSideQuestion.run(executable: executable, environment: environment, configuration: configuration,
+                    question: question, timeout: timeout)
+            }
+            group.addTask {
+                try await Task.sleep(for: min(timeout, .seconds(120)))
+                throw AgentConversationError.timedOut
+            }
+            defer { group.cancelAll() }
+            return try await group.next()!
+        }
+    }
     private func makeRun(_ configuration: AgentSessionConfiguration) async throws -> ClaudeRun {
         guard let executable else { throw AgentFailure.notInstalled }
         let status = try await status()
@@ -124,6 +141,10 @@ public actor ClaudeBackend: AgentBackend {
         }
         if let resume = configuration.resume {
             guard resume.provider == .claude, resume.profile == profile, resume.host == "local" else { throw AgentFailure.invalidRequest }
+        }
+        if configuration.forkSession || configuration.resumeSessionAt != nil {
+            guard configuration.forkSession, configuration.resume.flatMap({ UUID(uuidString: $0.nativeID) }) != nil,
+                  configuration.resumeSessionAt.flatMap(UUID.init(uuidString:)) != nil else { throw AgentFailure.invalidRequest }
         }
         let snapshot = try mcpPolicy.snapshot(directory: configuration.directory, projectID: configuration.projectID)
         mcpSetup = snapshot.status

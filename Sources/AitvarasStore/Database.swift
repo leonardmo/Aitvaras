@@ -1003,6 +1003,11 @@ public final class AitvarasDatabase: Sendable {
                 t.column("localMayUseMCP", .boolean).notNull().defaults(to: false)
             }
         }
+        m.registerMigration("v34-agent-conversation-forks") { db in
+            try db.alter(table: "agentChatSession") { t in
+                t.add(column: "forkOrigin", .text)
+            }
+        }
         return m
     }
 }
