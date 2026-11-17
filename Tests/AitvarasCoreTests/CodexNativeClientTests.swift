@@ -3,6 +3,7 @@ import Foundation
 import Testing
 @testable import AitvarasConnectors
 
+@Suite(.timeLimit(.minutes(2)))
 struct CodexNativeProtocolTests {
     @Test func jsonRetainsNestedUnknownItemsAndOpaqueIDs() throws {
         let value: CodexJSONValue = ["item": ["type": "futureNativeItem", "id": "synthetic-item", "value": [true, 7, .null, "text"]], "requestID": 42]
@@ -24,7 +25,7 @@ struct CodexNativeProtocolTests {
     }
 }
 
-@Suite(.enabled(if: CodexSessionReader.findNode() != nil && !AitvarasPaths.externalIntegrationsDisabled))
+@Suite(.enabled(if: CodexSessionReader.findNode() != nil && !AitvarasPaths.externalIntegrationsDisabled), .timeLimit(.minutes(2)))
 struct CodexNativeClientTests {
     @Test func persistentRequestsAndCompleteNativePagination() async throws {
         let fixture = try Fixture(); defer { fixture.remove() }

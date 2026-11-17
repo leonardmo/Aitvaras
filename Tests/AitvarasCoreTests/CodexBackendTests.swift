@@ -2,6 +2,7 @@ import Foundation
 import Testing
 @testable import AitvarasAgents
 
+@Suite(.timeLimit(.minutes(2)))
 struct CodexBackendTests {
     @Test func loginCancellationReachesNativeProvider() async throws {
         let fixture = try BackendExecutableFixture(script: #"""

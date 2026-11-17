@@ -3,7 +3,7 @@ import Testing
 import AitvarasAgents
 import AitvarasStore
 
-@Suite struct ProviderSignInTests {
+@Suite(.timeLimit(.minutes(2))) struct ProviderSignInTests {
     @Test func validatesBrowserURLs() throws {
         try ProviderSignIn.validate(URL(string: "https://example.invalid/login?code=transient")!)
         for value in ["http://example.invalid/login", "file:///tmp/login", "javascript:alert(1)", "https://user:password@example.invalid/login", "https://example.invalid:8080/login"] {

@@ -4,6 +4,7 @@ import Testing
 @testable import AitvarasConnectors
 
 /// Synthetic local executables only. These never authenticate or call a model.
+@Suite(.timeLimit(.minutes(2)))
 struct ClaudeSubscriptionSignInTests {
     @Test func exactSubscriptionArgumentsAndIsolatedEnvironment() async throws {
         let fixture = try Fixture("""

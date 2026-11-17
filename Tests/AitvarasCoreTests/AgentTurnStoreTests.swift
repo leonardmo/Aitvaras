@@ -4,7 +4,7 @@ import AitvarasAgents
 import AitvarasCore
 @testable import AitvarasStore
 
-@Suite struct AgentTurnStoreTests {
+@Suite(.timeLimit(.minutes(2))) struct AgentTurnStoreTests {
     @Test func activityIdentityCollisionCannotOverwriteAnotherOperation() throws {
         let stores = try inMemoryStores()
         let (chat, session) = try agentStoreChat(stores)

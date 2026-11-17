@@ -36,7 +36,7 @@ private struct GitFixture {
     func remove() { try? FileManager.default.removeItem(at: root) }
 }
 
-@Suite struct AgentWorktreeTests {
+@Suite(.timeLimit(.minutes(2))) struct AgentWorktreeTests {
     @Test func durableCreationDuplicateAndMultiFolderMapping() async throws {
         let f = try GitFixture(); defer { f.remove() }; try await f.initialize()
         let external = f.root.appendingPathComponent("external")
@@ -87,7 +87,7 @@ private struct GitFixture {
     }
 }
 
-@Suite struct AgentChangesTests {
+@Suite(.timeLimit(.minutes(2))) struct AgentChangesTests {
     @Test func newFilesHaveReadableStatusAndEmptyPreview() async throws {
         let f = try GitFixture(); defer { f.remove() }; try await f.initialize()
         try f.write("", "empty.txt")
@@ -150,7 +150,7 @@ private struct GitFixture {
     }
 }
 
-@Suite struct AgentGitActionTests {
+@Suite(.timeLimit(.minutes(2))) struct AgentGitActionTests {
     @Test func explicitCommitIncludesReviewedFilesAndNoAttribution() async throws {
         let f = try GitFixture(); defer { f.remove() }; try await f.initialize()
         try f.write("edit\n", "file.txt"); try f.write("new", "new.txt")
@@ -257,7 +257,7 @@ exec /usr/bin/git "$@"
     }
 }
 
-@Suite struct AgentGitProviderMappingTests {
+@Suite(.timeLimit(.minutes(2))) struct AgentGitProviderMappingTests {
     @Test(arguments: [AgentProvider.claude, .codex])
     func nativeLaunchAndResumeKeepCwdAndAdditionalRoot(provider: AgentProvider) async throws {
         let script = provider == .claude ? #"""

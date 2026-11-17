@@ -6,7 +6,7 @@ import Synchronization
 @testable import AitvarasAgent
 @testable import AitvarasConnectors
 
-@Suite struct CaptureTranscriptTests {
+@Suite(.timeLimit(.minutes(2))) struct CaptureTranscriptTests {
     @Test func provisionalCheckpointIsExplicitAndDoesNotMutateFinalText() {
         var transcript = CaptureTranscript(startedAt: start)
         transcript.append(channel: .microphone, text: "Final phrase", at: start)
@@ -100,7 +100,7 @@ import Synchronization
     }
 }
 
-@Suite struct CaptureSummarizerTests {
+@Suite(.timeLimit(.minutes(2))) struct CaptureSummarizerTests {
     @Test func transcriptOnlyCaptureCanBeSummarizedExplicitlyLater() async throws {
         let stores = try inMemoryStores()
         let engine = ScriptedEngine(responses: ["A later local summary."])

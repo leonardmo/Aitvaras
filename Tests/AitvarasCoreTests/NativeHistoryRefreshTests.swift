@@ -29,7 +29,7 @@ private actor SyntheticHistoryReader: NativeSessionReader {
     enum SyntheticError: Error { case failed }
 }
 
-@Suite struct NativeHistoryRefreshTests {
+@Suite(.timeLimit(.minutes(2))) struct NativeHistoryRefreshTests {
     let timestamp = Date(timeIntervalSince1970: 1_700_000_000)
 
     func page(_ ids: [String], cursor: String? = nil,

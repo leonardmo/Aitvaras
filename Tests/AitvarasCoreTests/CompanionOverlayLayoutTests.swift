@@ -3,7 +3,7 @@ import CoreGraphics
 import Testing
 @testable import AitvarasCore
 
-@Suite struct CompanionOverlayLayoutTests {
+@Suite(.timeLimit(.minutes(2))) struct CompanionOverlayLayoutTests {
     @Test func independentChatAndSubtitleLayouts() {
         let compact = CompanionOverlayLayout.preferredSize(presentation: .minimal, chatExpanded: false, subtitlesVisible: false)
         let subtitles = CompanionOverlayLayout.preferredSize(presentation: .minimal, chatExpanded: false, subtitlesVisible: true)

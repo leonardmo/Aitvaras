@@ -2,7 +2,7 @@ import Foundation
 import Testing
 import AitvarasAgents
 
-@Suite struct AgentFailureTests {
+@Suite(.timeLimit(.minutes(2))) struct AgentFailureTests {
     @Test func capacityAndSignInMessagesAreSpecific() {
         #expect(AgentFailure.sendMessage(for: AgentSessionManagerError.runningChatLimit, provider: .codex)
                 == "8 chats are running. Stop one or wait.")

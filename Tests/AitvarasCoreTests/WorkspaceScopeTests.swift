@@ -91,7 +91,7 @@ private actor WorkspaceArchiveGate: InferenceEngine {
     }
 }
 
-@Suite struct WorkspaceScopeTests {
+@Suite(.timeLimit(.minutes(2))) struct WorkspaceScopeTests {
     @Test(arguments: [true, false])
     func managedLocalChatRetainsCaptureOwnershipAndNeverLearnsGlobally(fabricatedTool: Bool) async throws {
         let stores = try inMemoryStores()

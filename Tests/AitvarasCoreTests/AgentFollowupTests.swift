@@ -3,6 +3,7 @@ import Testing
 import AitvarasStore
 @testable import AitvarasAgents
 
+@Suite(.timeLimit(.minutes(2)))
 struct AgentFollowupTests {
     @Test func claudeWritesFIFOToStdinAndKeepsSeparateDeliveryAndOutput() async throws {
         let fixture = try BackendExecutableFixture(script: #"""

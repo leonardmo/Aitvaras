@@ -4,7 +4,7 @@ import GRDB
 import AitvarasCore
 import AitvarasStore
 
-@Suite struct WorkspacePolicyTests {
+@Suite(.timeLimit(.minutes(2))) struct WorkspacePolicyTests {
     @Test func claudeReadGrantIsIndependentAndInvalidatesWithProjectChanges() throws {
         let stores = try inMemoryStores()
         let project = try stores.createWorkspaceProject(title: "Synthetic Claude project")

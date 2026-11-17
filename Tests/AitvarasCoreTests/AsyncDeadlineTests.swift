@@ -14,7 +14,7 @@ private actor NonCooperativeOperation {
     func finish() { continuation?.resume(returning: 7); continuation = nil }
 }
 
-@Suite struct AsyncDeadlineTests {
+@Suite(.timeLimit(.minutes(2))) struct AsyncDeadlineTests {
     @Test func successfulOperationReturnsItsValue() async throws {
         #expect(try await AsyncDeadline.run(for: .seconds(1)) { 42 } == 42)
     }

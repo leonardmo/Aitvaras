@@ -3,6 +3,7 @@ import Testing
 import AitvarasStore
 @testable import AitvarasAgents
 
+@Suite(.timeLimit(.minutes(2)))
 struct AgentInterruptTests {
     @Test(arguments: [AgentProvider.claude, .codex], [false, true])
     func stopDuringOutputOrApprovalContinuesSameNativeSession(provider: AgentProvider, approval: Bool) async throws {

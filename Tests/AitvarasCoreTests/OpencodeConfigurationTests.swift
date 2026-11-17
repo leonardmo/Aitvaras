@@ -4,7 +4,7 @@ import Testing
 import AitvarasStore
 @testable import AitvarasAgents
 
-@Suite struct OpencodeConfigurationTests {
+@Suite(.timeLimit(.minutes(2))) struct OpencodeConfigurationTests {
     @Test func configContainsOnlyLocalInferenceAndAsksBeforeTools() throws {
         let config = OpencodeConfiguration(root: URL(fileURLWithPath: "/tmp/profile/Opencode"))
         let value = config.config(models: [.init(id: "test-model", name: "Test model")])
@@ -219,7 +219,7 @@ private actor OpencodeHTTPTestBackend: AgentBackend {
     func readHistory(session: AgentSessionID, cursor: String?) throws -> AgentPage<AgentEvent> { throw AgentFailure.unsupported }
 }
 
-@Suite struct OpencodeServerPIDTests {
+@Suite(.timeLimit(.minutes(2))) struct OpencodeServerPIDTests {
     @Test func nativeArgumentsRecognizeOnlyTheServeSubcommand() throws {
         #expect(OpencodeServerPID.isServer(["/tmp/bin/opencode", "serve", "--port", "12345"]))
         for argv in [[], ["opencode"], ["opencode", "run", "serve"], ["/bin/echo", "opencode", "serve"],

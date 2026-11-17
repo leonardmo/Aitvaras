@@ -3,6 +3,7 @@ import Testing
 import AitvarasStore
 @testable import AitvarasAgents
 
+@Suite(.timeLimit(.minutes(2)))
 struct AgentAttachmentTests {
     @Test func snapshotsBytesAndRejectsMissingLargeAndBinaryFiles() throws {
         let fixture = try BackendExecutableFixture(script: "done()")

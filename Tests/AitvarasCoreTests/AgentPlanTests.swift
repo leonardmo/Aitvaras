@@ -3,7 +3,7 @@ import Testing
 import AitvarasStore
 @testable import AitvarasAgents
 
-@Suite struct AgentPlanTests {
+@Suite(.timeLimit(.minutes(2))) struct AgentPlanTests {
     @Test(arguments: [AgentProvider.claude, .codex], ["approve", "fast", "reject", "fail", "stop"])
     func planReviewPreservesModeUntilAcknowledged(provider: AgentProvider, action: String) async throws {
         let script = provider == .claude ? claudePlanScript(action) : codexPlanScript(action)

@@ -2,6 +2,7 @@ import Foundation
 import Testing
 @testable import AitvarasAgents
 
+@Suite(.timeLimit(.minutes(2)))
 struct ProviderEnvironmentTests {
     @Test func missingUSERBugRegressionPreservesOfficialLoginIdentity() {
         let result = ProviderEnvironment.make(inherited: ["USER": "example-user", "LOGNAME": "example-user",
@@ -75,6 +76,12 @@ struct ProviderEnvironmentTests {
         #expect(ProviderLocator.executable(for: .codex, environment: ["PATH": fixture.directory.path],
             overrides: [.codex: fixture.directory.appendingPathComponent("missing")]) == nil)
         #expect(ProviderLocator.executable(for: .claude, environment: [:], overrides: [.claude: fixture.directory]) == nil)
-        #expect(ProviderLocator.executable(for: .local, environment: [:]) == nil)
+        // The fixed fallback directories may hold a real opencode on a developer
+        // Mac, so only the PATH lookup and the override are checked for it.
+        let opencode = try AgentExecutableFixture("exit 0", name: "opencode")
+        defer { opencode.remove() }
+        #expect(ProviderLocator.executable(for: .local, environment: ["PATH": opencode.directory.path]) == opencode.executable)
+        #expect(ProviderLocator.executable(for: .local, environment: [:],
+            overrides: [.local: opencode.directory.appendingPathComponent("missing")]) == nil)
     }
 }

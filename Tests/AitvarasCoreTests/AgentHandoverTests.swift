@@ -5,7 +5,7 @@ import AitvarasCore
 import AitvarasAgents
 @testable import AitvarasStore
 
-@Suite struct AgentHandoverTests {
+@Suite(.timeLimit(.minutes(2))) struct AgentHandoverTests {
     @Test func allLegacySourcesAndLongGapsShareOneBoundedReceipt() throws {
         let stores = try inMemoryStores()
         let (chat, claude) = try agentStoreChat(stores)

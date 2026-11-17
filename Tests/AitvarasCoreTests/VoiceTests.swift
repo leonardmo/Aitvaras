@@ -62,7 +62,7 @@ private final class RecordingSpeechSynthesizer: SpeechSynthesizing, @unchecked S
     var spoken: [String] { recorded.withLock { $0 } }
 }
 
-@Suite struct VoiceTests {
+@Suite(.timeLimit(.minutes(2))) struct VoiceTests {
     @Test func slowVoiceStateSubscriberKeepsOnlyLatestSnapshot() async {
         let pair = ConversationController.makeStateStream()
         var listening = VoiceSnapshot()

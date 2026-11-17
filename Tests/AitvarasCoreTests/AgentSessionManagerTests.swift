@@ -4,7 +4,7 @@ import AitvarasCore
 import AitvarasStore
 @testable import AitvarasAgents
 
-@Suite struct AgentSessionManagerTests {
+@Suite(.timeLimit(.minutes(2))) struct AgentSessionManagerTests {
     @Test func fourSequentialChatsAllSend() async throws {
         let stores = try inMemoryStores()
         let backend = ManagerTestBackend()

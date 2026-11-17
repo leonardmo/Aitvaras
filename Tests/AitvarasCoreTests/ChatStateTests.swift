@@ -2,7 +2,7 @@ import Foundation
 import Testing
 import AitvarasAgents
 
-@Suite struct ChatStateTests {
+@Suite(.timeLimit(.minutes(2))) struct ChatStateTests {
     @Test func selectionRestoresProviderKeepsDraftsAndDoesNotCommitFailedWrites() throws {
         let first = UUID(), second = UUID()
         var state = ChatSelectionState()

@@ -3,7 +3,7 @@ import Foundation
 import Testing
 import AitvarasCore
 
-@Suite struct SelfDriveTests {
+@Suite(.timeLimit(.minutes(2))) struct SelfDriveTests {
     @Test func parsesEveryActionAndUnicodeText() throws {
         let scenario = try SelfDriveScenario.parse(Data(#"""
         {"steps":[

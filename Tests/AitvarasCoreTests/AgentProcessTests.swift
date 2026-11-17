@@ -3,6 +3,7 @@ import Foundation
 import Testing
 @testable import AitvarasAgents
 
+@Suite(.timeLimit(.minutes(2)))
 struct AgentProcessTests {
     @Test func framesSplitUTF8AndTrailingLine() async throws {
         let fixture = try AgentExecutableFixture("printf '\\303'; /bin/sleep 0.03; printf '\\244\\n\\nlast'")

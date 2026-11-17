@@ -3,7 +3,7 @@ import Testing
 import AitvarasAgents
 @testable import AitvarasStore
 
-@Suite struct ChatPresentationTests {
+@Suite(.timeLimit(.minutes(2))) struct ChatPresentationTests {
     @Test func firstSendRequiresVisibleProjectAndNonemptyInput() throws {
         let stores = try inMemoryStores()
         #expect(try stores.newChatProjectID() == nil)

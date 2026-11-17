@@ -1,7 +1,7 @@
 import Testing
 @testable import AitvarasCore
 
-@Suite struct StableIdentifierTests {
+@Suite(.timeLimit(.minutes(2))) struct StableIdentifierTests {
     @Test func digestIsDeterministicAndDoesNotExposeInput() {
         let first = StableIdentifier.digest(["private/path", "A title"])
         let second = StableIdentifier.digest(["private/path", "A title"])

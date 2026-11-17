@@ -1,7 +1,7 @@
 import Testing
 @testable import AitvarasCore
 
-@Suite struct AvatarRenderPolicyTests {
+@Suite(.timeLimit(.minutes(2))) struct AvatarRenderPolicyTests {
     private var visible: AvatarRenderPolicy.Visibility {
         var value = AvatarRenderPolicy.Visibility()
         value.isAttached = true

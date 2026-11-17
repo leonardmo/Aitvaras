@@ -4,7 +4,7 @@ import AitvarasCore
 import AitvarasStore
 @testable import AitvarasAgents
 
-@Suite struct AgentApprovalTests {
+@Suite(.timeLimit(.minutes(2))) struct AgentApprovalTests {
     @Test func managedApprovalAuditBelongsToDurableActivityAndDeniesOnStop() async throws {
         let stores = try inMemoryStores()
         let chat = try agentStoreChat(stores).0.id

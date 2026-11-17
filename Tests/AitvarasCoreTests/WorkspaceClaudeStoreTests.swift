@@ -15,7 +15,7 @@ func removeWorkspaceClaudeMigrationForTest(_ db: Database) throws {
     try db.execute(sql: "DELETE FROM grdb_migrations WHERE identifier = 'v26-workspace-claude-sessions'")
 }
 
-@Suite struct WorkspaceClaudeStoreTests {
+@Suite(.timeLimit(.minutes(2))) struct WorkspaceClaudeStoreTests {
     private func setup(_ stores: Stores) throws -> (WorkspaceProject, WorkspaceChat, WorkspaceClaudeSession) {
         let project = try stores.createWorkspaceProject(title: "Synthetic project", instructions: "Metadata instructions")
         let chat = try stores.createWorkspaceChat(projectID: project.id, title: "Same title", purpose: "Selected purpose")

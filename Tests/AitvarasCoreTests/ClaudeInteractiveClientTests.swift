@@ -5,7 +5,7 @@ import Testing
 @testable import AitvarasConnectors
 
 /// Only generated Node fixtures run here. No official CLI, auth or model call.
-@Suite(.enabled(if: ClaudeSessionReader.findExecutable("node") != nil && !AitvarasPaths.externalIntegrationsDisabled))
+@Suite(.enabled(if: ClaudeSessionReader.findExecutable("node") != nil && !AitvarasPaths.externalIntegrationsDisabled), .timeLimit(.minutes(2)))
 struct ClaudeInteractiveClientTests {
     private enum FixtureError: Error { case refused }
     private static let session = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"

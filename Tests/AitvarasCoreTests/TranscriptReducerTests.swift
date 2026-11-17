@@ -3,7 +3,7 @@ import Testing
 import AitvarasStore
 @testable import AitvarasAgents
 
-@Suite struct TranscriptReducerTests {
+@Suite(.timeLimit(.minutes(2))) struct TranscriptReducerTests {
     @Test(arguments: ["completed", "nonzero", "failure", "disconnect", "missing", "wrong-turn", "in-progress", "malformed", "timeout", "paginated", "repeated-cursor", "wrong-type", "declined"])
     func missingCodexToolCompletionReconcilesBeforeTurnEnd(scenario: String) async throws {
         let fixture = try BackendExecutableFixture(script: "scenario = '\(scenario)'\n" + #"""

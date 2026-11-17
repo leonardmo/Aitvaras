@@ -41,7 +41,7 @@ private actor CancellingRoutineConnector: Connector {
     func total() -> Int { count }
 }
 
-@Suite struct ActivityExecutionTests {
+@Suite(.timeLimit(.minutes(2))) struct ActivityExecutionTests {
     private static let agents = [
         DelegateConnector.Agent(path: "/synthetic/claude", kind: .claude),
         DelegateConnector.Agent(path: "/synthetic/codex", kind: .codex)

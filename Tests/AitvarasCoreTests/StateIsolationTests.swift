@@ -4,7 +4,7 @@ import AitvarasStore
 import Testing
 
 /// Serialized: these tests mutate the process environment.
-@Suite(.serialized) struct StateIsolationTests {
+@Suite(.serialized, .timeLimit(.minutes(2))) struct StateIsolationTests {
 
     @Test func stateDirHonorsEnvironmentOverride() throws {
         let dir = FileManager.default.temporaryDirectory

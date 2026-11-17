@@ -3,7 +3,7 @@ import Testing
 import AitvarasCore
 import AitvarasStore
 
-@Suite struct WorkspaceChatTimelineTests {
+@Suite(.timeLimit(.minutes(2))) struct WorkspaceChatTimelineTests {
     private func session(_ stores: Stores, chat: WorkspaceChat) throws -> WorkspaceFrontierSession {
         let review = try stores.workspacePolicyReview(projectID: chat.projectID)
         let policy = try stores.reviewWorkspacePolicy(projectID: chat.projectID,

@@ -3,7 +3,7 @@ import Testing
 import AitvarasCore
 import AitvarasStore
 
-@Suite struct MessageTrustTests {
+@Suite(.timeLimit(.minutes(2))) struct MessageTrustTests {
     @Test func mailSenderParsingUsesExactAddressAndCanonicalDomain() {
         let source = ExternalMessageSource.email(
             senderHeader: #"Alice Example <Alice.Team@Example.COM>"#)

@@ -4,7 +4,7 @@ import GRDB
 import AitvarasAgents
 @testable import AitvarasStore
 
-@Suite struct AgentHistoryReconciliationTests {
+@Suite(.timeLimit(.minutes(2))) struct AgentHistoryReconciliationTests {
     @Test func correctionsDeletionsBranchesAndStreamedRowsUseCanonicalIDs() throws {
         let stores = try inMemoryStores()
         let (chat, original) = try agentStoreChat(stores)

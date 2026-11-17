@@ -3,7 +3,7 @@ import Foundation
 import Testing
 @testable import AitvarasConnectors
 
-@Suite struct CodexSessionReaderTests {
+@Suite(.timeLimit(.minutes(2))) struct CodexSessionReaderTests {
     private var helper: String {
         URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
             .deletingLastPathComponent().appendingPathComponent("Sources/AitvarasConnectors/Resources/codex-history.mjs").path

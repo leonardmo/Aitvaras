@@ -4,6 +4,7 @@ import AitvarasCore
 import AitvarasStore
 @testable import AitvarasAgents
 
+@Suite(.timeLimit(.minutes(2)))
 struct AgentConformanceTests {
     @Test(arguments: [AgentProvider.claude, .codex], [true, false])
     func executableBackendsPassThroughCoordinator(provider: AgentProvider, approve: Bool) async throws {

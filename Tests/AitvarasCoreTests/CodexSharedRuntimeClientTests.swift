@@ -3,6 +3,7 @@ import Testing
 @testable import AitvarasConnectors
 import AitvarasCore
 
+@Suite(.timeLimit(.minutes(2)))
 struct CodexSharedRuntimeEndpointTests {
     @Test func acceptsOnlyExplicitLiteralLoopback() throws {
         for endpoint in ["ws://127.0.0.1:54321", "ws://[::1]:54321/synthetic", "ws://127.0.0.1:80/"] {
@@ -23,7 +24,7 @@ struct CodexSharedRuntimeEndpointTests {
 }
 
 /// Synthetic helper processes only; none start Codex or connect to any listener.
-@Suite(.enabled(if: CodexSessionReader.findNode() != nil && !AitvarasPaths.externalIntegrationsDisabled))
+@Suite(.enabled(if: CodexSessionReader.findNode() != nil && !AitvarasPaths.externalIntegrationsDisabled), .timeLimit(.minutes(2)))
 struct CodexSharedRuntimeClientTests {
     @Test func descriptorCannotClaimDesktopAttachment() async throws {
         let fixture = try Fixture(body: "send({result:result}); process.exit(0);")

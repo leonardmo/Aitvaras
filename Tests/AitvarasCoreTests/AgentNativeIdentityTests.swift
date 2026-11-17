@@ -5,7 +5,7 @@ import AitvarasCore
 @testable import AitvarasStore
 @testable import AitvarasAgents
 
-@Suite struct AgentNativeIdentityTests {
+@Suite(.timeLimit(.minutes(2))) struct AgentNativeIdentityTests {
     @Test func repeatDiscoveryScopesNativeIDsByProviderHostAndProfile() throws {
         let stores = try inMemoryStores()
         let project = try stores.createWorkspaceProject(title: "Example", folders: [.init(path: "/tmp/example-project")])

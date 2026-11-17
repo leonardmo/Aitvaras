@@ -50,7 +50,7 @@ private actor FixedRoutineEngine: InferenceEngine {
     }
 }
 
-@Suite struct CommandRoutineTests {
+@Suite(.timeLimit(.minutes(2))) struct CommandRoutineTests {
     private let step = CommandRoutineStep(
         connectorID: "switches", toolName: "set_off",
         argumentsJSON: #"{"id":"desk"}"#,

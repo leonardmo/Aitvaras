@@ -2,7 +2,7 @@ import Foundation
 import Testing
 import AitvarasAgents
 
-@Suite struct LocalBackendTests {
+@Suite(.timeLimit(.minutes(2))) struct LocalBackendTests {
     @Test func capabilitiesStreamTwoTurnsAndBarrierOrder() async throws {
         let calls = LocalCalls()
         let backend = LocalBackend { configuration, input in

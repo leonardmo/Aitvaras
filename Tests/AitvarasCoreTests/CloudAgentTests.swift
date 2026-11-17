@@ -5,7 +5,7 @@ import AitvarasStore
 @testable import AitvarasAgent
 @testable import AitvarasConnectors
 
-@Suite struct CloudAgentTests {
+@Suite(.timeLimit(.minutes(2))) struct CloudAgentTests {
     @Test func usageLedgerSummarizesMetadataWithoutPromptContent() throws {
         let stores = try inMemoryStores()
         var calendar = Calendar(identifier: .gregorian)

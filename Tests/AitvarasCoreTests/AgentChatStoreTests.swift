@@ -4,7 +4,7 @@ import GRDB
 import AitvarasAgents
 @testable import AitvarasStore
 
-@Suite struct AgentChatStoreTests {
+@Suite(.timeLimit(.minutes(2))) struct AgentChatStoreTests {
     @Test func freshDatabaseIdentitySettingsAndEntries() throws {
         let stores = try inMemoryStores()
         let (chat, session) = try agentStoreChat(stores)

@@ -3,7 +3,7 @@ import Testing
 import AitvarasAgents
 import AitvarasStore
 
-@Suite struct ChatSettingsTests {
+@Suite(.timeLimit(.minutes(2))) struct ChatSettingsTests {
     @Test func perChatAndProviderChoicesSurviveReloadWithoutSending() throws {
         let stores = try inMemoryStores()
         let (one, original) = try agentStoreChat(stores)

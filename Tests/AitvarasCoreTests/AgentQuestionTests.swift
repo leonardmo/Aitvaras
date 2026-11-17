@@ -2,7 +2,7 @@ import Foundation
 import Testing
 @testable import AitvarasAgents
 
-@Suite struct AgentQuestionTests {
+@Suite(.timeLimit(.minutes(2))) struct AgentQuestionTests {
     @Test func recordedOptionsAndAnswerRoundTrip() async throws {
         let fixture = try BackendExecutableFixture(provider: "claude", name: "question")
         defer { fixture.remove() }

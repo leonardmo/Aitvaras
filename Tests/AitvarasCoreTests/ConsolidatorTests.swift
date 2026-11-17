@@ -4,7 +4,7 @@ import AitvarasStore
 import Testing
 @testable import AitvarasAgent
 
-@Suite struct ConsolidatorTests {
+@Suite(.timeLimit(.minutes(2))) struct ConsolidatorTests {
 
     /// A `now` safely past the due hour on the local calendar.
     private var evening: Date {

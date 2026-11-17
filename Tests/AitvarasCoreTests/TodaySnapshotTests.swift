@@ -3,7 +3,7 @@ import Testing
 import AitvarasCore
 import AitvarasStore
 
-@Suite struct TodaySnapshotTests {
+@Suite(.timeLimit(.minutes(2))) struct TodaySnapshotTests {
     @Test func snapshotSelectsTodayAndBoundsGlanceableLists() throws {
         let stores = try inMemoryStores()
         let day = "2031-02-03"

@@ -3,7 +3,7 @@ import Testing
 import AitvarasCore
 import AitvarasStore
 
-@Suite struct WakeBriefingTests {
+@Suite(.timeLimit(.minutes(2))) struct WakeBriefingTests {
     @Test func policyIgnoresShortSleepsAndBoundsLongCatchUpWindows() {
         let sleep = Date(timeIntervalSince1970: 1_000_000)
 

@@ -16,7 +16,7 @@ func removeWorkspaceFrontierMigrationForTest(_ db: Database) throws {
     try db.execute(sql: "DELETE FROM grdb_migrations WHERE identifier = 'v24-frontier-turn-failure-reason'")
 }
 
-@Suite struct WorkspaceFrontierStoreTests {
+@Suite(.timeLimit(.minutes(2))) struct WorkspaceFrontierStoreTests {
     private func setup(_ stores: Stores) throws -> (WorkspaceProject, WorkspaceChat, WorkspaceFrontierSession) {
         let project = try stores.createWorkspaceProject(title: "Synthetic project", instructions: "Metadata instructions")
         let chat = try stores.createWorkspaceChat(projectID: project.id, title: "Same title", purpose: "Selected purpose")

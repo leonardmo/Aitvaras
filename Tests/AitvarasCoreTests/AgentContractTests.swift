@@ -2,6 +2,7 @@ import Foundation
 import Testing
 @testable import AitvarasAgents
 
+@Suite(.timeLimit(.minutes(2)))
 struct AgentContractTests {
     @Test func nativeIdentityIncludesProviderHostAndProfile() {
         let session = AgentSessionID(provider: .claude, profile: "synthetic", nativeID: "session")

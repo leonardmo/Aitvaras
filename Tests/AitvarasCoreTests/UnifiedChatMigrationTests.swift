@@ -5,7 +5,7 @@ import AitvarasCore
 import AitvarasAgents
 @testable import AitvarasStore
 
-@Suite struct UnifiedChatMigrationTests {
+@Suite(.timeLimit(.minutes(2))) struct UnifiedChatMigrationTests {
     @Test func v27UpgradeAndRepeatedOpenPreserveSavedEvidenceAndCaptureTargets() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("unified-upgrade-\(UUID())")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)

@@ -4,7 +4,7 @@ import AitvarasCore
 import AitvarasStore
 @testable import AitvarasAgents
 
-@Suite struct OpencodeBackendTests {
+@Suite(.timeLimit(.minutes(2))) struct OpencodeBackendTests {
     @Test func replayRecordedSessionDoesNotCancelInformationalEvents() async throws {
         let fixture = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
             .appendingPathComponent("Fixtures/agents/opencode/allow-deny-stop.jsonl")

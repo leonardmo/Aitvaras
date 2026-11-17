@@ -48,7 +48,7 @@ private func freshStores() throws -> Stores {
     Stores(db: try AitvarasDatabase(url: nil))
 }
 
-@Suite struct MemoryFoundationTests {
+@Suite(.timeLimit(.minutes(2))) struct MemoryFoundationTests {
 
     // MARK: Store layer
 

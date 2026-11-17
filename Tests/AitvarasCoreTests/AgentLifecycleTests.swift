@@ -4,6 +4,7 @@ import GRDB
 import AitvarasAgents
 import AitvarasStore
 
+@Suite(.timeLimit(.minutes(2)))
 struct AgentLifecycleTests {
     @Test(arguments: [AgentProvider.claude, .codex])
     func recordedInterruptRemainsAvailableAfterWindowDetaches(provider: AgentProvider) async throws {

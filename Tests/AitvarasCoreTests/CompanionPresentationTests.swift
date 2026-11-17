@@ -2,7 +2,7 @@ import Foundation
 import Testing
 @testable import AitvarasCore
 
-@Suite struct CompanionPresentationTests {
+@Suite(.timeLimit(.minutes(2))) struct CompanionPresentationTests {
     @Test func existingProfilesKeepAvatarAndUnknownValuesRecover() throws {
         let name = "app.aitvaras.test.companion.\(UUID().uuidString)"
         let preferences = try #require(UserDefaults(suiteName: name))

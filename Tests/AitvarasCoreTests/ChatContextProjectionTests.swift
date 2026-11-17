@@ -4,7 +4,7 @@ import GRDB
 import AitvarasAgents
 @testable import AitvarasStore
 
-@Suite struct ChatContextProjectionTests {
+@Suite(.timeLimit(.minutes(2))) struct ChatContextProjectionTests {
     @Test func labelsOrderProviderWatermarkAndByteBudget() throws {
         let chat = UUID()
         let entries = (0..<80).map { position in

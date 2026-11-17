@@ -12,7 +12,7 @@ func removeWorkspaceCodexNativeMigrationForTest(_ db: Database) throws {
     try db.execute(sql: "DELETE FROM grdb_migrations WHERE identifier = 'v23-workspace-codex-native'")
 }
 
-@Suite struct WorkspaceCodexNativeStoreTests {
+@Suite(.timeLimit(.minutes(2))) struct WorkspaceCodexNativeStoreTests {
     private let time = Date(timeIntervalSince1970: 1_800_000_000)
 
     private func setup(_ stores: Stores, profile: String = "synthetic-profile") throws

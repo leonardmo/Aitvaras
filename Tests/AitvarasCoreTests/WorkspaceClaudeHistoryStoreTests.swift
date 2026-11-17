@@ -4,7 +4,7 @@ import GRDB
 import AitvarasCore
 import AitvarasStore
 
-@Suite struct WorkspaceClaudeHistoryStoreTests {
+@Suite(.timeLimit(.minutes(2))) struct WorkspaceClaudeHistoryStoreTests {
     private let instant = Date(timeIntervalSince1970: 1_900_000_000)
 
     private func setup() throws -> (Stores, WorkspaceChat, WorkspaceClaudeSession) {

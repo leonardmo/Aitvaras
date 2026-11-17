@@ -4,7 +4,7 @@ import GRDB
 import AitvarasCore
 import AitvarasStore
 
-@Suite struct ActivityMonitoringTests {
+@Suite(.timeLimit(.minutes(2))) struct ActivityMonitoringTests {
     @Test func stagesWithTheSameTimestampKeepInsertionOrder() throws {
         let stores = try inMemoryStores()
         let id = UUID()

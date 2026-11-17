@@ -2,6 +2,7 @@ import Foundation
 import Testing
 @testable import AitvarasAgents
 
+@Suite(.timeLimit(.minutes(2)))
 struct AgentComposerInputTests {
     @Test func absentAndMalformedCatalogsNeverInventCommands() throws {
         #expect(throws: AgentFailure.unsupported) { try AgentCommandCatalog.claude(.object([:])) }

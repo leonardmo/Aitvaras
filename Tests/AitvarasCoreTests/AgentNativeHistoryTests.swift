@@ -3,7 +3,7 @@ import Testing
 import AitvarasCore
 @testable import AitvarasAgents
 
-@Suite struct AgentNativeHistoryTests {
+@Suite(.timeLimit(.minutes(2))) struct AgentNativeHistoryTests {
     @Test func claudeReadsRecordedContentWithoutCLIOrSDK() async throws {
         let fixture = try NativeHistoryFixture()
         defer { fixture.remove() }
