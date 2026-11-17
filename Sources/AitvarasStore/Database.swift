@@ -989,6 +989,20 @@ public final class AitvarasDatabase: Sendable {
                 t.column("snapshotJSON", .text).notNull()
             }
         }
+        m.registerMigration("v33-workspace-agent-setup") { db in
+            try db.create(table: "workspaceAgentSetup") { t in
+                t.primaryKey("projectID", .text).references("workspaceProject", onDelete: .cascade)
+                t.column("approvedProjectServers", .text).notNull().defaults(to: "[]")
+                t.column("deniedProjectServers", .text).notNull().defaults(to: "[]")
+                t.column("approvedProjectServerFingerprints", .text).notNull().defaults(to: "{}")
+                t.column("extraServersJSON", .text).notNull().defaults(to: "{}")
+                t.column("disabledGlobalServers", .text).notNull().defaults(to: "[]")
+                t.column("alwaysAllowedTools", .text).notNull().defaults(to: "[]")
+                t.column("permissionSource", .text).notNull().defaults(to: "repo")
+                    .check { ["repo", "aitvaras"].contains($0) }
+                t.column("localMayUseMCP", .boolean).notNull().defaults(to: false)
+            }
+        }
         return m
     }
 }

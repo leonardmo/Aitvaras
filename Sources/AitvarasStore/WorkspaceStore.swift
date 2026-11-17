@@ -1,6 +1,7 @@
 import Foundation
 import GRDB
 import AitvarasAgents
+import AitvarasCore
 
 public enum WorkspaceFolderAccess: String, Codable, Sendable, CaseIterable { case readOnly, readWrite }
 public enum WorkspaceChatKind: String, Codable, Sendable, CaseIterable { case primary, temporary }
@@ -38,6 +39,131 @@ public struct WorkspaceProject: Codable, Sendable, Equatable, Identifiable, Fetc
         self.id = id; self.title = title; self.instructions = instructions
         self.createdAt = createdAt; self.updatedAt = updatedAt
         self.isVisible = isVisible; self.allowsCloud = allowsCloud
+    }
+}
+
+/// Profile-local setup only. Repo definitions and resolved credentials are never persisted here.
+public struct WorkspaceAgentSetup: Codable, Sendable, Equatable, FetchableRecord, PersistableRecord {
+    public static let databaseTableName = "workspaceAgentSetup"
+    public var projectID: UUID
+    public var approvedProjectServers: [String] = []
+    public var deniedProjectServers: [String] = []
+    public var approvedProjectServerFingerprints: [String: String] = [:]
+    public var extraServersJSON = "{}"
+    public var disabledGlobalServers: [String] = []
+    public var alwaysAllowedTools: [String] = []
+    public var permissionSource: AgentPermissionSource = .repo
+    public var localMayUseMCP = false
+
+    public init(projectID: UUID) { self.projectID = projectID }
+
+    private enum CodingKeys: String, CodingKey {
+        case projectID, approvedProjectServers, deniedProjectServers, approvedProjectServerFingerprints
+        case extraServersJSON, disabledGlobalServers, alwaysAllowedTools, permissionSource, localMayUseMCP
+    }
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        func json<T: Decodable>(_ type: T.Type, _ key: CodingKeys) throws -> T {
+            let text = try c.decode(String.self, forKey: key)
+            guard text.utf8.count <= AgentMCPConfiguration.maximumBytes else { throw AgentMCPError.invalidConfiguration }
+            return try JSONDecoder().decode(type, from: Data(text.utf8))
+        }
+        projectID = try c.decode(UUID.self, forKey: .projectID)
+        approvedProjectServers = try json([String].self, .approvedProjectServers)
+        deniedProjectServers = try json([String].self, .deniedProjectServers)
+        approvedProjectServerFingerprints = try json([String: String].self, .approvedProjectServerFingerprints)
+        extraServersJSON = try c.decode(String.self, forKey: .extraServersJSON)
+        disabledGlobalServers = try json([String].self, .disabledGlobalServers)
+        alwaysAllowedTools = try json([String].self, .alwaysAllowedTools)
+        permissionSource = try c.decode(AgentPermissionSource.self, forKey: .permissionSource)
+        localMayUseMCP = try c.decode(Bool.self, forKey: .localMayUseMCP)
+    }
+    public func encode(to encoder: any Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(projectID, forKey: .projectID)
+        try c.encode(AgentMCPConfiguration.encode(approvedProjectServers), forKey: .approvedProjectServers)
+        try c.encode(AgentMCPConfiguration.encode(deniedProjectServers), forKey: .deniedProjectServers)
+        try c.encode(AgentMCPConfiguration.encode(approvedProjectServerFingerprints), forKey: .approvedProjectServerFingerprints)
+        try c.encode(extraServersJSON, forKey: .extraServersJSON)
+        try c.encode(AgentMCPConfiguration.encode(disabledGlobalServers), forKey: .disabledGlobalServers)
+        try c.encode(AgentMCPConfiguration.encode(alwaysAllowedTools), forKey: .alwaysAllowedTools)
+        try c.encode(permissionSource, forKey: .permissionSource)
+        try c.encode(localMayUseMCP, forKey: .localMayUseMCP)
+    }
+
+    public func mcpConfiguration() throws -> AgentMCPProjectConfiguration {
+        .init(approvedServers: approvedProjectServerFingerprints.filter { approvedProjectServers.contains($0.key) },
+              deniedServers: Set(deniedProjectServers),
+              projectServers: try AgentMCPConfiguration.decodeServers(extraServersJSON),
+              disabledGlobalServers: Set(disabledGlobalServers), localMayUseMCP: localMayUseMCP)
+    }
+
+    fileprivate func validated() throws -> Self {
+        var value = self
+        for names in [approvedProjectServers, deniedProjectServers, disabledGlobalServers] {
+            guard names.count <= 128 else { throw AgentMCPError.invalidConfiguration }
+            for name in names { try AgentMCPConfiguration.validateName(name) }
+        }
+        guard approvedProjectServerFingerprints.count <= 128, alwaysAllowedTools.count <= 1024,
+              alwaysAllowedTools.allSatisfy({ !$0.isEmpty && $0.utf8.count <= 1024 && !$0.contains(where: { $0.isWhitespace || $0 == "\0" }) }) else {
+            throw AgentMCPError.invalidConfiguration
+        }
+        for (name, fingerprint) in approvedProjectServerFingerprints {
+            try AgentMCPConfiguration.validateName(name)
+            guard approvedProjectServers.contains(name), fingerprint.count == 64,
+                  fingerprint.utf8.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) }) else {
+                throw AgentMCPError.invalidApproval
+            }
+        }
+        value.extraServersJSON = try AgentMCPConfiguration.encode(AgentMCPConfiguration.decodeServers(extraServersJSON))
+        value.approvedProjectServers = Array(Set(approvedProjectServers)).sorted()
+        value.deniedProjectServers = Array(Set(deniedProjectServers)).sorted()
+        value.disabledGlobalServers = Array(Set(disabledGlobalServers)).sorted()
+        value.alwaysAllowedTools = Array(Set(alwaysAllowedTools)).sorted()
+        return value
+    }
+}
+
+extension Stores {
+    public func workspaceAgentSetup(projectID: UUID) throws -> WorkspaceAgentSetup {
+        try db.queue.read { dbc in
+            guard try WorkspaceProject.fetchOne(dbc, key: projectID) != nil else { throw WorkspaceStoreError.projectNotFound }
+            return try (WorkspaceAgentSetup.fetchOne(dbc, key: projectID) ?? .init(projectID: projectID)).validated()
+        }
+    }
+
+    public func saveWorkspaceAgentSetup(_ setup: WorkspaceAgentSetup) throws {
+        let value = try setup.validated()
+        try db.queue.write { dbc in
+            guard try WorkspaceProject.fetchOne(dbc, key: value.projectID) != nil else { throw WorkspaceStoreError.projectNotFound }
+            try Self.agentSetupAudit(projectID: value.projectID).insert(dbc)
+            try value.save(dbc)
+        }
+    }
+
+    public func globalAgentMCPServers() throws -> [String: AgentMCPServer] {
+        try AgentMCPConfiguration.decodeServers(value(forKey: "agent.mcp.global") ?? "{}")
+    }
+
+    public func saveGlobalAgentMCPServers(_ servers: [String: AgentMCPServer]) throws {
+        try AgentMCPConfiguration.validate(servers)
+        let json = try AgentMCPConfiguration.encode(servers)
+        try db.queue.write { dbc in
+            try Self.agentSetupAudit(projectID: nil).insert(dbc)
+            try dbc.execute(sql: "INSERT INTO kv(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                            arguments: ["agent.mcp.global", json])
+        }
+    }
+
+    private static func agentSetupAudit(projectID: UUID?) throws -> ActivityEvent {
+        let tool = ToolDefinition(name: "saveSetup", description: "Save agent setup", parametersJSON: "{}", risk: .reversibleWrite)
+        guard AutonomyPolicy().verdict(for: tool, connectorID: "agent.setup") == .allow else {
+            throw AgentMCPError.invalidConfiguration
+        }
+        return ActivityEvent(kind: .toolExecuted, connectorID: "agent.setup", summary: "Save agent setup",
+            detailJSON: JSONValue.object(["scope": .string(projectID == nil ? "global" : "project"),
+                "projectID": projectID.map { .string($0.uuidString) } ?? .null,
+                "risk": .string(ActionRisk.reversibleWrite.rawValue)]).jsonString)
     }
 }
 
