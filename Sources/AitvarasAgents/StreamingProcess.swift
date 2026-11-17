@@ -292,7 +292,10 @@ public final class StreamingProcess: @unchecked Sendable {
                 groupCleaned = true
             }
         }
-        io.asyncAfter(deadline: .now() + grace.timeInterval + terminationDelay.timeInterval + 1) { [self] in
+        // Safety net only: a normal exit is confirmed by waitpid long before.
+        // On a loaded machine that notice can take over a second after SIGKILL,
+        // so a tight deadline reported healthy cleanups as failures.
+        io.asyncAfter(deadline: .now() + grace.timeInterval + terminationDelay.timeInterval + 5) { [self] in
             if status == nil || stdoutSource != nil || stderrSource != nil {
                 cleanupFailure = .cleanupUnconfirmed
                 finishStream(.cleanupUnconfirmed)

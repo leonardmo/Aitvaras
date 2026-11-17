@@ -102,6 +102,10 @@ public actor AgentActionCoordinator: AgentRun {
         do {
             try await finish(request, response: answer, decision: response == .deny ? "denied" : "approved")
         } catch {
+            // Stop can deny this request while its approval audit is yielding.
+            // The denial already went out, so only this late answer is invalid;
+            // the session stays open for the native interrupted result.
+            if interrupting, error as? AgentFailure == .invalidRequest { throw error }
             await exited((error as? AgentFailure) ?? .unknown)
             throw error
         }
