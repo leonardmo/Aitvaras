@@ -9,10 +9,11 @@ Setup → AI providers and the Providers tab. Earlier project-less conversations
 use the retained `LocalChatView`; the adapter checkpoints below are historical
 compatibility checks, not the current UI flow.
 
-**Acceptance still open:** Codex has run through the in-process UI driver, but
-the Claude path through this UI has never run live because its CLI login
-expired. Signed-out UI coverage and earlier direct-CLI recordings do not prove
-a live Claude reply, cross-provider catch-up or browser completion. The real
+**Acceptance:** Codex and a signed-in Claude have both run live through the
+in-process UI driver. `cloud-switching.json` proved Codex→Claude→Codex catch-up
+and a Claude shell approval whose command completed and wrote its file, and a
+Codex→Local→Claude run proved Claude catches up after Local. Still open: Claude
+browser sign-in completion through the UI. The real
 Ollama Local gate has not run; AgentLoop remains the default. Old chat code is
 not yet removed: M6.3 waits for the owner's review. Native menus, file panels,
 drag and drop and real focus are covered only by XCUITest, which needs the
@@ -1012,6 +1013,15 @@ the owner's review; M6.1–M6.2 compatibility does not complete the cleanup gate
 
 On the host, `make ui` runs `scripts/run-self-drive.sh`. Screenshots land in
 `.build-e2e/self-drive/<scenario>`.
+
+For a fast check without a local model, run `make ui UI_SCENARIO=cloud-switching`
+(about a minute on a signed-in machine; a few short prompts of Claude and Codex
+usage). In one chat Codex answers the backwards-word prompt, Claude repeats it
+after catch-up, asks for a shell command, gets Allow and completes it, and Codex
+then reports Claude's answer. It needs both CLIs signed in; the signed-out Claude
+path stays covered by `golden-path.json` and `switching.json`. Provider tabs stay
+disabled while the chat is busy, slightly after Stop disappears, so the scenario
+waits for each tab to be enabled before pressing it.
 
 Set `AITVARAS_SELF_DRIVE` to a scenario JSON file and
 `AITVARAS_SELF_DRIVE_OUTPUT` to a local artifact directory. Also set
