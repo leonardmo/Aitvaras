@@ -22,9 +22,10 @@ have not been checked in the real app; the matrix below still requires host
 execution and screenshot review.
 
 The direct CLI backends in `AitvarasAgents` have offline executable replay tests
-(`ClaudeBackendTests`, `CodexBackendTests`). Every sanitized recording under
-`Tests/AitvarasCoreTests/Fixtures/agents` is replayed through the real process
-transport, comparing outgoing JSON frames. Additional cases cover complete
+(`ClaudeBackendTests`, `CodexBackendTests`). Sanitized recordings under
+`Tests/AitvarasCoreTests/Fixtures/agents` are replayed through the real process
+transport, comparing outgoing JSON frames; the D34 setup fixture is written
+by hand, as described below. Additional cases cover complete
 Claude content blocks and native IDs, subscription refusal, browser login,
 Codex thread multiplexing, mode changes, rate limits, stale approvals, exact
 integer/string request IDs, duplicate and late replies, disconnect/reconnect,
@@ -135,6 +136,129 @@ Stop Ollama and confirm a plain unavailable reason with no provider fallback.
 Measure memory against the model budget, test coexistence with voice/capture,
 and review light/dark and minimum-window states. Exposing Aitvaras knowledge
 through a policy-gated MCP server remains an open follow-up.
+
+## Project agent setup (D34)
+
+`Fixtures/agents/claude/setup-hooks.jsonl` is a **hand-written** protocol fixture
+using the P0 field shapes, with generic `echo`/`docs` servers, a `shout` skill,
+a `reviewer` agent and synthetic hook IDs. It merges `initialize` command hints
+with `system/init`, then exercises running, successful, blocked and failed hook
+events through `BackendExecutableFixture`. It is not copied from a machine's
+init output, which can expose private plugins, connectors and skill names.
+Settings/rules inventories and all new server, credential and session fixtures
+are also authored from generic data. See the [fixture README](../Tests/AitvarasCoreTests/Fixtures/agents/README.md).
+
+Hermetic Swift Testing suites use `BackendExecutableFixture` /
+`AgentExecutableFixture`, injected secret stores and fake transports, with a
+two-minute suite limit. Stub processes idle with bounded `sleep 1` loops,
+terminate on their own and are reaped during cleanup. Coverage includes:
+
+- `WorkspaceAgentSetupTests`, `AgentMCPResolverTests`: additive migration,
+  project/global persistence, raw-object fingerprints (including unknown
+  options), fresh repo reads, denial precedence, unsupported entries, visible
+  collisions and unreadable-file fallback.
+- `AgentMCPRuntimeFileTests`, `AgentMCPLaunchTests`, `OpencodeMCPTests`:
+  exact launch flags and probes, 0600-at-creation files, cleanup on failure /
+  cancellation, reuse revisions, Local opt-in/stdio translation and unchanged
+  sandbox. Serialized store rows and audit payloads must exclude synthetic
+  resolved secrets.
+- `AgentSetupTests`, `AgentHookTests`, `CodexMCPStatusTests` and action
+  coordinator tests: out-of-transcript snapshots, metadata inventories,
+  redacted/bounded hook reasons, mode-aware PreToolUse decisions in all four
+  modes, exact project grants, D20 precedence and audit failures, paginated
+  Codex status and threadless updates.
+- `AgentMCPLoginTests`, `AgentSetupCoordinatorTests`, `AgentSetupFormTests`:
+  managed sign-in success/failure/timeout/cancellation, transient URL handling,
+  refresh races, fingerprint-bound approval and atomic secret-reference saves.
+- `AgentConversationForkTests`, `AgentConversationTextTests`,
+  `AgentSideQuestionTests`: exact fork/side-question argv, fork records and
+  identities, separate committed-tip worktrees, first-message editing, quote
+  formatting, diff numbering, unchanged source chat/native files and rejection
+  of unexpected side-question tools/hooks or malformed results.
+
+In a supervised sandbox, build/test only with
+`scripts/codex-swift.sh build --build-tests` followed by
+`scripts/codex-swift.sh test --skip-build`, plus `make privacy`. The supervisor
+runs host-only checks, `make node-test` and `make app`; package tests cannot
+compile or validate AppKit/SwiftUI interaction.
+
+**CLI evidence:** Claude CLI 2.1.300 was live-checked: an ephemeral side question
+answers from resumed context and leaves no native session file. Native `/btw`
+is unavailable headless; the fallback disables tools, hooks, MCP and session
+persistence as specified in [D34](DECISIONS.md#d34--project-agent-setup--2026-11-17).
+This evidence does not close the following full app live gate.
+
+For host acceptance, create a throwaway project with a tiny echo **stdio MCP
+server**, a `.mcp.json` entry named `echo`, and `.claude/settings.json` with
+a `PreToolUse:Bash` command hook whose `statusMessage` is “Checking project
+rules”. Make it block one harmless fixture command with exit code 2 and a fixed
+stderr reason. Add `.claude/skills/shout/SKILL.md` with `argument-hint: [words]`
+and `$ARGUMENTS`, plus a generic scoped rule. Use only hand-written generic
+content; never copy a real repo's settings or init output into fixtures.
+
+Launch the built app with `AITVARAS_STATE_DIR` set to a new temporary directory,
+`AITVARAS_DISABLE_EXTERNAL_INTEGRATIONS=1` and `--seed-demo-state`. Explicit
+real-provider host harnesses use `AITVARAS_AGENT_TEST_PROVIDERS=real` when
+required. Keep browser/CLI authentication under the user's control: the app
+profile isolates Aitvaras state and Keychain items, not the provider CLI's
+credential or native-session stores. Use only fixture conversations and track
+the native sessions created by this check.
+
+1. Open the fixture project and Agent setup, including through an existing
+   chat's project menu. `echo` is off/pending approval; Approve makes it connect
+   on refresh/next run. Deny keeps it off. Change even an unknown server option
+   and confirm re-approval is required. Make `.mcp.json` unreadable or malformed:
+   the unreadable notice appears and repo servers stay off while app servers
+   remain available. Restore the file before continuing.
+2. Invoke the echo tool: its card reads `echo · <tool>`. Allow once, then grant
+   “Always allow in this project”; only that exact provider/tool stops prompting.
+   A different project still asks. Forbidden service tools never offer a grant.
+3. Trigger the fixture hook and verify “Checking project rules”, the bounded
+   block reason and a visible blocked row; successful hooks collapse. Under
+   Aitvaras policy, repo hooks and deny rules **still run**. Verify the hook
+   requests approval for edits in Ask / Plan, Accept Edits / Auto retain their
+   edit behavior, and changing mode during the session takes effect. Native
+   Plan restrictions still apply. Repo allow rules cannot bypass an approval
+   required by Aitvaras's current mode.
+4. Pick `/shout`, see `[words]`, send `/shout quiet little words` and verify
+   argument expansion. Switch projects and confirm the catalog refreshes;
+   inspect the read-only hooks and rule scopes.
+5. Add a global echo server: it appears in a second project. “Off in this
+   project” removes it only there. Add a project definition and exercise the
+   stdio / HTTP / SSE form with synthetic env/header secrets; inspect runtime
+   file mode and removal after shutdown, and confirm stored rows/audits contain
+   references rather than resolved values. Use distinct names for distinct
+   servers, and verify app/repo name collisions are visibly rejected.
+6. Turn Local MCP on and invoke echo through a Local approval card. Turn it off
+   and verify it disappears on the next run. Remote servers show “Local: stdio
+   servers only”; the sandbox still denies remote network and outside-root
+   writes. No sandbox widening is part of this feature.
+7. For OAuth, use a generic user-supplied test server in repo or provider config.
+   **The user must complete sign-in in the browser.** Confirm needs-sign-in →
+   Sign in → refresh → connected, plus Cancel and timeout cleanup. Browser URLs
+   must not persist in state/logs/audits. Runtime-only app servers show the fixed
+   sign-in-unavailable reason. Check Codex status/sign-in and completion without
+   disturbing an active chat; there is no Terminal fallback.
+8. Fork from a middle Claude assistant message: the new chat knows the prefix
+   and not later turns; the source remains unchanged. Edit & resend forks at
+   the previous assistant message; editing the first user message starts fresh.
+   With a source worktree, verify a distinct owned checkout at its committed
+   tip and no uncommitted source changes carried over.
+9. For every provider, select assistant text and Reply with quote; repeat with
+   no selection. Select added, removed-only and disjoint diff lines and Add to
+   message; check path, fenced snippets and the correct line numbers.
+10. Ask `/btw <question>` and use the Side question action. The dismissible panel
+    answers using context; the chat message count, journal and source native
+    session file remain unchanged, with no new native session file. Only a
+    metadata activity entry exists, containing neither question nor answer.
+    Dismiss during a request and verify process cleanup; Codex/Local show the
+    fixed unavailable reason.
+11. Review light/dark, minimum size, selection/focus, flat menus, switch rows and
+    accessible green/yellow/grey/red status indicators. Capture generic-content
+    screenshots of Agent setup and a hook row as acceptance evidence. Quit the
+    app normally, verify runtime files are removed and reap all fixture/test
+    processes. Keep private browser/account content out of screenshots and
+    committed artifacts. Mark D34 complete only after this gate passes.
 
 ## Legacy Claude subscription adapter checkpoint
 
@@ -620,11 +744,13 @@ export AITVARAS_SHARE_MODELS=1                # reuse downloaded model weights
   Calendar, Reminders, shared Keychain accounts, custom APIs or network tools
   are registered during bootstrap. For a safe empty profile without fixtures,
   set `AITVARAS_DISABLE_EXTERNAL_INTEGRATIONS=1` explicitly.
-- The real profile in `~/Library/Application Support/Aitvaras` is untouched;
-  delete the temp directory afterwards and nothing remains.
-- Keychain items are currently NOT namespaced per profile; connector tokens
-  are shared. A plain `AITVARAS_STATE_DIR` override therefore does not disable
-  integrations—also use the safe-mode variable above for agent-driven runs.
+- The default Aitvaras state directory is untouched. Deleting the temporary
+  directory removes that profile's on-disk state; its Keychain items and any
+  provider-native artifacts require separate cleanup.
+- Aitvaras Keychain items are namespaced per isolated state profile. Provider
+  CLIs retain their own credential stores and native history outside that
+  profile. Also use the safe-mode variable above for agent-driven runs; a state
+  directory override alone does not disable integrations.
 - In-bundle model runtime check: `Aitvaras --selftest` (MLX generation,
   the one thing Layer 1 can't cover). Diagnostic modes do not run the normal
   app bootstrap in parallel. During the Naomi → Aitvaras transition, shared

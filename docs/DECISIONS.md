@@ -331,6 +331,8 @@ whenever the latest message was local: the thread is now kept and caught up.
 
 ## D31 — Chats drive the official CLIs directly 🚧 (2026-11-04)
 
+See [D34](#d34--project-agent-setup--2026-11-17) for project setup, MCP gating, approvals and conversation forks.
+
 **Implementation and acceptance:** the unified UI is connected to the direct
 backends, durable journal, native discovery/reconciliation and action coordinator.
 Codex has run through the in-process UI driver. The Claude path through this UI
@@ -407,6 +409,8 @@ Codex-on-Ollama candidate and its environment switch have been removed.
 
 ## D32 — Chat opens the unified composer; every new chat has a project ✅ (2026-11-06)
 
+See [D34](#d34--project-agent-setup--2026-11-17) for the setup entry in existing chats, command hints and conversation actions.
+
 The Chat tab follows the Claude and Codex desktop apps. With no chat selected,
 or after New Chat, it shows an empty unified transcript and a ready composer.
 There is no creation dialog, Create/Cancel pair, project-less new chat or automatic
@@ -467,6 +471,8 @@ tabs retain their activity presentation. The dock reserves real layout height so
 native split views cannot draw the composer or error actions underneath it.
 
 ## D33 — Local uses sandboxed opencode and Ollama ✅ (2026-11-07)
+
+See [D34](#d34--project-agent-setup--2026-11-17) for opt-in stdio MCP and MCP-revision reuse checks within this unchanged sandbox.
 
 Owner decision: Local must use an open source agent harness and keep file
 processing on this Mac. opencode (MIT) supplies tools, editing, context and
@@ -529,3 +535,134 @@ unified-app acceptance, the exact generated isolation config, model reliability
 or memory/voice coexistence. Host self-drive and manual sandbox-denial checks
 remain required. Exposing Aitvaras knowledge through a policy-gated MCP server
 is an open follow-up; it is not available to opencode in this batch.
+
+## D34 — Project agent setup 🚧 (2026-11-17)
+
+Project Chat discovers the setup defined by any project folder. Claude's
+`system/init` reports MCP servers, their source and connection status, skills
+and agents; its command names are merged with the richer `initialize` catalog,
+including argument hints. These snapshots stay outside the transcript and
+handover context. Hooks and scoped rules have no CLI listing: Aitvaras reads
+user settings, `.claude/settings{,.local}.json` and `.claude/rules/` for display
+only. The CLI remains responsible for applying project instructions, rules,
+skills, permissions and hooks. This changes interactive Chat, not D14's four
+restricted non-chat CLI features.
+
+MCP has three layers, resolved per run: app-global definitions, app-project
+definitions and the repo's `.mcp.json`. A project can switch off a global
+server, and project definitions override globals with the same name. An
+app/repo name collision fails visibly. Claude still loads its own user/account
+configuration; Aitvaras never writes that configuration or the repo.
+
+Claude `-p` loads repo MCP servers without an approval dialog. Every launch,
+including catalog probes, therefore re-reads `.mcp.json` at its actual cwd and
+passes `--settings` with `disabledMcpjsonServers` for every unsupported,
+denied, new or changed server. Approval is project-scoped and bound to a
+SHA-256 fingerprint of the whole raw server object as canonical JSON with
+sorted keys, including unknown options. Unknown top-level keys are ignored;
+invalid typed fields leave that server listed as unsupported without hiding
+valid siblings. A name alone never approves a server, and denial wins.
+
+A missing `.mcp.json` is normal. An unreadable, non-regular, oversized or
+unparseable file, or one without an `mcpServers` object, produces a visible
+unreadable state. Claude then receives `--strict-mcp-config` with only app
+servers, keeping repo servers off. Ordinary launches omit that flag and use
+`disabledMcpjsonServers`, never `enabledMcpjsonServers`. There remains a race
+between Aitvaras's fresh read and the CLI's later read: a repo change during
+that window is not an atomic approved snapshot. Fingerprints and reuse
+revisions detect changes on the next launch; they do not eliminate this window.
+
+App-added servers are passed with `--mcp-config` only when present. Each run
+owns `<state>/Runtime/mcp/<project>/<run>.json`, created with mode 0600 in
+private directories and removed when its transport/run ends, including startup
+failure and cancellation. Stored definitions contain Keychain references;
+the App injects the profile-scoped Keychain resolver without an Agents → Store
+dependency. Resolved secrets enter only the transient runtime configuration,
+never stored rows, session configuration, logs or audit payloads. Definition
+hashes use reference names, never resolved values. Runtime file creation and
+cleanup pass policy and metadata-only audit. Retained transports are reused
+only with a matching setup revision.
+
+MCP OAuth credentials remain in the provider CLI's own credential store,
+like its account login. Aitvaras never reads or stores those tokens; this is
+not an exception to the Keychain rule for secrets Aitvaras holds. Claude
+sign-in runs a managed `claude mcp login -- <name>` in the project directory,
+with cancellation and a five-minute limit. Its validated browser URL is
+transient. That command cannot receive the run's injected settings/config,
+so sign-in is offered for eligible repo and user/account servers; runtime-only
+app servers show a fixed unavailable reason. There is no Terminal fallback.
+Codex reports paginated `mcpServerStatus/list` and threadless startup updates,
+and uses `mcpServer/oauth/login` plus `mcpServer/oauthLogin/completed` for
+sign-in. Setup refreshes after sign-in. Per-project Codex MCP configuration,
+Codex hooks and Codex forks remain out of scope.
+
+The project permission source defaults to **Repo settings**: the repo's allow
+and deny rules apply. **Aitvaras policy** ignores repo allow rules by returning
+PreToolUse `permissionDecision: "ask"` whenever Aitvaras's current mode requires
+approval. Reads continue; reversible writes continue in Accept Edits and Auto
+and ask in Ask and Plan. Confirmable tools ask except in Auto, which retains
+the existing native Auto behavior; any native permission request still passes
+the coordinator. Mode changes apply during the session. Repo deny rules and
+hooks still apply under both sources. `--setting-sources user` was rejected
+because it also removes project instructions, skills and `.mcp.json`.
+
+All tool actions retain the autonomy policy and activity provenance. Exact
+built-in `ToolSearch` is a read so deferred MCP discovery can proceed. MCP
+cards display `server · tool` while retaining the wire name. “Always allow in
+this project” stores an audited exact `provider.tool` grant, with no wildcards.
+The D20 forbidden-name guard runs first and cannot be bypassed by a grant;
+forbidden tools never offer this action. A grant answers the native permission
+request, rather than changing the PreToolUse decision.
+
+Local MCP is off by default and opt-in per project. Only stdio servers are
+translated into opencode configuration through the same runtime-file lifecycle.
+Remote transports show “Local: stdio servers only”; repo options that cannot
+be translated also show a fixed unavailable reason. The loopback network and
+write-root sandbox in D33 is unchanged, including for MCP descendants. Local
+tools retain the existing audited permission path. Server reuse also checks
+the MCP revision. Exposing Aitvaras knowledge as an MCP server remains open.
+
+Agent setup lives in `WorkspaceBoundaryReviewView`, reachable through the
+composer's project menu even when project switching is disabled for an existing
+chat. Connections holds the global server list. Server actions use flat menus;
+connection state uses accessible indicators, and Local opt-in is a switch.
+Hook/rule metadata is read-only. Setup refreshes at chat startup and with
+“Check now”. Command catalogs refresh on project changes,
+and a picked command's argument hint appears in the composer.
+
+Claude launches include hook events. `hook_started` and `hook_response` are
+correlated by `hook_id`; `statusMessage` comes from settings matched by event
+and matcher. A PreToolUse exit code 2 is blocked, with bounded, redacted stderr
+as its reason. Successful rows collapse; blocked/error rows remain visible.
+Only an explicit tool-use identity attaches a hook row to a tool; otherwise
+it remains a separate row. Unknown informational system events are ignored.
+
+Claude **Fork from here** creates a chat in the same project with
+`--resume <sid> --fork-session --resume-session-at <assistant uuid>`. It records
+the fork origin and binds a distinct native identity on first Send. **Edit &
+resend** forks before the user message at its preceding assistant message;
+editing the first user message creates a fresh chat. Forks require an idle
+source. A source worktree produces a separately owned worktree from its
+committed branch tip; uncommitted changes are not carried. Worktrees are never
+shared between chats. All providers support **Reply with quote** from a
+read-only native text selection (whole-message fallback), and **Add to message**
+from selected diff lines. Diff context includes the path, fenced snippet and
+new-file line range, using old-file numbers for removed-only selections.
+
+Native `/btw` is unavailable headless and writes to the session. Side questions
+instead use a separate ephemeral Claude fork with `--resume <sid>
+--fork-session --no-session-persistence --tools ""`,
+`--settings '{"disableAllHooks":true}'` and `--strict-mcp-config` with no MCP
+config. Tools, hooks and MCP are off. One bounded prompt treats the question
+as quoted text so it cannot expand a slash or shell command. The dismissible
+answer panel cancels on dismissal; the operation has a bounded timeout and is
+Claude-only. Question and answer never enter chat state, transcript, journal,
+activity payloads or a native session file. A metadata-only activity event
+retains chat provenance without either text.
+
+**Verification boundary:** a real Claude CLI 2.1.300 check verified that the
+ephemeral side question answers from resumed context and leaves no session
+file. Hand-written fixtures establish offline protocol and failure behavior;
+they do not prove browser completion or UI acceptance. D34 remains 🚧 until
+the full isolated-profile live checklist in [TESTING.md](TESTING.md#project-agent-setup-d34)
+is complete, including MCP sign-in with the user in the browser.
