@@ -28,6 +28,10 @@ jobs:
           # reported by file and line only, so the terms never reach the log.
           AITVARAS_PRIVACY_DENYLIST: ${{ secrets.PRIVACY_DENYLIST }}
         run: scripts/check-privacy.sh
+      - name: Hard rules
+        env:
+          BASE: ${{ github.event_name == 'pull_request' && format('origin/{0}', github.base_ref) || github.event.before || 'origin/main' }}
+        run: scripts/check-rules.sh --base "$BASE"
       - name: Commit metadata and history
         if: github.event_name == 'pull_request'
         env:
@@ -39,6 +43,9 @@ jobs:
 
   # Docs-only changes skip the macOS builds. The build jobs still run (on Ubuntu,
   # doing nothing), so their required checks report success instead of pending.
+  # They also run when this job fails (`!cancelled()`) and then fail themselves:
+  # a job skipped because a dependency failed counts as passed for a required
+  # check, which would let an auto-merging PR through untested.
   changes:
     name: Detect code changes
     runs-on: ubuntu-latest
@@ -79,11 +86,17 @@ jobs:
   package:
     name: Package tests
     needs: changes
+    if: ${{ !cancelled() }}
     runs-on: ${{ needs.changes.outputs.code == 'true' && 'macos-26' || 'ubuntu-latest' }}
     timeout-minutes: 120
     env:
       CODE: ${{ needs.changes.outputs.code }}
     steps:
+      - name: Require change detection
+        if: needs.changes.result != 'success'
+        run: |
+          echo "::error::Detect code changes ended with '${{ needs.changes.result }}'; not reporting package tests as passed."
+          exit 1
       - name: Docs-only change
         if: env.CODE != 'true'
         run: echo "No code changed; package tests skipped."
@@ -137,6 +150,7 @@ jobs:
   app:
     name: App build
     needs: changes
+    if: ${{ !cancelled() }}
     # Xcode 26.6's Swift 6.3 compiler crashes in IRGen on the app target;
     # build with the same Xcode 27 the app is developed with.
     runs-on: ${{ needs.changes.outputs.code == 'true' && 'xcode-27' || 'ubuntu-latest' }}
@@ -145,6 +159,11 @@ jobs:
       CODE: ${{ needs.changes.outputs.code }}
       DEVELOPER_DIR: /Applications/Xcode_27.2.app/Contents/Developer
     steps:
+      - name: Require change detection
+        if: needs.changes.result != 'success'
+        run: |
+          echo "::error::Detect code changes ended with '${{ needs.changes.result }}'; not reporting app build as passed."
+          exit 1
       - name: Docs-only change
         if: env.CODE != 'true'
         run: echo "No code changed; app build skipped."
