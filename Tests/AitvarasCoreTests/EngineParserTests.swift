@@ -5,7 +5,7 @@ import Foundation
 import AitvarasStore
 import AitvarasCore
 
-@Suite struct EngineParserTests {
+@Suite(.timeLimit(.minutes(2))) struct EngineParserTests {
     private func collect(_ chunks: [String]) -> [InferenceChunk] {
         var parser = QwenStreamParser()
         var out: [InferenceChunk] = []
@@ -126,7 +126,7 @@ enum AitvarasVoiceSentenceProxy {
     }
 }
 
-@Suite struct InferenceStreamTimeoutTests {
+@Suite(.timeLimit(.minutes(2))) struct InferenceStreamTimeoutTests {
     @Test func silentStreamFailsWithTimeout() async {
         let (source, sourceContinuation) = AsyncThrowingStream<InferenceChunk, Error>.makeStream()
         let watched = InferenceStreams.withInactivityTimeout(

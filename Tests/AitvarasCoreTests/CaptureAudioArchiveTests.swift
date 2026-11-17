@@ -5,7 +5,7 @@ import AitvarasCore
 import AitvarasVoice
 @preconcurrency import AVFoundation
 
-@Suite struct CaptureAudioArchiveTests {
+@Suite(.timeLimit(.minutes(2))) struct CaptureAudioArchiveTests {
     private func profile() throws -> URL {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: url, withIntermediateDirectories: false,

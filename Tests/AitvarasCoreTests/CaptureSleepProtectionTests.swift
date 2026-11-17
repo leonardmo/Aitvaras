@@ -3,7 +3,7 @@ import Synchronization
 import Testing
 import AitvarasCore
 
-@Suite struct CaptureSleepProtectionTests {
+@Suite(.timeLimit(.minutes(2))) struct CaptureSleepProtectionTests {
     @Test func audioOnlyAllowsDisplaySleepAndReleasesExactlyOnce() throws {
         let driver = FakeSleepDriver()
         let lease = try CaptureSleepProtectionLease(policy: .audioOnly, driver: driver)

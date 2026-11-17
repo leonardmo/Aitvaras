@@ -58,7 +58,7 @@ private actor ShortEmbedder: EmbeddingEngine {
     }
 }
 
-@Suite struct RAGTests {
+@Suite(.timeLimit(.minutes(2))) struct RAGTests {
 
     // MARK: Chunkers
 

@@ -4,7 +4,7 @@ import GRDB
 import AitvarasCore
 import AitvarasStore
 
-@Suite struct WorkspaceNativeStoreTests {
+@Suite(.timeLimit(.minutes(2))) struct WorkspaceNativeStoreTests {
     private let observedAt = Date(timeIntervalSince1970: 1_700_000_000)
 
     private func page(

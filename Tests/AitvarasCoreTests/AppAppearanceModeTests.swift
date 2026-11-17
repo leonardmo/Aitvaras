@@ -2,7 +2,7 @@ import Foundation
 import Testing
 import AitvarasCore
 
-@Suite struct AppAppearanceModeTests {
+@Suite(.timeLimit(.minutes(2))) struct AppAppearanceModeTests {
     @Test func defaultsAndInvalidValuesFollowSystem() throws {
         let name = "synthetic-appearance-\(UUID())"
         let preferences = try #require(UserDefaults(suiteName: name))

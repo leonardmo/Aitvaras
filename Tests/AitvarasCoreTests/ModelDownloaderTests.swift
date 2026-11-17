@@ -2,7 +2,7 @@ import Foundation
 import Testing
 @testable import AitvarasCore
 
-@Suite struct ModelDownloaderTests {
+@Suite(.timeLimit(.minutes(2))) struct ModelDownloaderTests {
     @Test func pythonCompatibilityRequiresSupportedMajorAndMinor() {
         #expect(!ModelDownloader.isCompatiblePythonVersion("3.9\n"))
         #expect(ModelDownloader.isCompatiblePythonVersion("3.10\n"))

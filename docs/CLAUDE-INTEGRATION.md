@@ -1,5 +1,12 @@
 # Claude connection: shared or separate subscription profile
 
+**Superseded for interactive Chat by [UNIFIED-CHAT-PLAN.md](UNIFIED-CHAT-PLAN.md)
+and D31/D32.** The current UI drives the official CLI directly with its default
+login/store; the account-mode and consent flows below document the retained
+legacy adapter. Saved evidence remains readable. M6.3 removal waits for the
+owner's review, and Claude through the unified UI has never run live because
+its CLI login expired. This checkpoint is not current UI acceptance evidence.
+
 Implementation checkpoint — 2026-10-30. This is the on-demand live chat adapter,
 not a claim of complete Claude desktop/web synchronization.
 

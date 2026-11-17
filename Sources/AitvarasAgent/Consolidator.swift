@@ -140,7 +140,12 @@ public actor Consolidator {
             // Raw connector payloads and classifications can contain indirect
             // prompt injection and are not evidence about the user. Learn only
             // from user conversations and actions they actually took/approved.
-            material = episodes.filter { Self.isMemoryEvidence($0.kind) }
+            // Project git/provider audits and the retained adapters' file-read
+            // audits belong to project chats, never personal memory. Keep the
+            // audit rows available to Activity without treating them as episodes.
+            material = episodes.filter {
+                Self.isMemoryEvidence($0.kind) && !["agent", "git", "claude", "codex"].contains($0.connectorID ?? "")
+            }
             guard !material.isEmpty else {
                 try setLastRun(now)   // clean no-op night; nothing to retry
                 return .skipped

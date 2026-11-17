@@ -1,0 +1,118 @@
+import Foundation
+
+public actor ClaudeBackend: AgentBackend {
+    private let environment: [String: String]
+    private let executable: URL?
+    private let profile: String
+
+    public init(executable: URL? = nil, environment: [String: String] = ProcessInfo.processInfo.environment,
+                profile: String = "default", overrides: [String: String] = [:]) {
+        self.environment = ProviderEnvironment.make(inherited: environment, overrides: overrides)
+        self.executable = ProviderLocator.executable(for: .claude, environment: self.environment,
+            overrides: executable.map { [.claude: $0] } ?? [:])
+        self.profile = profile
+    }
+
+    public func status() async throws -> AgentStatus {
+        guard let executable else { return AgentStatus(installed: false, authentication: .signedOut, capabilities: []) }
+        let output = try await OneShotProcess.run(executable: executable, arguments: ["auth", "status"],
+            environment: environment, timeout: .seconds(15))
+        guard !output.timedOut, let value = JSONValue.parse(output.stdout) else { throw AgentFailure.unknown }
+        let authentication: AgentStatus.Authentication
+        if value["loggedIn"]?.boolValue != true { authentication = .signedOut }
+        else if value["apiKeySource"].map({ $0.stringValue != "none" }) ?? false || value["apiProvider"]?.stringValue != "firstParty" { authentication = .unsupported }
+        else if value["authMethod"]?.stringValue == "claude.ai",
+                ["pro", "max", "team", "enterprise"].contains((value["subscriptionType"]?.stringValue ?? "").lowercased().replacingOccurrences(of: "claude ", with: "")) {
+            authentication = .subscription
+        } else { authentication = .unsupported }
+        return AgentStatus(installed: true, authentication: authentication, capabilities: subscriptionCapabilities,
+                           accountID: value["accountUuid"]?.stringValue ?? value["accountId"]?.stringValue)
+    }
+
+    public func signIn(onBrowserURL: @escaping @Sendable (URL) async -> Void) async throws {
+        guard let executable else { throw AgentFailure.notInstalled }
+        let process = StreamingProcess(executable: executable, arguments: ["auth", "login", "--claudeai"],
+            currentDirectory: nil, environment: environment)
+        try process.start()
+        let timer = Task {
+            do { try await Task.sleep(for: .seconds(300)) } catch { return }
+            process.terminate()
+        }
+        // The CLI may print its URL to stderr and then wait for the browser.
+        // Inspect only the bounded transient tail while the process is alive.
+        let stderrURLs = Task {
+            var seen = Set<URL>()
+            while !Task.isCancelled {
+                for url in Self.browserURLs(process.stderrText) where seen.insert(url).inserted {
+                    await onBrowserURL(url)
+                }
+                if !process.isRunning { return }
+                do { try await Task.sleep(for: .milliseconds(25)) } catch { return }
+            }
+        }
+        defer { timer.cancel(); stderrURLs.cancel() }
+        do {
+            try await withTaskCancellationHandler {
+                for try await line in process.lines {
+                    for url in Self.browserURLs(line) { await onBrowserURL(url) }
+                }
+                await stderrURLs.value
+                guard try await process.waitForExit() == 0 else { throw AgentFailure.authRequired }
+            } onCancel: { process.terminate() }
+        } catch { try? await process.shutdown(grace: .zero); throw error }
+    }
+
+    private static func browserURLs(_ text: String) -> [URL] {
+        text.split(whereSeparator: { $0.isWhitespace }).compactMap {
+            guard $0.hasPrefix("https://"), let url = URL(string: String($0)) else { return nil }
+            return url
+        }
+    }
+
+    public func models() async throws -> [AgentModel] {
+        let run = try await makeRun(AgentSessionConfiguration(directory: FileManager.default.temporaryDirectory, model: "default"))
+        let models = await run.availableModels
+        try await run.shutdown()
+        return models
+    }
+
+    public func start(_ configuration: AgentSessionConfiguration) async throws -> any AgentRun { try await makeRun(configuration) }
+    public func commands(directory: URL) async throws -> [AgentCommand] {
+        let run = try await makeRun(.init(directory: directory, model: "default"))
+        let commands = await run.availableCommands
+        try await run.shutdown()
+        guard let commands else { throw AgentFailure.unsupported }
+        return commands
+    }
+    public func files(query: String, directory: URL) async throws -> [AgentFileMention] {
+        let task = Task.detached { try AgentFileMention.localSearch(query: query, directory: directory) }
+        return try await withTaskCancellationHandler { try await task.value } onCancel: { task.cancel() }
+    }
+    private func makeRun(_ configuration: AgentSessionConfiguration) async throws -> ClaudeRun {
+        guard let executable else { throw AgentFailure.notInstalled }
+        let status = try await status()
+        guard status.authentication == .subscription else {
+            throw status.authentication == .signedOut ? AgentFailure.authRequired : AgentFailure.unsupported
+        }
+        if let resume = configuration.resume {
+            guard resume.provider == .claude, resume.profile == profile, resume.host == "local" else { throw AgentFailure.invalidRequest }
+        }
+        let run = ClaudeRun(executable: executable, environment: environment, profile: profile, configuration: configuration)
+        do { try await run.initialize(); return run }
+        catch { try? await run.shutdown(); throw error }
+    }
+    private var historyReader: ClaudeNativeHistory {
+        let root = environment["CLAUDE_CONFIG_DIR"].map { URL(fileURLWithPath: $0) }
+            ?? URL(fileURLWithPath: environment["HOME"] ?? NSHomeDirectory()).appendingPathComponent(".claude")
+        return ClaudeNativeHistory(projectsDirectory: root.appendingPathComponent("projects"), profile: profile)
+    }
+    public func listSessions(folder: URL, cursor: String?) throws -> AgentPage<AgentSessionSummary> {
+        try historyReader.list(folder: folder, cursor: cursor)
+    }
+    public func nativeSessions(folder: URL?, cursor: String?, archived: Bool) throws -> AgentPage<AgentSessionSummary> {
+        try historyReader.list(folder: folder, cursor: cursor, archived: archived)
+    }
+    public func readHistory(session: AgentSessionID, cursor: String?) throws -> AgentPage<AgentEvent> {
+        try historyReader.history(session: session, cursor: cursor)
+    }
+}

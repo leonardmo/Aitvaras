@@ -184,7 +184,7 @@ private actor InteractiveMailInjectionEngine: InferenceEngine {
     }
 }
 
-@Suite struct AgentLoopTests {
+@Suite(.timeLimit(.minutes(2))) struct AgentLoopTests {
     @Test func externalTurnHasNoPersonalContextAndOnlyPlanningProposalTools() async throws {
         let stores = try inMemoryStores()
         try stores.saveFact(MemoryFact(

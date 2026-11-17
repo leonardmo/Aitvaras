@@ -2,7 +2,7 @@ import Foundation
 import Testing
 @testable import AitvarasCore
 
-@Suite struct ActivityDockPlacementTests {
+@Suite(.timeLimit(.minutes(2))) struct ActivityDockPlacementTests {
     @Test func missingOrInvalidPreferenceUsesBottomDock() throws {
         let name = "app.aitvaras.tests.activity-dock.\(UUID().uuidString)"
         let preferences = try #require(UserDefaults(suiteName: name))

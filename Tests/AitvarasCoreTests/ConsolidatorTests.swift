@@ -4,7 +4,7 @@ import AitvarasStore
 import Testing
 @testable import AitvarasAgent
 
-@Suite struct ConsolidatorTests {
+@Suite(.timeLimit(.minutes(2))) struct ConsolidatorTests {
 
     /// A `now` safely past the due hour on the local calendar.
     private var evening: Date {
@@ -256,6 +256,22 @@ import Testing
         #expect(!outcome.ran)
         #expect(await engine.callCount() == 0)
         #expect(try stores.activeFacts().isEmpty)
+    }
+
+    @Test(arguments: ["agent", "git", "claude", "codex"])
+    func projectActionAuditsNeverBecomePersonalMemory(connector: String) async throws {
+        let stores = try inMemoryStores()
+        for kind in [ActivityEvent.Kind.toolExecuted, .suggestionAccepted, .suggestionRejected, .confirmationDenied] {
+            try stores.record(ActivityEvent(kind: kind, timestamp: evening.addingTimeInterval(-3600),
+                connectorID: connector, summary: "PROJECT_ACTIVITY_CANARY"))
+        }
+        let engine = ScriptedEngine(responses: ["must not be called"])
+        let consolidator = Consolidator(router: EngineRouter(ranked: [engine]), stores: stores)
+        let outcome = await consolidator.run(now: evening)
+        #expect(!outcome.ran && !outcome.failed)
+        #expect(await engine.callCount() == 0)
+        #expect(try stores.activeFacts().isEmpty)
+        #expect(try stores.recentActivity().count == 4) // retain the original audit
     }
 
     @Test func consolidationPromptFlattensEmbeddedRoleMarkers() {

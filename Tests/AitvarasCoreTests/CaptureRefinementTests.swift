@@ -4,7 +4,7 @@ import Testing
 import AitvarasCore
 @testable import AitvarasVoice
 
-@Suite struct CaptureRefinementTests {
+@Suite(.timeLimit(.minutes(2))) struct CaptureRefinementTests {
     @Test func catalogueIsPinnedAndOutsideChatCatalogue() throws {
         #expect(CaptureRefinementModel.allCases.count == 2)
         for model in CaptureRefinementModel.allCases {

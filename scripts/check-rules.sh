@@ -66,8 +66,10 @@ elif ! FORK=$(git merge-base "$BASE" HEAD) || ! git cat-file -e "$FORK:$MIGRATIO
 else
     OLD=$(git show "$FORK:$MIGRATIONS" | blocks)
     COUNT=$(grep -c '^@@ ' <<< "$OLD" || true)
-    # This side up to the first migration the base doesn't have.
-    NEW=$(blocks < "$MIGRATIONS" | awk -v n="$COUNT" '/^@@ / && ++seen > n { exit } { print }')
+    # This side up to the first migration the base doesn't have. Read to the end
+    # instead of exiting early: an early exit kills the writer with SIGPIPE, and
+    # pipefail turns that into a silent exit 141.
+    NEW=$(blocks < "$MIGRATIONS" | awk -v n="$COUNT" '/^@@ / && ++seen > n { done = 1 } !done { print }')
     if [[ "$OLD" != "$NEW" ]]; then
         echo "✗ existing migrations changed, reordered or removed (append a new vN-topic migration instead):" >&2
         diff -u <(echo "$OLD") <(echo "$NEW") | tail -n +3 | grep -E '^[-+@]' | head -40 | sed 's/^/    /' >&2 || true

@@ -88,7 +88,7 @@ private actor ActionTestConnector: Connector {
     func callCount() -> Int { calls }
 }
 
-@Suite struct ConnectorHubTests {
+@Suite(.timeLimit(.minutes(2))) struct ConnectorHubTests {
     @Test func pendingConfirmationQueueHasADurableCeiling() async throws {
         let stores = try inMemoryStores()
         for index in 0..<Stores.maximumPendingSuggestions {

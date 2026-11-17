@@ -15,7 +15,7 @@ private func turns(_ pairs: [(String, String)]) -> [ChatMessage] {
     }
 }
 
-@Suite struct ConversationArchiverTests {
+@Suite(.timeLimit(.minutes(2))) struct ConversationArchiverTests {
 
     private let substantive = turns([
         ("Ich fahre eigentlich immer mit dem Rad zur Uni, auch im Winter meistens.",

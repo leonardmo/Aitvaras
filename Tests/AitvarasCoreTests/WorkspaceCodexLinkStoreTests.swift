@@ -15,7 +15,7 @@ func removeWorkspaceCodexLinkMigrationForTest(_ db: Database) throws {
     try db.execute(sql: "DELETE FROM grdb_migrations WHERE identifier = 'v22-workspace-codex-links'")
 }
 
-@Suite struct WorkspaceCodexLinkStoreTests {
+@Suite(.timeLimit(.minutes(2))) struct WorkspaceCodexLinkStoreTests {
     private func snapshot(host: String = "synthetic-host", profile: String = "synthetic-profile", id: String = "synthetic-project",
                           paths: [String] = ["/synthetic/secondary", "/synthetic/main"]) -> NativeProjectSnapshot {
         .init(identity: .init(provider: .codex, hostID: host, profileNamespace: profile, externalID: id),

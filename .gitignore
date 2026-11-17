@@ -11,6 +11,7 @@ __pycache__/
 Models/
 Aitvaras.xcodeproj/
 .build-xcode/
+.build-e2e/
 
 CLAUDE.local.md
 AGENTS.local.md

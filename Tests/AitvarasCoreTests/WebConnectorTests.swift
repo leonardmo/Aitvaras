@@ -24,7 +24,7 @@ private final class PrivateRedirectURLProtocol: URLProtocol, @unchecked Sendable
     override func stopLoading() {}
 }
 
-@Suite struct WebConnectorTests {
+@Suite(.timeLimit(.minutes(2))) struct WebConnectorTests {
     // MARK: - Tag stripping & entity decoding
 
     @Test func tagStrippingAndEntityDecoding() {

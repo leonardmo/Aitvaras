@@ -97,7 +97,15 @@ struct MainWindow: View {
         .buttonStyle(.plain)
         .help(item.title)
         .accessibilityLabel(item.title)
+        .accessibilityIdentifier(item.icon)
         .accessibilityAddTraits(selected ? [.isSelected] : [])
+        .overlay(alignment: .topTrailing) {
+            if item == .chat, model.chatModel?.needsPerson == true {
+                Circle().fill(Color.accentColor).frame(width: 7, height: 7)
+                    .allowsHitTesting(false).accessibilityElement(children: .ignore)
+                    .accessibilityLabel("Chat needs you").accessibilityIdentifier("chat.needsYou")
+            }
+        }
         .background { layoutProbe("button-\(item.rawValue)") }
     }
 
@@ -105,6 +113,29 @@ struct MainWindow: View {
         let flags: [(String, SidebarItem)] = [("--open-setup", .setup), ("--open-news", .news), ("--open-shortcuts", .shortcuts), ("--open-chat", .chat), ("--open-capture", .capture), ("--open-history", .activity)]
         if let route = flags.first(where: { CommandLine.arguments.contains($0.0) }) { return route.1 }
         return AitvarasPreferences.current.string(forKey: "navigation.lastSelection").flatMap(SidebarItem.init(rawValue:)) ?? .today
+    }
+    private var showActivityDock: Bool {
+        !chatSelected || model.currentActivityRuns.contains {
+            $0.trigger == .automatic && $0.state == .running
+        }
+    }
+    @ViewBuilder private var detailDock: some View {
+        if showActivityDock {
+            switch resolvedDockPlacement {
+            case .bottomDock:
+                ActivityDockView(placement: $activityDockPlacement, presentation: .bottomDock, excludesChatFailures: chatSelected)
+                    .padding(.horizontal, 12).padding(.bottom, 12).padding(.top, 10)
+            case .minimized:
+                HStack {
+                    Spacer(minLength: 0)
+                    ActivityDockView(placement: $activityDockPlacement, presentation: .minimized, excludesChatFailures: chatSelected)
+                        .frame(maxWidth: 360)
+                }
+                .padding(.horizontal, 12).padding(.bottom, 12).padding(.top, 10)
+            case .sidebarFooter:
+                EmptyView()
+            }
+        }
     }
     var body: some View {
         // Keep the rail outside NSSplitView's retained divider allocation.
@@ -131,8 +162,8 @@ struct MainWindow: View {
                 .frame(maxHeight: .infinity, alignment: .top)
                 .frame(width: chatSelected ? 246 : 50)
                 .safeAreaInset(edge: .bottom, spacing: 0) {
-                    if resolvedDockPlacement == .sidebarFooter {
-                        ActivityDockView(placement: $activityDockPlacement, presentation: .sidebarFooter)
+                    if showActivityDock, resolvedDockPlacement == .sidebarFooter {
+                        ActivityDockView(placement: $activityDockPlacement, presentation: .sidebarFooter, excludesChatFailures: chatSelected)
                             .padding(8)
                     }
                 }
@@ -153,24 +184,10 @@ struct MainWindow: View {
                     Divider()
                 }
                 destination.frame(maxWidth: .infinity, maxHeight: .infinity)
-            }
-            // The dock belongs to the detail column: a window-level inset lets
-            // column content keep its full height and run underneath the bar.
-            .safeAreaInset(edge: .bottom, spacing: 0) {
-                switch resolvedDockPlacement {
-                case .bottomDock:
-                    ActivityDockView(placement: $activityDockPlacement, presentation: .bottomDock)
-                        .padding(.horizontal, 12).padding(.bottom, 12).padding(.top, 10)
-                case .minimized:
-                    HStack {
-                        Spacer(minLength: 0)
-                        ActivityDockView(placement: $activityDockPlacement, presentation: .minimized)
-                            .frame(maxWidth: 360)
-                    }
-                    .padding(.horizontal, 12).padding(.bottom, 12).padding(.top, 10)
-                case .sidebarFooter:
-                    EmptyView()
-                }
+                // Native split/tab containers do not reliably propagate safe-area
+                // insets to their scroll views. Reserve the dock's full height
+                // (including padding) on every destination so its last row clears it.
+                detailDock
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -262,7 +279,10 @@ struct SettingsWorkspaceView: View {
     }
     var body: some View {
         TabView(selection: $tab) {
-            OnboardingView().tabItem { Label("Setup", systemImage: "checklist") }.tag("setup")
+            if let chat = model.chatModel {
+                AgentProviderSettingsView(chat: chat).tabItem { Label("Providers", systemImage: "cpu") }.tag("providers").accessibilityIdentifier("settings.providers.page")
+            }
+            OnboardingView(openProviders: { tab = "providers" }).tabItem { Label("Setup", systemImage: "checklist") }.tag("setup")
             ConnectorsView().tabItem { Label("Connections", systemImage: "point.3.connected.trianglepath.dotted") }.tag("connections")
             CommandRoutinesView(model: model).tabItem { Label("Routines", systemImage: "command") }.tag("routines")
             BackgroundReviewView().tabItem { Label("Automatic Work", systemImage: "clock") }.tag("background")

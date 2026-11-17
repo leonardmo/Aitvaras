@@ -6,6 +6,7 @@ import AitvarasCore
 import AitvarasStore
 import AitvarasEngines
 import AitvarasAgent
+import AitvarasAgents
 import AitvarasConnectors
 import AitvarasVoice
 
@@ -68,6 +69,9 @@ final class AppModel {
     private(set) var captureOllamaModelName: String?
     private(set) var hub: ConnectorHub?
     private(set) var agentLoop: AgentLoop?
+    private(set) var agentSessionManager: AgentSessionManager?
+    private(set) var chatModel: ChatModel?
+    private(set) var localAgentReplyActive = false
     private(set) var voice: ConversationController?
     private(set) var neuralTTS: NeuralTTS?
     private(set) var integrations: IntegrationCoordinator?
@@ -111,7 +115,10 @@ final class AppModel {
     // Existing conversations remain unassigned until the user chooses otherwise.
     var workspaceProjects: [WorkspaceProject] = []
     var workspaceChats: [WorkspaceChat] = []
+    var workspaceSidebarChats: [WorkspaceChat] = []
     var unassignedChatConversations: [Conversation] = []
+    var showingEarlierChat = false
+    var defaultChatProjectID: UUID?
     var selectedWorkspaceProjectID: UUID?
     var selectedWorkspaceChatID: UUID?
     var workspaceMessage: String?
@@ -159,7 +166,8 @@ final class AppModel {
             }
         }
         if isRoutingTypedTurn { return .idle }
-        return isResponding ? .thinking : .idle
+        let selectedChatRunning = selectedWorkspaceChatID.map { chatModel?.state?.chatID == $0 && chatModel?.state?.isRunning == true } ?? false
+        return (selectedWorkspaceChatID == nil ? isResponding : selectedChatRunning) ? .thinking : .idle
     }
     var mouthLevel: Float { voiceSnapshot.mouthLevel }
 
@@ -260,9 +268,10 @@ final class AppModel {
             activityReporter = reporter
             monitoringFailureHandled = false
             reporter.recoverInterruptedRuns()
-            try codexWorkspace.configure(stores: stores, reporter: reporter)
-            try claudeWorkspace.configure(stores: stores, reporter: reporter)
-            try codexNativeWorkspace.configure(stores: stores, reporter: reporter)
+            // Recover saved legacy evidence without initializing retired owners.
+            _ = try stores.reconcileUnfinishedWorkspaceFrontierTurns()
+            _ = try stores.reconcileUnfinishedWorkspaceClaudeTurns()
+            _ = try stores.reconcileUnfinishedWorkspaceCodexNativeOperations()
             backgroundPolicy = try stores.backgroundWorkPolicy()
             startupID = reporter.begin(ActivityRun(
                 category: .startup, trigger: .startup, title: "Starting Aitvaras",
@@ -331,6 +340,7 @@ final class AppModel {
                 retriever: integrations.retriever,
                 routineReviewer: routineReviewer, reporter: reporter)
             self.agentLoop = agentLoop
+            try await bootstrapAgentChats(stores: stores, agentLoop: agentLoop)
             integrations.attach(agentLoop: agentLoop)
             let routineExecutor = CommandRoutineExecutor(hub: hub, stores: stores, reporter: reporter)
             self.routineExecutor = routineExecutor
@@ -410,9 +420,80 @@ final class AppModel {
     // MARK: Chat
 
     @discardableResult
+    private func bootstrapAgentChats(stores: Stores, agentLoop: AgentLoop) async throws {
+        let inherited = ProcessInfo.processInfo.environment
+        let environment = try await Task.detached {
+            try await ProviderEnvironment.resolve(inherited: inherited)
+        }.value
+        let isolated = AitvarasPaths.isIsolated
+        let claude = ClaudeBackend(executable: AgentProviderLaunchPolicy.executable(.claude,
+            environment: inherited, isolated: isolated), environment: environment,
+            overrides: isolated && inherited["AITVARAS_FAKE_CLAUDE"] != nil
+                ? ["CLAUDE_CONFIG_DIR": AitvarasPaths.stateDirectory.appendingPathComponent("FakeProviders/claude").path] : [:])
+        let codex = CodexBackend(executable: AgentProviderLaunchPolicy.executable(.codex,
+            environment: inherited, isolated: isolated), environment: environment)
+        let local = LocalChatBackendFactory.make(environment: environment) { [weak self] configuration, input in
+            guard let self else { throw AgentFailure.offline }
+            return try await self.localAgentReply(agentLoop: agentLoop, configuration: configuration, input: input)
+        }
+        let backends: [AgentProvider: any AgentBackend] = [.claude: claude, .codex: codex, .local: local]
+        let available = backends.filter { AgentProviderLaunchPolicy.allows($0.key, environment: inherited, isolated: isolated) }
+        let manager = try AgentSessionManager(persistence: stores, backend: { provider in
+            guard let backend = available[provider] else { throw AgentFailure.offline }
+            return backend
+        }, audit: { _ = try stores.record($0) })
+        nativeWorkspace.readerFactory = { provider in
+            NativeBackendSessionReader(provider: provider, backend: available[provider == .claude ? .claude : .codex])
+        }
+        agentSessionManager = manager
+        chatModel = ChatModel(manager: manager, stores: stores, backends: available)
+        chatModel?.didCreateChat = { [weak self] id in self?.openWorkspaceChat(id) }
+        chatModel?.activityChanged = { [weak self] in self?.refreshWorkspaces() }
+        chatModel?.observeSidebar(workspaceSidebarChats)
+        if let selectedWorkspaceChatID { chatModel?.select(selectedWorkspaceChatID) }
+        else { chatModel?.prepareNew(projectID: try? stores.newChatProjectID()) }
+    }
+
+    private func localAgentReply(agentLoop: AgentLoop, configuration: AgentSessionConfiguration,
+                                 input: AgentInput) throws -> AsyncThrowingStream<String, Error> {
+        guard !localAgentReplyActive, !isResponding, !microphoneInUseByVoice, !captureRefinement.isProcessing else {
+            throw AgentFailure.invalidTransition
+        }
+        localAgentReplyActive = true
+        return AsyncThrowingStream { continuation in
+            let task = Task { [weak self] in
+                defer { self?.localAgentReplyActive = false }
+                // A nonnil project context preserves the existing tool-free,
+                // no-shared-memory project path. Catch-up is already in input.
+                let stream = await ActivityTaskContext.$runID.withValue(input.id) {
+                    await agentLoop.run(history: [], userMessage: input.text,
+                        referenceID: input.id.uuidString, projectTextContext: configuration.instructions)
+                }
+                for await update in stream {
+                    if Task.isCancelled { break }
+                    switch update {
+                    case .textDelta(let text): continuation.yield(text)
+                    case .failed: continuation.finish(throwing: AgentFailure.offline); return
+                    default: break
+                    }
+                }
+                continuation.finish()
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
+    }
+
+    func shutdownAgentChats() async throws {
+        try await chatModel?.shutdown()
+    }
+
     func send(_ text: String) -> Bool {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return false }
+        if let chatID = selectedWorkspaceChatID {
+            return chatModel?.submitText(trimmed, chatID: chatID) ?? false
+        }
+        if !showingEarlierChat, let chatModel { return chatModel.submitNewText(trimmed) }
         guard !selectedUnassignedVoiceHistory else {
             workspaceMessage = "Saved voice history is read-only here. Start a new chat to continue."
             return false
@@ -427,7 +508,7 @@ final class AppModel {
                 message: "Keep chat messages under \(AgentLoop.maximumUserMessageCharacters.formatted()) characters. Add long documents or code folders in Knowledge so Aitvaras can retrieve only the relevant parts.")
             return false
         }
-        guard !isResponding, let agentLoop,
+        guard !isResponding, !localAgentReplyActive, !microphoneInUseByVoice, let agentLoop,
               let stores, let conversationID = chatConversationID else { return false }
         let projectContext: String?
         do {
@@ -512,7 +593,7 @@ final class AppModel {
             }
             self.isRoutingTypedTurn = false
             let stream = await agentLoop.run(history: history, userMessage: trimmed,
-                referenceID: selectedWorkspaceChatID?.uuidString ?? conversationID.uuidString,
+                referenceID: turnID.uuidString,
                 projectTextContext: projectContext)
             for await update in stream {
                 guard !Task.isCancelled, self.currentTurnID == turnID else { break }
@@ -529,6 +610,8 @@ final class AppModel {
         }
         return true
     }
+
+    var localChatActivityReference: String? { currentTurnID?.uuidString }
 
     func cancelTurn() {
         currentTurn?.cancel()
@@ -587,27 +670,7 @@ final class AppModel {
         }
     }
 
-    func newChat() {
-        guard !isWorkspaceSelectionBusy else {
-            workspaceMessage = "Finish or stop the current conversation before creating another chat."
-            return
-        }
-        if selectedWorkspaceProjectID != nil {
-            createWorkspaceChat(title: "New chat", kind: .temporary, purpose: "")
-            return
-        }
-        guard let stores, let previousID = chatConversationID else { return }
-        do {
-            chatConversationID = try stores.rotatePersistentConversation(
-                forKey: Self.chatConversationKey, title: "Chat")
-            messages.removeAll()
-            earlierChatMessagesAreHidden = false
-            archiveStoredConversation(previousID)
-            refreshWorkspaces()
-        } catch {
-            presentError(title: "New chat could not be created", error: error)
-        }
-    }
+    func newChat() { startNewAgentChat() }
 
     /// Flush the ending conversation into memory (episode + durable facts)
     /// before it disappears — fire-and-forget, never blocks the UI.
@@ -657,8 +720,8 @@ final class AppModel {
             workspaceMessage = "Project voice conversations are not connected yet. Use text here, or switch to Unassigned for the existing voice mode."
             return
         }
-        guard voiceEnabled || !captureRefinement.isProcessing else {
-            presentError(title: "Local transcription is running", message: "Finish or stop the second pass before starting a voice conversation.")
+        guard voiceEnabled || (!captureRefinement.isProcessing && !localAgentReplyActive && !isResponding) else {
+            presentError(title: "Local inference is busy", message: "Finish or stop the local response or second pass before starting voice.")
             return
         }
         guard !voiceTransitioning, let voice else { return }
@@ -690,6 +753,7 @@ final class AppModel {
             workspaceMessage = "Project voice conversations are not connected yet. Use text here, or switch to Unassigned for the existing voice mode."
             return
         }
+        guard !localAgentReplyActive, !isResponding, !captureRefinement.isProcessing else { return }
         guard capture?.microphoneInUse != true else {
             presentError(title: "Microphone is in use", message: "Stop the microphone capture before starting a voice conversation.")
             return
@@ -979,7 +1043,8 @@ final class AppModel {
 
     /// Typed prompt from the companion — answered with her voice.
     func askCompanion(_ text: String) {
-        guard let voice else { return }
+        guard selectedWorkspaceProjectID == nil, !localAgentReplyActive, !isResponding,
+              !captureRefinement.isProcessing, let voice else { return }
         Task { await voice.submitTyped(text) }
     }
 

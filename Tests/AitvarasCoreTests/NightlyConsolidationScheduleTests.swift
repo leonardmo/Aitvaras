@@ -2,7 +2,7 @@ import Foundation
 import Testing
 @testable import AitvarasAgent
 
-@Suite struct NightlyConsolidationScheduleTests {
+@Suite(.timeLimit(.minutes(2))) struct NightlyConsolidationScheduleTests {
     private var calendar: Calendar {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(secondsFromGMT: 0)!

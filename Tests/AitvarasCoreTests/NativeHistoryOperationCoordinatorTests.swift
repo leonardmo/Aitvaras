@@ -6,7 +6,7 @@ import AitvarasStore
 import AitvarasConnectors
 
 @MainActor
-@Suite struct NativeHistoryOperationCoordinatorTests {
+@Suite(.timeLimit(.minutes(2))) struct NativeHistoryOperationCoordinatorTests {
     @Test func runningHistoryPrecedesWorkAndProgressIsReal() async throws {
         let stores = try inMemoryStores()
         let coordinator = NativeHistoryOperationCoordinator(reporter: ActivityReporter(stores: stores))

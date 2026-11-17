@@ -1,0 +1,229 @@
+{
+ "steps": [
+  {
+   "action": "press",
+   "identifier": "bubble.left.and.text.bubble.right"
+  },
+  {
+   "action": "press",
+   "identifier": "chat.new.$project"
+  },
+  {
+   "action": "waitFor",
+   "identifier": "chat.provider.codex",
+   "enabled": true,
+   "timeout": 180
+  },
+  {
+   "action": "press",
+   "identifier": "chat.provider.codex"
+  },
+  {
+   "action": "waitFor",
+   "identifier": "chat.composer.send",
+   "enabled": true,
+   "timeout": 180
+  },
+  {
+   "action": "type",
+   "text": "Reply with only this word spelled backwards: nacilep"
+  },
+  {
+   "action": "press",
+   "identifier": "chat.composer.send"
+  },
+  {
+   "action": "waitFor",
+   "text": "Reply with only this word spelled backwards: nacilep",
+   "within": "chat.composer.input",
+   "absent": true,
+   "timeout": 15
+  },
+  {
+   "action": "waitFor",
+   "text": "pelican",
+   "within": "chat.transcript",
+   "caseSensitive": true,
+   "timeout": 180
+  },
+  {
+   "action": "waitFor",
+   "identifier": "chat.composer.stop",
+   "timeout": 180,
+   "absent": true
+  },
+  {
+   "action": "waitFor",
+   "identifier": "chat.provider.claude",
+   "enabled": true,
+   "timeout": 120
+  },
+  {
+   "action": "press",
+   "identifier": "chat.provider.claude"
+  },
+  {
+   "action": "waitFor",
+   "identifier": "chat.composer.send",
+   "enabled": true,
+   "timeout": 120
+  },
+  {
+   "action": "type",
+   "text": "Which word did Codex reply with? Reply with only that word in lowercase, followed by -claude"
+  },
+  {
+   "action": "press",
+   "identifier": "chat.composer.send"
+  },
+  {
+   "action": "waitFor",
+   "text": "Which word did Codex reply with? Reply with only that word in lowercase, followed by -claude",
+   "within": "chat.composer.input",
+   "absent": true,
+   "timeout": 15
+  },
+  {
+   "action": "waitFor",
+   "text": "Context sent to Claude",
+   "within": "chat.transcript",
+   "timeout": 60
+  },
+  {
+   "action": "waitFor",
+   "text": "pelican-claude",
+   "within": "chat.transcript",
+   "caseSensitive": true,
+   "timeout": 180
+  },
+  {
+   "action": "waitFor",
+   "identifier": "chat.composer.stop",
+   "absent": true,
+   "timeout": 180
+  },
+  {
+   "action": "waitFor",
+   "identifier": "chat.error",
+   "absent": true,
+   "timeout": 0
+  },
+  {
+   "action": "waitFor",
+   "identifier": "chat.composer.send",
+   "enabled": true,
+   "timeout": 120
+  },
+  {
+   "action": "type",
+   "text": "Use your Bash tool to run exactly: printf ok > claude-made.txt. Wait for approval."
+  },
+  {
+   "action": "press",
+   "identifier": "chat.composer.send"
+  },
+  {
+   "action": "waitFor",
+   "text": "Use your Bash tool to run exactly: printf ok > claude-made.txt. Wait for approval.",
+   "within": "chat.composer.input",
+   "absent": true,
+   "timeout": 15
+  },
+  {
+   "action": "waitFor",
+   "identifier": "chat.request.0.allow",
+   "enabled": true,
+   "timeout": 180
+  },
+  {
+   "action": "screenshot",
+   "name": "claude-approval"
+  },
+  {
+   "action": "press",
+   "identifier": "chat.request.0.allow"
+  },
+  {
+   "action": "waitFor",
+   "identifier": "chat.tool.completed",
+   "within": "chat.transcript",
+   "timeout": 180
+  },
+  {
+   "action": "waitFor",
+   "identifier": "chat.composer.stop",
+   "absent": true,
+   "timeout": 180
+  },
+  {
+   "action": "screenshot",
+   "name": "claude-tool-done",
+   "delay": 2
+  },
+  {
+   "action": "waitFor",
+   "identifier": "chat.provider.codex",
+   "enabled": true,
+   "timeout": 120
+  },
+  {
+   "action": "press",
+   "identifier": "chat.provider.codex"
+  },
+  {
+   "action": "waitFor",
+   "identifier": "chat.composer.send",
+   "enabled": true,
+   "timeout": 120
+  },
+  {
+   "action": "type",
+   "text": "What did Claude reply with just before running the command? Reply with only that text in uppercase."
+  },
+  {
+   "action": "press",
+   "identifier": "chat.composer.send"
+  },
+  {
+   "action": "waitFor",
+   "text": "What did Claude reply with just before running the command? Reply with only that text in uppercase.",
+   "within": "chat.composer.input",
+   "absent": true,
+   "timeout": 15
+  },
+  {
+   "action": "waitFor",
+   "text": "Context sent to Codex",
+   "within": "chat.transcript",
+   "timeout": 60
+  },
+  {
+   "action": "waitFor",
+   "text": "PELICAN-CLAUDE",
+   "within": "chat.transcript",
+   "caseSensitive": true,
+   "timeout": 180
+  },
+  {
+   "action": "waitFor",
+   "identifier": "chat.composer.stop",
+   "absent": true,
+   "timeout": 180
+  },
+  {
+   "action": "waitFor",
+   "identifier": "chat.error",
+   "absent": true,
+   "timeout": 0
+  },
+  {
+   "action": "screenshot",
+   "name": "codex-caught-up",
+   "delay": 2
+  },
+  {
+   "action": "dumpTree",
+   "name": "final-tree"
+  }
+ ]
+}

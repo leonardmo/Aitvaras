@@ -4,6 +4,7 @@ import Testing
 @testable import AitvarasConnectors
 
 /// Synthetic local executables only. These never authenticate or call a model.
+@Suite(.timeLimit(.minutes(2)))
 struct ClaudeSubscriptionSignInTests {
     @Test func exactSubscriptionArgumentsAndIsolatedEnvironment() async throws {
         let fixture = try Fixture("""
@@ -102,7 +103,7 @@ struct ClaudeSubscriptionSignInTests {
     }
 
     @Test func timeoutEscalatesWhenCLIRefusesTermination() async throws {
-        let fixture = try Fixture("trap '' TERM\nwhile :; do :; done")
+        let fixture = try Fixture("trap '' TERM\ni=0; while [ $i -lt 60 ]; do /bin/sleep 1; i=$((i+1)); done")
         defer { fixture.remove() }
         await #expect(throws: ClaudeSubscriptionSignInError.timeout) {
             try await fixture.host(timeout: 0.1).signIn(guidance: fixture.guidance(), onBrowserURL: { _ in })

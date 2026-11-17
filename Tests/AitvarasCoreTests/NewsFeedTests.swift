@@ -25,7 +25,7 @@ private final class NewsPrivateRedirectProtocol: URLProtocol, @unchecked Sendabl
     override func stopLoading() {}
 }
 
-@Suite struct NewsFeedTests {
+@Suite(.timeLimit(.minutes(2))) struct NewsFeedTests {
     @Test func starterTopicsReplaceTheOldDemoOnceAndPreserveCustomTopics() throws {
         let stores = try inMemoryStores()
         _ = try stores.saveNewsTopic(NewsTopic(

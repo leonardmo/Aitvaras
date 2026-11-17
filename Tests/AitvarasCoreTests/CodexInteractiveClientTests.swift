@@ -5,7 +5,7 @@ import Testing
 import AitvarasCore
 
 /// These launch only tiny generated Node fixtures, never the real Codex CLI.
-@Suite(.enabled(if: CodexSessionReader.findNode() != nil && !AitvarasPaths.externalIntegrationsDisabled))
+@Suite(.enabled(if: CodexSessionReader.findNode() != nil && !AitvarasPaths.externalIntegrationsDisabled), .timeLimit(.minutes(2)))
 struct CodexInteractiveClientTests {
     private enum FixtureError: Error { case refused }
 

@@ -71,7 +71,7 @@ private final class HomeAssistantURLProtocol: URLProtocol, @unchecked Sendable {
     }
 }
 
-@Suite(.serialized) struct HomeAssistantConnectorTests {
+@Suite(.serialized, .timeLimit(.minutes(2))) struct HomeAssistantConnectorTests {
     private let token = "fixture-long-lived-token"
 
     private func session() -> URLSession {

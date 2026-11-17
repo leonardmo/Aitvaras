@@ -1,5 +1,10 @@
 # Aitvaras: private work hub, durable context and distributed execution
 
+**Phase 3 chat execution is superseded by
+[UNIFIED-CHAT-PLAN.md](UNIFIED-CHAT-PLAN.md) and D31/D32.** Use that plan's
+current-status section for the implemented direct CLI UI and still-open gates;
+the adapter approach here is historical. Other product phases remain plans.
+
 Consolidated plan — 2026-10-19. **Planning only; not an implementation or runtime-verification claim.**
 
 Implementation detail and subsequent accepted refinements are tracked in

@@ -1,7 +1,7 @@
 import Foundation
 import Testing
 
-@Suite struct DragonRuntimeAssetTests {
+@Suite(.timeLimit(.minutes(2))) struct DragonRuntimeAssetTests {
     @Test func bundledDragonHasBoundedGeometryAndOnlyLiveFacialControls() throws {
         let root = URL(fileURLWithPath: #filePath).resolvingSymlinksInPath()
             .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()

@@ -94,7 +94,7 @@ and Codex runs ephemerally in a workspace-write sandbox. A successful process
 with denied Claude operations is treated as failure. Delegated tasks remain
 `confirmable` because they consume quota and may modify the selected workspace.
 
-All CLI-backed features now share one provider-neutral boundary and the
+The four non-chat CLI-backed features share one provider-neutral boundary and the
 versioned Aitvaras Cloud Agent Policy. Delegation, nightly memory, connector
 creation and routine review each have an independent Local/Automatic/Claude/
 Codex setting. Automatic mode validates the task result and tries Codex if
@@ -105,6 +105,12 @@ Selections are resolved when a new call starts, so changes take effect without
 restarting the app. Turning routine review on immediately checks unreviewed
 existing candidates. Usage UI exposes monthly totals and recent history for
 each feature.
+
+Interactive project Chat instead uses the direct `AitvarasAgents` backends
+and `AgentSessionManager` (D31/D32). It does not use `CloudAgentService`'s
+restricted feature calls. Those four non-chat features retain the isolation,
+selection and accounting rules here; native chat configuration is not enabled
+for them.
 
 Tool access follows the job: confirmed delegation receives its selected
 workspace because editing is the point. Nightly memory and routine review gain
@@ -279,6 +285,11 @@ run.
 
 ## D30 — One chat transcript; backends catch up on Send ✅ (2026-10-26)
 
+The original adapter contract below remains relevant to legacy readers. D31
+amends consent and the context limit for the current unified Chat: provider
+selection plus Send authorizes catch-up, bounded to 16,000 UTF-8 bytes. New
+chats use normalized sessions and entries; legacy evidence stays readable.
+
 A workspace chat is one conversation, whichever engine answers. Aitvaras owns
 its canonical transcript: local messages, Aitvaras-only Codex turns and linked
 native Codex items (Claude later) form one timeline, and every entry records
@@ -317,3 +328,204 @@ This implements the "explicit context handover" promised in
 [CODEX-BIDIRECTIONAL-INTEGRATION.md](CODEX-BIDIRECTIONAL-INTEGRATION.md) and
 replaces the earlier Aitvaras-only rule that started a fresh Codex thread
 whenever the latest message was local: the thread is now kept and caught up.
+
+## D31 — Chats drive the official CLIs directly 🚧 (2026-11-04)
+
+**Implementation and acceptance:** the unified UI is connected to the direct
+backends, durable journal, native discovery/reconciliation and action coordinator.
+Codex has run through the in-process UI driver. The Claude path through this UI
+has never run live because its CLI login expired; the visible signed-out row and
+offline recordings do not prove a Claude reply, catch-up or browser completion.
+The real Ollama Local gate has not run, so AgentLoop remains the default.
+Old chat adapters, models, helpers and diagnostics are not yet removed: M6.3
+waits for the owner's review. Native menus, file panels, drag and drop and real
+focus are covered only by the XCUITest, which needs the owner's password and
+has not passed that gate. Light/dark and the 800 × 500-point minimum content
+layout also require real-app screenshot review; adding a scenario is not proof.
+
+Replaces the adapter approach in `CLAUDE-INTEGRATION.md` and
+`CODEX-BIDIRECTIONAL-INTEGRATION.md`; plan in `UNIFIED-CHAT-PLAN.md`. Chat runs
+`claude` and `codex app-server` as subprocesses with their default login and
+stores, so chats exist natively in those tools and there is no separate account
+or link step. Child environments inherit the app's environment minus a denylist of
+credential and endpoint overrides: the allowlist dropped `USER`, which pointed the
+CLI at a stale credential item. The session start checks first-party subscription
+status and refuses anything else. API keys stay forbidden.
+
+Changing provider and pressing Send is the consent for sending that chat's earlier
+messages to the provider (amends D30). Every provider action passes
+`AgentActionCoordinator`, using Claude's pre-tool hook callback and Codex's sandbox,
+approvals and item events, so the autonomy policy and activity log still hold.
+Pending permission, plan and question cards wait without an automatic timeout,
+matching the native CLIs. Answers, Stop, provider cancellation or resolution
+(including turn end), and process exit clear them through the audited lifecycle.
+Up to eight chats may have a turn in progress, including approval waits. Idle
+transports do not consume that allowance; at eight retained transports, a new
+chat evicts the least recently used idle one and resumes its durable native
+session on its next Send. Capacity refusal stays inline without failing the chat.
+
+The new chat path bounds each deterministic handover block, including labels, to
+16,000 UTF-8 bytes. It keeps the newest completed messages, orders them
+oldest first, states the omitted count (and explicitly clips an oversized newest
+message at a Unicode character boundary) and advances the per-provider watermark
+only on acknowledgement. Local receives completed context on every Send. Legacy
+adapters retain their existing sharing checks until migration.
+
+Native history refresh publishes a complete canonical branch atomically across
+a chat's refreshed sessions, keyed by native message identity (turn and item
+for Codex, persisted UUID for Claude). Streamed rows retain their display IDs;
+removed branch messages are retired from the projection, with prior observations
+and execution journals retained. Failed, partial or inconsistent reads keep the
+last projection. An unavailable native reader (including a newly created session
+not yet present in native storage or an unsupported full-history surface) does
+not block Send: it uses the retained canonical transcript. Identity conflicts,
+malformed history and persistence failures still fail closed. Passive refresh
+failures do not replace the inline send/sign-in error. A second complete observation checks for changes during refresh;
+it does not reserve the native session against another client. Changed native
+content evicts an idle run so the next Send resumes the updated native session.
+
+Catch-up scans normalized entries and the chat's legacy local, owned and linked
+timeline without the UI page limit. Completed messages from other sessions are
+eligible, including earlier sessions of the same provider. Acknowledged handovers
+record source identities and text digests as well as their exact wire envelope.
+Corrections or deletions invalidate that receipt and send an explicitly labelled
+canonical-history correction on the next Send. Unknown delivery never consumes
+context. Older positional receipts conservatively repeat context. Envelopes are
+stripped only for an exact acknowledged send bound to the canonical user identity
+(and the acknowledged native turn identity for Codex).
+
+Per-chat git worktrees are optional and default off. Their ownership and cwd/root
+mappings are durable; failed or mismatched ownership blocks execution. Explicit
+Commit and confirmed Discard pass the autonomy policy and metadata-only activity
+audit. Discard clears reviewed changes only inside the selected owned worktree;
+it never force-removes a worktree or branch. Ordinary checkouts allow explicit
+Commit, with the user's message and native git hooks, without added attribution.
+
+Local chat now follows D33: sandboxed opencode with Ollama, with the tool-free
+AgentLoop adapter used only when opencode is not installed. The former
+Codex-on-Ollama candidate and its environment switch have been removed.
+
+## D32 — Chat opens the unified composer; every new chat has a project ✅ (2026-11-06)
+
+The Chat tab follows the Claude and Codex desktop apps. With no chat selected,
+or after New Chat, it shows an empty unified transcript and a ready composer.
+There is no creation dialog, Create/Cancel pair, project-less new chat or automatic
+catch-all workspace. First Send creates the record; abandoned drafts leave none.
+
+The composer's flat project menu (`chat.project`) preselects an explicitly requested
+project, then the optional default project, then the most recently used visible
+project. Its final item, “Add project…”, opens the folder picker. With no projects,
+it reads “Choose project”, Send is disabled and one short line explains why. Git
+projects offer a small worktree control beside the picker, off by default.
+
+Default project is a profile-local, initially unset choice, changed through a
+project row's “Set as default” / “Remove as default” context item and indicated by
+a small marker. Removing or hiding that project silently clears the choice.
+
+Projects and chats live together in the sidebar. A chat opens with one click,
+including across projects, retains a clear selection highlight and cannot be hidden
+by collapsing its project. Each project shows its five most recently active chats,
+plus every running or waiting chat; older chats are behind “Show more” / “Show less”.
+The selected chat also stays visible. A project's + opens its unsaved composer.
+Old conversations without projects remain readable in `LocalChatView`, exclusively
+through the bottom “Earlier chats” group, collapsed behind its own “Show more” and
+absent when empty. Existing voice and companion paths remain supported.
+
+One accessible icon per chat derives from the M3.12 state: animated running,
+accent-coloured and prominent needs-you (approval, plan or question), filled dot for
+completed but unseen, failed or interrupted. Idle/seen has no icon. A profile-local
+read receipt identifies the last completed turn seen; opening a chat clears its dot,
+and completion while visible is acknowledged immediately. The main Chat icon has
+an accent badge whenever any chat needs the person.
+
+New chats use the last provider chosen or sent with. A fresh profile starts on
+Local, except when no local model is available and an installed, signed-in provider
+exists. Signed-out providers remain selectable; Send retains the existing single
+sign-in action and safe retry. Setup includes a visible “AI providers” card
+(`settings.providers`) opening `AgentProviderSettingsView`. Section 4 of the unified
+chat plan still governs gauges, icons, flat menus and the absence of start buttons
+and checkboxes.
+
+Chat's composer and transcript share a centred column. The composer is one rounded
+card with input above a fixed control row: attach, project, provider, model, effort,
+mode; then reserved gauge slots and Send/Stop on the right. Send remains beside
+Stop whenever there is input, using the existing follow-up delivery. At narrow
+widths the provider segments collapse to a menu, then the project becomes an
+icon menu, then effort and mode become icon menus. Controls stay on one row
+without scrolling. Changes opens only
+from the toolbar's changed-file count (`chat.changes`), never automatically.
+Gauges use a static full track and a small percentage number. Unsupported controls
+and unknown gauges reserve space without drawing empty controls. Accepted input
+leaves the composer as soon as its transcript entry and delivery journal are saved,
+including when provider startup subsequently requires sign-in. Sign-in retries
+restore that saved input, never the current draft. Restored chat/provider settings
+are checked against the cached provider catalog on selection and before Send.
+
+On Chat, the activity dock appears only while automatic work is actually running;
+manual chat/provider failures remain inline and do not add dock attention. Other
+tabs retain their activity presentation. The dock reserves real layout height so
+native split views cannot draw the composer or error actions underneath it.
+
+## D33 — Local uses sandboxed opencode and Ollama ✅ (2026-11-07)
+
+Owner decision: Local must use an open source agent harness and keep file
+processing on this Mac. opencode (MIT) supplies tools, editing, context and
+permissions; building and maintaining another agent harness was rejected.
+Local no longer launches Codex or any OpenAI CLI. There is no cloud-provider,
+API-key or subscription fallback when Local is selected.
+
+Aitvaras launches one on-demand `opencode serve` process per profile through
+`StreamingProcess`, under a generated macOS `sandbox-exec` policy. Network is
+restricted to loopback, including descendants. Writes are limited to the chat's
+project folders (including its worktree and additional roots), isolated
+opencode XDG/home directories under `AitvarasPaths`, and the temp directory.
+The normal opencode home/config/plugins are not inherited; project config and
+external skills are disabled. Config admits only Ollama at loopback, disables
+sharing and auto-update, and starts with tool permissions asking, except denied
+web search and question tools. The startup HTTP password is transient memory used only for Basic authentication;
+it never becomes a transcript event, diagnostic, DB value or activity field.
+
+A live server cannot acquire additional write roots. A different folder set
+restarts it only when its sessions are idle; conflicting active requests fail
+inline. Idle sessions resume from the same isolated data store. This keeps one
+server per profile without widening authority across simultaneous chats.
+Shutting down the final run, backend or app terminates the isolated process group,
+including the sandbox wrapper and descendants: SIGTERM, then SIGKILL after two
+seconds. A PID file in the isolated data directory supports startup recovery;
+stale cleanup verifies an opencode serve process and its owned group before
+signalling. Native sessions remain resumable after the server stops.
+
+Ask requires approval for shell and edits. Accept Edits and Auto permit typed
+reversible edits through the audited coordinator; shell remains confirmable in
+all modes. Read permissions pass policy and are audited automatically. Plan
+denies shell and edits (a shell command cannot be proved read-only from text).
+Web search is off; web fetch has an Ask permission but remote network requests
+are blocked by the sandbox. The question tool is denied in generated config and
+session permissions; Local asks questions in plain text. The tested form adapter
+remains defensive support for unexpected native forms. Unsupported blocking
+permissions, forms or questions are cancelled or interrupted with a visible
+“Not supported here” line. Informational events, including instructions, inbox,
+usage, project/plugin updates and unknown non-blocking events, never cancel a turn.
+Local currently has no native plan cards, attachments, slash commands, file
+completion or effort control.
+
+Installed models are discovered from Ollama's loopback `/api/tags`, without
+loading/pulling weights. Remote/cloud model metadata is excluded. Missing
+Ollama or no eligible model reports unavailable. Missing opencode selects the
+existing text-only AgentLoop, and Providers says “Install opencode for tools”
+with the reason; there is no installer/download action. Errors after opencode
+selection fail visibly instead of selecting a different backend.
+
+opencode sessions persist native IDs and participate in the same acknowledged,
+revision-aware 16,000-byte catch-up as Claude and Codex, into and out of Local.
+This amends D30/D31's stateless Local rule only for opencode; text-only Local
+still reads completed context each turn. Changing providers sends nothing;
+Send authorizes that chat's catch-up. Native opencode history reconciliation is
+not advertised; the Aitvaras transcript remains authoritative.
+
+Host recordings from opencode 2.2.6 establish the HTTP/SSE protocol, Allow,
+Reject and Stop with a local model under a sandbox. They do not establish
+unified-app acceptance, the exact generated isolation config, model reliability
+or memory/voice coexistence. Host self-drive and manual sandbox-denial checks
+remain required. Exposing Aitvaras knowledge through a policy-gated MCP server
+is an open follow-up; it is not available to opencode in this batch.

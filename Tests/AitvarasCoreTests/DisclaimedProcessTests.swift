@@ -2,7 +2,7 @@ import Foundation
 import Testing
 @testable import AitvarasCore
 
-@Suite struct DisclaimedProcessTests {
+@Suite(.timeLimit(.minutes(2))) struct DisclaimedProcessTests {
     @Test func capturesBothOutputStreamsWithoutLeakingToParentConsole() async throws {
         let output = try await DisclaimedProcess.run(
             executable: "/bin/sh",

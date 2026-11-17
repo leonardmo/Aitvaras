@@ -2,7 +2,7 @@ import Foundation
 import Testing
 import AitvarasCore
 
-@Suite struct CaptureSettingsTests {
+@Suite(.timeLimit(.minutes(2))) struct CaptureSettingsTests {
     @Test func defaultsDoNotFollowConversationLanguage() {
         let suite = "app.aitvaras.tests.capture.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suite)!

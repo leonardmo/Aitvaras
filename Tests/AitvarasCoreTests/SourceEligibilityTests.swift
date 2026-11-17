@@ -33,7 +33,7 @@ private actor PausedScopeEmbedder: EmbeddingEngine {
     func release() { released = true }
 }
 
-@Suite struct SourceEligibilityTests {
+@Suite(.timeLimit(.minutes(2))) struct SourceEligibilityTests {
     @Test func automaticScanDoesNothingUntilReviewedAndPausedScansStayBlocked() async throws {
         let stores = try inMemoryStores()
         let root = try directory()

@@ -4,7 +4,7 @@ import GRDB
 import AitvarasCore
 import AitvarasStore
 
-@Suite struct WorkspaceStoreTests {
+@Suite(.timeLimit(.minutes(2))) struct WorkspaceStoreTests {
     @Test func projectsWithDuplicateTitlesAreDistinctAndHiddenProjectsKeepEverything() throws {
         let stores = try inMemoryStores()
         var project = try stores.createWorkspaceProject(title: "Example", instructions: "Keep local",

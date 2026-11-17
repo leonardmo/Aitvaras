@@ -3,6 +3,7 @@ import Testing
 import Darwin
 @testable import AitvarasConnectors
 
+@Suite(.timeLimit(.minutes(2)))
 struct ProjectFileReaderTests {
     private struct Fixture {
         let directory: URL

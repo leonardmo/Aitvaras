@@ -1,0 +1,25 @@
+{
+  "steps": [
+    {
+      "action": "press",
+      "identifier": "bubble.left.and.text.bubble.right"
+    },
+    {
+      "action": "press",
+      "identifier": "chat.new.unassigned"
+    },
+    {
+      "action": "waitFor",
+      "identifier": "chat.composer.input",
+      "timeout": 10
+    },
+    {
+      "action": "dumpTree",
+      "name": "picker-new-chat-tree"
+    },
+    {
+      "action": "press",
+      "identifier": "chat.project"
+    }
+  ]
+}

@@ -3,7 +3,7 @@ import Testing
 import AitvarasCore
 import AitvarasStore
 
-@Suite struct WorkspaceHandoverTests {
+@Suite(.timeLimit(.minutes(2))) struct WorkspaceHandoverTests {
     private func setup(_ stores: Stores) throws -> (WorkspaceChat, WorkspaceFrontierSession) {
         let project = try stores.createWorkspaceProject(title: "Synthetic project")
         let chat = try stores.createWorkspaceChat(projectID: project.id, title: "Synthetic chat")

@@ -1,0 +1,712 @@
+{
+  "steps": [
+    {
+      "action": "screenshot",
+      "name": "01-launch",
+      "delay": 3
+    },
+    {
+      "action": "dumpTree",
+      "name": "01-launch-tree"
+    },
+    {
+      "action": "press",
+      "identifier": "bubble.left.and.text.bubble.right"
+    },
+    {
+      "action": "screenshot",
+      "name": "02-chat-empty",
+      "delay": 2
+    },
+    {
+      "action": "dumpTree",
+      "name": "02-chat-tree"
+    },
+    {
+      "action": "press",
+      "identifier": "chat.new.unassigned"
+    },
+    {
+      "action": "screenshot",
+      "name": "03-new-chat",
+      "delay": 2
+    },
+    {
+      "action": "dumpTree",
+      "name": "03-new-chat-tree"
+    },
+    {
+      "action": "waitFor",
+      "identifier": "chat.composer.input",
+      "timeout": 10
+    },
+    {
+      "action": "waitFor",
+      "identifier": "chat.provider.codex",
+      "enabled": true,
+      "timeout": 180
+    },
+    {
+      "action": "press",
+      "identifier": "chat.provider.codex"
+    },
+    {
+      "action": "screenshot",
+      "name": "04-codex-first-selected",
+      "delay": 2
+    },
+    {
+      "action": "waitFor",
+      "identifier": "chat.composer.input",
+      "timeout": 10
+    },
+    {
+      "action": "type",
+      "text": "Reply with only this word spelled backwards: nacilep"
+    },
+    {
+      "action": "press",
+      "identifier": "chat.composer.send"
+    },
+    {
+      "action": "waitFor",
+      "text": "Reply with only this word spelled backwards: nacilep",
+      "within": "chat.composer.input",
+      "absent": true,
+      "timeout": 15
+    },
+    {
+      "action": "screenshot",
+      "name": "05-codex-first-streaming",
+      "delay": 2
+    },
+    {
+      "action": "waitFor",
+      "text": "pelican",
+      "timeout": 90,
+      "within": "chat.transcript"
+    },
+    {
+      "action": "screenshot",
+      "name": "06-codex-first-replied",
+      "delay": 3
+    },
+    {
+      "action": "dumpTree",
+      "name": "06-codex-first-tree"
+    },
+    {
+      "action": "press",
+      "identifier": "chat.provider.codex"
+    },
+    {
+      "action": "screenshot",
+      "name": "07-codex-selected",
+      "delay": 2
+    },
+    {
+      "action": "waitFor",
+      "identifier": "chat.composer.input",
+      "timeout": 10
+    },
+    {
+      "action": "type",
+      "text": "Which word did you just reply with? Reply with only that word, in capitals."
+    },
+    {
+      "action": "press",
+      "identifier": "chat.composer.send"
+    },
+    {
+      "action": "waitFor",
+      "text": "Which word did you just reply with? Reply with only that word, in capitals.",
+      "within": "chat.composer.input",
+      "absent": true,
+      "timeout": 15
+    },
+    {
+      "action": "waitFor",
+      "text": "PELICAN",
+      "timeout": 120,
+      "within": "chat.transcript",
+      "caseSensitive": true
+    },
+    {
+      "action": "screenshot",
+      "name": "08-codex-replied",
+      "delay": 3
+    },
+    {
+      "action": "waitFor",
+      "identifier": "chat.composer.input",
+      "timeout": 10
+    },
+    {
+      "action": "press",
+      "identifier": "chat.new.$project"
+    },
+    {
+      "action": "waitFor",
+      "text": "PELICAN",
+      "within": "chat.transcript",
+      "caseSensitive": true,
+      "timeout": 0,
+      "absent": true
+    },
+    {
+      "action": "type",
+      "text": "Reply with only this word spelled backwards: niugnep"
+    },
+    {
+      "action": "press",
+      "identifier": "chat.composer.send"
+    },
+    {
+      "action": "waitFor",
+      "text": "Reply with only this word spelled backwards: niugnep",
+      "within": "chat.composer.input",
+      "absent": true,
+      "timeout": 15
+    },
+    {
+      "action": "waitFor",
+      "text": "penguin",
+      "within": "chat.transcript",
+      "timeout": 120
+    },
+    {
+      "action": "press",
+      "identifier": "chat.sidebar.$chat1"
+    },
+    {
+      "action": "waitFor",
+      "text": "PELICAN",
+      "within": "chat.transcript",
+      "caseSensitive": true,
+      "timeout": 10
+    },
+    {
+      "action": "press",
+      "identifier": "chat.sidebar.$chat2"
+    },
+    {
+      "action": "waitFor",
+      "text": "penguin",
+      "within": "chat.transcript",
+      "timeout": 10
+    },
+    {
+      "action": "press",
+      "identifier": "chat.sidebar.$chat1"
+    },
+    {
+      "action": "waitFor",
+      "text": "PELICAN",
+      "within": "chat.transcript",
+      "caseSensitive": true,
+      "timeout": 10
+    },
+    {
+      "action": "press",
+      "identifier": "chat.new.$project"
+    },
+    {
+      "action": "waitFor",
+      "text": "PELICAN",
+      "within": "chat.transcript",
+      "caseSensitive": true,
+      "timeout": 0,
+      "absent": true
+    },
+    {
+      "action": "type",
+      "text": "Use your shell tool to create an empty file named e2e-made.txt in the current folder."
+    },
+    {
+      "action": "press",
+      "identifier": "chat.composer.send"
+    },
+    {
+      "action": "waitFor",
+      "text": "Use your shell tool to create an empty file named e2e-made.txt in the current folder.",
+      "within": "chat.composer.input",
+      "absent": true,
+      "timeout": 15
+    },
+    {
+      "action": "waitFor",
+      "identifier": "chat.request.0.allow",
+      "timeout": 120
+    },
+    {
+      "action": "waitFor",
+      "identifier": "chat.sidebar.$chat3.status.needsYou",
+      "timeout": 10
+    },
+    {
+      "action": "waitFor",
+      "identifier": "chat.needsYou",
+      "timeout": 10
+    },
+    {
+      "action": "screenshot",
+      "name": "09-approval-card"
+    },
+    {
+      "action": "dumpTree",
+      "name": "09-approval-tree"
+    },
+    {
+      "action": "waitFor",
+      "identifier": "chat.request.1.allow",
+      "timeout": 0,
+      "absent": true
+    },
+    {
+      "action": "press",
+      "identifier": "chat.request.0.allow"
+    },
+    {
+      "action": "waitFor",
+      "identifier": "chat.request.0.allow",
+      "timeout": 15,
+      "delay": 1,
+      "optional": true
+    },
+    {
+      "action": "press",
+      "identifier": "chat.request.0.allow",
+      "optional": true
+    },
+    {
+      "action": "waitFor",
+      "identifier": "chat.request.0.allow",
+      "timeout": 15,
+      "delay": 1,
+      "optional": true
+    },
+    {
+      "action": "press",
+      "identifier": "chat.request.0.allow",
+      "optional": true
+    },
+    {
+      "action": "waitFor",
+      "identifier": "chat.request.0.allow",
+      "timeout": 15,
+      "delay": 1,
+      "optional": true
+    },
+    {
+      "action": "press",
+      "identifier": "chat.request.0.allow",
+      "optional": true
+    },
+    {
+      "action": "waitFor",
+      "identifier": "chat.request.0.allow",
+      "timeout": 15,
+      "delay": 1,
+      "optional": true
+    },
+    {
+      "action": "press",
+      "identifier": "chat.request.0.allow",
+      "optional": true
+    },
+    {
+      "action": "waitFor",
+      "anyOf": [
+        "chat.tool.completed",
+        "chat.tool.unconfirmed"
+      ],
+      "within": "chat.transcript",
+      "timeout": 120
+    },
+    {
+      "action": "waitFor",
+      "identifier": "chat.changes.refresh",
+      "absent": true,
+      "timeout": 0
+    },
+    {
+      "action": "screenshot",
+      "name": "10-after-approval",
+      "delay": 15
+    },
+    {
+      "action": "press",
+      "identifier": "chat.changes"
+    },
+    {
+      "action": "type",
+      "text": "Write a 400 word story about a dragon."
+    },
+    {
+      "action": "press",
+      "identifier": "chat.composer.send"
+    },
+    {
+      "action": "waitFor",
+      "text": "Write a 400 word story about a dragon.",
+      "within": "chat.composer.input",
+      "absent": true,
+      "timeout": 15
+    },
+    {
+      "action": "waitFor",
+      "identifier": "chat.stop",
+      "timeout": 30
+    },
+    {
+      "action": "screenshot",
+      "name": "11-running"
+    },
+    {
+      "action": "press",
+      "identifier": "chat.stop"
+    },
+    {
+      "action": "screenshot",
+      "name": "12-stopped",
+      "delay": 5
+    },
+    {
+      "action": "press",
+      "identifier": "chat.new.$project"
+    },
+    {
+      "action": "type",
+      "text": "Reply with only this word spelled backwards: elpmaxe"
+    },
+    {
+      "action": "press",
+      "identifier": "chat.composer.send"
+    },
+    {
+      "action": "waitFor",
+      "text": "Reply with only this word spelled backwards: elpmaxe",
+      "within": "chat.composer.input",
+      "absent": true,
+      "timeout": 15
+    },
+    {
+      "action": "waitFor",
+      "text": "example",
+      "within": "chat.transcript",
+      "timeout": 120
+    },
+    {
+      "action": "press",
+      "identifier": "chat.new.$project"
+    },
+    {
+      "action": "type",
+      "text": "Reply with only this word spelled backwards: elpmaxe"
+    },
+    {
+      "action": "press",
+      "identifier": "chat.composer.send"
+    },
+    {
+      "action": "waitFor",
+      "text": "Reply with only this word spelled backwards: elpmaxe",
+      "within": "chat.composer.input",
+      "absent": true,
+      "timeout": 15
+    },
+    {
+      "action": "waitFor",
+      "text": "example",
+      "within": "chat.transcript",
+      "timeout": 120
+    },
+    {
+      "action": "press",
+      "identifier": "chat.new.$project"
+    },
+    {
+      "action": "type",
+      "text": "Reply with only this word spelled backwards: elpmaxe"
+    },
+    {
+      "action": "press",
+      "identifier": "chat.composer.send"
+    },
+    {
+      "action": "waitFor",
+      "text": "Reply with only this word spelled backwards: elpmaxe",
+      "within": "chat.composer.input",
+      "absent": true,
+      "timeout": 15
+    },
+    {
+      "action": "waitFor",
+      "text": "example",
+      "within": "chat.transcript",
+      "timeout": 120
+    },
+    {
+      "action": "press",
+      "identifier": "chat.new.$project"
+    },
+    {
+      "action": "type",
+      "text": "Reply with only this word spelled backwards: elpmaxe"
+    },
+    {
+      "action": "press",
+      "identifier": "chat.composer.send"
+    },
+    {
+      "action": "waitFor",
+      "text": "Reply with only this word spelled backwards: elpmaxe",
+      "within": "chat.composer.input",
+      "absent": true,
+      "timeout": 15
+    },
+    {
+      "action": "waitFor",
+      "text": "example",
+      "within": "chat.transcript",
+      "timeout": 120
+    },
+    {
+      "action": "waitFor",
+      "identifier": "chat.project.$project.more",
+      "timeout": 10
+    },
+    {
+      "action": "press",
+      "identifier": "chat.project.$project.more"
+    },
+    {
+      "action": "waitFor",
+      "identifier": "chat.sidebar.$chat2",
+      "timeout": 10
+    },
+    {
+      "action": "press",
+      "identifier": "chat.sidebar.$chat2"
+    },
+    {
+      "action": "waitFor",
+      "text": "penguin",
+      "within": "chat.transcript",
+      "timeout": 10
+    },
+    {
+      "action": "press",
+      "identifier": "chat.project.$project.more"
+    },
+    {
+      "action": "waitFor",
+      "identifier": "chat.sidebar.$chat2",
+      "timeout": 10
+    },
+    {
+      "action": "press",
+      "identifier": "chat.provider.local"
+    },
+    {
+      "action": "screenshot",
+      "name": "13-local-selected",
+      "delay": 2
+    },
+    {
+      "action": "press",
+      "identifier": "chat.new.$project"
+    },
+    {
+      "action": "press",
+      "identifier": "chat.provider.local"
+    },
+    {
+      "action": "type",
+      "text": "Use your bash shell tool to run exactly: printf example > local-approved.txt. Do not use an edit tool. Wait for approval."
+    },
+    {
+      "action": "press",
+      "identifier": "chat.composer.send"
+    },
+    {
+      "action": "waitFor",
+      "text": "Use your bash shell tool to run exactly: printf example > local-approved.txt. Do not use an edit tool. Wait for approval.",
+      "within": "chat.composer.input",
+      "absent": true,
+      "timeout": 300
+    },
+    {
+      "action": "waitFor",
+      "identifier": "chat.request.0.allow",
+      "timeout": 300
+    },
+    {
+      "action": "screenshot",
+      "name": "local-approval"
+    },
+    {
+      "action": "press",
+      "identifier": "chat.request.0.allow"
+    },
+    {
+      "action": "waitFor",
+      "identifier": "chat.request.0.allow",
+      "timeout": 300,
+      "absent": true
+    },
+    {
+      "action": "waitFor",
+      "identifier": "chat.tool.completed",
+      "within": "chat.transcript",
+      "timeout": 300
+    },
+    {
+      "action": "waitFor",
+      "identifier": "chat.composer.stop",
+      "timeout": 300,
+      "absent": true
+    },
+    {
+      "action": "press",
+      "identifier": "chat.new.$project"
+    },
+    {
+      "action": "press",
+      "identifier": "chat.provider.local"
+    },
+    {
+      "action": "type",
+      "text": "Use your bash shell tool to run exactly: printf example > local-denied.txt. Do not use an edit tool. Wait for approval."
+    },
+    {
+      "action": "press",
+      "identifier": "chat.composer.send"
+    },
+    {
+      "action": "waitFor",
+      "text": "Use your bash shell tool to run exactly: printf example > local-denied.txt. Do not use an edit tool. Wait for approval.",
+      "within": "chat.composer.input",
+      "absent": true,
+      "timeout": 300
+    },
+    {
+      "action": "waitFor",
+      "identifier": "chat.request.0.allow",
+      "timeout": 300
+    },
+    {
+      "action": "screenshot",
+      "name": "local-denial"
+    },
+    {
+      "action": "press",
+      "identifier": "chat.request.0.deny"
+    },
+    {
+      "action": "waitFor",
+      "identifier": "chat.request.0.allow",
+      "timeout": 300,
+      "absent": true
+    },
+    {
+      "action": "waitFor",
+      "identifier": "chat.composer.stop",
+      "timeout": 300,
+      "absent": true
+    },
+    {
+      "action": "screenshot",
+      "name": "14-composer-controls"
+    },
+    {
+      "action": "dumpTree",
+      "name": "14-picker-tree"
+    },
+    {
+      "action": "press",
+      "identifier": "gearshape"
+    },
+    {
+      "action": "screenshot",
+      "name": "15-settings",
+      "delay": 2
+    },
+    {
+      "action": "press",
+      "identifier": "cpu"
+    },
+    {
+      "action": "waitFor",
+      "identifier": "settings.providers.page",
+      "timeout": 300
+    },
+    {
+      "action": "screenshot",
+      "name": "16-settings-providers",
+      "delay": 2
+    },
+    {
+      "action": "dumpTree",
+      "name": "16-settings-tree"
+    },
+    {
+      "action": "press",
+      "identifier": "bubble.left.and.text.bubble.right"
+    },
+    {
+      "action": "press",
+      "identifier": "chat.new.$project"
+    },
+    {
+      "action": "press",
+      "identifier": "chat.provider.claude"
+    },
+    {
+      "action": "type",
+      "text": "Reply with only this word spelled backwards: nacilep"
+    },
+    {
+      "action": "press",
+      "identifier": "chat.composer.send"
+    },
+    {
+      "action": "waitFor",
+      "text": "Reply with only this word spelled backwards: nacilep",
+      "within": "chat.composer.input",
+      "absent": true,
+      "timeout": 15
+    },
+    {
+      "action": "screenshot",
+      "name": "17-claude-send",
+      "delay": 3
+    },
+    {
+      "action": "dumpTree",
+      "name": "17-claude-tree"
+    },
+    {
+      "action": "waitFor",
+      "text": "Sign in to Claude",
+      "within": "chat.error",
+      "timeout": 30
+    },
+    {
+      "action": "waitFor",
+      "identifier": "chat.signin",
+      "within": "chat.error",
+      "timeout": 10
+    },
+    {
+      "action": "waitFor",
+      "identifier": "chat.changes.refresh",
+      "absent": true,
+      "timeout": 0
+    },
+    {
+      "action": "screenshot",
+      "name": "18-claude-replied"
+    }
+  ]
+}
