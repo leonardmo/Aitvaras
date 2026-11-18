@@ -803,9 +803,12 @@ an open completion or sends. Marked text defers Return to the input method.
 
 Home shows at most five attention rows in Decisions, Problems, Notices order,
 with approvals first and one “N more” link into History's attention mode for
-all remaining kinds. Approval and tool-suggestion rows have labeled Approve
-and Reject buttons, no ✕ and no Undo; rejection retains the existing policy
-and audit paths. Captures waiting to be saved have Save/Open actions only.
+all remaining kinds. Agent permission requests use the same full approval
+card as Chat (every detail line, the reason, Allow/Deny and Always allow);
+plan approvals and question forms stay in Chat. Tool suggestions have labeled
+Approve and Reject buttons. Neither has a ✕ or Undo, and rejection keeps the
+existing policy and audit paths. Captures waiting to be saved have Save/Open
+actions only.
 
 Dismiss all acknowledges failed/interrupted problems, dismisses held updates
 and defers the automatic-work review prompt. It skips approvals, unsaved
@@ -832,8 +835,9 @@ after the failure finished clears it through a database query over persisted
 evidence, without writing an automatic acknowledgement or using the recent-run
 window. Unkeyed runs neither group nor auto-clear; unknown outcomes never
 auto-clear. Chat responses and confirmed connector actions remain unkeyed.
-Existing parent/child ownership stays intact; a failed helper under a succeeded
-keyed owner does not add its own Home row.
+Existing parent/child ownership stays intact; an unkeyed failed helper under a
+keyed owner does not add its own Home row: the owner's row, or its recovery,
+covers it, and the helper stays in the owner's details and History.
 
 Held updates leave through ✕, Dismiss all, existing briefing consumption or a
 fixed 24-hour expiry. Dismissal is soft during Undo, then deletes the held row;

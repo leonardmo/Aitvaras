@@ -27,7 +27,7 @@ import AitvarasStore
         #expect(!snapshot.bulkDismissibleRunIDs.contains(unknown.latestRun.id))
 
         let held = try stores.heldNotifications()
-        #expect(held.map(\.title) == ["Library pickup ready", "Build finished"])
+        #expect(held.map(\.title) == ["Parcel ready", "Build finished"])
         #expect(try stores.pendingSuggestions().count == 1)
     }
 

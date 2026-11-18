@@ -92,8 +92,8 @@ public enum HomeAttentionFixtures {
         ]
         try stores.db.queue.write { db in
             for run in runs { try run.insert(db) }
-            try HeldNotification(id: heldUpdateIDs[0], title: "Library pickup ready",
-                body: "An example book is ready for pickup at the front desk.", createdAt: at(50)).insert(db)
+            try HeldNotification(id: heldUpdateIDs[0], title: "Parcel ready",
+                body: "An example parcel is ready at the front desk.", createdAt: at(50)).insert(db)
             try HeldNotification(id: heldUpdateIDs[1], title: "Build finished",
                 body: "The example project's nightly build finished without warnings.", createdAt: at(15)).insert(db)
             // Older than 24 hours: expired on the first read, never shown.

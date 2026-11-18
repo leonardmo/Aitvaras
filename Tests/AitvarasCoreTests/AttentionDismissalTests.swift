@@ -126,7 +126,10 @@ import AitvarasStore
         #expect(try stores.activityRun(id: recovered.id)?.acknowledgedAt != nil)
         #expect(try stores.activityRun(id: changed.id) == altered)
         #expect(try stores.activityRun(id: deleted.id) == nil)
-        #expect(try stores.activityRun(id: helper.id)?.acknowledgedAt != nil)
+        // The keyed owner covers its failed helper, so the helper never had its
+        // own row to dismiss and Undo has nothing of it to restore.
+        #expect(try stores.activityRun(id: helper.id)?.acknowledgedAt == nil)
+        #expect(!receipt.runs.contains { $0.written.id == helper.id })
     }
 
     @Test func overlappingOrOlderSuccessDoesNotPreventUndo() throws {

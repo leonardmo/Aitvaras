@@ -137,11 +137,12 @@ public struct HomeAttentionCard: Sendable, Equatable {
 
     public init(snapshot: HomeAttentionSnapshot = .init(), approvals: [AgentApprovalSuggestion] = [],
                 monitoring: HomeMonitoringIncident? = nil) {
-        // Only requests supported by the existing labeled allow/deny path.
-        // Question forms stay in Chat; they cannot be approved with a button.
+        // Only permission requests, shown with the full approval card as
+        // before. Plans and question forms need the chat's context and stay
+        // in Chat; a plan approval switches the session to execution.
         let approvals = approvals.filter {
             switch $0.request.kind {
-            case .permission, .permissions, .plan: true
+            case .permission, .permissions: true
             default: false
             }
         }

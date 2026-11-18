@@ -105,13 +105,14 @@ import AitvarasAgents
         #expect(rows[4].dismissal == .later)
     }
 
-    @Test func onlyRequestsWithExistingApproveRejectResponsesEnterDecisions() {
+    @Test func onlyPermissionRequestsEnterDecisions() {
         let permission = approval(index: 1)
         let permissions = approval(index: 2, kind: .permissions(.object([:])))
         let plan = approval(index: 3, kind: .plan("Example plan"))
         let question = approval(index: 4, kind: .questions([.init(id: "example", prompt: "Example question")]))
         let card = HomeAttentionCard(approvals: [permission, permissions, plan, question])
-        #expect(card.rows.map(\.id) == [permission, permissions, plan].map { .approval($0.id) })
+        #expect(card.rows.map(\.id) == [permission, permissions].map { .approval($0.id) })
+        _ = plan
         #expect(card.rows.allSatisfy { $0.dismissal == nil })
         #expect(!card.canDismissAll)
     }

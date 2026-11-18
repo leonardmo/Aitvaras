@@ -149,7 +149,7 @@ import AitvarasAgent
         #expect(try stores.activityRun(id: second.id) == second)
     }
 
-    @Test func successfulOwnersSuppressOnlyTheirUnkeyedFailedHelpers() throws {
+    @Test func keyedOwnersSuppressTheirUnkeyedFailedHelpers() throws {
         let stores = try inMemoryStores()
         let owner = run(.succeeded, key: ActivityJobKey.consolidation, start: 1, finish: 100)
         let intermediary = run(.succeeded, start: 5, finish: 50, parentID: owner.id)
@@ -168,10 +168,26 @@ import AitvarasAgent
         #expect(try stores.activityRuns(limit: 40).allSatisfy { $0.id != owner.id })
 
         let snapshot = try stores.activityAttentionSnapshot()
-        #expect(Set(snapshot.runIDs) == [unknown.id, independent.id, independentHelper.id, unkeyedHelper.id, orphan.id])
+        // The failed keyed `independent` owner covers its own helper; only
+        // unkeyed owners, orphans and unknown outcomes keep separate rows.
+        #expect(Set(snapshot.runIDs) == [unknown.id, independent.id, unkeyedHelper.id, orphan.id])
         #expect(!snapshot.bulkDismissibleRunIDs.contains(unknown.id))
         #expect(try stores.activityRun(id: failed.id) == failed)
         #expect(try stores.activityRun(id: interrupted.id) == interrupted)
+    }
+
+    /// A failed summary job and its failed model helper are one Home row, and a
+    /// later successful retry of the job clears both.
+    @Test func failedOwnerAndHelperAreOneRowAndRecoverTogether() throws {
+        let stores = try inMemoryStores()
+        let key = ActivityJobKey.captureSummary(recordID: UUID())
+        let owner = run(.failed, key: key, start: 10, finish: 20)
+        let helper = run(.failed, start: 11, finish: 19, parentID: owner.id)
+        try insert([owner, helper], into: stores)
+        #expect(try stores.activityAttentionSnapshot().runIDs == [owner.id])
+        try insert([run(.succeeded, key: key, start: 30, finish: 40)], into: stores)
+        #expect(try stores.activityAttentionSnapshot().groups.isEmpty)
+        #expect(try stores.activityRun(id: helper.id) == helper)
     }
 
     @Test func brokenParentCyclesRemainVisibleWithoutHanging() throws {

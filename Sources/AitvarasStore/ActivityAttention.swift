@@ -32,7 +32,7 @@ extension Stores {
             .fetchAll(db)
 
         let ancestors = try ActivityAttentionQuery.ancestors(of: candidates, in: db)
-        let visible = candidates.filter { !ActivityAttentionQuery.isCompletedHelper($0, ancestors: ancestors) }
+        let visible = candidates.filter { !ActivityAttentionQuery.isOwnedHelper($0, ancestors: ancestors) }
         let members = Dictionary(grouping: visible, by: ActivityAttentionQuery.groupID)
         var emitted: Set<ActivityAttentionGroup.ID> = []
         let groups: [ActivityAttentionGroup] = visible.compactMap { run in
@@ -74,14 +74,16 @@ private enum ActivityAttentionQuery {
         return records
     }
 
-    static func isCompletedHelper(_ run: ActivityRun, ancestors: [UUID: ActivityRun]) -> Bool {
+    static func isOwnedHelper(_ run: ActivityRun, ancestors: [UUID: ActivityRun]) -> Bool {
         // A key identifies an independent owner, not a model/provider helper.
         guard run.jobKey == nil, run.state == .failed || run.state == .interrupted else { return false }
         var parentID = run.parentID
         var visited: Set<UUID> = [run.id]
         while let id = parentID, visited.insert(id).inserted, let parent = ancestors[id] {
-            // A failed inner owner must not be masked by an outer success.
-            if parent.jobKey != nil { return parent.state == .succeeded }
+            // The nearest keyed owner represents this work on Home: its own
+            // row (or its recovery) covers a failed model/provider helper,
+            // which stays visible in that owner's details and in History.
+            if parent.jobKey != nil { return true }
             parentID = parent.parentID
         }
         return false

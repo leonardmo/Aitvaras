@@ -180,7 +180,16 @@ struct AttentionRowsView: View {
     @ViewBuilder private func attentionRow(_ row: HomeAttentionRow) -> some View {
         switch row {
         case .approval(let suggestion):
-            if let chat = model.chatModel { HomeAgentApprovalRow(suggestion: suggestion, chat: chat) }
+            // The same full card as Chat: every detail line, the reason and
+            // Always allow, so nothing is approved from a truncated summary.
+            if let chat = model.chatModel {
+                AgentApprovalCard(request: suggestion.request, identifier: HomeAttentionRow.approval(suggestion).accessibilityIdentifier,
+                                  context: chat.approvalContext(suggestion),
+                                  grantAvailable: chat.canAlwaysAllow(chatID: suggestion.chatID, request: suggestion.request),
+                                  alwaysAllow: { await chat.alwaysAllow(chatID: suggestion.chatID, request: suggestion.request) }) { response in
+                    await chat.respond(chatID: suggestion.chatID, to: suggestion.request, with: response)
+                }
+            }
         case .suggestion(let suggestion):
             VStack(alignment: .leading, spacing: 6) {
                 HomeAttentionSummary(title: suggestion.title, detail: suggestion.detail, icon: "hand.raised", tint: .accentColor)
@@ -380,40 +389,6 @@ private struct HomeAttentionDismissButton: View {
         .help(row.dismissalAccessibilityLabel ?? "")
         .accessibilityLabel(row.dismissalAccessibilityLabel ?? "")
         .accessibilityIdentifier(row.accessibilityIdentifier + ".dismiss")
-    }
-}
-
-private struct HomeAgentApprovalRow: View {
-    let suggestion: AgentApprovalSuggestion
-    let chat: ChatModel
-    @State private var responding = false
-    @State private var failed = false
-
-    var body: some View {
-        let row = HomeAttentionRow.approval(suggestion)
-        VStack(alignment: .leading, spacing: 6) {
-            HomeAttentionSummary(title: row.title, detail: suggestion.request.presentation.detail,
-                                 icon: "hand.raised", tint: .accentColor)
-            HStack {
-                Text(chat.approvalContext(suggestion)).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
-                Spacer()
-                if responding { ProgressView().controlSize(.mini) }
-                Button("Reject") { answer(.deny) }
-                    .accessibilityIdentifier(row.accessibilityIdentifier + ".reject")
-                Button("Approve") { answer(.allow(updatedInput: nil)) }.buttonStyle(.borderedProminent)
-                    .accessibilityIdentifier(row.accessibilityIdentifier + ".approve")
-            }.controlSize(.small).disabled(responding || failed)
-            if failed { Text("This request is no longer available.").font(.caption).foregroundStyle(.secondary) }
-        }
-    }
-
-    private func answer(_ response: AgentResponse) {
-        guard !responding, !failed else { return }
-        responding = true
-        Task {
-            failed = !(await chat.respond(chatID: suggestion.chatID, to: suggestion.request, with: response))
-            responding = false
-        }
     }
 }
 
