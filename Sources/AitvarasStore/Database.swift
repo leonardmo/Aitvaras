@@ -1,6 +1,7 @@
 import Foundation
 import GRDB
 import AitvarasCore
+import AitvarasAgents
 
 /// Single SQLite database for everything Aitvaras persists: activity log,
 /// memories, chats, RAG index, suggestions, connector state.
@@ -1007,6 +1008,47 @@ public final class AitvarasDatabase: Sendable {
             try db.alter(table: "agentChatSession") { t in
                 t.add(column: "forkOrigin", .text)
             }
+        }
+        m.registerMigration("v35-claude-provider-profiles") { db in
+            try db.create(table: "agentProviderProfile") { t in
+                t.primaryKey("id", .text)
+                t.column("name", .text).notNull()
+                t.column("kind", .text).notNull().check { $0 == "claude" }
+                t.column("badge", .text).notNull()
+                t.column("colour", .text).notNull()
+                t.column("defaultModel", .text).notNull()
+                t.column("defaultEffort", .text).notNull()
+                t.column("configDirectory", .text)
+                t.column("sortOrder", .integer).notNull()
+                t.column("createdAt", .datetime).notNull()
+                t.column("isDeleted", .boolean).notNull().defaults(to: false)
+            }
+            try AgentProviderProfile(id: AgentProviderProfile.defaultClaudeID, name: "Claude").insert(db)
+            // SQLite cannot drop a table-level UNIQUE constraint. Rebuild while
+            // GRDB defers foreign-key checking; IDs and all referenced rows stay.
+            try db.execute(sql: """
+                CREATE TABLE agentChatSession_profiles (
+                    id TEXT PRIMARY KEY NOT NULL,
+                    chatID TEXT NOT NULL REFERENCES workspaceChat(id) ON DELETE RESTRICT,
+                    provider TEXT NOT NULL, host TEXT, profile TEXT, nativeID TEXT,
+                    cwd TEXT NOT NULL, model TEXT NOT NULL, effort TEXT, mode TEXT NOT NULL,
+                    instructions TEXT NOT NULL DEFAULT '', additionalRootsJSON TEXT NOT NULL DEFAULT '[]', forkOrigin TEXT,
+                    providerProfile TEXT NOT NULL DEFAULT 'default',
+                    UNIQUE(chatID, provider, providerProfile), UNIQUE(provider, host, profile, nativeID),
+                    UNIQUE(id, chatID, provider),
+                    CHECK ((host IS NULL AND profile IS NULL AND nativeID IS NULL) OR
+                           (host IS NOT NULL AND profile IS NOT NULL AND nativeID IS NOT NULL))
+                );
+                INSERT INTO agentChatSession_profiles
+                    (id, chatID, provider, host, profile, nativeID, cwd, model, effort, mode, instructions, additionalRootsJSON, forkOrigin)
+                    SELECT id, chatID, provider, host, profile, nativeID, cwd, model, effort, mode, instructions, additionalRootsJSON, forkOrigin FROM agentChatSession;
+                DROP TRIGGER agentTurnChat;
+                DROP TABLE agentChatSession;
+                ALTER TABLE agentChatSession_profiles RENAME TO agentChatSession;
+                CREATE TRIGGER agentTurnChat BEFORE INSERT ON agentTurn
+                WHEN NOT EXISTS (SELECT 1 FROM agentChatSession WHERE id = NEW.sessionID AND chatID = NEW.chatID)
+                BEGIN SELECT RAISE(ABORT, 'Turn must belong to its chat session'); END;
+                """)
         }
         return m
     }

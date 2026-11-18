@@ -43,9 +43,14 @@ public struct AgentConversationForkPlan: Sendable, Equatable {
 
 public protocol AgentConversationPersistence: Sendable {
     func conversationSource(chatID: UUID) throws -> AgentConversationSource
+    func conversationSource(chatID: UUID, messageID: UUID) throws -> AgentConversationSource
     func createConversationFork(_ plan: AgentConversationForkPlan, chatID: UUID, directory: URL,
                                 additionalRoots: [URL]) throws
     func finishConversationFork(chatID: UUID, worktree: AgentWorktree) throws
+}
+
+extension AgentConversationPersistence {
+    public func conversationSource(chatID: UUID, messageID: UUID) throws -> AgentConversationSource { try conversationSource(chatID: chatID) }
 }
 
 public struct AgentConversationForkResult: Sendable {
@@ -58,6 +63,7 @@ public struct AgentConversationForkResult: Sendable {
 public actor AgentConversationActions {
     private let persistence: any AgentConversationPersistence
     private let git: AgentGitActionCoordinator
+    private let profileBackend: AgentSessionManager.ProfileBackendFactory?
     private let backend: AgentSessionManager.BackendFactory
     private let audit: AgentActionCoordinator.Audit
     private let worktreeStorage: URL
@@ -66,7 +72,9 @@ public actor AgentConversationActions {
     private var closing = false
     public init(persistence: any AgentConversationPersistence, git: AgentGitActionCoordinator,
                 worktreeStorage: URL, backend: @escaping AgentSessionManager.BackendFactory,
+                profileBackend: AgentSessionManager.ProfileBackendFactory? = nil,
                 audit: @escaping AgentActionCoordinator.Audit) {
+        self.profileBackend = profileBackend
         self.persistence = persistence; self.git = git; self.worktreeStorage = worktreeStorage
         self.backend = backend; self.audit = audit
     }
@@ -79,7 +87,7 @@ public actor AgentConversationActions {
         return try await withTaskCancellationHandler { try await task.value } onCancel: { task.cancel() }
     }
     private func performFork(chatID: UUID, messageID: UUID, editedText: String?) async throws -> AgentConversationForkResult {
-        let source = try persistence.conversationSource(chatID: chatID)
+        let source = try persistence.conversationSource(chatID: chatID, messageID: messageID)
         let plan = try AgentConversationForkPlan.make(source: source, messageID: messageID, editing: editedText != nil)
         if let text = editedText {
             guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, text.utf8.count <= 1_048_576,
@@ -121,7 +129,13 @@ public actor AgentConversationActions {
         try await audit(.init(kind: .toolExecuted, connectorID: "agent.conversation", summary: "Side question requested", sourceID: "chat:" + chatID.uuidString))
         try Task.checkCancellation()
         guard !closing, questions[chatID] == nil else { throw AgentConversationError.busy }
-        let provider = try backend(.claude), configuration = source.session.configuration
+        let provider: any AgentBackend
+        if let profileBackend { provider = try profileBackend(source.session.choice) }
+        else {
+            guard source.session.providerProfile == "default" else { throw AgentFailure.invalidRequest }
+            provider = try backend(.claude)
+        }
+        let configuration = source.session.configuration
         let task = Task { try await provider.sideQuestion(configuration: configuration, question: question, timeout: timeout) }
         questions[chatID] = task
         defer { questions.removeValue(forKey: chatID) }

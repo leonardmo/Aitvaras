@@ -9,7 +9,9 @@ import AitvarasCore
     @Test func repeatDiscoveryScopesNativeIDsByProviderHostAndProfile() throws {
         let stores = try inMemoryStores()
         let project = try stores.createWorkspaceProject(title: "Example", folders: [.init(path: "/tmp/example-project")])
-        let values = [summary(), summary(profile: "other"), summary(host: "other-host"), summary(provider: .codex)]
+        let profile = AgentProviderProfile(name: "Other", configDirectory: "/tmp/example-claude")
+        try stores.saveClaudeProfile(profile)
+        let values = [summary(), summary(profile: profile.nativeProfile), summary(host: "other-host"), summary(provider: .codex)]
         let first = try stores.discoverAgentNativeSessions(values + values)
         #expect(first.count == 4)
         #expect(try stores.discoverAgentNativeSessions(values.reversed()) == first)

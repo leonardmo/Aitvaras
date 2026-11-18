@@ -1371,3 +1371,22 @@ without a result as unconfirmed, showing the plain command. Rows with pending
 approval stay unchanged. A later real result upgrades the same row to success or
 failure; progress alone never advertises success. `ChatStateTests` covers these
 transitions, pending approvals and late results.
+
+### Claude account profiles (issue #9)
+
+Offline coverage checks the additive migration, separate session identities and
+catch-up between two Claude accounts, private directory and symlink creation,
+launch environments, and a composer choice list with at least six profiles.
+Codex and Local multi-account work in issue #9 remains open.
+
+Host acceptance (isolated app state): add two Claude profiles and sign in using
+the CLI browser flow; verify default Claude stays signed in. Check local skills,
+plugins and settings in each profile, with user MCP definitions separate. Switch
+in an existing chat and a new chat, send between both accounts, revisit and
+restart, then check native reconciliation, MCP status/login, side questions and
+forks. Add six or more profiles, exercise More and Control-Command 1–9, rename,
+reorder, and delete one. Check its old chats remain readable and send with default
+Claude. Verify inline order stays fixed until another chat opens and narrow
+composer controls retain one row. Inspect profile-specific usage after replies.
+Real browser completion, live account isolation and menu/focus/layout behavior
+require the host and a person; package tests cannot establish those results.

@@ -347,14 +347,22 @@ layout also require real-app screenshot review; adding a scenario is not proof.
 
 Replaces the adapter approach in `CLAUDE-INTEGRATION.md` and
 `CODEX-BIDIRECTIONAL-INTEGRATION.md`; plan in `UNIFIED-CHAT-PLAN.md`. Chat runs
-`claude` and `codex app-server` as subprocesses with their default login and
-stores, so chats exist natively in those tools and there is no separate account
-or link step. Child environments inherit the app's environment minus a denylist of
+`claude` and `codex app-server` as subprocesses, so chats exist natively in
+those tools. Claude has named account profiles, each with a separate CLI home
+(`CLAUDE_CONFIG_DIR`) and native history. The migrated default profile leaves
+that variable unset and uses the existing login. Additional homes live under
+`<state>/Providers/claude/<UUID>` with mode 0700 and symlink only the default
+home's `CLAUDE.md`, `settings.json`, `skills` and `plugins` when present.
+Aitvaras never copies credentials or touches the default home. User-scope MCP
+servers stay per account; app-global MCP definitions can be shared. Sign-in is
+the CLI's own browser flow and credential store; Aitvaras never handles tokens.
+Codex and Local retain exactly one implicit profile and no profile UI. Their
+remaining multi-account work in issue #9 is open. Child environments inherit the app's environment minus a denylist of
 credential and endpoint overrides: the allowlist dropped `USER`, which pointed the
 CLI at a stale credential item. The session start checks first-party subscription
 status and refuses anything else. API keys stay forbidden.
 
-Changing provider and pressing Send is the consent for sending that chat's earlier
+Changing provider or Claude profile and pressing Send is the consent for sending that chat's earlier
 messages to the provider (amends D30). Every provider action passes
 `AgentActionCoordinator`, using Claude's pre-tool hook callback and Codex's sandbox,
 approvals and item events, so the autonomy policy and activity log still hold.
@@ -369,7 +377,7 @@ session on its next Send. Capacity refusal stays inline without failing the chat
 The new chat path bounds each deterministic handover block, including labels, to
 16,000 UTF-8 bytes. It keeps the newest completed messages, orders them
 oldest first, states the omitted count (and explicitly clips an oversized newest
-message at a Unicode character boundary) and advances the per-provider watermark
+message at a Unicode character boundary) and advances the per-session/profile watermark
 only on acknowledgement. Local receives completed context on every Send. Legacy
 adapters retain their existing sharing checks until migration.
 
@@ -442,7 +450,17 @@ read receipt identifies the last completed turn seen; opening a chat clears its 
 and completion while visible is acknowledged immediately. The main Chat icon has
 an accent badge whenever any chat needs the person.
 
-New chats use the last provider chosen or sent with. A fresh profile starts on
+New chats use the last profile chosen or sent with (one implicit choice for
+Codex and Local). The composer shows up to three recent profile/provider
+segments, with order frozen until another chat opens, plus one flat More menu
+listing every choice grouped by provider and its sign-in state. Control-Command
+1–9 select menu entries in that order; Edit profiles opens AI providers. Claude
+profiles can be added, edited, reordered and deleted there, with separate login
+status and observed usage. New profiles default to Opus (newest), Medium effort.
+Deleting an additional profile retains chats, native history and CLI credentials;
+its chats fall back to default Claude on their next send. Switching Claude
+profiles is the same acknowledged catch-up as switching providers (D30/D31).
+A fresh app profile starts on
 Local, except when no local model is available and an installed, signed-in provider
 exists. Signed-out providers remain selectable; Send retains the existing single
 sign-in action and safe retry. Setup includes a visible “AI providers” card

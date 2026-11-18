@@ -24,6 +24,8 @@ public actor AgentSessionManager {
         var isRunning: Bool { inputID != nil || !followups.isEmpty || sendingFollowup || stopping }
     }
     private let persistence: any AgentSessionPersistence
+    public typealias ProfileBackendFactory = @Sendable (AgentProviderChoice) throws -> any AgentBackend
+    private let profileBackend: ProfileBackendFactory?
     private let backend: BackendFactory
     private let audit: AgentActionCoordinator.Audit
     private let idleTimeout: Duration
@@ -39,8 +41,9 @@ public actor AgentSessionManager {
 
     /// Startup recovery is synchronous and must finish before any backend starts.
     public init(persistence: any AgentSessionPersistence, idleTimeout: Duration = .seconds(600),
-                backend: @escaping BackendFactory, audit: @escaping AgentActionCoordinator.Audit,
+                backend: @escaping BackendFactory, profileBackend: ProfileBackendFactory? = nil, audit: @escaping AgentActionCoordinator.Audit,
                 mcpPolicy: AgentMCPLaunchPolicy = .default) throws {
+        self.profileBackend = profileBackend
         self.persistence = persistence; self.idleTimeout = idleTimeout; self.backend = backend; self.audit = audit
         self.mcpPolicy = mcpPolicy
         try persistence.recoverAgentTurns()
@@ -54,6 +57,13 @@ public actor AgentSessionManager {
         approvalSubscribers.values.forEach { $0.finish() }
         subscribers.values.forEach { $0.values.forEach { $0.finish() } }
     }
+
+    private func scopedBackend(_ choice: AgentProviderChoice) throws -> any AgentBackend {
+        if let profileBackend { return try profileBackend(choice) }
+        guard choice.profile == "default" else { throw AgentFailure.invalidRequest }
+        return try backend(choice.provider)
+    }
+    private func scopedBackend(_ session: AgentChatSession) throws -> any AgentBackend { try scopedBackend(session.choice) }
 
     public func state(chatID: UUID) throws -> ChatState {
         if let state = states[chatID] { return state }
@@ -163,6 +173,7 @@ public actor AgentSessionManager {
         guard !closing else { throw AgentSessionManagerError.shuttingDown }
         try persistence.requireAgentChatAvailable(chatID: chatID)
         guard let slot = live[chatID], slot.session.provider == provider,
+              try persistence.agentSession(chatID: chatID, provider: provider)?.id == slot.session.id,
               let run = slot.coordinator, !slot.stopping, !slot.sendingFollowup,
               slot.session.usesThreadContext, slot.followups.count < 32,
               try persistence.agentTurn(id: input.id) == nil else { throw AgentSessionManagerError.chatBusy }
@@ -310,8 +321,8 @@ public actor AgentSessionManager {
                 old?.reader?.cancel()
                 if let run = old?.coordinator { await Self.close(run, timeout: .seconds(2)) }
                 let launchConfiguration = configuration
-                let factory = backend
-                let startup = Task { try await factory(provider).start(launchConfiguration) }
+                let selectedBackend = try scopedBackend(session)
+                let startup = Task { try await selectedBackend.start(launchConfiguration) }
                 live[chatID]?.startup = startup
                 let raw = try await withTaskCancellationHandler { try await startup.value } onCancel: { startup.cancel() }
                 if live[chatID]?.token == token { live[chatID]?.startup = nil }
@@ -687,10 +698,10 @@ public actor AgentSessionManager {
 extension AgentSessionManager {
     /// Discovery starts no run and sends no prompt. Read every page before
     /// committing mappings, so a failed CLI never leaves half a discovery.
-    public func discoverNativeSessions(provider: AgentProvider) async throws -> [UUID] {
+    public func discoverNativeSessions(provider: AgentProvider, profile: String = "default") async throws -> [UUID] {
         guard !closing else { throw AgentSessionManagerError.shuttingDown }
         guard provider != .local, let store = persistence as? any AgentNativeSessionPersistence else { throw AgentFailure.unsupported }
-        let reader = try backend(provider)
+        let reader = try scopedBackend(.init(provider: provider, profile: profile))
         var sessions: [AgentSessionSummary] = [], cursor: String?, cursors = Set<String>()
         repeat {
             try Task.checkCancellation()
@@ -747,9 +758,8 @@ extension AgentSessionManager {
     private func refreshNativeHistory(chatID: UUID, store: any AgentHistoryPersistence, token: UUID) async throws {
         let previous = try persistence.agentEntries(chatID: chatID)
         var observations: [(AgentChatSession, [AgentTranscriptEntry])] = []
-        for provider in [AgentProvider.claude, .codex] {
-            guard let session = try persistence.agentSession(chatID: chatID, provider: provider), session.sessionID != nil else { continue }
-            let reader = try backend(provider)
+        for session in try persistence.agentSessions(chatID: chatID) where session.provider != .local && session.sessionID != nil {
+            let reader = try scopedBackend(session)
             // A complete second observation detects changes after the final
             // page, including single-page reads. This is no native-client lock.
             let entries = try await readNativeHistory(session: session, reader: reader)
@@ -783,7 +793,7 @@ extension AgentSessionManager {
         guard !closing else { throw AgentSessionManagerError.shuttingDown }
         guard provider != .local else { throw AgentFailure.unsupported }
         guard let session = try persistence.agentSession(chatID: chatID, provider: provider), session.sessionID != nil else { return [] }
-        return try await readNativeHistory(session: session, reader: backend(provider))
+        return try await readNativeHistory(session: session, reader: scopedBackend(session))
     }
     private static func historyEvidence(_ entry: AgentTranscriptEntry) -> String {
         JSONValue.array([.string(entry.nativeMessageID ?? ""), .string(entry.kind), .string(entry.text), .string(entry.payloadJSON ?? "")]).jsonString

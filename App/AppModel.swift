@@ -449,23 +449,38 @@ final class AppModel {
         }
         let backends: [AgentProvider: any AgentBackend] = [.claude: claude, .codex: codex, .local: local]
         let available = backends.filter { AgentProviderLaunchPolicy.allows($0.key, environment: inherited, isolated: isolated) }
+        let profileBackends = AgentProfileBackends { choice in
+            guard let fallback = available[choice.provider] else { throw AgentFailure.offline }
+            guard choice.provider == .claude, choice.profile != "default" else { return fallback }
+            guard let profile = try stores.claudeProfile(nativeProfile: choice.profile, includeDeleted: true),
+                  let directory = profile.configDirectory else { throw AgentFailure.invalidRequest }
+            return ClaudeBackend(executable: AgentProviderLaunchPolicy.executable(.claude,
+                environment: inherited, isolated: isolated), environment: environment, profile: choice.profile,
+                overrides: ["CLAUDE_CONFIG_DIR": directory], mcpPolicy: mcpPolicy)
+        }
         let metadataUserDirectory = available[.claude] == nil ? nil
             : (claudeOverrides["CLAUDE_CONFIG_DIR"] ?? environment["CLAUDE_CONFIG_DIR"]).map { URL(fileURLWithPath: $0) }
                 ?? environment["HOME"].map { URL(fileURLWithPath: $0).appendingPathComponent(".claude") }
         let setup = AgentSetupCoordinator(persistence: stores,
             secrets: .init(set: { value, key in try keychain.set(value, forKey: key) }, delete: { key in try keychain.delete(key) }),
             backends: available, metadataUserDirectory: metadataUserDirectory,
+            profileBackend: { try profileBackends.backend($0) }, profileDirectory: { profile in
+                try stores.claudeProfile(nativeProfile: profile, includeDeleted: true)?.configDirectory.map { URL(fileURLWithPath: $0) }
+            },
             audit: { _ = try stores.record($0) })
         agentSetupCoordinator = setup
         let manager = try AgentSessionManager(persistence: stores, backend: { provider in
             guard let backend = available[provider] else { throw AgentFailure.offline }
             return backend
-        }, audit: { _ = try stores.record($0) }, mcpPolicy: mcpPolicy)
+        }, profileBackend: { try profileBackends.backend($0) }, audit: { _ = try stores.record($0) }, mcpPolicy: mcpPolicy)
         nativeWorkspace.readerFactory = { provider in
             NativeBackendSessionReader(provider: provider, backend: available[provider == .claude ? .claude : .codex])
         }
         agentSessionManager = manager
-        chatModel = ChatModel(manager: manager, stores: stores, backends: available, agentSetup: setup)
+        chatModel = ChatModel(manager: manager, stores: stores, backends: available, profileBackends: profileBackends,
+            claudeDefaultDirectory: metadataUserDirectory ?? (isolated
+                ? AitvarasPaths.stateDirectory.appendingPathComponent("FakeProviders/claude")
+                : FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".claude")), agentSetup: setup)
         chatModel?.didCreateChat = { [weak self] id in self?.openWorkspaceChat(id) }
         chatModel?.activityChanged = { [weak self] in self?.refreshWorkspaces() }
         chatModel?.observeSidebar(workspaceSidebarChats)

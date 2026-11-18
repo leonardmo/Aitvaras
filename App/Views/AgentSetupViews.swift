@@ -12,10 +12,10 @@ struct AgentSetupSection: View {
             if let setup { AgentSetupContent(setup: setup) }
             else { ProgressView().controlSize(.small).accessibilityLabel("Loading agent setup") }
         }
-        .task(id: "\(projectID?.uuidString ?? "global").\(directory?.path ?? "").\(model.agentSetupCoordinator != nil)") {
+        .task(id: "\(projectID?.uuidString ?? "global").\(directory?.path ?? "").\(model.agentSetupCoordinator != nil).\(model.chatModel?.claudeProfile ?? "default")") {
             setup?.cancel()
             guard let coordinator = model.agentSetupCoordinator else { return }
-            let value = AgentSetupModel(coordinator: coordinator, projectID: projectID, directory: directory)
+            let value = AgentSetupModel(coordinator: coordinator, projectID: projectID, directory: directory, claudeProfile: model.chatModel?.claudeProfile ?? "default")
             value.didChange = { [weak model] in model?.chatModel?.invalidateCommandCatalog() }
             setup = value
             await value.load()

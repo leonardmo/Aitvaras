@@ -46,7 +46,7 @@ public struct ChatState: Sendable, Equatable {
         inputID = input.id; self.outputID = outputID; provider = session.provider; sessionID = session.id
         acknowledgedMode = session.mode
         streamingText = ""; thinking = ""; thinkingIDs = [:]; textIDs = [:]; toolEntryIDs = [:]
-        tools = []; pendingCards = []; usage = nil; outcome = nil; isRunning = true
+        tools = []; pendingCards = []; usage = nil; rateLimits = []; outcome = nil; isRunning = true
         hookEntryIDs = [:]; hooks = [:]
         if !entries.contains(where: { $0.id == input.id }) {
             if let context {

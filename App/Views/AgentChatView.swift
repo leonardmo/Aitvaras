@@ -20,6 +20,7 @@ struct AgentChatView: View {
     var workspaceError: String? = nil
     var compact = false
 
+    @State private var showingProfiles = false
     @State private var showingChanges = false
     @State private var editingMessage: AgentTranscriptEntry?
     @State private var agentSetupDestination: AgentSetupDestination?
@@ -211,7 +212,8 @@ struct AgentChatView: View {
             .frame(maxWidth: .infinity)
         }
         .task(id: chatID) { await chat.refreshStatus() }
-        .task(id: "\(chatID).\(chat.provider.rawValue).\(chat.signingIn == nil)") { await chat.loadModels() }
+        .sheet(isPresented: $showingProfiles) { AgentProviderSettingsView(chat: chat).frame(minWidth: 560, minHeight: 400) }
+        .task(id: "\(chatID).\(chat.choice.id).\(chat.signingIn == nil)") { await chat.loadModels() }
     }
     private func transcriptRow(_ entry: AgentTranscriptEntry) -> some View {
         let fork: (() -> Void)?
@@ -295,7 +297,7 @@ struct AgentChatView: View {
             Task { for url in urls { await chat.attach(url, chatID: target.chatID, provider: target.provider) } }
         }
         .onChange(of: chatID) { showingCompletion = false; completion = nil; placeComposerCaret() }
-        .onChange(of: chat.provider) { showingCompletion = false; completion = nil; placeComposerCaret() }
+        .onChange(of: chat.choice) { showingCompletion = false; completion = nil; placeComposerCaret() }
         .onChange(of: chat.composerInsertionRevision) { placeComposerCaret() }
         .onChange(of: showingCompletion) {
             if !showingCompletion {
@@ -405,34 +407,48 @@ struct AgentChatView: View {
             }
         }.frame(width: iconOnly ? 32 : 127)
     }
-    @ViewBuilder private func providerControl(compact: Bool, narrow: Bool) -> some View {
-        if compact {
-            Menu {
-                ForEach([AgentProvider.claude, .codex, .local], id: \.self) { provider in
-                    Button { chat.setProvider(provider) } label: {
-                        if chat.provider == provider { Label(provider.rawValue.capitalized, systemImage: "checkmark") }
-                        else { Text(provider.rawValue.capitalized) }
-                    }.accessibilityIdentifier("chat.provider.\(provider.rawValue)")
-                }
-            } label: { Text(chat.provider.rawValue.capitalized).lineLimit(1) }
-            .frame(width: narrow ? 62 : 76)
-            .menuIndicator(.visible)
-            .help(chat.provider.rawValue.capitalized)
-            .accessibilityIdentifier("chat.provider")
-            .accessibilityLabel("Provider").accessibilityValue(chat.provider.rawValue.capitalized)
-            .disabled(chat.isBusy || chat.creatingChat)
-            .controlSize(.small).menuStyle(.borderlessButton)
-        } else {
-            Picker("Provider", selection: Binding(get: { chat.provider }, set: { chat.setProvider($0) })) {
-                ForEach([AgentProvider.claude, .codex, .local], id: \.self) { provider in
-                    Text(provider.rawValue.capitalized).tag(provider)
-                        .accessibilityIdentifier("chat.provider.\(provider.rawValue)")
+    @ViewBuilder private var providerMenuEntries: some View {
+        ForEach([AgentProvider.claude, .codex, .local], id: \.self) { provider in
+            Section(provider.rawValue.capitalized) {
+                ForEach(Array(chat.allChoices.enumerated()).filter { $0.element.provider == provider }, id: \.element.id) { index, entry in
+                    if index < 9 {
+                        profileMenuButton(entry)
+                            .keyboardShortcut(KeyEquivalent(Character(String(index + 1))), modifiers: [.control, .command])
+                    } else { profileMenuButton(entry) }
                 }
             }
-            .pickerStyle(.segmented).labelsHidden().frame(width: 154)
-            .accessibilityIdentifier("chat.provider")
-            .accessibilityValue(chat.provider.rawValue.capitalized)
-            .disabled(chat.isBusy || chat.creatingChat)
+        }
+        Divider()
+        Button("Edit profiles…") { showingProfiles = true }
+    }
+    private func profileMenuButton(_ entry: AgentProviderChoice) -> some View {
+        Button { chat.setChoice(entry) } label: {
+            Label("\(chat.title(entry)) · \(chat.statusLabel(entry))", systemImage: entry == chat.choice ? "checkmark" : "person.crop.circle")
+        }.accessibilityIdentifier("chat.provider.\(entry.id)")
+    }
+    @ViewBuilder private func providerControl(compact: Bool, narrow: Bool) -> some View {
+        if compact {
+            Menu { providerMenuEntries } label: { Text(chat.title(chat.choice)).lineLimit(1) }
+                .frame(width: narrow ? 62 : 76)
+                .menuIndicator(.visible).help(chat.title(chat.choice))
+                .accessibilityIdentifier("chat.provider")
+                .accessibilityLabel("Provider profile").accessibilityValue(chat.title(chat.choice))
+                .disabled(chat.isBusy || chat.creatingChat).controlSize(.small).menuStyle(.borderlessButton)
+        } else {
+            HStack(spacing: 1) {
+                ForEach(chat.inlineChoices) { entry in
+                    Button { chat.setChoice(entry) } label: {
+                        Text(chat.title(entry)).font(.caption).lineLimit(1).frame(maxWidth: .infinity).frame(height: 22)
+                            .background(entry == chat.choice ? Color.accentColor.opacity(0.25) : .clear, in: RoundedRectangle(cornerRadius: 4))
+                    }.buttonStyle(.plain).help(chat.title(entry))
+                        .accessibilityIdentifier("chat.provider.\(entry.id)")
+                        .accessibilityAddTraits(entry == chat.choice ? .isSelected : [])
+                }
+                Menu { providerMenuEntries } label: { Text("More").font(.caption) }
+                    .menuIndicator(.hidden).fixedSize()
+            }.padding(2).background(.quaternary, in: RoundedRectangle(cornerRadius: 6)).frame(width: 190)
+                .accessibilityIdentifier("chat.provider").accessibilityValue(chat.title(chat.choice))
+                .disabled(chat.isBusy || chat.creatingChat)
         }
     }
     private func modelControls(iconOnly: Bool) -> some View {
@@ -493,11 +509,10 @@ struct AgentChatView: View {
     }
     private var sendEnabled: Bool { canSend && chat.canSubmit }
     private var contextValue: Double? {
-        guard chat.state?.entries.last?.provider == chat.provider else { return nil }
-        return ChatSettings.contextFraction(chat.state?.usage)
+        chat.currentContextFraction
     }
     private var usageValue: Double? {
-        chat.providerLimits[chat.provider]?.compactMap(\.utilization).filter(\.isFinite).max()
+        chat.profileLimits[chat.choice]?.compactMap(\.utilization).filter(\.isFinite).max()
     }
     private func gaugeSlot(_ value: Double?, title: String, identifier: String, narrow: Bool) -> some View {
         Group {
@@ -679,9 +694,52 @@ struct ChatGauge: View {
 
 struct AgentProviderSettingsView: View {
     @Bindable var chat: ChatModel
+    @State private var addingProfile = false
+    @State private var editingProfile: AgentProviderProfile?
+    @State private var newProfileName = ""
     var body: some View {
         Form {
-            ForEach([AgentProvider.claude, .codex, .local], id: \.self) { provider in
+            if let error = chat.profileError { Text(error).foregroundStyle(.orange) }
+            Section("Claude profiles") {
+                ForEach(chat.claudeProfiles) { profile in
+                    HStack(spacing: 10) {
+                        Text(profile.badge).font(.caption.bold()).frame(width: 28, height: 28)
+                            .background(profileColour(profile).opacity(0.2), in: RoundedRectangle(cornerRadius: 6))
+                        VStack(alignment: .leading) {
+                            Text(profile.name)
+                            Text(chat.statusLabel(profile.choice)).font(.caption).foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        if let value = chat.profileLimits[profile.choice]?.compactMap(\.utilization).filter(\.isFinite).max() {
+                            ChatGauge(value: value, title: "Usage", identifier: "chat.settings.gauge.\(profile.choice.id)")
+                        }
+                        if chat.signingInChoice == profile.choice {
+                            ProgressView().controlSize(.small)
+                            Button("Cancel") { chat.cancelSignIn() }
+                        } else if chat.profileStatuses[profile.choice]?.authentication == .signedOut {
+                            Button("Sign in") { chat.signIn(profile.choice) }.disabled(chat.signingIn != nil)
+                        }
+                        Menu {
+                            Button("Edit…") { editingProfile = profile }
+                            Button("Move up") { chat.moveClaudeProfile(profile, by: -1) }
+                                .disabled(chat.claudeProfiles.first?.id == profile.id)
+                            Button("Move down") { chat.moveClaudeProfile(profile, by: 1) }
+                                .disabled(chat.claudeProfiles.last?.id == profile.id)
+                            if profile.id != AgentProviderProfile.defaultClaudeID {
+                                Button("Delete profile", role: .destructive) { chat.deleteClaudeProfile(profile) }
+                                    .disabled(chat.isBusy || chat.signingIn != nil)
+                            }
+                        } label: { Image(systemName: "ellipsis") }.menuIndicator(.hidden)
+                    }.accessibilityElement(children: .contain)
+                        .accessibilityIdentifier("chat.settings.\(profile.choice.id)")
+                }
+                Button("Add Claude profile…", systemImage: "plus") { newProfileName = ""; addingProfile = true }
+                Text("Profiles share local skills, plugins and settings. User MCP servers stay separate; use Aitvaras global MCP servers to share them.")
+                    .font(.caption).foregroundStyle(.secondary)
+                Text("Deleting a profile keeps chats and CLI data. Its chats use default Claude on their next send.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            ForEach([AgentProvider.codex, .local], id: \.self) { provider in
                 HStack(spacing: 12) {
                     Image(systemName: statusIcon(provider)).foregroundStyle(statusColor(provider))
                         .accessibilityLabel(statusLabel(provider))
@@ -708,6 +766,18 @@ struct AgentProviderSettingsView: View {
             }
         }
         .formStyle(.grouped).task { await chat.refreshStatus() }
+        .alert("Add Claude profile", isPresented: $addingProfile) {
+            TextField("Name", text: $newProfileName)
+            Button("Add") { chat.addClaudeProfile(name: newProfileName) }
+                .disabled(newProfileName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            Button("Cancel", role: .cancel) {}
+        } message: { Text("Sign in with the CLI after adding the profile. New profiles use Opus (newest) and Medium effort.") }
+        .sheet(item: $editingProfile) { profile in
+            ClaudeProfileEditor(profile: profile) { chat.updateClaudeProfile($0) }
+        }
+    }
+    private func profileColour(_ profile: AgentProviderProfile) -> Color {
+        switch profile.colour { case "blue": .blue; case "green": .green; case "purple": .purple; case "red": .red; default: .orange }
     }
     private func statusIcon(_ provider: AgentProvider) -> String {
         guard let status = chat.statuses[provider] else { return "circle.dotted" }
@@ -723,5 +793,30 @@ struct AgentProviderSettingsView: View {
         if !status.installed { return "Not installed" }
         if status.authentication == .unavailable { return "Unavailable" }
         return status.authentication == .subscription || status.authentication == .local ? "Ready" : "Signed out"
+    }
+}
+
+private struct ClaudeProfileEditor: View {
+    @Environment(\.dismiss) private var dismiss
+    @State var profile: AgentProviderProfile
+    let save: (AgentProviderProfile) -> Void
+    var body: some View {
+        Form {
+            TextField("Name", text: $profile.name)
+            TextField("Badge", text: $profile.badge)
+            Picker("Colour", selection: $profile.colour) {
+                ForEach(["orange", "blue", "green", "purple", "red"], id: \.self) { Text($0.capitalized).tag($0) }
+            }
+            TextField("Default model", text: $profile.defaultModel)
+            Picker("Default effort", selection: $profile.defaultEffort) {
+                ForEach(["low", "medium", "high", "max"], id: \.self) { Text($0.capitalized).tag($0) }
+            }
+            HStack {
+                Button("Cancel") { dismiss() }
+                Spacer()
+                Button("Save") { save(profile); dismiss() }
+                    .disabled(profile.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || profile.name.count > 80 || profile.badge.isEmpty || profile.badge.count > 4 || profile.defaultModel.isEmpty)
+            }
+        }.padding().frame(width: 400)
     }
 }

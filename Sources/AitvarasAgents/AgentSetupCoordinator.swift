@@ -120,6 +120,8 @@ public actor AgentSetupCoordinator {
     }
     private let persistence: any AgentSetupPersistence
     private let secrets: Secrets
+    private let profileBackend: AgentSessionManager.ProfileBackendFactory?
+    private let profileDirectory: @Sendable (String) throws -> URL?
     private let backends: [AgentProvider: any AgentBackend]
     private let audit: AgentActionCoordinator.Audit
     private let metadataUserDirectory: URL?
@@ -131,24 +133,33 @@ public actor AgentSetupCoordinator {
     private var probes: [UUID: Task<AgentSetupSnapshot, Error>] = [:]
     public init(persistence: any AgentSetupPersistence, secrets: Secrets,
                 backends: [AgentProvider: any AgentBackend], metadataUserDirectory: URL? = nil,
+                profileBackend: AgentSessionManager.ProfileBackendFactory? = nil,
+                profileDirectory: @escaping @Sendable (String) throws -> URL? = { _ in nil },
                 audit: @escaping AgentActionCoordinator.Audit) {
+        self.profileBackend = profileBackend; self.profileDirectory = profileDirectory
         self.persistence = persistence; self.secrets = secrets; self.backends = backends; self.audit = audit
         self.metadataUserDirectory = metadataUserDirectory
     }
 
+    private func scopedBackend(provider: AgentProvider, profile: String) throws -> any AgentBackend {
+        let choice = AgentProviderChoice(provider: provider, profile: profile)
+        if let profileBackend { return try profileBackend(choice) }
+        guard choice.profile == "default", let backend = backends[provider] else { throw AgentFailure.notInstalled }
+        return backend
+    }
     private func location(projectID: UUID, directory: URL?) throws -> AgentSetupProject {
         let project = try persistence.agentSetupProject(projectID: projectID)
         return .init(directory: directory ?? project.directory, context: project.context)
     }
-    private func key(projectID: UUID, directory: URL, provider: AgentProvider) -> String {
-        projectID.uuidString + "." + directory.standardizedFileURL.path + "." + provider.rawValue
+    private func key(projectID: UUID, directory: URL, provider: AgentProvider, profile: String = "default") -> String {
+        projectID.uuidString + "." + directory.standardizedFileURL.path + "." + provider.rawValue + "." + (provider == .claude ? profile : "default")
     }
     private func revision(_ project: AgentSetupProject) throws -> String {
         try AgentMCPLaunchPolicy(load: { _, _ in project.context }, audit: { _ in throw AgentMCPError.auditFailed })
             .snapshot(directory: project.directory, projectID: project.context.projectID).status.revision
     }
 
-    public func state(projectID: UUID?, directory: URL? = nil, provider: AgentProvider) async throws -> AgentSetupState {
+    public func state(projectID: UUID?, directory: URL? = nil, provider: AgentProvider, profile: String = "default") async throws -> AgentSetupState {
         var state = AgentSetupState(projectID: projectID, provider: provider)
         guard let projectID else {
             let globals = try persistence.globalAgentMCPServers()
@@ -157,7 +168,7 @@ public actor AgentSetupCoordinator {
         }
         let project = try location(projectID: projectID, directory: directory), setup = project.context.setup
         let globals = project.context.globalServers
-        let cached = snapshots[key(projectID: projectID, directory: project.directory, provider: provider)]
+        let cached = snapshots[key(projectID: projectID, directory: project.directory, provider: provider, profile: profile)]
         let snapshot = provider == .codex || cached?.revision == (try? revision(project)) ? cached?.snapshot : nil
         state.snapshot = snapshot; state.permissionSource = project.context.permissionSource; state.localMayUseMCP = setup.localMayUseMCP
         if provider == .codex {
@@ -167,7 +178,7 @@ public actor AgentSetupCoordinator {
         if state.snapshot == nil {
             var metadata = AgentSetupSnapshot(provider: provider)
             metadata.metadata = await AgentProjectMetadataReader(projectDirectory: project.directory,
-                userDirectory: provider == .claude ? metadataUserDirectory : nil).read()
+                userDirectory: provider == .claude ? (try profileDirectory(profile) ?? metadataUserDirectory) : nil).read()
             state.snapshot = metadata
         }
         let inventory = AgentMCPResolver.repositoryInventory(directory: project.directory)
@@ -227,11 +238,11 @@ public actor AgentSetupCoordinator {
             repositorySource: repositorySource, isApproved: approved)
     }
 
-    public func refresh(projectID: UUID, directory: URL? = nil, provider: AgentProvider) async throws -> AgentSetupState {
+    public func refresh(projectID: UUID, directory: URL? = nil, provider: AgentProvider, profile: String = "default") async throws -> AgentSetupState {
         guard !closing else { throw AgentFailure.invalidTransition }
         let project = try location(projectID: projectID, directory: directory)
-        guard let backend = backends[provider] else { throw AgentFailure.notInstalled }
-        let key = key(projectID: projectID, directory: project.directory, provider: provider), token = UUID()
+        let backend = try scopedBackend(provider: provider, profile: profile)
+        let key = key(projectID: projectID, directory: project.directory, provider: provider, profile: profile), token = UUID()
         let startedRevision = provider == .codex ? "codex" : try revision(project)
         generations[key] = token
         try await record("Check agent setup", projectID: projectID, risk: .read)
@@ -245,14 +256,14 @@ public actor AgentSetupCoordinator {
         guard generations[key] == token else { throw CancellationError() }
         if provider != .codex, try revision(location(projectID: projectID, directory: project.directory)) != startedRevision { throw CancellationError() }
         snapshots[key] = (snapshot, startedRevision)
-        return try await state(projectID: projectID, directory: project.directory, provider: provider)
+        return try await state(projectID: projectID, directory: project.directory, provider: provider, profile: profile)
     }
 
-    public func report(_ snapshot: AgentSetupSnapshot, projectID: UUID, directory: URL, revision reported: String? = nil) {
+    public func report(_ snapshot: AgentSetupSnapshot, projectID: UUID, directory: URL, revision reported: String? = nil, profile: String = "default") {
         guard let project = try? location(projectID: projectID, directory: directory) else { return }
         let current = snapshot.provider == .codex ? "codex" : (try? revision(project))
         guard let current, reported == nil || reported == current else { return }
-        let key = key(projectID: projectID, directory: directory, provider: snapshot.provider)
+        let key = key(projectID: projectID, directory: directory, provider: snapshot.provider, profile: profile)
         generations[key] = UUID(); snapshots[key] = (snapshot, current)
     }
 
@@ -313,16 +324,16 @@ public actor AgentSetupCoordinator {
         snapshots = [:]; generations = [:]
     }
 
-    public func signIn(projectID: UUID, directory: URL? = nil, provider: AgentProvider, rowID: String,
+    public func signIn(projectID: UUID, directory: URL? = nil, provider: AgentProvider, profile: String = "default", rowID: String,
                        timeout: Duration = .seconds(300), onBrowserURL: @escaping @Sendable (URL) async -> Void) async throws -> AgentSetupState {
-        let current = try await state(projectID: projectID, directory: directory, provider: provider)
+        let current = try await state(projectID: projectID, directory: directory, provider: provider, profile: profile)
         guard !closing else { throw AgentFailure.invalidTransition }
-        guard let row = current.servers.first(where: { $0.id == rowID }), row.canSignIn,
-              let backend = backends[provider] else { throw AgentFailure.unsupported }
+        guard let row = current.servers.first(where: { $0.id == rowID }), row.canSignIn else { throw AgentFailure.unsupported }
+        let backend = try scopedBackend(provider: provider, profile: profile)
         let project = try location(projectID: projectID, directory: directory)
         try await record("Sign in to MCP server", projectID: projectID, risk: .reversibleWrite)
         try Task.checkCancellation()
-        let reread = try await state(projectID: projectID, directory: project.directory, provider: provider)
+        let reread = try await state(projectID: projectID, directory: project.directory, provider: provider, profile: profile)
         guard let latest = reread.servers.first(where: { $0.id == rowID }), latest.canSignIn,
               latest.fingerprint == row.fingerprint else { throw AgentMCPError.invalidApproval }
         guard !closing else { throw AgentFailure.invalidTransition }
@@ -343,7 +354,7 @@ public actor AgentSetupCoordinator {
             try? await record(Task.isCancelled || error is CancellationError ? "MCP sign-in cancelled" : "MCP sign-in failed", projectID: projectID, risk: .read)
             throw error
         }
-        return try await refresh(projectID: projectID, directory: project.directory, provider: provider)
+        return try await refresh(projectID: projectID, directory: project.directory, provider: provider, profile: profile)
     }
 
     /// App shutdown awaits process cleanup, even if the settings view is open.

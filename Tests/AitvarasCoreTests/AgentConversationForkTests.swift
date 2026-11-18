@@ -236,3 +236,35 @@ func conversationWait(_ predicate: () async throws -> Bool) async throws {
         try await Task.sleep(for: .milliseconds(10))
     }
 }
+
+extension AgentConversationForkTests {
+    @Test func forkUsesTheMessagesAccountAfterTheComposerChangesAccounts() async throws {
+        let stores = try inMemoryStores()
+        let source = try conversationFixture(stores, directory: URL(fileURLWithPath: "/tmp"))
+        let profile = AgentProviderProfile(name: "Other account", configDirectory: "/tmp/example-account")
+        try stores.saveClaudeProfile(profile)
+        var other = AgentChatSession(chatID: source.chatID, provider: .claude, cwd: "/tmp", model: "opus", providerProfile: profile.nativeProfile)
+        other.sessionID = .init(provider: .claude, profile: profile.nativeProfile, nativeID: UUID().uuidString)
+        try stores.saveAgentSession(other)
+        let input = AgentInput(text: "Another account question")
+        try stores.prepareAgentTurn(.init(input: input, chatID: source.chatID, sessionID: other.id))
+        _ = try stores.saveAgentEntry(.init(id: input.id, chatID: source.chatID, provider: .claude, kind: "user", text: input.text,
+            sessionID: other.id, nativeMessageID: input.id.uuidString))
+        let answer = try stores.saveAgentEntry(.init(chatID: source.chatID, provider: .claude, kind: "assistant", text: "Another account answer",
+            sessionID: other.id, nativeMessageID: UUID().uuidString))
+        try stores.advanceAgentDelivery(id: input.id, to: .deliveryUnknown)
+        try stores.advanceAgentDelivery(id: input.id, to: .acknowledged)
+        try stores.finishAgentTurn(id: input.id, state: .completed)
+        let actions = conversationActions(stores, storage: URL(fileURLWithPath: "/tmp/unused-worktrees"))
+        let result = try await actions.fork(chatID: source.chatID, messageID: answer.id)
+        let fork = try #require(try stores.agentSession(chatID: result.chatID, provider: .claude))
+        #expect(fork.providerProfile == profile.nativeProfile)
+        #expect(fork.configuration.resume == other.sessionID)
+        #expect(fork.configuration.forkSession)
+        #expect(try stores.selectedClaudeProfile(chatID: result.chatID) == profile.nativeProfile)
+        try stores.selectAgentChoice(profile.choice, chatID: source.chatID)
+        let firstAccountFork = try await actions.fork(chatID: source.chatID, messageID: source.entries[1].id)
+        let first = try #require(try stores.agentSession(chatID: firstAccountFork.chatID, provider: .claude))
+        #expect(first.providerProfile == "default" && first.configuration.resume == source.session.sessionID)
+    }
+}

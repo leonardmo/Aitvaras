@@ -10,6 +10,7 @@ final class AgentSetupModel {
     let coordinator: AgentSetupCoordinator
     let projectID: UUID?
     let directory: URL?
+    let claudeProfile: String
     var provider: AgentProvider = .claude
     private(set) var state: AgentSetupState?
     private(set) var busy = false
@@ -20,7 +21,8 @@ final class AgentSetupModel {
     private var loadToken = UUID()
     var didChange: (() -> Void)?
 
-    init(coordinator: AgentSetupCoordinator, projectID: UUID?, directory: URL?) {
+    init(coordinator: AgentSetupCoordinator, projectID: UUID?, directory: URL?, claudeProfile: String = "default") {
+        self.claudeProfile = claudeProfile
         self.coordinator = coordinator; self.projectID = projectID; self.directory = directory
     }
     func load() async {
@@ -28,7 +30,7 @@ final class AgentSetupModel {
         loadToken = current
         if state?.provider != selected { state = nil }
         do {
-            let value = try await coordinator.state(projectID: projectID, directory: directory, provider: selected)
+            let value = try await coordinator.state(projectID: projectID, directory: directory, provider: selected, profile: claudeProfile)
             try Task.checkCancellation()
             guard loadToken == current, provider == selected else { return }
             state = value
@@ -37,7 +39,7 @@ final class AgentSetupModel {
     func checkNow() {
         guard let projectID else { return }
         perform {
-            self.state = try await self.coordinator.refresh(projectID: projectID, directory: self.directory, provider: self.provider)
+            self.state = try await self.coordinator.refresh(projectID: projectID, directory: self.directory, provider: self.provider, profile: self.claudeProfile)
         }
     }
     func edit(_ edit: AgentSetupEdit) {
@@ -47,7 +49,7 @@ final class AgentSetupModel {
             self.didChange?()
             await self.load()
             if self.provider != .local {
-                do { self.state = try await self.coordinator.refresh(projectID: projectID, directory: self.directory, provider: self.provider) }
+                do { self.state = try await self.coordinator.refresh(projectID: projectID, directory: self.directory, provider: self.provider, profile: self.claudeProfile) }
                 catch { if !Task.isCancelled { self.message = "Settings saved. Provider status could not be checked." } }
             }
         }
@@ -72,7 +74,7 @@ final class AgentSetupModel {
         signingIn = true
         perform {
             self.state = try await self.coordinator.signIn(projectID: projectID, directory: self.directory,
-                provider: self.provider, rowID: row.id) { url in
+                provider: self.provider, profile: self.claudeProfile, rowID: row.id) { url in
                     guard !Task.isCancelled else { return }
                     _ = await MainActor.run { NSWorkspace.shared.open(url) }
                 }

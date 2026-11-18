@@ -8,11 +8,26 @@ extension Stores: AgentConversationPersistence {
     public func conversationSource(chatID: UUID) throws -> AgentConversationSource {
         try db.queue.read { try Self.conversationSource(chatID: chatID, in: $0) }
     }
-    private static func conversationSource(chatID: UUID, in db: Database) throws -> AgentConversationSource {
+    public func conversationSource(chatID: UUID, messageID: UUID) throws -> AgentConversationSource {
+        try db.queue.read { db in
+            guard let entry = try AgentTranscriptEntry.fetchOne(db, key: messageID), entry.chatID == chatID,
+                  let sessionID = entry.sessionID else { throw AgentConversationError.invalidMessage }
+            return try Self.conversationSource(chatID: chatID, sessionID: sessionID, in: db)
+        }
+    }
+    private static func conversationSource(chatID: UUID, sessionID: UUID? = nil, in db: Database) throws -> AgentConversationSource {
+        var selected = try String.fetchOne(db, sql: "SELECT value FROM kv WHERE key = ?",
+            arguments: ["agent.claudeProfile.\(chatID.uuidString)"]) ?? "default"
+        if selected != "default" {
+            if let id = UUID(uuidString: selected), let profile = try AgentProviderProfile.fetchOne(db, key: id), !profile.isDeleted {} else { selected = "default" }
+        }
+        let sessions = AgentChatSession.filter(Column("chatID") == chatID).filter(Column("provider") == AgentProvider.claude.rawValue)
+        let session: AgentChatSession?
+        if let sessionID { session = try sessions.filter(Column("id") == sessionID).fetchOne(db) }
+        else { session = try sessions.filter(Column("providerProfile") == selected).fetchOne(db) }
         guard let chat = try WorkspaceChat.fetchOne(db, key: chatID), chat.archivedAt == nil,
               try WorkspaceProject.fetchOne(db, key: chat.projectID)?.isVisible == true,
-              let session = try AgentChatSession.filter(Column("chatID") == chatID)
-                .filter(Column("provider") == AgentProvider.claude.rawValue).fetchOne(db) else { throw AgentConversationError.unavailable }
+              let session else { throw AgentConversationError.unavailable }
         guard try AgentJournalTurn.filter(Column("chatID") == chatID)
             .filter(Column("state") == AgentJournalState.running.rawValue).fetchCount(db) == 0 else { throw AgentConversationError.busy }
         let owned = try AgentWorktree.fetchOne(db, key: chatID)
@@ -41,7 +56,7 @@ extension Stores: AgentConversationPersistence {
         let tool = ToolDefinition(name: "fork", description: "Fork conversation", parametersJSON: "{}", risk: .reversibleWrite)
         guard AutonomyPolicy().verdict(for: tool, connectorID: "agent.conversation") == .allow else { throw AgentFailure.invalidRequest }
         try db.queue.write { db in
-            guard try Self.conversationSource(chatID: plan.source.chatID, in: db) == plan.source else { throw AgentConversationError.invalidMessage }
+            guard try Self.conversationSource(chatID: plan.source.chatID, sessionID: plan.source.session.id, in: db) == plan.source else { throw AgentConversationError.invalidMessage }
             let conversation = Conversation(title: String(("Fork of " + plan.source.title).prefix(200)))
             try conversation.insert(db)
             let chat = WorkspaceChat(id: chatID, projectID: plan.source.projectID, localConversationID: conversation.id, title: conversation.title)
@@ -51,6 +66,8 @@ extension Stores: AgentConversationPersistence {
             session.forkOrigin = plan.origin; session.cwd = directory.path
             session.additionalRootsJSON = String(decoding: try JSONEncoder().encode(additionalRoots.map(\.path)), as: UTF8.self)
             try session.insert(db)
+            try db.execute(sql: "INSERT INTO kv(key, value) VALUES (?, ?)",
+                arguments: ["agent.claudeProfile.\(chatID.uuidString)", session.providerProfile])
             for (position, original) in plan.prefix.enumerated() {
                 var entry = original
                 entry.id = UUID(); entry.chatID = chatID; entry.position = position
