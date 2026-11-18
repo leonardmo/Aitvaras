@@ -24,3 +24,12 @@ public enum StableIdentifier {
         String(digest(components).prefix(max(1, min(length, 64))))
     }
 }
+
+/// The archiver's transcript identity: its "already archived" marker and the
+/// subject of an archiving job key. Shared so fixtures and retries agree.
+public enum TranscriptFingerprint {
+    public static func of(_ transcript: [ChatMessage]) -> String {
+        let joined = transcript.map { "\($0.role.rawValue):\($0.content)" }.joined(separator: "\u{1F}")
+        return SHA256.hash(data: Data(joined.utf8)).map { String(format: "%02x", $0) }.joined()
+    }
+}

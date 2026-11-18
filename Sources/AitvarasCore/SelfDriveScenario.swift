@@ -3,7 +3,10 @@ import Foundation
 
 /// Debug-only wire format shared by the in-process driver and package tests.
 public struct SelfDriveScenario: Decodable, Sendable {
+    /// Fixture sets the driver seeds into its isolated profile after bootstrap.
+    public enum Seed: String, Decodable, Sendable { case homeAttention }
     public let steps: [SelfDriveStep]
+    public var seed: [Seed]?
 
     public static func parse(_ data: Data) throws -> SelfDriveScenario {
         let scenario = try JSONDecoder().decode(Self.self, from: data)

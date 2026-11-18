@@ -142,6 +142,7 @@ struct ActivityView: View {
                 }
             }
         }
+        .accessibilityElement(children: .contain) // children keep their own identifiers
         .accessibilityIdentifier("history.attention.list")
     }
 

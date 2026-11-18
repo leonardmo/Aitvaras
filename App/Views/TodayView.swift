@@ -58,6 +58,7 @@ struct TodayView: View {
             }
             AttentionUndoBar()
         }
+        .accessibilityElement(children: .contain) // children keep their own identifiers
         .accessibilityIdentifier("home.attention.card")
     }
 

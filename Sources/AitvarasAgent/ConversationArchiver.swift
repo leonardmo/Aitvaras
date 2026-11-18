@@ -62,7 +62,7 @@ public actor ConversationArchiver {
         case active, projectChat, missing, changed, notSubstantial, inProgress, alreadyArchived
     }
 
-    /// Retry exactly the conversation a failed archive run recorded (D35). The
+    /// Retry exactly the conversation a failed archive run recorded (D36). The
     /// run's job key binds the conversation to the transcript version that
     /// failed; a changed, active, project-owned, already archived or in-flight
     /// transcript is reported as unavailable and nothing else is archived.
@@ -328,8 +328,7 @@ public actor ConversationArchiver {
     }
 
     static func fingerprint(of transcript: [ChatMessage]) -> String {
-        let joined = transcript.map { "\($0.role.rawValue):\($0.content)" }.joined(separator: "\u{1F}")
-        return SHA256.hash(data: Data(joined.utf8)).map { String(format: "%02x", $0) }.joined()
+        TranscriptFingerprint.of(transcript)
     }
 
     static func normalize(_ text: String) -> String {

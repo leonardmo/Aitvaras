@@ -309,6 +309,11 @@ final class AppModel {
             if CommandLine.arguments.contains("--seed-demo-state") {
                 _ = try? StateFixtures.seedDemoProfile(into: stores)
             }
+            // `--seed-home-attention` (D36, TESTING.md) adds fictional attention
+            // items for Home/History checks. Only in an isolated profile.
+            if CommandLine.arguments.contains("--seed-home-attention"), AitvarasPaths.isIsolated {
+                _ = try? HomeAttentionFixtures.seed(into: stores)
+            }
 
             let mlx = MLXEngine(reportLoad: { event in
                 switch event {

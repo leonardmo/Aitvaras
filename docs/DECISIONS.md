@@ -799,7 +799,7 @@ The existing vertical composer keeps its selection binding and draft-edit path.
 Shift/Option-Return replace the selection with a newline; plain Return accepts
 an open completion or sends. Marked text defers Return to the input method.
 
-## D36 — Home attention dismissal and recovery ✅ (2026-11-18)
+## D36 — Home attention dismissal and recovery 🚧 (2026-11-18)
 
 Home shows at most five attention rows in Decisions, Problems, Notices order,
 with approvals first and one “N more” link into History's attention mode for
@@ -846,3 +846,5 @@ JSON. Groups show the latest run and a short list of earlier failures.
 Open conversation/capture closes the sheet before navigating. Retry is offered
 only for failed capture summaries and safely identified stored-conversation
 archives through their existing targeted paths; no other job gains Retry.
+D36 stays 🚧 until the maintainer has reviewed the light/dark screenshots and
+the person-only checks in [TESTING.md](TESTING.md#home-attention-d36-issue-18).

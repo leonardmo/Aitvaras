@@ -601,6 +601,8 @@ struct ActivityRunDetailView: View {
         .padding(20)
         .frame(minWidth: 430, idealWidth: 500, maxWidth: 680,
                minHeight: 300, idealHeight: 440, maxHeight: 760)
+        // Contain, so the Close button and other children keep their own identifiers.
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("activity.detail.sheet")
         .task(id: run.id) { load() }
         .onChange(of: model.homeAttentionSnapshot) { load() }
@@ -704,6 +706,7 @@ struct ActivityRunDetailView: View {
                 }
             }
         }
+        .accessibilityElement(children: .contain) // children keep their own identifiers
         .accessibilityIdentifier("activity.detail.earlierFailures")
     }
 

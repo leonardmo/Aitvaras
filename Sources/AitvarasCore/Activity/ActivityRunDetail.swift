@@ -23,7 +23,7 @@ public enum ActivityDetailDestination: Sendable, Equatable {
     }
 }
 
-/// The only operations with a safe, targeted retry path (D35): a failed capture
+/// The only operations with a safe, targeted retry path (D36): a failed capture
 /// summary and a failed archive of one stored conversation. Everything else
 /// has no Retry.
 public enum ActivityRetryTarget: Sendable, Equatable {

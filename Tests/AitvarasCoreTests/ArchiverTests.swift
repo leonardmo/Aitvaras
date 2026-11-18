@@ -298,7 +298,7 @@ private actor GatedArchiverEngine: InferenceEngine {
     }
 }
 
-/// D35: Retry archives exactly the stored conversation a failed run recorded.
+/// D36: Retry archives exactly the stored conversation a failed run recorded.
 @Suite(.timeLimit(.minutes(2))) struct StoredConversationRetryTests {
     private let substantive = turns([
         ("I usually plan the week on Sunday evening and keep Fridays free for reading.",

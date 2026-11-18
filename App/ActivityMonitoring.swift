@@ -307,7 +307,7 @@ extension AppModel {
         automaticTasks.removeAll()
     }
 
-    /// D35: Retry exists only for a failed capture summary and a failed archive
+    /// D36: Retry exists only for a failed capture summary and a failed archive
     /// of one stored conversation, through their existing targeted paths.
     func canRetryActivity(_ target: ActivityRetryTarget) -> Bool {
         switch target {

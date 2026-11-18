@@ -1,0 +1,324 @@
+{
+  "seed": [
+    "homeAttention"
+  ],
+  "steps": [
+    {
+      "action": "press",
+      "identifier": "house",
+      "delay": 3
+    },
+    {
+      "action": "waitFor",
+      "identifier": "home.attention.card",
+      "timeout": 15
+    },
+    {
+      "action": "waitFor",
+      "identifier": "home.attention.suggestion.0A170000-0000-4000-8000-000000000003",
+      "timeout": 10
+    },
+    {
+      "action": "waitFor",
+      "identifier": "home.attention.suggestion.0A170000-0000-4000-8000-000000000003.approve",
+      "timeout": 5
+    },
+    {
+      "action": "waitFor",
+      "identifier": "home.attention.suggestion.0A170000-0000-4000-8000-000000000003.dismiss",
+      "absent": true,
+      "timeout": 2
+    },
+    {
+      "action": "waitFor",
+      "identifier": "home.attention.problem.job.d57d89612861fac2066b19c89110f524e44ed835321795686f9feacf2618cf45",
+      "timeout": 10
+    },
+    {
+      "action": "waitFor",
+      "text": "3 occurrences",
+      "within": "home.attention.problem.job.d57d89612861fac2066b19c89110f524e44ed835321795686f9feacf2618cf45",
+      "timeout": 5
+    },
+    {
+      "action": "waitFor",
+      "identifier": "home.attention.more",
+      "timeout": 5
+    },
+    {
+      "action": "screenshot",
+      "name": "attention-01-home",
+      "delay": 1
+    },
+    {
+      "action": "press",
+      "identifier": "home.attention.problem.job.d57d89612861fac2066b19c89110f524e44ed835321795686f9feacf2618cf45.open"
+    },
+    {
+      "action": "waitFor",
+      "identifier": "activity.detail.close",
+      "timeout": 10
+    },
+    {
+      "action": "waitFor",
+      "identifier": "activity.detail.summary",
+      "timeout": 5
+    },
+    {
+      "action": "waitFor",
+      "identifier": "activity.detail.earlierFailures",
+      "timeout": 5
+    },
+    {
+      "action": "waitFor",
+      "identifier": "activity.detail.dismiss",
+      "timeout": 5
+    },
+    {
+      "action": "screenshot",
+      "name": "attention-02-detail",
+      "delay": 1
+    },
+    {
+      "action": "press",
+      "identifier": "activity.detail.details",
+      "optional": true
+    },
+    {
+      "action": "screenshot",
+      "name": "attention-03-detail-expanded",
+      "delay": 1
+    },
+    {
+      "action": "press",
+      "identifier": "activity.detail.close"
+    },
+    {
+      "action": "waitFor",
+      "identifier": "activity.detail.close",
+      "absent": true,
+      "timeout": 5
+    },
+    {
+      "action": "press",
+      "identifier": "home.attention.problem.job.d57d89612861fac2066b19c89110f524e44ed835321795686f9feacf2618cf45.dismiss"
+    },
+    {
+      "action": "waitFor",
+      "identifier": "home.attention.undo",
+      "timeout": 5
+    },
+    {
+      "action": "waitFor",
+      "identifier": "home.attention.problem.job.d57d89612861fac2066b19c89110f524e44ed835321795686f9feacf2618cf45",
+      "absent": true,
+      "timeout": 5
+    },
+    {
+      "action": "screenshot",
+      "name": "attention-04-dismissed"
+    },
+    {
+      "action": "press",
+      "identifier": "home.attention.undo"
+    },
+    {
+      "action": "waitFor",
+      "identifier": "home.attention.problem.job.d57d89612861fac2066b19c89110f524e44ed835321795686f9feacf2618cf45",
+      "timeout": 5
+    },
+    {
+      "action": "press",
+      "identifier": "home.attention.dismissAll"
+    },
+    {
+      "action": "waitFor",
+      "identifier": "home.attention.undo",
+      "timeout": 5
+    },
+    {
+      "action": "waitFor",
+      "identifier": "home.attention.suggestion.0A170000-0000-4000-8000-000000000003",
+      "timeout": 5
+    },
+    {
+      "action": "waitFor",
+      "identifier": "home.attention.problem.run.0A170000-0000-4000-8000-000000000002",
+      "timeout": 5
+    },
+    {
+      "action": "waitFor",
+      "identifier": "home.attention.problem.job.d57d89612861fac2066b19c89110f524e44ed835321795686f9feacf2618cf45",
+      "absent": true,
+      "timeout": 5
+    },
+    {
+      "action": "waitFor",
+      "identifier": "home.attention.automaticWork",
+      "absent": true,
+      "timeout": 5
+    },
+    {
+      "action": "screenshot",
+      "name": "attention-05-dismissed-all"
+    },
+    {
+      "action": "press",
+      "identifier": "home.attention.undo"
+    },
+    {
+      "action": "waitFor",
+      "identifier": "home.attention.problem.job.d57d89612861fac2066b19c89110f524e44ed835321795686f9feacf2618cf45",
+      "timeout": 5
+    },
+    {
+      "action": "press",
+      "identifier": "home.attention.more"
+    },
+    {
+      "action": "waitFor",
+      "identifier": "history.attention.list",
+      "timeout": 10
+    },
+    {
+      "action": "screenshot",
+      "name": "attention-06-history",
+      "delay": 1
+    },
+    {
+      "action": "press",
+      "identifier": "house"
+    },
+    {
+      "action": "waitFor",
+      "identifier": "home.attention.card",
+      "timeout": 10
+    },
+    {
+      "action": "press",
+      "identifier": "home.attention.problem.job.b7f42a6f3f20e2d40c3e7ba01f6d19e7f202bb0e59a009751508f8a3da94e4f9.open"
+    },
+    {
+      "action": "waitFor",
+      "identifier": "activity.detail.retry",
+      "timeout": 10
+    },
+    {
+      "action": "waitFor",
+      "identifier": "activity.detail.open",
+      "timeout": 5
+    },
+    {
+      "action": "screenshot",
+      "name": "attention-07-archive-detail",
+      "delay": 1
+    },
+    {
+      "action": "press",
+      "identifier": "activity.detail.open"
+    },
+    {
+      "action": "waitFor",
+      "identifier": "activity.detail.close",
+      "absent": true,
+      "timeout": 10
+    },
+    {
+      "action": "waitFor",
+      "text": "example seminar talk",
+      "timeout": 10
+    },
+    {
+      "action": "screenshot",
+      "name": "attention-08-opened-conversation",
+      "delay": 2
+    },
+    {
+      "action": "press",
+      "identifier": "house"
+    },
+    {
+      "action": "waitFor",
+      "identifier": "home.attention.card",
+      "timeout": 10
+    },
+    {
+      "action": "press",
+      "identifier": "home.attention.problem.job.b7f42a6f3f20e2d40c3e7ba01f6d19e7f202bb0e59a009751508f8a3da94e4f9.dismiss"
+    },
+    {
+      "action": "waitFor",
+      "identifier": "home.attention.problem.job.b7f42a6f3f20e2d40c3e7ba01f6d19e7f202bb0e59a009751508f8a3da94e4f9",
+      "absent": true,
+      "timeout": 5
+    },
+    {
+      "action": "press",
+      "identifier": "home.attention.problem.job.d57d89612861fac2066b19c89110f524e44ed835321795686f9feacf2618cf45.dismiss"
+    },
+    {
+      "action": "waitFor",
+      "identifier": "home.attention.problem.job.d57d89612861fac2066b19c89110f524e44ed835321795686f9feacf2618cf45",
+      "absent": true,
+      "timeout": 5
+    },
+    {
+      "action": "press",
+      "identifier": "home.attention.problem.job.ddcc5d0bb2ce60f7c05e9ce6752718d4eeb514d734c657d6bd9f924e5e125984.dismiss"
+    },
+    {
+      "action": "waitFor",
+      "identifier": "home.attention.problem.job.ddcc5d0bb2ce60f7c05e9ce6752718d4eeb514d734c657d6bd9f924e5e125984",
+      "absent": true,
+      "timeout": 5
+    },
+    {
+      "action": "press",
+      "identifier": "home.attention.problem.job.322526de37077c85dddd38a16dc1282948a08d700d6ec3e0dc4ab691b9f23212.dismiss"
+    },
+    {
+      "action": "waitFor",
+      "identifier": "home.attention.problem.job.322526de37077c85dddd38a16dc1282948a08d700d6ec3e0dc4ab691b9f23212",
+      "absent": true,
+      "timeout": 5
+    },
+    {
+      "action": "waitFor",
+      "identifier": "home.attention.held.0A170000-0000-4000-8000-000000000004",
+      "timeout": 5
+    },
+    {
+      "action": "waitFor",
+      "identifier": "home.attention.held.0A170000-0000-4000-8000-000000000005",
+      "timeout": 5
+    },
+    {
+      "action": "screenshot",
+      "name": "attention-09-notices"
+    },
+    {
+      "action": "press",
+      "identifier": "home.attention.held.0A170000-0000-4000-8000-000000000004.dismiss"
+    },
+    {
+      "action": "waitFor",
+      "identifier": "home.attention.held.0A170000-0000-4000-8000-000000000004",
+      "absent": true,
+      "timeout": 5
+    },
+    {
+      "action": "waitFor",
+      "identifier": "home.attention.undo",
+      "timeout": 5
+    },
+    {
+      "action": "waitFor",
+      "identifier": "home.attention.automaticWork",
+      "timeout": 5
+    },
+    {
+      "action": "screenshot",
+      "name": "attention-10-held-dismissed"
+    }
+  ]
+}
