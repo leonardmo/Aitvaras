@@ -60,7 +60,7 @@ public actor CaptureSummarizer {
         try Task.checkCancellation()
 
         var finalRecord = record
-        if let summary = try await summarize(rendered) {
+        if let summary = try await summarize(rendered, recordID: recordID) {
             finalRecord.summary = summary
             finalRecord.summaryPending = false
         }
@@ -100,7 +100,7 @@ public actor CaptureSummarizer {
             throw CaptureSummaryError.recordMissing
         }
         guard record.summaryPending || record.summary.isEmpty else { return record }
-        guard let summary = try await summarize(record.transcript) else {
+        guard let summary = try await summarize(record.transcript, recordID: recordID) else {
             try Task.checkCancellation()
             throw CaptureSummaryError.modelUnavailable
         }
@@ -120,12 +120,19 @@ public actor CaptureSummarizer {
 
     // MARK: Model passes
 
-    func summarize(_ rendered: String) async throws -> String? {
+    func summarize(_ rendered: String, recordID: UUID? = nil) async throws -> String? {
         guard !rendered.isEmpty else { return "" }
         try Task.checkCancellation()
-        let runID = reporter?.begin(ActivityRun(category: .capture,
+        let jobKey = recordID.map { ActivityJobKey.captureSummary(recordID: $0) }
+        // App capture summaries already have a durable-save owner. Keep this
+        // model helper unkeyed when that owner is reporting the same job.
+        let parentKey = ActivityTaskContext.runID.flatMap { id in
+            try? reporter?.stores.activityRun(id: id)?.jobKey
+        }
+        let runID = reporter?.begin(ActivityRun(referenceID: recordID?.uuidString, category: .capture,
             title: "Summarize capture", stage: "Selecting summary model",
-            executionLocation: "Local", dataAccess: "Saved capture transcript", dataDestination: "Local capture summary"))
+            executionLocation: "Local", dataAccess: "Saved capture transcript", dataDestination: "Local capture summary",
+            jobKey: parentKey == jobKey ? nil : jobKey))
         guard let engine = await router.engine(for: .background) else {
             if let runID { reporter?.finish(id: runID, state: .failed,
                 outcome: "Transcript retained; no summary model is available") }

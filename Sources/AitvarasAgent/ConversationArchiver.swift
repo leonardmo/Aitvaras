@@ -99,9 +99,10 @@ public actor ConversationArchiver {
         let fingerprint = Self.fingerprint(of: transcript)
         guard !inFlightFingerprints.contains(fingerprint),
               (try? stores.hasSeen(connectorID: "archiver", itemID: fingerprint)) != true else { return Self.emptyOutcome }
-        let runID = reporter?.begin(ActivityRun(category: .memory,
+        let runID = reporter?.begin(ActivityRun(referenceID: sourceConversationID?.uuidString, category: .memory,
             title: "Archive conversation", stage: "Preparing transcript",
-            executionLocation: "Local", dataAccess: "Saved conversation", dataDestination: "Local memory"))
+            executionLocation: "Local", dataAccess: "Saved conversation", dataDestination: "Local memory",
+            jobKey: sourceConversationID.map { ActivityJobKey.archiving(conversationID: $0, fingerprint: fingerprint) }))
         return await ActivityTaskContext.$runID.withValue(runID ?? ActivityTaskContext.runID) {
             let outcome = await archiveContent(transcript: transcript, label: label,
                                               runID: runID, sourceConversationID: sourceConversationID)

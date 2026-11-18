@@ -166,8 +166,8 @@ final class IntegrationCoordinator {
         notificationRouter.announce = { text in
             AppModel.shared.announce(text)
         }
-        notificationRouter.reportError = { title, error in
-            AppModel.shared.reportBackgroundError(title: title, error: error)
+        notificationRouter.reportError = { code, title, error in
+            AppModel.shared.reportBackgroundError(code: code, title: title, error: error)
         }
         notifications = notificationRouter
         let coach = FocusCoach(stores: stores, router: router, notifications: notificationRouter, reporter: reporter)
@@ -501,9 +501,9 @@ final class IntegrationCoordinator {
                 Task { @MainActor [weak self] in
                     self?.indexStatusIsWarning = true
                     self?.indexProgressText = message
-                    AppModel.shared.reportBackgroundError(title: "Folder indexing needs attention", message: "Some files could not be indexed. Review Library → Files/Sources.")
+                    AppModel.shared.reportBackgroundError(code: .indexing, title: "Folder indexing needs attention", message: "Some files could not be indexed. Review Library → Files/Sources.")
                 }
-            })
+            }, jobSourceIDs: configuredSources.map(\.id))
         self.indexer = indexer
         // Source changes at runtime must re-arm the folder watcher.
         if pumpTask != nil, automaticAllowed(.indexing) {
@@ -531,7 +531,8 @@ final class IntegrationCoordinator {
         let sources = sources
         let runID = reporter?.begin(ActivityRun(category: .knowledge, title: "Index selected folders",
             stage: "Preparing files", executionLocation: "This Mac",
-            dataAccess: "Registered available folders", dataDestination: "Local index and configured local embedding service"))
+            dataAccess: "Registered available folders", dataDestination: "Local index and configured local embedding service",
+            jobKey: ActivityJobKey.indexing(sourceIDs: ragSourceConfigs.map(\.id))))
         indexRunID = runID
         indexTask = Task {
             defer {
@@ -749,7 +750,7 @@ final class IntegrationCoordinator {
         do {
             guard try !stores.hasSeen(connectorID: event.connectorID, itemID: itemID) else { return }
         } catch {
-            AppModel.shared.reportBackgroundError(
+            AppModel.shared.reportBackgroundError(code: .incomingLookup,
                 title: "Incoming update could not be checked", error: error)
             return
         }
@@ -771,7 +772,7 @@ final class IntegrationCoordinator {
                 observation = nil
             }
         } catch {
-            AppModel.shared.reportBackgroundError(
+            AppModel.shared.reportBackgroundError(code: .senderTrustLookup,
                 title: "Sender trust could not be checked", error: error)
             return
         }
@@ -811,7 +812,7 @@ final class IntegrationCoordinator {
                 settingValue: event.checkpoint.map { ($0.key, $0.value) },
                 observing: observation) != nil else { return }
         } catch {
-            AppModel.shared.reportBackgroundError(
+            AppModel.shared.reportBackgroundError(code: .incomingSave,
                 title: "Incoming update could not be saved", error: error)
             return   // connector will replay because no seen marker committed
         }
@@ -967,7 +968,7 @@ final class IntegrationCoordinator {
             try stores.enqueuePhoneNotification(item, recording: queuedEvent)
             NotificationCenter.default.post(name: .aitvarasActivityChanged, object: nil)
         } catch {
-            AppModel.shared.reportBackgroundError(
+            AppModel.shared.reportBackgroundError(code: .notificationQueue,
                 title: "Urgent phone notification could not be queued", error: error)
             return
         }
@@ -997,7 +998,7 @@ final class IntegrationCoordinator {
                 try stores.duePhoneNotifications(), now: now)
         } catch {
             phoneDeliveryWarning = "Urgent phone deliveries could not be read from the local queue."
-            AppModel.shared.reportBackgroundError(title: "Phone delivery queue could not be read", error: error)
+            AppModel.shared.reportBackgroundError(code: .phoneQueueRead, title: "Phone delivery queue could not be read", error: error)
             return
         }
         guard !due.isEmpty else {
@@ -1028,7 +1029,7 @@ final class IntegrationCoordinator {
                 do { try stores.finishPhoneNotification(id: item.id, recording: expired) }
                 catch {
                     phoneDeliveryWarning = "An expired phone delivery could not be cleared."
-                    AppModel.shared.reportBackgroundError(title: "Phone delivery queue could not be updated", error: error)
+                    AppModel.shared.reportBackgroundError(code: .phoneQueueUpdate, subjectID: item.id, title: "Phone delivery queue could not be updated", error: error)
                     return
                 }
                 phoneDeliveryAttemptGate.clear(id: item.id)
@@ -1047,7 +1048,7 @@ final class IntegrationCoordinator {
                 do { try stores.finishPhoneNotification(id: item.id, recording: invalid) }
                 catch {
                     phoneDeliveryWarning = "An invalid phone delivery could not be cleared."
-                    AppModel.shared.reportBackgroundError(title: "Phone delivery queue could not be updated", error: error)
+                    AppModel.shared.reportBackgroundError(code: .phoneQueueUpdate, subjectID: item.id, title: "Phone delivery queue could not be updated", error: error)
                     return
                 }
                 phoneDeliveryAttemptGate.clear(id: item.id)
@@ -1056,7 +1057,8 @@ final class IntegrationCoordinator {
 
             let deliveryID = reporter?.begin(ActivityRun(referenceID: item.id.uuidString, category: .delivery,
                 trigger: .automatic, title: "Send queued external notification", stage: "Sending approved notification",
-                executionLocation: "This Mac", dataAccess: "Previously queued notification", dataDestination: "Configured Telegram account"))
+                executionLocation: "This Mac", dataAccess: "Previously queued notification", dataDestination: "Configured Telegram account",
+                jobKey: ActivityJobKey.queuedDelivery(itemID: item.id)))
             do {
                 _ = try await telegram.execute(
                     toolName: "notify_phone",
@@ -1070,7 +1072,7 @@ final class IntegrationCoordinator {
                 phoneDeliveryAttemptGate.suppress(id: item.id, until: next)
                 do { try stores.deferPhoneNotification(id: item.id, nextAttemptAt: next) }
                 catch {
-                    AppModel.shared.reportBackgroundError(title: "Phone delivery retry could not be scheduled", error: error)
+                    AppModel.shared.reportBackgroundError(code: .phoneRetrySchedule, subjectID: item.id, title: "Phone delivery retry could not be scheduled", error: error)
                 }
                 phoneDeliveryWarning = "An urgent phone notification is waiting to retry."
                 return
@@ -1104,7 +1106,7 @@ final class IntegrationCoordinator {
                         + error.localizedDescription
                 }
                 phoneDeliveryWarning = "Telegram delivered an alert, but its local queue state could not be updated."
-                AppModel.shared.reportBackgroundError(
+                AppModel.shared.reportBackgroundError(code: .phoneResultSave, subjectID: item.id,
                     title: "Phone delivery result could not be saved",
                     message: String(detail.prefix(1_500)))
                 return

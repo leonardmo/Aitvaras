@@ -40,7 +40,8 @@ final class CaptureRefinementManager {
         reporter?.begin(ActivityRun(id: operation, referenceID: archiveID.uuidString, category: .capture,
             title: "Local second-pass transcription", stage: "Loading speech model",
             provider: model.displayName, executionLocation: "This Mac",
-            dataAccess: "User-retained audio recording", dataDestination: "Separate local transcript candidate; no network"))
+            dataAccess: "User-retained audio recording", dataDestination: "Separate local transcript candidate; no network",
+            jobKey: ActivityJobKey.captureRefinement(archiveID: archiveID, modelID: model.rawValue, language: language)))
         let audioStore = CaptureAudioArchiveStore(profileDirectory: profileDirectory)
         let outputStore = CaptureRefinementStore(profileDirectory: profileDirectory)
         task = Task { [weak self] in

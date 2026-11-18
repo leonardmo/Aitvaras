@@ -12,7 +12,7 @@ final class NotificationRouter {
 
     /// Embodied announcement — show Aitvaras, speak, caption. Set by the app.
     var announce: ((_ text: String) -> Void)?
-    var reportError: ((_ title: String, _ error: Error) -> Void)?
+    var reportError: ((_ code: ActivityProblemCode, _ title: String, _ error: Error) -> Void)?
 
     init(stores: Stores) {
         self.stores = stores
@@ -51,7 +51,7 @@ final class NotificationRouter {
                 kind: .notificationSent, connectorID: "focus",
                 summary: "Update available inside Aitvaras"))
         } catch {
-            reportError?("Update could not be held for the next break", error)
+            reportError?(.heldNotificationSave, "Update could not be held for the next break", error)
             // Storage failure must degrade to immediate delivery, never loss.
             surface(title: title, body: body, urgent: false)
         }
@@ -62,7 +62,7 @@ final class NotificationRouter {
         do {
             return try stores.heldNotifications()
         } catch {
-            reportError?("Held updates could not be loaded", error)
+            reportError?(.heldNotificationRead, "Held updates could not be loaded", error)
             return []
         }
     }
@@ -72,7 +72,7 @@ final class NotificationRouter {
             try stores.clearHeldNotifications(ids: items.map(\.id))
         } catch {
             // Retaining them can duplicate a later briefing, but cannot lose it.
-            reportError?("Delivered updates could not be cleared", error)
+            reportError?(.heldNotificationConsume, "Delivered updates could not be cleared", error)
         }
     }
 

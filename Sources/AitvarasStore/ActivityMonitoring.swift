@@ -207,22 +207,26 @@ public final class ActivityReporter: @unchecked Sendable {
     /// Repeated background failures update one unresolved attention item,
     /// including across restarts. Reviewing it allows a later new incident.
     @discardableResult
-    public func problem(title: String, outcome: String) -> UUID {
+    public func problem(code: ActivityProblemCode, subjectID: UUID? = nil,
+                        title: String, outcome: String) -> UUID {
         var result = UUID()
+        let jobKey = ActivityJobKey.problem(code, subjectID: subjectID)
         perform {
             try stores.db.queue.write { dbc in
-                if var run = try ActivityRun.filter(Column("title") == title)
+                if var run = try ActivityRun.filter(Column("jobKey") == jobKey)
                     .filter(Column("category") == ActivityCategory.system.rawValue)
                     .filter(Column("state") == ActivityRunState.failed.rawValue)
                     .filter(Column("acknowledgedAt") == nil).fetchOne(dbc) {
                     result = run.id
                     run.updatedAt = .now
                     run.outcome = outcome
+                    run.occurrenceCount += 1
                     try run.update(dbc)
                 } else {
                     let run = ActivityRun(id: result, parentID: nil, category: .system,
                         trigger: .automatic, state: .failed, title: title,
-                        executionLocation: "This Mac", dataDestination: "Local activity history", outcome: outcome)
+                        executionLocation: "This Mac", dataDestination: "Local activity history", outcome: outcome,
+                        jobKey: jobKey)
                     try run.insert(dbc)
                     try ActivityRunStep(runID: result, stage: outcome, state: .failed).insert(dbc)
                 }

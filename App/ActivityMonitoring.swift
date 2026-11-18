@@ -177,7 +177,7 @@ extension AppModel {
                     }
                     refreshSidebandData()
                 } catch is CancellationError { }
-                catch { reportBackgroundError(title: "Stored conversations could not be recovered", error: error) }
+                catch { reportBackgroundError(code: .archiveRecovery, title: "Stored conversations could not be recovered", error: error) }
             }
         }
         if automaticWorkAllowed(.routineReview), let routineReviewer,
@@ -192,7 +192,7 @@ extension AppModel {
                     }
                     refreshSidebandData()
                 } catch is CancellationError { }
-                catch { reportBackgroundError(title: "Routine review could not finish", error: error) }
+                catch { reportBackgroundError(code: .routineReview, title: "Routine review could not finish", error: error) }
             }
         }
     }
@@ -235,13 +235,16 @@ extension AppModel {
         }
     }
 
-    func reportBackgroundError(title: String, error: Error) {
-        reportBackgroundError(title: title, message: "The operation could not finish. Review this feature's status before retrying.")
+    func reportBackgroundError(code: ActivityProblemCode, subjectID: UUID? = nil, title: String, error: Error) {
+        reportBackgroundError(code: code, subjectID: subjectID, title: title,
+            message: "The operation could not finish. Review this feature's status before retrying.")
     }
 
-    func reportBackgroundError(title: String, message: String) {
+    func reportBackgroundError(code: ActivityProblemCode, subjectID: UUID? = nil, title: String, message: String) {
         if let parent = ActivityTaskContext.runID { failedOperationIDs.insert(parent) }
-        if let id = activityReporter?.problem(title: title, outcome: message) { backgroundProblemRuns[title] = id }
+        if let id = activityReporter?.problem(code: code, subjectID: subjectID, title: title, outcome: message) {
+            backgroundProblemRuns[ActivityJobKey.problem(code, subjectID: subjectID)] = id
+        }
     }
 
     func shutdownMonitoring() async {

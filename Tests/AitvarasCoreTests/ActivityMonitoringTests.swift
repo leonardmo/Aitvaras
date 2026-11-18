@@ -20,13 +20,13 @@ import AitvarasStore
 
     @Test func repeatedProblemsDeduplicateAcrossReporterInstancesUntilReviewed() throws {
         let stores = try inMemoryStores()
-        let first = ActivityReporter(stores: stores).problem(title: "Folder check unavailable", outcome: "Retry later")
-        let second = ActivityReporter(stores: stores).problem(title: "Folder check unavailable", outcome: "Still unavailable")
+        let first = ActivityReporter(stores: stores).problem(code: .indexing, title: "Folder check unavailable", outcome: "Retry later")
+        let second = ActivityReporter(stores: stores).problem(code: .indexing, title: "Folder check unavailable", outcome: "Still unavailable")
         #expect(first == second)
         #expect(try stores.activityAttentionRuns().count == 1)
         #expect(try stores.activityRun(id: first)?.outcome == "Still unavailable")
         try stores.acknowledgeActivityRun(id: first)
-        let next = ActivityReporter(stores: stores).problem(title: "Folder check unavailable", outcome: "New incident")
+        let next = ActivityReporter(stores: stores).problem(code: .indexing, title: "Folder check unavailable", outcome: "New incident")
         #expect(next != first)
         #expect(try stores.activityRuns().count == 2)
     }

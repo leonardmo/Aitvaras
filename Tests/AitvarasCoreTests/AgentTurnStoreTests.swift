@@ -43,6 +43,7 @@ import AitvarasCore
         try stores.finishAgentTurn(id: input.id, state: .completed)
         let run = try #require(try stores.activityRun(id: input.id))
         #expect(run.state == .succeeded)
+        #expect(run.jobKey == nil)
         let metadata = String(decoding: try JSONEncoder().encode(run), as: UTF8.self)
         #expect(!metadata.contains("PROMPT_CANARY") && !metadata.contains("OUTPUT_CANARY"))
         #expect(try stores.activityRunSteps(runID: input.id).map(\.state) == [.running, .succeeded])
@@ -59,6 +60,7 @@ import AitvarasCore
         #expect(try stores.activityRun(id: input.id)?.state == .running)
         #expect(try stores.activityRun(id: input.id)?.finishedAt == nil)
         try stores.finishAgentTurn(id: input.id, state: .failed)
+        #expect(try stores.activityRun(id: input.id)?.jobKey == nil)
         #expect(try stores.activityRuns().map(\.id) == [input.id])
         #expect(try stores.activityRunSteps(runID: input.id).map(\.state) == [.running, .interrupted, .running, .failed])
     }

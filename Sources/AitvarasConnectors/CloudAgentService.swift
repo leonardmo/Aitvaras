@@ -176,6 +176,8 @@ public actor CloudAgentService {
         public var access: Access
         public var maxTurns: Int
         public var timeout: TimeInterval
+        /// Supplied only by the routine-review owner; other feature attempts stay unkeyed.
+        public var routineReviewIDs: [UUID]
 
         public init(
             feature: CloudAgentFeature,
@@ -183,7 +185,8 @@ public actor CloudAgentService {
             prompt: String,
             access: Access = .noTools,
             maxTurns: Int = 1,
-            timeout: TimeInterval = 10 * 60
+            timeout: TimeInterval = 10 * 60,
+            routineReviewIDs: [UUID] = []
         ) {
             self.feature = feature
             self.selection = selection ?? CloudAgentSettings.selection(for: feature)
@@ -191,6 +194,7 @@ public actor CloudAgentService {
             self.access = access
             self.maxTurns = min(max(maxTurns, 1), 40)
             self.timeout = min(max(timeout, 5), 30 * 60)
+            self.routineReviewIDs = feature == .routineReview ? routineReviewIDs : []
         }
     }
 
@@ -275,7 +279,9 @@ public actor CloudAgentService {
                 stage: failures.isEmpty ? "Provider request" : "Fallback provider request",
                 provider: agent.kind.displayName, executionLocation: "Cloud provider via local CLI",
                 dataAccess: request.feature.dataCategories.joined(separator: ", "),
-                dataDestination: agent.kind.displayName))
+                dataDestination: agent.kind.displayName,
+                jobKey: request.feature == .routineReview && !request.routineReviewIDs.isEmpty
+                    ? ActivityJobKey.routineReview(routineIDs: request.routineReviewIDs) : nil))
             do {
                 if ActivityTaskContext.trigger != .manual, reporter?.failureMessage != nil {
                     throw ConnectorError("Automatic work is suspended because monitoring is unavailable.")
