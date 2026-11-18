@@ -751,3 +751,33 @@ file. Hand-written fixtures establish offline protocol and failure behavior;
 they do not prove browser completion or UI acceptance. D34 remains 🚧 until
 the full isolated-profile live checklist in [TESTING.md](TESTING.md#project-agent-setup-d34)
 is complete, including MCP sign-in with the user in the browser.
+
+## D35 — Native selectable Markdown and math in Chat ✅ (2026-11-18)
+
+All message bodies, plans and side answers share one TextKit renderer. Exact
+SwiftPM dependencies are `swift-markdown` **0.7.3** (Apache-2.0 with the Swift
+runtime exception) and `SwiftMath` **1.7.3** (MIT); the resolved transitive
+`swift-cmark` **0.9.0** uses BSD and bundled permissive notices. SwiftMath ships
+its unmodified offline font bundle, including Latin Modern Math under the GUST
+Font License and other fonts under SIL OFL; distribution notices are bundled
+in `ChatThirdPartyNotices.txt` and the dependency's resource bundle.
+
+CommonMark/GFM becomes native attributed text and tables, with LaTeX as inline
+baseline-aligned or display attachments. Invalid, incomplete, excessively deep
+or oversized math remains literal monospace source. HTML stays visible text;
+images become browser links and never load. HTTP/HTTPS/mailto links open only
+on an explicit click. Native system colors follow appearance changes.
+
+A single text storage per message keeps selection continuous across formatting,
+code, tables and math without a web process per message. Source spans recover
+Markdown for Copy and Reply with quote; Fork retains its existing anchor and
+eligibility. Code stays in that text storage, with native copy controls and
+horizontal scrollers rather than nested editors. The proposed transcript width
+always controls prose and table layout. Complete top-level blocks and their math
+attachments survive appends; only the open tail is parsed and replaced. Edits,
+appearance changes and reference definitions invalidate the necessary prefix.
+Host profiling and native interaction checks remain required for long chats.
+
+The existing vertical composer keeps its selection binding and draft-edit path.
+Shift/Option-Return replace the selection with a newline; plain Return accepts
+an open completion or sends. Marked text defers Return to the input method.

@@ -12,6 +12,7 @@ struct AgentPlanCard: View {
         VStack(alignment: .leading, spacing: 10) {
             if case .plan(let text) = request.kind {
                 ChatMarkdown(text: AgentTranscriptContent.bounded(text))
+                    .frame(maxWidth: .infinity, alignment: .leading)
                     .accessibilityIdentifier("chat.plan.\(request.identity).content")
             }
             HStack {

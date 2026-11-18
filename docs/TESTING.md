@@ -1405,3 +1405,51 @@ Claude. Verify inline order stays fixed until another chat opens and narrow
 composer controls retain one row. Inspect profile-specific usage after replies.
 Real browser completion, live account isolation and menu/focus/layout behavior
 require the host and a person; package tests cannot establish those results.
+
+### Native chat rich text and composer (D35)
+
+`ChatMarkdownStructureTests`, `ChatMathTests`, and `ChatComposerNewlineTests`
+exercise CommonMark/GFM source structure, code exclusions, currency, UTF-16
+selection edits, tail boundaries and source-aware quote projection offline.
+`ChatRichTextTests` additionally exercises native attributed styles, tables,
+math attachments/error fallback, formatted selections, streaming convergence and
+transcript sizing. It needs macOS system appearance resources: the supervised
+sandbox cannot load them, so run that suite on the host. Sandbox verification
+may explicitly skip `ChatRichTextTests`; do not mistake that for native coverage.
+
+In a disposable profile with external integrations disabled:
+
+- Paste a message containing a GFM table, nested/task lists, a blockquote,
+  headings, links and a fenced `swift` block with a very long line. Check the
+  same content as a user message, assistant answer, plan and side answer.
+  Resize the transcript with Changes open/closed: prose and tables use the
+  full offered width, never a narrow intrinsic column. The code language and
+  Copy control remain visible while its horizontal scrollbar/trackpad scrolls.
+- Include inline `$e^{i\pi}+1=0$`, `\(x^2\)`, a display integral
+  `$$\int_0^1 x^2\,dx = \frac{1}{3}$$`, the same integral inside `\[...\]`,
+  and `costs $5 and $10`. Check baseline, display spacing, and literal currency.
+  Put math delimiters inside code spans/fences and submit malformed LaTeX:
+  code stays literal and math errors retain all their source in monospace.
+- Drag a selection across paragraphs, a table, code and math. Copy and Reply
+  with quote must recover its Markdown, including selected formatting, links
+  and equations. Without a selection they use the whole message. Check Edit &
+  resend on user messages and Fork from here on an eligible Claude answer;
+  ineligible/busy anchors must remain disabled and original history unchanged.
+- With the completion popup closed, insert Shift-Return and Option-Return at
+  the start, middle and end, and over a selection including an emoji. Confirm
+  the caret follows the inserted newline, plain Return sends once and Return
+  with an open completion picks it. Paste multiline text; retain blank lines,
+  grow to six lines and then scroll. While entering marked Japanese text,
+  Return must commit the composition without sending or picking a completion.
+- Stream long paragraphs, a table, a fence and a multiline formula, including
+  a blank line inside display math. Unclosed fences/formulas remain literal,
+  completed prefixes and selections stay steady, and closure renders once.
+  Repeat with 100+ messages and inspect scrolling, memory and typing latency.
+- Check light/dark appearances (including changing appearance in place),
+  minimum window width, link opening, code-copy pasteboard contents and text
+  selection by keyboard. An image link and raw `<img>`/HTML must produce no
+  remote image request, including when scrolling or changing appearance.
+
+The App wrapper and composer key handling still require `make app`, project
+regeneration and the host's isolated-profile native interaction checks. Package
+builds do not compile the SwiftUI App target or prove IME/focus behavior.

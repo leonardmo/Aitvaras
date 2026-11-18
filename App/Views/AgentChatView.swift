@@ -278,8 +278,14 @@ struct AgentChatView: View {
                     }
                 }
                 .onKeyPress(.return, phases: .down) { press in
+                    // Let the input method commit its marked text first. This
+                    // must precede completion acceptance as well as sending.
+                    if (NSApp.keyWindow?.firstResponder as? NSTextView)?.hasMarkedText() == true { return .ignored }
+                    if press.modifiers.contains(.shift) || press.modifiers.contains(.option) {
+                        insertComposerNewline()
+                        return .handled
+                    }
                     if showingCompletion { completionAcceptance += 1; return .handled }
-                    if press.modifiers.contains(.shift) { return .ignored }
                     if chat.canSubmit && canSend && chat.hasInput { Task { await chat.send() } }
                     return .handled
                 }
@@ -304,6 +310,15 @@ struct AgentChatView: View {
                 Task { await focusComposerAfterInsertion() }
             }
         }
+    }
+    private func insertComposerNewline() {
+        let selected: NSRange?
+        if let selection = composerTextSelection, case .selection(let range) = selection.indices {
+            selected = NSRange(range, in: chat.draft)
+        } else { selected = nil }
+        let edit = AgentComposerCaret.insertingNewline(in: chat.draft, selection: selected)
+        chat.editDraft(edit.text)
+        composerTextSelection = TextSelection(insertionPoint: String.Index(utf16Offset: edit.caret.location, in: edit.text))
     }
     @MainActor private func focusComposerAfterInsertion() async {
         let revision = chat.composerInsertionRevision
@@ -632,53 +647,6 @@ struct AgentChatView: View {
             }
             return false
         }
-    }
-
-}
-
-/// Native text rendering, including readable fenced code and Markdown inline
-/// styles. Stable block indices keep incremental text in place while streaming.
-struct ChatMarkdown: View {
-    let text: String
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            ForEach(Array(text.components(separatedBy: "```").enumerated()), id: \.offset) { index, block in
-                if index.isMultiple(of: 2) {
-                    VStack(alignment: .leading, spacing: 4) {
-                        ForEach(Array(block.components(separatedBy: "\n").enumerated()), id: \.offset) { _, line in
-                            markdownLine(line)
-                        }
-                    }
-                } else {
-                    let code = block.firstIndex(of: "\n").map { String(block[block.index(after: $0)...]) } ?? block
-                    ScrollView(.horizontal) {
-                        Text(code).font(.callout.monospaced()).textSelection(.enabled).padding(10)
-                    }
-                    .background(.quaternary, in: RoundedRectangle(cornerRadius: 8))
-                }
-            }
-        }
-    }
-    @ViewBuilder private func markdownLine(_ line: String) -> some View {
-        if line.hasPrefix("# ") {
-            inline(String(line.dropFirst(2))).font(.title2.weight(.semibold))
-        } else if line.hasPrefix("## ") {
-            inline(String(line.dropFirst(3))).font(.title3.weight(.semibold))
-        } else if line.hasPrefix("### ") {
-            inline(String(line.dropFirst(4))).font(.headline)
-        } else if line.hasPrefix("- ") || line.hasPrefix("* ") {
-            HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Text("•"); inline(String(line.dropFirst(2)))
-            }.padding(.leading, 6)
-        } else if line.hasPrefix("> ") {
-            inline(String(line.dropFirst(2))).foregroundStyle(.secondary).padding(.leading, 12)
-        } else {
-            inline(line.isEmpty ? " " : line)
-        }
-    }
-    private func inline(_ text: String) -> some View {
-        Text((try? AttributedString(markdown: text, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))) ?? AttributedString(text))
-            .textSelection(.enabled)
     }
 
 }

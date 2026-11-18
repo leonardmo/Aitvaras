@@ -48,7 +48,8 @@ struct AgentTranscriptView: View {
                 HStack {
                     Spacer(minLength: 30)
                     VStack(alignment: .trailing, spacing: 4) {
-                        Text(entry.displayText).textSelection(.enabled)
+                        ChatMarkdown(text: entry.displayText, quote: quote, edit: edit)
+                            .frame(maxWidth: .infinity, alignment: .leading)
                         if let attachments = payload?["composer"]?["attachments"]?.arrayValue {
                             ForEach(Array(attachments.enumerated()), id: \.offset) { _, file in
                                 Label(file["name"]?.stringValue ?? "File", systemImage: file["kind"]?.stringValue == "image" ? "photo" : "doc")
@@ -62,13 +63,9 @@ struct AgentTranscriptView: View {
                     }
                     .padding(12).background(.quaternary, in: RoundedRectangle(cornerRadius: 14))
                 }
-                .contextMenu {
-                    Button("Copy") { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(entry.displayText, forType: .string) }
-                    if let edit { Button("Edit & resend", action: edit) }
-                }
             } else {
                 if entry.kind == "assistant", let quote {
-                    SelectableMessageText(text: entry.text, quote: quote, fork: fork, forkEnabled: forkEnabled)
+                    ChatMarkdown(text: entry.text, quote: quote, fork: fork, forkEnabled: forkEnabled)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .accessibilityLabel(entry.text)
                 } else {
@@ -112,7 +109,7 @@ struct AgentTranscriptView: View {
                         .font(.caption).foregroundStyle(.secondary)
                     ForEach(entry.importedMessages) { message in
                         if message.kind == "user" {
-                            Text(message.text).textSelection(.enabled)
+                            ChatMarkdown(text: message.text)
                                 .padding(12).background(.quaternary, in: RoundedRectangle(cornerRadius: 14))
                                 .frame(maxWidth: .infinity, alignment: .trailing)
                                 .accessibilityIdentifier("chat.entry.\(message.id)")
