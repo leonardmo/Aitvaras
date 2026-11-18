@@ -200,7 +200,7 @@ private func profileTestDirectory() throws -> URL {
     @Test(arguments: ["status", "signIn", "chat", "models", "catalog", "setup", "mcpLogin", "sideQuestion", "fork"], [false, true])
     func everyLaunchUsesTheChosenHome(surface: String, separate: Bool) async throws {
         let fixture = try BackendExecutableFixture(script: #"""
-if sys.argv[1:3] in (['auth','login'], ['mcp','login']):
+if sys.argv[1:3] == ['auth','login'] or sys.argv[3:5] == ['mcp','login']:
     print('https://login.example.invalid/authorize', flush=True)
     sys.exit(0)
 if '--no-session-persistence' in sys.argv:

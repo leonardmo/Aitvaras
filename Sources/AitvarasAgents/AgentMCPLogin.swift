@@ -6,7 +6,12 @@ enum AgentMCPLogin {
     static func run(executable: URL, name: String, directory: URL, environment: [String: String],
                     timeout: Duration, onBrowserURL: @escaping @Sendable (URL) async -> Void) async throws {
         try AgentMCPConfiguration.validateName(name)
-        let process = StreamingProcess(executable: executable, arguments: ["mcp", "login", "--", name],
+        // `mcp login` refuses a `.mcp.json` server the CLI itself has not
+        // approved. Aitvaras keeps its approvals out of the CLI's files, and the
+        // coordinator only offers sign-in for servers approved in Aitvaras, so
+        // pass that approval for this one call. Harmless for other sources.
+        let approval = String(decoding: try JSONSerialization.data(withJSONObject: ["enabledMcpjsonServers": [name]]), as: UTF8.self)
+        let process = StreamingProcess(executable: executable, arguments: ["--settings", approval, "mcp", "login", "--", name],
             currentDirectory: directory, environment: environment)
         let urls = AgentMCPLoginURLs()
         try process.start()
