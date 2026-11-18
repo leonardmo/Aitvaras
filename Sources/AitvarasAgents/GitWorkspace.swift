@@ -63,6 +63,16 @@ public actor GitWorkspace {
             isDefaultBranch: branch != nil && branch == defaultBranch, hasRemote: remote != nil)
     }
 
+    public func defaultBranch(at directory: URL) async throws -> String {
+        if let ref = try await optionalCommand(["symbolic-ref", "-q", "refs/remotes/origin/HEAD"], in: directory, absent: 1), ref.hasPrefix("refs/remotes/origin/") {
+            return String(ref.dropFirst(20))
+        }
+        for name in ["main", "master"] {
+            if try await optionalCommand(["show-ref", "--verify", "--quiet", "refs/remotes/origin/" + name], in: directory, absent: 1) != nil { return name }
+        }
+        throw AgentGitError.invalidOutput
+    }
+
     /// Extract only a hostname from URL or scp syntax. Local paths have no host.
     public static func remoteHost(_ remote: String) -> String? {
         let host: String?
@@ -101,7 +111,18 @@ public actor GitWorkspace {
         } catch is CancellationError { throw CancellationError() }
         catch { throw AgentGitError.commandFailed }
         if output.timedOut { throw AgentGitError.timedOut }
-        guard output.exitCode != 0 else { return }
+        if output.exitCode == 0 {
+            // `push -u` records the upstream in config, but in a single-branch or
+            // shallow clone origin's fetch refspec does not cover this branch, so
+            // @{u} stays unresolvable ("Not pushed yet"). Add just this branch to
+            // origin's fetch list (what a normal clone already has) and record
+            // the pushed commit as its remote-tracking ref.
+            if (try? await command(["rev-parse", "--verify", "--quiet", "@{u}"], in: directory)) == nil {
+                _ = try? await command(["remote", "set-branches", "--add", "origin", branch], in: directory)
+                _ = try? await command(["update-ref", "refs/remotes/origin/\(branch)", "HEAD"], in: directory)
+            }
+            return
+        }
         let diagnostic = (output.stdout + "\n" + output.stderr).lowercased()
         if diagnostic.contains("non-fast-forward") || diagnostic.contains("fetch first") || diagnostic.contains("stale info") {
             throw AgentGitError.rejectedNonFastForward

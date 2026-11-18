@@ -45,6 +45,9 @@ struct AgentChatView: View {
             }
         }
         .toolbar {
+            if !compact, chat.pullRequest != nil || chat.pullRequestBinding != nil {
+                AgentPullRequestBar(chat: chat)
+            }
             if !compact {
                 Button { showingChanges.toggle() } label: {
                     Label("\(chat.changes?.files.count ?? 0)", systemImage: "doc.text")
@@ -66,6 +69,8 @@ struct AgentChatView: View {
             guard model.selectedWorkspaceChatID == chatID else { return }
             chat.select(chatID)
             await chat.refreshNativePreview()
+            await chat.refreshChanges()
+            await chat.refreshPullRequest()
             while !compact, !Task.isCancelled {
                 await chat.refreshChanges()
                 do { try await Task.sleep(for: .seconds(2)) } catch { return }

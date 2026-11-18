@@ -29,12 +29,24 @@ struct AgentChangesView: View {
             HStack {
                 Text("Changes").font(.headline)
                 Spacer()
-                Button { Task { await chat.refreshChanges() } } label: { Image(systemName: "arrow.clockwise") }
+                Button { Task { await chat.refreshChanges(); await chat.refreshPullRequest() } } label: { Image(systemName: "arrow.clockwise") }
                     .buttonStyle(.borderless).disabled(chat.gitBusy)
                     .accessibilityLabel("Refresh changes").accessibilityIdentifier("chat.changes.refresh")
                 Text("\(changes.files.count)").monospacedDigit().foregroundStyle(.secondary)
             }
             branchHeader
+            if chat.canCreatePullRequest {
+                Button("Create \(chat.forgeKind?.requestName ?? "pull request")…") {
+                    Task { await chat.preparePullRequest() }
+                }.disabled(chat.forgeBusy || chat.gitBusy || chat.isBusy)
+                    .accessibilityIdentifier("chat.changes.createPullRequest")
+            }
+            if let error = chat.forgeError {
+                Text(error).font(.caption).foregroundStyle(.secondary).help(error)
+            }
+            if chat.forgeNeedsSignIn, let kind = chat.forgeKind, let host = chat.branchStatus?.remoteHost {
+                ForgeSignInButton(kind: kind, host: host) { await chat.refreshPullRequest() }
+            }
             if let reason = chat.pushDisabledReason {
                 Text(reason).font(.caption).foregroundStyle(.secondary).lineLimit(1).help(reason)
             }
@@ -148,6 +160,13 @@ struct AgentChangesView: View {
         }
         .padding(12).frame(minWidth: 230, idealWidth: 270, maxWidth: 320)
         .accessibilityIdentifier("chat.changes.panel")
+        .sheet(isPresented: Binding(get: { chat.forgeDraft != nil }, set: { if !$0 { chat.dismissForgeDraft() } })) {
+            if let draft = chat.forgeDraft { AgentPullRequestSheet(chat: chat, owner: owner, initial: draft) }
+        }
+        .onChange(of: changes.hasChanges) { _, hasChanges in
+            // A successful commit empties the change set; start the next one blank.
+            if !hasChanges { message = "" }
+        }
         .onChange(of: selected?.path) { resetLineSelection() }
         .onChange(of: selected?.diff) { resetLineSelection() }
         .confirmationDialog("Discard changes in this chat’s worktree?", isPresented: Binding(
