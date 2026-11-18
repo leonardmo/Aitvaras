@@ -74,6 +74,12 @@ public enum ActivityJobKey {
         key(.backgroundProblem, subjects: [code.rawValue] + (subjectID.map { [$0.uuidString] } ?? []))
     }
 
+    /// Archiving keys hash their subject, so only the operation is recognizable
+    /// here; the archiver recomputes the full key before any retry.
+    public static func isArchiving(_ key: String) -> Bool {
+        key.hasPrefix(Operation.archiving.rawValue + ":")
+    }
+
     private static func key(_ operation: Operation, subjects: [String] = []) -> String {
         subjects.isEmpty ? operation.rawValue : operation.rawValue + ":" + StableIdentifier.digest(subjects)
     }

@@ -51,6 +51,42 @@ public actor ConversationArchiver {
         return await archive(transcript: transcript, label: conversation.title, sourceConversationID: id)
     }
 
+    public enum StoredRetryResult: Sendable, Equatable {
+        case archived
+        /// Attempted, but no archive was saved; the transcript is retained.
+        case notArchived
+        case unavailable(StoredRetryUnavailable)
+    }
+
+    public enum StoredRetryUnavailable: Sendable, Equatable {
+        case active, projectChat, missing, changed, notSubstantial, inProgress, alreadyArchived
+    }
+
+    /// Retry exactly the conversation a failed archive run recorded (D35). The
+    /// run's job key binds the conversation to the transcript version that
+    /// failed; a changed, active, project-owned, already archived or in-flight
+    /// transcript is reported as unavailable and nothing else is archived.
+    public func retryStoredConversation(id: UUID, expectedJobKey: String,
+                                        excluding activeIDs: Set<UUID>) async throws -> StoredRetryResult {
+        guard !activeIDs.contains(id) else { return .unavailable(.active) }
+        guard try stores.workspaceChat(forConversationID: id) == nil else { return .unavailable(.projectChat) }
+        guard let conversation = try stores.conversation(id: id) else { return .unavailable(.missing) }
+        let transcript = Self.transcript(from: try stores.messages(in: id))
+        guard Self.isSubstantial(transcript) else { return .unavailable(.notSubstantial) }
+        let fingerprint = Self.fingerprint(of: transcript)
+        guard ActivityJobKey.archiving(conversationID: id, fingerprint: fingerprint) == expectedJobKey else {
+            return .unavailable(.changed)
+        }
+        guard !inFlightFingerprints.contains(fingerprint) else { return .unavailable(.inProgress) }
+        guard try !stores.hasSeen(connectorID: "archiver", itemID: fingerprint) else {
+            return .unavailable(.alreadyArchived)
+        }
+        let outcome = await ActivityTaskContext.$trigger.withValue(.manual) {
+            await archive(transcript: transcript, label: conversation.title, sourceConversationID: id)
+        }
+        return outcome.archived ? .archived : .notArchived
+    }
+
     /// Retry durable conversations that were rotated out of the UI before a
     /// previous archive pass could finish. Already-consumed fingerprints and
     /// trivial chats are scanned without model work; `maxAttempts` bounds the

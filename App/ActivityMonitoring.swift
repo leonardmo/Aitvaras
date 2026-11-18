@@ -307,6 +307,58 @@ extension AppModel {
         automaticTasks.removeAll()
     }
 
+    /// D35: Retry exists only for a failed capture summary and a failed archive
+    /// of one stored conversation, through their existing targeted paths.
+    func canRetryActivity(_ target: ActivityRetryTarget) -> Bool {
+        switch target {
+        case .captureSummary: capture != nil
+        case .conversationArchive: archiver != nil && stores != nil
+        }
+    }
+
+    /// Returns nil when the retry ran to a recorded result (a success clears the
+    /// failure from attention through its job key), or a short reason otherwise.
+    func retryActivity(_ target: ActivityRetryTarget) async -> String? {
+        defer { refreshSidebandData() }
+        switch target {
+        case .captureSummary(let recordID):
+            guard let capture else { return "Capture is not available yet." }
+            do {
+                _ = try await capture.retrySummary(for: recordID)
+                return nil
+            } catch let error as CaptureError {
+                return error.message
+            } catch is CancellationError {
+                return "The retry was stopped. The transcript is retained."
+            } catch {
+                return "The summary could not be completed. The transcript is retained."
+            }
+        case .conversationArchive(let conversationID, let jobKey):
+            guard let archiver, let stores else { return "Archiving is not available yet." }
+            // Never archive a conversation that is currently open in chat or voice.
+            var active: Set<UUID> = chatConversationID.map { [$0] } ?? []
+            for storedKey in ["chat.conversationID", "voice.conversationID"] {
+                if let raw = try? stores.value(forKey: storedKey), let id = UUID(uuidString: raw) { active.insert(id) }
+            }
+            do {
+                switch try await archiver.retryStoredConversation(id: conversationID, expectedJobKey: jobKey,
+                                                                  excluding: active) {
+                case .archived: return nil
+                case .notArchived: return "No archive was saved this time. The conversation is retained."
+                case .unavailable(.active): return "This conversation is still open. It is archived when you leave it."
+                case .unavailable(.projectChat): return "Project chats are never archived into shared memory."
+                case .unavailable(.missing): return "The saved conversation is no longer available."
+                case .unavailable(.changed): return "The conversation changed since this attempt, so it is not retried here."
+                case .unavailable(.notSubstantial): return "The conversation is too short to archive."
+                case .unavailable(.inProgress): return "This conversation is already being archived."
+                case .unavailable(.alreadyArchived): return "This conversation has already been archived."
+                }
+            } catch {
+                return "The conversation could not be checked for archiving."
+            }
+        }
+    }
+
     func canStopActivityRun(_ run: ActivityRun) -> Bool {
         guard !run.state.isTerminal, run.state != .cancellationRequested else { return false }
         if run.id == nativeWorkspace.activeRunID { return true }

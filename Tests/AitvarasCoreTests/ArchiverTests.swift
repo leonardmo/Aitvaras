@@ -297,3 +297,145 @@ private actor GatedArchiverEngine: InferenceEngine {
         streamContinuation = nil
     }
 }
+
+/// D35: Retry archives exactly the stored conversation a failed run recorded.
+@Suite(.timeLimit(.minutes(2))) struct StoredConversationRetryTests {
+    private let substantive = turns([
+        ("I usually plan the week on Sunday evening and keep Fridays free for reading.",
+         "Noted, I'll keep Fridays clear."),
+        ("Can you help me plan the hand-in for the example course? It is due on Thursday.",
+         "Sure, I added a reminder.")
+    ])
+
+    private func storedConversation(_ stores: Stores, title: String, prefix: String = "") throws -> UUID {
+        let conversation = Conversation(title: title)
+        try stores.saveConversation(conversation)
+        for (index, message) in substantive.enumerated() {
+            try stores.appendMessage(StoredMessage(conversationID: conversation.id,
+                role: message.role == .user ? "user" : "assistant", content: prefix + message.content,
+                createdAt: Date(timeIntervalSince1970: Double(index))))
+        }
+        return conversation.id
+    }
+
+    private func key(_ stores: Stores, _ id: UUID) throws -> String {
+        let transcript = ConversationArchiver.transcript(from: try stores.messages(in: id))
+        return ActivityJobKey.archiving(conversationID: id,
+            fingerprint: ConversationArchiver.fingerprint(of: transcript))
+    }
+
+    @Test func retryArchivesOnlyTheRequestedConversationAndClearsItsFailure() async throws {
+        let stores = try makeStores()
+        let target = try storedConversation(stores, title: "Target")
+        let other = try storedConversation(stores, title: "Other", prefix: "Other: ")
+        let targetKey = try key(stores, target)
+        let failed = ActivityRun(parentID: nil, referenceID: target.uuidString, category: .memory,
+            trigger: .automatic, state: .failed, title: "Archive conversation",
+            startedAt: Date(timeIntervalSince1970: 100), finishedAt: Date(timeIntervalSince1970: 110),
+            outcome: "No archive saved; transcript retained", jobKey: targetKey)
+        try await stores.db.queue.write { try failed.insert($0) }
+        let engine = ScriptedEngine(responses: [#"{"summary": "Retried.", "facts": []}"#])
+        let archiver = ConversationArchiver(router: EngineRouter(ranked: [engine]), stores: stores,
+            reporter: ActivityReporter(stores: stores))
+
+        #expect(ActivityRetryTarget(run: failed) == .conversationArchive(conversationID: target, jobKey: targetKey))
+        let result = try await archiver.retryStoredConversation(id: target, expectedJobKey: targetKey, excluding: [])
+        #expect(result == .archived)
+        #expect(await engine.callCount() == 1)
+        let episodes = try stores.recentActivity().filter { $0.kind == .conversationArchived }
+        #expect(episodes.count == 1 && episodes[0].summary.contains("Target archived"))
+        #expect(!episodes[0].summary.contains("Other"))
+        #expect(try stores.activityAttentionSnapshot().groups.isEmpty)
+        #expect(try stores.activityRun(id: failed.id) == failed)
+        // A second click on the same failure is not a second archive.
+        #expect(try await archiver.retryStoredConversation(id: target, expectedJobKey: targetKey, excluding: [])
+            == .unavailable(.alreadyArchived))
+        #expect(await engine.callCount() == 1)
+        _ = other
+    }
+
+    @Test func unavailableRetriesDoNoModelWork() async throws {
+        let stores = try makeStores()
+        let id = try storedConversation(stores, title: "Example")
+        let expected = try key(stores, id)
+        let engine = ScriptedEngine(responses: ["must not be used"])
+        let archiver = ConversationArchiver(router: EngineRouter(ranked: [engine]), stores: stores)
+
+        #expect(try await archiver.retryStoredConversation(id: id, expectedJobKey: expected, excluding: [id])
+            == .unavailable(.active))
+        #expect(try await archiver.retryStoredConversation(id: UUID(), expectedJobKey: expected, excluding: [])
+            == .unavailable(.missing))
+        try stores.appendMessage(StoredMessage(conversationID: id, role: "user", content: "One more thing."))
+        #expect(try await archiver.retryStoredConversation(id: id, expectedJobKey: expected, excluding: [])
+            == .unavailable(.changed))
+
+        let short = Conversation(title: "Short")
+        try stores.saveConversation(short)
+        try stores.appendMessage(StoredMessage(conversationID: short.id, role: "user", content: "hi"))
+        #expect(try await archiver.retryStoredConversation(id: short.id, expectedJobKey: try key(stores, short.id),
+            excluding: []) == .unavailable(.notSubstantial))
+        #expect(await engine.callCount() == 0)
+        #expect(try stores.recentActivity().filter { $0.kind == .conversationArchived }.isEmpty)
+    }
+
+    @Test func engineFailureAndMalformedOutputKeepTheTranscriptRetryable() async throws {
+        let stores = try makeStores()
+        let id = try storedConversation(stores, title: "Example")
+        let expected = try key(stores, id)
+        let engine = ScriptedEngine(responses: ["not json", #"{"summary": "Second try.", "facts": []}"#])
+        let archiver = ConversationArchiver(router: EngineRouter(ranked: [engine]), stores: stores)
+
+        #expect(try await archiver.retryStoredConversation(id: id, expectedJobKey: expected, excluding: []) == .notArchived)
+        #expect(try stores.recentActivity().filter { $0.kind == .conversationArchived }.isEmpty)
+        #expect(try await archiver.retryStoredConversation(id: id, expectedJobKey: expected, excluding: []) == .archived)
+
+        let noEngine = ConversationArchiver(router: EngineRouter(ranked: []), stores: stores)
+        let other = try storedConversation(stores, title: "Other", prefix: "Other: ")
+        #expect(try await noEngine.retryStoredConversation(id: other, expectedJobKey: try key(stores, other),
+            excluding: []) == .notArchived)
+    }
+
+    @Test func duplicateClickWhileRunningIsInProgress() async throws {
+        let stores = try makeStores()
+        let id = try storedConversation(stores, title: "Example")
+        let expected = try key(stores, id)
+        let engine = GatedArchiverEngine()
+        let archiver = ConversationArchiver(router: EngineRouter(ranked: [engine]), stores: stores)
+
+        async let first = archiver.retryStoredConversation(id: id, expectedJobKey: expected, excluding: [])
+        await engine.waitForRequest()
+        #expect(try await archiver.retryStoredConversation(id: id, expectedJobKey: expected, excluding: [])
+            == .unavailable(.inProgress))
+        await engine.finish(with: #"{"summary": "One pass.", "facts": []}"#)
+        #expect(try await first == .archived)
+        #expect(await engine.callCount() == 1)
+    }
+
+    @Test func retryTargetsAreLimitedToTheTwoSupportedJobs() {
+        let record = UUID()
+        func run(_ category: ActivityCategory, _ state: ActivityRunState, key: String?, reference: String?) -> ActivityRun {
+            ActivityRun(parentID: nil, referenceID: reference, category: category, trigger: .automatic,
+                        state: state, title: "Example", jobKey: key)
+        }
+        let summary = ActivityJobKey.captureSummary(recordID: record)
+        #expect(ActivityRetryTarget(run: run(.capture, .failed, key: summary, reference: record.uuidString))
+            == .captureSummary(recordID: record))
+        #expect(ActivityRetryTarget(run: run(.capture, .outcomeUnknown, key: summary, reference: record.uuidString)) == nil)
+        #expect(ActivityRetryTarget(run: run(.capture, .failed, key: summary, reference: UUID().uuidString)) == nil)
+        #expect(ActivityRetryTarget(run: run(.capture, .failed, key: nil, reference: record.uuidString)) == nil)
+        #expect(ActivityRetryTarget(run: run(.knowledge, .failed, key: ActivityJobKey.indexing(sourceIDs: ["a"]),
+            reference: record.uuidString)) == nil)
+        #expect(ActivityRetryTarget(run: run(.memory, .failed, key: ActivityJobKey.consolidation,
+            reference: record.uuidString)) == nil)
+        #expect(ActivityRetryTarget(run: run(.memory, .failed, key: ActivityJobKey.archiving(conversationID: record,
+            fingerprint: "f"), reference: nil)) == nil)
+        var reviewed = run(.capture, .failed, key: summary, reference: record.uuidString)
+        reviewed.acknowledgedAt = .now
+        #expect(ActivityRetryTarget(run: reviewed) == nil)
+
+        let failed = run(.capture, .failed, key: summary, reference: record.uuidString)
+        #expect(ActivityRunDetailPresentation(run: failed).actions.isEmpty)
+        #expect(ActivityRunDetailPresentation(run: failed, retrySupported: { _ in true }).actions
+            == [.retry(.captureSummary(recordID: record))])
+    }
+}

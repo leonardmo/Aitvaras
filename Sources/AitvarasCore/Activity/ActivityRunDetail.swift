@@ -23,20 +23,42 @@ public enum ActivityDetailDestination: Sendable, Equatable {
     }
 }
 
+/// The only operations with a safe, targeted retry path (D35): a failed capture
+/// summary and a failed archive of one stored conversation. Everything else
+/// has no Retry.
+public enum ActivityRetryTarget: Sendable, Equatable {
+    case captureSummary(recordID: UUID)
+    case conversationArchive(conversationID: UUID, jobKey: String)
+
+    public init?(run: ActivityRun) {
+        guard run.state == .failed || run.state == .interrupted, run.acknowledgedAt == nil,
+              let key = run.jobKey, let reference = run.referenceID.flatMap(UUID.init(uuidString:)) else { return nil }
+        if run.category == .capture, key == ActivityJobKey.captureSummary(recordID: reference) {
+            self = .captureSummary(recordID: reference)
+        } else if run.category == .memory, ActivityJobKey.isArchiving(key) {
+            self = .conversationArchive(conversationID: reference, jobKey: key)
+        } else {
+            return nil
+        }
+    }
+}
+
 /// Deterministic copy and action rules, independent of SwiftUI or a provider.
 /// Destination existence and unresolved group membership come from the store;
 /// the app supplies its existing operational Stop capability.
 public struct ActivityRunDetailPresentation: Sendable, Equatable {
     public enum Action: Sendable, Equatable {
-        case open(ActivityDetailDestination), stop, dismiss(ActivityAttentionGroup)
+        case retry(ActivityRetryTarget), open(ActivityDetailDestination), stop, dismiss(ActivityAttentionGroup)
     }
     public let run: ActivityRun
     public let actions: [Action]
 
     public init(run: ActivityRun, destination: ActivityDetailDestination? = nil,
-                stopSupported: Bool = false, dismissalGroup: ActivityAttentionGroup? = nil) {
+                stopSupported: Bool = false, dismissalGroup: ActivityAttentionGroup? = nil,
+                retrySupported: (ActivityRetryTarget) -> Bool = { _ in false }) {
         self.run = run
         var actions: [Action] = []
+        if let target = ActivityRetryTarget(run: run), retrySupported(target) { actions.append(.retry(target)) }
         if let destination { actions.append(.open(destination)) }
         if stopSupported, !run.state.isTerminal, run.state != .cancellationRequested { actions.append(.stop) }
         if [.failed, .interrupted, .outcomeUnknown].contains(run.state),

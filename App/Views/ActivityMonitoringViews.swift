@@ -530,6 +530,7 @@ struct ActivityRunDetailView: View {
     @State private var actionError: String?
     @State private var detailsExpanded = false
     @State private var pendingDestination: ActivityDetailDestination?
+    @State private var retrying = false
 
     init(run: ActivityRun, group: ActivityAttentionGroup? = nil, onClose: (() -> Void)? = nil) {
         self.run = group?.latestRun ?? run
@@ -545,7 +546,10 @@ struct ActivityRunDetailView: View {
         ActivityRunDetailPresentation(run: current,
             destination: loadError == nil ? snapshot?.destination : nil,
             stopSupported: loadError == nil && model.canStopActivityRun(current),
-            dismissalGroup: loadError == nil ? snapshot?.dismissalGroup : nil)
+            dismissalGroup: loadError == nil ? snapshot?.dismissalGroup : nil,
+            // Only while the failure is still unresolved: a later success
+            // (including this retry's) clears the group and hides Retry.
+            retrySupported: { loadError == nil && snapshot?.dismissalGroup != nil && model.canRetryActivity($0) })
     }
     private var inlineError: String? {
         if let actionError { return actionError }
@@ -613,9 +617,13 @@ struct ActivityRunDetailView: View {
 
     private var mainActions: some View {
         HStack(spacing: 10) {
-            // Retry belongs here once task 10 supplies a supported retry path.
             ForEach(presentation.actions.indices, id: \.self) { index in
                 switch presentation.actions[index] {
+                case .retry(let target):
+                    Button(retrying ? "Retrying…" : "Retry", systemImage: "arrow.clockwise") { retry(target) }
+                        .disabled(retrying)
+                        .help(retrying ? "A retry is already running." : "Run this once more")
+                        .accessibilityIdentifier("activity.detail.retry")
                 case .open(let destination):
                     Button(destination.title) { openDestination() }
                         .accessibilityIdentifier("activity.detail.open")
@@ -726,6 +734,17 @@ struct ActivityRunDetailView: View {
             pendingDestination = destination
             close()
         } catch { actionError = "The saved destination could not be verified; this operation remains open." }
+    }
+
+    private func retry(_ target: ActivityRetryTarget) {
+        guard !retrying else { return }
+        retrying = true
+        actionError = nil
+        Task {
+            actionError = await model.retryActivity(target)
+            retrying = false
+            load()
+        }
     }
 
     private func close() { if let onClose { onClose() } else { dismiss() } }
