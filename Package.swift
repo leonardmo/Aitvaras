@@ -15,6 +15,8 @@ let package = Package(
         .library(name: "AitvarasAgents", targets: ["AitvarasAgents"])
     ],
     dependencies: [
+        .package(url: "https://github.com/swiftlang/swift-markdown", exact: "0.7.3"),
+        .package(url: "https://github.com/mgriebling/SwiftMath", exact: "1.7.3"),
         .package(url: "https://github.com/groue/GRDB.swift", from: "7.0.0"),
         // Declared here as well as in project.yml so `swift test` and the
         // generated app project share one stable Package.resolved graph.
@@ -44,7 +46,11 @@ let package = Package(
             ]
         ),
         .target(name: "AitvarasRAG", dependencies: ["AitvarasCore", "AitvarasStore"]),
-        .target(name: "AitvarasAgents", dependencies: ["AitvarasCore"]),
+        .target(name: "AitvarasAgents", dependencies: [
+            "AitvarasCore",
+            .product(name: "Markdown", package: "swift-markdown"),
+            .product(name: "SwiftMath", package: "SwiftMath")
+        ]),
         .target(
             name: "AitvarasConnectors",
             dependencies: ["AitvarasCore", "AitvarasStore"],

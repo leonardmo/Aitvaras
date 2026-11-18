@@ -20,6 +20,21 @@ public enum ClaudeCommandText {
 public enum AgentComposerCaret {
     /// NSText uses UTF-16 offsets; programmatic edits always leave an empty selection.
     public static func afterInsertion(_ text: String) -> NSRange { NSRange(location: text.utf16.count, length: 0) }
+
+    /// Replace the selection in NSText's UTF-16 coordinate space. Stale or
+    /// invalid selections fall back to the end without splitting a character.
+    public static func insertingNewline(in text: String, selection: NSRange?) -> (text: String, caret: NSRange) {
+        let selected = selection.flatMap { range -> Range<String.Index>? in
+            guard let range = Range(range, in: text),
+                  range.lowerBound.samePosition(in: text.utf8) != nil,
+                  range.upperBound.samePosition(in: text.utf8) != nil else { return nil }
+            return range
+        } ?? text.endIndex..<text.endIndex
+        var result = text
+        let offset = selected.lowerBound.utf16Offset(in: text)
+        result.replaceSubrange(selected, with: "\n")
+        return (result, NSRange(location: offset + 1, length: 0))
+    }
 }
 
 extension AgentTranscriptEntry {
