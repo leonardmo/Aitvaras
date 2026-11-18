@@ -1,0 +1,12 @@
+# SENT {"type":"control_request","request_id":"init","request":{"subtype":"initialize"}}
+{"type":"control_response","response":{"subtype":"success","request_id":"init","response":{"commands":[{"name":"shout","description":"Repeat the arguments","argumentHint":"[words]"}]}}}
+# Hand-written protocol fixture using the P0 field shapes. No captured CLI output.
+# SENT {"type":"user","message":{"role":"user","content":"Use shout"}}
+{"type":"system","subtype":"init","session_id":"session-example","apiKeySource":"none","mcp_servers":[{"name":"echo","status":"connected","source":"project"},{"name":"docs","status":"needs-auth","source":"user"}],"skills":["shout"],"slash_commands":["shout","review"],"agents":["reviewer"]}
+{"type":"system","subtype":"hook_started","hook_id":"hook-success","hook_name":"PreToolUse:Bash","hook_event":"PreToolUse"}
+{"type":"system","subtype":"hook_response","hook_id":"hook-success","hook_name":"PreToolUse:Bash","hook_event":"PreToolUse","output":"ok","stdout":"ok","stderr":"","exit_code":0,"outcome":"success"}
+{"type":"system","subtype":"hook_started","hook_id":"hook-block","hook_name":"PreToolUse:Bash","hook_event":"PreToolUse"}
+{"type":"system","subtype":"hook_response","hook_id":"hook-block","hook_name":"PreToolUse:Bash","hook_event":"PreToolUse","output":"","stdout":"","stderr":"ACCESS_TOKEN=synthetic-hidden Command blocked by project rules.","exit_code":2,"outcome":"error"}
+{"type":"system","subtype":"hook_response","hook_id":"hook-error","hook_name":"PostToolUse:Edit","hook_event":"PostToolUse","output":"Style check failed.","stdout":"","stderr":"","exit_code":1,"outcome":"error"}
+{"type":"assistant","uuid":"message-example","message":{"id":"message-example","role":"assistant","content":[{"type":"text","text":"Finished."}]}}
+{"type":"result","uuid":"result-example","is_error":false}

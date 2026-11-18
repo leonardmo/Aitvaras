@@ -18,12 +18,15 @@ public actor AgentActionCoordinator: AgentRun {
     }
 
     public nonisolated let id: UUID
+    public nonisolated let mcpSetup: AgentMCPLaunchStatus?
+    public nonisolated let permissionSource: AgentPermissionSource
     public nonisolated let events: AsyncThrowingStream<AgentEvent, Error>
     private let continuation: AsyncThrowingStream<AgentEvent, Error>.Continuation
     private let run: any AgentRun
     private let provenance: Provenance
     private let audit: Audit
     private let policy: AutonomyPolicy
+    private let projectGrants: @Sendable () throws -> Set<String>
     private var mode: AgentMode
     private var inputID: UUID?
     private var followups: Set<UUID> = []
@@ -41,8 +44,11 @@ public actor AgentActionCoordinator: AgentRun {
     /// `{ event in _ = try stores.record(event) }`; no schema changes required.
     /// Explicit user whitelist entries use `provider.<native tool name>`.
     public init(run: any AgentRun, mode: AgentMode, provenance: Provenance,
-                policy: AutonomyPolicy = AutonomyPolicy(), audit: @escaping Audit) {
+                policy: AutonomyPolicy = AutonomyPolicy(), permissionSource: AgentPermissionSource? = nil,
+                projectGrants: @escaping @Sendable () throws -> Set<String> = { [] }, audit: @escaping Audit) {
         self.run = run; id = run.id; self.mode = mode
+        mcpSetup = run.mcpSetup
+        self.permissionSource = permissionSource ?? run.permissionSource; self.projectGrants = projectGrants
         self.provenance = provenance; self.policy = policy; self.audit = audit
         (events, continuation) = AsyncThrowingStream.makeStream(bufferingPolicy: .bufferingOldest(4096))
     }
@@ -105,6 +111,25 @@ public actor AgentActionCoordinator: AgentRun {
             // Stop can deny this request while its approval audit is yielding.
             // The denial already went out, so only this late answer is invalid;
             // the session stays open for the native interrupted result.
+            if interrupting, error as? AgentFailure == .invalidRequest { throw error }
+            await exited((error as? AgentFailure) ?? .unknown)
+            throw error
+        }
+    }
+
+    /// Reserve the live request before persisting the explicit user grant. The
+    /// persistence closure must save the rule and its audit in one transaction.
+    public func alwaysAllow(to request: AgentRequest, persist: @Sendable () throws -> Void) async throws {
+        guard !interrupting, isCurrent(request), pending[request.id] == request,
+              AgentToolPolicy.canAlwaysAllow(request), case .permission(let tool) = request.kind,
+              let provider = request.scope.session?.provider,
+              (try? AgentToolPolicy.grantKey(provider: provider, tool: tool.name,
+                  fingerprint: AgentToolPolicy.fingerprint(tool: tool.name, servers: mcpSetup?.serverFingerprints ?? [:]))) != nil else { throw AgentFailure.invalidRequest }
+        removePending(request.id)
+        do {
+            try persist()
+            try await finish(request, response: .allow(updatedInput: nil), decision: "approved and allowed in project")
+        } catch {
             if interrupting, error as? AgentFailure == .invalidRequest { throw error }
             await exited((error as? AgentFailure) ?? .unknown)
             throw error
@@ -180,6 +205,7 @@ public actor AgentActionCoordinator: AgentRun {
                 try await record(scope: event.scope, decision: observation(event.kind))
             case .turnEnded:
                 await denyPending(); inputID = nil
+                followups.subtract(event.scope.completedInputIDs)
             default: break
             }
             guard !closed else { return }
@@ -215,9 +241,15 @@ public actor AgentActionCoordinator: AgentRun {
             // Hooks cover every tool, including tools already allowed by
             // native rules. Enforce hard denials and audit here; only a native
             // permission request may create a user-facing approval.
-            let denied = forbidden(tool)
-            try await finish(request, response: denied ? .deny : .continueHook,
-                             decision: denied ? "forbidden" : "allowed")
+            if forbidden(tool) {
+                try await finish(request, response: .deny, decision: "forbidden")
+            } else if AgentToolPolicy.requiresExplicitMCPApproval(tool) {
+                try await finish(request, response: .askHook, decision: "requires explicit MCP approval")
+            } else if permissionSource == .aitvaras, requiresAitvarasApproval(tool) {
+                try await finish(request, response: .askHook, decision: "requires Aitvaras approval")
+            } else {
+                try await finish(request, response: .continueHook, decision: "allowed")
+            }
         case .permission(let tool):
             if forbidden(tool) {
                 try await finish(request, response: .deny, decision: "forbidden")
@@ -227,7 +259,13 @@ public actor AgentActionCoordinator: AgentRun {
                 // Native Local permissions always ask, so policy and durable
                 // provenance are applied even when the app mode permits edits.
                 try await finish(request, response: .allow(updatedInput: nil), decision: "allowed by local mode")
-            } else if policy.whitelist.contains("provider.\(tool.name)") {
+            } else if let provider = request.scope.session?.provider,
+                      AgentToolPolicy.grantEligible(tool),
+                      let key = try? AgentToolPolicy.grantKey(provider: provider, tool: tool.name,
+                          fingerprint: AgentToolPolicy.fingerprint(tool: tool.name, servers: mcpSetup?.serverFingerprints ?? [:])),
+                      try projectGrants().contains(key) {
+                try await finish(request, response: .allow(updatedInput: nil), decision: "allowed by project grant")
+            } else if AgentToolPolicy.grantEligible(tool), !tool.name.hasPrefix("mcp__"), policy.whitelist.contains("provider.\(tool.name)") {
                 try await finish(request, response: .allow(updatedInput: nil), decision: "allowed by whitelist")
             } else {
                 try await offer(request, risk: risk(tool))
@@ -324,39 +362,24 @@ public actor AgentActionCoordinator: AgentRun {
         }
     }
 
+    /// Repo allow rules must not bypass approvals required by the current mode.
+    private func requiresAitvarasApproval(_ tool: AgentTool) -> Bool {
+        switch risk(tool) {
+        case .read: false
+        case .reversibleWrite: mode != .acceptEdits && mode != .auto
+        // Auto retains the repo-source hook behavior. Native auto mode still
+        // decides whether to issue a permission request, which we gate normally.
+        case .confirmable: mode != .auto
+        }
+    }
+
     /// Audit metadata only. Native permissions decide which operations ask;
     /// even a read permission request needs the user unless whitelisted.
     private func risk(_ tool: AgentTool) -> ActionRisk {
-        if isServiceRead(tool) { return .read }
-        return switch tool.name.lowercased() {
-        case "read", "glob", "grep", "list", "ls", "todoread", "websearch", "webfetch", "enterplanmode", "exitplanmode", "askuserquestion", "question": .read
-        case "write", "edit", "multiedit", "notebookedit": .reversibleWrite
-        default: .confirmable
-        }
+        AgentToolPolicy.risk(tool)
     }
 
     private func forbidden(_ tool: AgentTool) -> Bool {
-        let name = tool.name.lowercased()
-        // Service tools are denied conservatively unless explicitly read-only.
-        if name.contains("mail") || name.contains("calendar") || name.contains("reminder") {
-            // Ownership cannot be proved by a provider-supplied ID or boolean.
-            // Only typed owned-item connectors may later enable mutations.
-            return !isServiceRead(tool)
-        }
-        if name == "bash" || name == "commandexecution" {
-            let command = (tool.input["command"]?.stringValue ?? tool.input["command"]?.jsonString ?? "").lowercased()
-            return ["sendmail", "smtp", "mail ", "mailx", "mailto:", "osascript"].contains { command.contains($0) }
-        }
-        return false
-    }
-
-    private func isServiceRead(_ tool: AgentTool) -> Bool {
-        // Exact connector operations only. A name like mail.read_and_send is
-        // never considered read-only, nor is an arbitrary MCP service method.
-        let names: Set<String> = ["mail.read", "mail.search", "mail.list", "mail.get",
-            "mail.recent_messages", "mail.get_message", "mail.search_messages",
-            "calendar.list", "calendar.read", "calendar.search", "calendar.list_events",
-            "reminders.list", "reminders.read", "reminders.search", "reminders.list_reminders"]
-        return names.contains(tool.name.lowercased())
+        AgentToolPolicy.forbidden(tool)
     }
 }

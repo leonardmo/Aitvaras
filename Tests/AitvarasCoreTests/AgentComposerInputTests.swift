@@ -84,7 +84,8 @@ struct AgentComposerInputTests {
 
     @Test func claudeInitializeCatalogDoesNotSend() async throws {
         let fixture = try BackendExecutableFixture(script: #"""
-assert '--model' not in sys.argv
+assert sys.argv[sys.argv.index('--model')+1]=='opus'
+assert sys.argv[sys.argv.index('--effort')+1]=='medium'
 assert os.getcwd()==os.path.realpath(root)
 r=read(); assert r['request']['subtype']=='initialize'
 emit({'type':'control_response','response':{'subtype':'success','request_id':r['request_id'],'response':{'commands':[{'name':'review','description':'Review changes','argumentHint':'[file]'}]}}})

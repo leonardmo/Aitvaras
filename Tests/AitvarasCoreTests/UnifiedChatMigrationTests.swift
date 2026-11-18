@@ -22,11 +22,11 @@ import AitvarasAgents
             // Reconstruct the pre-unified schema, retaining populated legacy
             // tables, then let the production migration chain perform the upgrade.
             try stores.db.queue.write { db in
-                for table in ["agentHistoryObservation", "agentWorktree", "agentHandover", "agentTurn", "agentTranscriptEntry", "agentChatSession"] {
+                for table in ["agentHistoryObservation", "agentWorktree", "agentHandover", "agentTurn", "agentTranscriptEntry", "agentChatSession", "agentProviderProfile"] {
                     try db.drop(table: table)
                 }
-                try db.execute(sql: "DELETE FROM grdb_migrations WHERE identifier IN (?, ?, ?, ?, ?)",
-                    arguments: ["v28-agent-chat-journal", "v29-agent-handover", "v30-agent-followup-inputs", "v31-agent-worktrees", "v32-agent-history-reconciliation"])
+                try db.execute(sql: "DELETE FROM grdb_migrations WHERE identifier IN (?, ?, ?, ?, ?, ?, ?)",
+                    arguments: ["v28-agent-chat-journal", "v29-agent-handover", "v30-agent-followup-inputs", "v31-agent-worktrees", "v32-agent-history-reconciliation", "v34-agent-conversation-forks", "v35-claude-provider-profiles"])
             }
         }
         for _ in 0..<2 {

@@ -31,6 +31,7 @@ actor CodexRun: AgentRun {
         (events, continuation) = AsyncThrowingStream.makeStream(bufferingPolicy: .bufferingOldest(4096))
     }
     func started() { emit(.sessionStarted(session)) }
+    func setup(_ snapshot: AgentSetupSnapshot) { emit(.setupReported(snapshot)) }
     private func scope(item: String? = nil) -> AgentEventScope {
         AgentEventScope(runID: id, session: session, inputID: input, turnID: turn, itemID: item)
     }

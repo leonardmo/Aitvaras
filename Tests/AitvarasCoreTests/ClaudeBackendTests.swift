@@ -4,9 +4,10 @@ import Testing
 
 @Suite(.timeLimit(.minutes(2)))
 struct ClaudeBackendTests {
-    @Test func defaultModelUsesNativeDefaultWithoutInventingAnID() async throws {
+    @Test func defaultModelUsesTheOpusAliasAndMediumEffort() async throws {
         let fixture = try BackendExecutableFixture(script: #"""
-assert '--model' not in sys.argv
+assert sys.argv[sys.argv.index('--model')+1]=='opus'
+assert sys.argv[sys.argv.index('--effort')+1]=='medium'
 claude_init()
 done()
 """#)
@@ -70,7 +71,7 @@ done()
 
     @Test func twoTurnsAllBlocksNativeIDsAndJournalBarrier() async throws {
         let fixture = try BackendExecutableFixture(script: #"""
-assert sys.argv[1:]==['-p','--input-format','stream-json','--output-format','stream-json','--verbose','--include-partial-messages','--permission-prompt-tool','stdio','--permission-mode','auto','--model','test-model','--resume','session-test','--effort','high']
+assert sys.argv[1:]==['-p','--input-format','stream-json','--output-format','stream-json','--verbose','--include-partial-messages','--permission-prompt-tool','stdio','--permission-mode','auto','--model','test-model','--resume','session-test','--effort','high','--settings','{"disabledMcpjsonServers":[]}','--include-hook-events']
 claude_init()
 for n in range(2):
     assert read()['message']['content']=='hello'
@@ -158,7 +159,7 @@ done()
         let status = try await backend.status()
         #expect(status.authentication == .subscription)
         #expect(status.capabilities.contains(.history))
-        #expect(try await backend.models() == [AgentModel(id: "test-model", name: "test-model")])
+        #expect(try await backend.models() == ChatSettings.claudeModels([AgentModel(id: "test-model", name: "test-model")]))
         let sessions = try await backend.listSessions(folder: history.root, cursor: nil)
         #expect(sessions.items.map(\.id) == [history.session])
         #expect(try await backend.readHistory(session: history.session, cursor: nil).items.map(\.kind)

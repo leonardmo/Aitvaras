@@ -25,6 +25,17 @@ yet meet the new capture/session-continuity requirements.
 The current Step 1 implementation checkpoint and its verification/release boundary
 are tracked in [`STEP-ONE-OBSERVABILITY.md`](STEP-ONE-OBSERVABILITY.md).
 
+### Project agent setup 🚧 implemented; live acceptance pending (D34)
+
+Chat discovers project tools, skills and commands; exposes MCP approval/sign-in,
+global and project server definitions, hook rows and mode-aware project policy.
+Local MCP is opt-in and stdio-only within its existing sandbox. Conversation
+tools add Claude fork/edit and ephemeral side questions, plus quotes and diff
+context for all providers. The side-question mechanism was verified on Claude
+CLI 2.1.300 with resumed context and no session file. Full app, browser sign-in
+and MCP acceptance remain gated by the isolated-profile
+[D34 checklist](TESTING.md#project-agent-setup-d34).
+
 Phase 1 = everything below. Phase 2 = messengers (Discord/WhatsApp chat), wake
 word and a local-first mobile companion. The proposed Android model, shared-task
 protocol and optional encrypted Docker relay are specified in

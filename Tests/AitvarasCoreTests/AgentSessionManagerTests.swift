@@ -761,3 +761,83 @@ private actor LocalFallbackRecorder {
     private(set) var text: String?
     func record(_ value: String) { text = value }
 }
+
+extension AgentSessionManagerTests {
+    @Test func twoClaudeAccountsHandoverAndResumeTheirOwnSession() async throws {
+        let stores = try inMemoryStores()
+        let (chat, defaultSession) = try agentStoreChat(stores)
+        let profile = AgentProviderProfile(name: "Other account", configDirectory: "/tmp/example-claude-account")
+        try stores.saveClaudeProfile(profile)
+        let otherSession = AgentChatSession(chatID: chat.id, provider: .claude, cwd: "/tmp", model: "opus", providerProfile: profile.nativeProfile)
+        try stores.saveAgentSession(otherSession)
+        let a = ManagerTestBackend(), b = ManagerTestBackend()
+        let manager = try AgentSessionManager(persistence: stores, backend: { _ in a }, profileBackend: { choice in
+            choice.profile == profile.nativeProfile ? b : a
+        }, audit: { _ in })
+        let first = AgentInput(text: "Remember the word PELICAN")
+        try await manager.send(chatID: chat.id, provider: .claude, input: first)
+        let runA = try #require(await a.runs.last)
+        let nativeA = AgentSessionID(provider: .claude, profile: "default", nativeID: UUID().uuidString)
+        await runA.emit(.sessionStarted(nativeA), input: first.id)
+        await runA.emit(.delivery(.acknowledged), input: first.id)
+        await runA.emit(.message(id: "answer-a", role: "assistant", text: "PELICAN is saved"), input: first.id)
+        await runA.emit(.turnEnded(.completed), input: first.id)
+        try await waitManager { try await manager.state(chatID: chat.id).outcome == .completed }
+        try stores.setValues(["agent.claudeProfile.\(chat.id.uuidString)": profile.nativeProfile])
+        try await manager.configure(otherSession)
+        let second = AgentInput(text: "What word?")
+        try await manager.send(chatID: chat.id, provider: .claude, input: second)
+        let runB = try #require(await b.runs.last)
+        let receivedB = try #require(await runB.inputs.last?.text)
+        #expect(receivedB.contains("PELICAN is saved") && receivedB.contains("What word?"))
+        #expect(await b.configurations.last?.resume == nil)
+        let nativeB = AgentSessionID(provider: .claude, profile: profile.nativeProfile, nativeID: UUID().uuidString)
+        await runB.emit(.sessionStarted(nativeB), input: second.id)
+        await runB.emit(.delivery(.acknowledged), input: second.id)
+        await runB.emit(.message(id: "answer-b", role: "assistant", text: "The other account remembers PELICAN"), input: second.id)
+        await runB.emit(.turnEnded(.completed), input: second.id)
+        try await waitManager { try await manager.state(chatID: chat.id).outcome == .completed }
+        #expect(try stores.agentSession(chatID: chat.id, choice: profile.choice)?.sessionID == nativeB)
+        try stores.setValues(["agent.claudeProfile.\(chat.id.uuidString)": "default"])
+        let resumedA = try #require(try stores.agentSession(chatID: chat.id, provider: .claude))
+        #expect(resumedA.id == defaultSession.id && resumedA.sessionID == nativeA)
+        try await manager.configure(resumedA)
+        let third = AgentInput(text: "Continue here")
+        try await manager.send(chatID: chat.id, provider: .claude, input: third)
+        let newRunA = try #require(await a.runs.last)
+        #expect(await a.configurations.last?.resume == nativeA)
+        #expect(await newRunA.inputs.last?.text.contains("The other account remembers PELICAN") == true)
+        #expect(try stores.agentSessions(chatID: chat.id).count == 2)
+        #expect(try stores.agentHandover(turnID: second.id) != nil)
+        await newRunA.emit(.turnEnded(.completed), input: third.id)
+        try await waitManager { try await manager.state(chatID: chat.id).outcome == .completed }
+        // Signing out the second account cannot deliver its input to default.
+        try stores.setValues(["agent.claudeProfile.\(chat.id.uuidString)": profile.nativeProfile])
+        await b.setFailure(.auth)
+        let currentB = try #require(try stores.agentSession(chatID: chat.id, choice: profile.choice))
+        try await manager.configure(currentB)
+        let denied = AgentInput(text: "Sign in required")
+        await #expect(throws: AgentFailure.authRequired) { try await manager.send(chatID: chat.id, provider: .claude, input: denied) }
+        #expect(try stores.agentTurn(id: denied.id)?.delivery == .prepared)
+        #expect(await a.runs.count == 2)
+        try await manager.shutdown()
+    }
+}
+
+extension AgentSessionManagerTests {
+    @Test func explicitAccountWithoutAResolverCannotLaunchTheDefaultAccount() async throws {
+        let stores = try inMemoryStores(), backend = ManagerTestBackend()
+        let (chat, _) = try agentStoreChat(stores)
+        let profile = AgentProviderProfile(name: "Other account", configDirectory: "/tmp/example-account")
+        try stores.saveClaudeProfile(profile)
+        try stores.saveAgentSession(.init(chatID: chat.id, provider: .claude, cwd: "/tmp", model: "opus", providerProfile: profile.nativeProfile))
+        try stores.selectAgentChoice(profile.choice, chatID: chat.id)
+        let manager = try AgentSessionManager(persistence: stores, backend: { _ in backend }, audit: { _ in })
+        let input = AgentInput(text: "Account-specific question")
+        await #expect(throws: AgentFailure.invalidRequest) { try await manager.send(chatID: chat.id, provider: .claude, input: input) }
+        #expect(await backend.runs.isEmpty)
+        #expect(try stores.agentTurn(id: input.id)?.delivery == .prepared)
+        await #expect(throws: AgentFailure.invalidRequest) { try await manager.discoverNativeSessions(provider: .claude, profile: profile.nativeProfile) }
+        try await manager.shutdown()
+    }
+}

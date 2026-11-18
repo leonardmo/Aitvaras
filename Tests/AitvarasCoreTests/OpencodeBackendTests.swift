@@ -511,6 +511,7 @@ actor OpencodeFakeTransport: OpencodeTransport {
     private var continuation: AsyncThrowingStream<JSONValue, Error>.Continuation?
     private var recording: [JSONValue]
     private var failure = false
+    private var openFailure = false
     private var failFormCancellation = false
     private var promptNumber = 0
     private var pausePrompt = false
@@ -525,9 +526,13 @@ actor OpencodeFakeTransport: OpencodeTransport {
     func releasePrompt() { promptWaiter?.resume(); promptWaiter = nil }
     init(recording: [JSONValue] = []) { self.recording = recording }
     func setFailure(_ value: Bool) { failure = value }
+    func setOpenFailure(_ value: Bool) { openFailure = value }
     func failNextFormCancellation() { failFormCancellation = true }
-    func open(projects: [URL], models: [AgentModel]) async {
+    private(set) var mcpConfigPaths: [URL?] = []
+    func open(projects: [URL], models: [AgentModel], mcpConfigPath: URL?) async throws {
+        mcpConfigPaths.append(mcpConfigPath)
         opens += 1
+        if openFailure { throw AgentFailure.offline }
         if pauseOpen {
             pauseOpen = false
             await withCheckedContinuation { openWaiter = $0 }

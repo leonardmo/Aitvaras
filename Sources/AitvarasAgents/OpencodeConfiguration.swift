@@ -17,7 +17,7 @@ public struct OpencodeConfiguration: Sendable {
         ["config", "data", "cache", "state", "home"].map { root.appendingPathComponent($0, isDirectory: true) }
     }
     var serverPIDFile: URL { root.appendingPathComponent("data/server.pid") }
-    public func environment(_ inherited: [String: String]) -> [String: String] {
+    public func environment(_ inherited: [String: String], runtimeConfig: URL? = nil) -> [String: String] {
         // ProviderEnvironment removes known CLI overrides; an allowlist additionally
         // keeps opencode/plugin/proxy/credential configuration out of this child.
         let cleaned = ProviderEnvironment.make(inherited: inherited)
@@ -26,7 +26,7 @@ public struct OpencodeConfiguration: Sendable {
             result[key] = directory.path
         }
         result["TMPDIR"] = temporaryDirectory.path
-        result["OPENCODE_CONFIG"] = dataDirectories[0].appendingPathComponent("opencode/opencode.json").path
+        result["OPENCODE_CONFIG"] = (runtimeConfig ?? dataDirectories[0].appendingPathComponent("opencode/opencode.json")).path
         result["OPENCODE_DISABLE_PROJECT_CONFIG"] = "true"
         result["OPENCODE_DISABLE_EXTERNAL_SKILLS"] = "true"
         result["OPENCODE_DISABLE_DEFAULT_PLUGINS"] = "true"
@@ -34,6 +34,11 @@ public struct OpencodeConfiguration: Sendable {
         return result
     }
     public func config(models: [AgentModel]) -> JSONValue {
+        Self.generatedConfig(models: models)
+    }
+    /// Configuration content does not depend on a profile path. In particular,
+    /// building a private runtime config must not inspect the default profile.
+    static func generatedConfig(models: [AgentModel]) -> JSONValue {
         .object([
             "share": .string("disabled"), "autoupdate": .bool(false),
             "enabled_providers": .array([.string("ollama")]),
@@ -142,10 +147,11 @@ func localHTTPSession() -> URLSession {
 
 public enum LocalChatBackendFactory {
     public static func make(executable: URL? = nil, environment: [String: String] = ProcessInfo.processInfo.environment,
+                            mcpPolicy: AgentMCPLaunchPolicy = .default,
                             reply: @escaping LocalBackend.Reply) -> any AgentBackend {
         if let executable = ProviderLocator.executable(for: .local, environment: environment,
             overrides: executable.map { [.local: $0] } ?? [:]) {
-            return OpencodeBackend(executable: executable, environment: environment)
+            return OpencodeBackend(executable: executable, environment: environment, mcpPolicy: mcpPolicy)
         }
         return LocalBackend(reply: reply)
     }

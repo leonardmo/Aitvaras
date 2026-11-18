@@ -4,6 +4,22 @@ import AitvarasAgents
 import AitvarasStore
 
 @Suite(.timeLimit(.minutes(2))) struct ChatSettingsTests {
+    @Test func signedOutSelectedProfileRequiresSignInBeforeSend() {
+        let signedOut = AgentProviderChoice(provider: .claude, profile: "example-profile")
+        let signedIn = AgentProviderChoice(provider: .claude)
+        var statuses: [AgentProviderChoice: AgentStatus] = [
+            signedOut: .init(installed: true, authentication: .signedOut, capabilities: []),
+            signedIn: .init(installed: true, authentication: .subscription, capabilities: [])
+        ]
+        #expect(ChatSettings.signInProvider(for: signedOut, statuses: statuses) == .claude)
+        #expect(ChatSettings.signInProvider(for: signedIn, statuses: statuses) == nil)
+        #expect(ChatSettings.signInProvider(for: .init(provider: .codex), statuses: statuses) == nil)
+        #expect(ChatSettings.signInProvider(for: .init(provider: .local), statuses: statuses) == nil)
+        statuses[signedOut] = .init(installed: true, authentication: .subscription, capabilities: [])
+        #expect(ChatSettings.signInProvider(for: signedOut, statuses: statuses) == nil)
+        statuses[signedOut] = .init(installed: false, authentication: .signedOut, capabilities: [])
+        #expect(ChatSettings.signInProvider(for: signedOut, statuses: statuses) == nil)
+    }
     @Test func perChatAndProviderChoicesSurviveReloadWithoutSending() throws {
         let stores = try inMemoryStores()
         let (one, original) = try agentStoreChat(stores)

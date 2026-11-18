@@ -38,7 +38,8 @@ extension Stores {
                 }
                 return current?.state == .completed && entry.sessionID == current?.sessionID
             }.filter { ["user", "assistant"].contains($0.kind) && !$0.text.isEmpty
-                && (!session.usesThreadContext || $0.sessionID != session.id) }
+                && (!session.usesThreadContext || ($0.sessionID != session.id
+                    && $0.payloadJSON.flatMap(JSONValue.parse)?["forkInheritedForSession"]?.stringValue != session.id.uuidString)) }
             var receipt: [String: String]?
             if session.usesThreadContext {
                 // Preparation order breaks timestamp ties deterministically.

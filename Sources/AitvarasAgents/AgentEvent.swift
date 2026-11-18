@@ -25,11 +25,13 @@ public struct AgentEventScope: Sendable, Equatable {
     public let inputID: UUID?
     public let turnID: String?
     public let itemID: String?
+    /// Claude may complete several written inputs with one native result.
+    public let completedInputIDs: [UUID]
 
     public init(runID: UUID, session: AgentSessionID? = nil, inputID: UUID? = nil,
-                turnID: String? = nil, itemID: String? = nil) {
+                turnID: String? = nil, itemID: String? = nil, completedInputIDs: [UUID] = []) {
         self.runID = runID; self.session = session; self.inputID = inputID
-        self.turnID = turnID; self.itemID = itemID
+        self.turnID = turnID; self.itemID = itemID; self.completedInputIDs = completedInputIDs
     }
 }
 
@@ -86,6 +88,7 @@ public enum AgentResponse: Sendable, Equatable {
     case deny
     case answers([String: [String]])
     case continueHook
+    case askHook
     case unsupported
 }
 
@@ -126,6 +129,8 @@ public struct AgentRateLimitWindow: Sendable, Equatable {
 public struct AgentEvent: Sendable, Equatable {
     public enum Kind: Sendable, Equatable {
         case sessionStarted(AgentSessionID)
+        case setupReported(AgentSetupSnapshot)
+        case hook(AgentHookEvent)
         case delivery(AgentDeliveryState)
         /// A queued Claude input becomes the output/approval owner.
         case inputActivated

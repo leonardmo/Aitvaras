@@ -2,6 +2,9 @@ import Foundation
 
 /// One app-server connection per backend, with independent thread runs.
 public actor CodexBackend: AgentBackend {
+    public private(set) var availableSetup = AgentSetupSnapshot(provider: .codex)
+    private var mcpEpoch = 0
+    private var mcpUpdates: [String: (epoch: Int, server: AgentSetupServer)] = [:]
     private let executable: URL?
     private let environment: [String: String]
     private let profile: String
@@ -12,6 +15,9 @@ public actor CodexBackend: AgentBackend {
     private var runs: [String: CodexRun] = [:]
     private var loginResults: [String: Bool] = [:]
     private var loginInProgress = false
+    private var mcpLogin: (name: String, generation: UUID)?
+    private var mcpLoginResult: Bool?
+    private var mcpLoginInProgress = false
 
     public init(executable: URL? = nil, environment: [String: String] = ProcessInfo.processInfo.environment,
                 profile: String = "default", overrides: [String: String] = [:]) {
@@ -22,7 +28,13 @@ public actor CodexBackend: AgentBackend {
     }
     private func connection() async throws -> AgentWire {
         if let wire { return wire }
-        if let connecting { return try await connecting.value }
+        if let connecting {
+            let generation = self.generation
+            let result = try await connecting.value
+            guard generation == self.generation else { throw AgentFailure.invalidTransition }
+            wire = result; self.connecting = nil
+            return result
+        }
         guard let executable else { throw AgentFailure.notInstalled }
         let generation = UUID(); self.generation = generation
         let task = Task { [self] () throws -> AgentWire in
@@ -41,8 +53,14 @@ public actor CodexBackend: AgentBackend {
             } catch { try? await wire.close(); throw error }
         }
         connecting = task
-        do { let result = try await task.value; wire = result; connecting = nil; return result }
-        catch { connecting = nil; throw error }
+        do {
+            let result = try await task.value
+            guard self.generation == generation else { try? await result.close(); throw AgentFailure.invalidTransition }
+            wire = result; connecting = nil; return result
+        } catch {
+            if self.generation == generation { connecting = nil }
+            throw error
+        }
     }
     public func status() async throws -> AgentStatus {
         guard executable != nil else { return AgentStatus(installed: false, authentication: .signedOut, capabilities: []) }
@@ -101,6 +119,77 @@ public actor CodexBackend: AgentBackend {
         } while cursor != nil
         return models
     }
+
+    public func signInMCP(name: String, directory: URL, timeout: Duration = .seconds(300),
+                          onBrowserURL: @escaping @Sendable (URL) async -> Void) async throws {
+        guard !mcpLoginInProgress else { throw AgentFailure.invalidTransition }
+        mcpLoginInProgress = true
+        defer { mcpLoginInProgress = false }
+        // A dedicated login connection can be closed on cancellation without
+        // interrupting the backend's existing chat threads.
+        let login = CodexBackend(executable: executable, environment: environment, profile: profile)
+        let deadline = ContinuousClock.now.advanced(by: min(timeout, .seconds(300)))
+        do {
+            try await withThrowingTaskGroup(of: Void.self) { group in
+                group.addTask {
+                    try await withTaskCancellationHandler {
+                        try await login.performMCPLogin(name: name, timeout: timeout, onBrowserURL: onBrowserURL)
+                    } onCancel: { Task { try? await login.shutdown() } }
+                }
+                group.addTask {
+                    try await Task.sleep(for: min(timeout, .seconds(300)))
+                    try? await login.shutdown()
+                    throw ProviderSignInError.timedOut
+                }
+                defer { group.cancelAll() }
+                _ = try await group.next()
+            }
+            try await login.shutdown()
+        } catch {
+            try? await login.shutdown()
+            if Task.isCancelled { throw CancellationError() }
+            if ContinuousClock.now >= deadline { throw ProviderSignInError.timedOut }
+            throw error
+        }
+    }
+
+    private func performMCPLogin(name: String, timeout: Duration,
+                                 onBrowserURL: @escaping @Sendable (URL) async -> Void) async throws {
+        try AgentMCPConfiguration.validateName(name)
+        guard mcpLogin == nil else { throw AgentFailure.invalidTransition }
+        let deadline = ContinuousClock.now.advanced(by: min(timeout, .seconds(300)))
+        let connection = try await connection()
+        guard mcpLogin == nil else { throw AgentFailure.invalidTransition }
+        let generation = self.generation
+        mcpLogin = (name, generation); mcpLoginResult = nil
+        defer { mcpLogin = nil; mcpLoginResult = nil }
+        do {
+            let result = try await connection.request("mcpServer/oauth/login", .object(["name": .string(name),
+                "timeoutSecs": .number(max(1, min(300, Double(timeout.components.seconds))))]),
+                timeout: min(timeout, .seconds(300)), failOnTimeout: false)
+            guard generation == self.generation, let raw = result["authorizationUrl"]?.stringValue,
+                  let url = URL(string: raw) else { throw AgentFailure.authRequired }
+            try ProviderSignIn.validate(url)
+            try Task.checkCancellation()
+            await onBrowserURL(url)
+            while ContinuousClock.now < deadline {
+                try Task.checkCancellation()
+                guard generation == self.generation, wire === connection else { throw AgentFailure.offline }
+                if let success = mcpLoginResult {
+                    guard success else { throw AgentFailure.authRequired }
+                    return
+                }
+                try await Task.sleep(for: .milliseconds(25))
+            }
+            throw ProviderSignInError.timedOut
+        } catch {
+            // This protocol has no MCP OAuth cancel method. Dispose the owned
+            // connection so an abandoned local login listener cannot survive.
+            if generation == self.generation { try? await shutdown() }
+            if Task.isCancelled { throw CancellationError() }
+            throw error
+        }
+    }
     public func rateLimits() async throws -> [AgentRateLimitWindow] {
         let result = try await rpc("account/rateLimits/read")
         return codexRateLimits(result)
@@ -113,7 +202,46 @@ public actor CodexBackend: AgentBackend {
         return try AgentFileMention.codex(await rpc("fuzzyFileSearch", .object([
             "query": .string(query), "roots": .array([.string(directory.path)])])), directory: directory)
     }
+    public func setup(directory: URL, projectID: UUID?) async throws -> AgentSetupSnapshot {
+        let connection = try await connection()
+        let generation = self.generation, epoch = mcpEpoch
+        var cursor: String?, cursors = Set<String>(), servers: [String: AgentSetupServer] = [:]
+        repeat {
+            var parameters: [String: JSONValue] = ["limit": .number(100)]
+            if let cursor { parameters["cursor"] = .string(cursor) }
+            let result = try await connection.request("mcpServerStatus/list", .object(parameters), timeout: .seconds(10), failOnTimeout: false)
+            guard generation == self.generation, wire === connection, let data = result["data"]?.arrayValue,
+                  data.count <= 512 else { throw AgentFailure.invalidRequest }
+            for raw in data {
+                guard let name = AgentSetupSnapshot.name(raw["name"]), servers[name] == nil else { throw AgentFailure.invalidRequest }
+                let auth = raw["authStatus"]?.stringValue
+                let authentication = ["unsupported", "notLoggedIn", "bearerToken", "oAuth"].contains(auth) ? auth : nil
+                let status = raw["status"]?.stringValue.map { AgentSetupServer.status($0) }
+                    ?? (auth == "notLoggedIn" ? .needsAuth : mcpUpdates[name]?.server.status ?? .unknown)
+                servers[name] = .init(name: name, status: status, source: "provider", authentication: authentication)
+            }
+            guard servers.count <= 512 else { throw AgentFailure.invalidRequest }
+            if let next = result["nextCursor"], next != .null {
+                guard let text = next.stringValue, !text.isEmpty, text.utf8.count <= 4096,
+                      cursors.insert(text).inserted, cursors.count < 128 else { throw AgentFailure.invalidRequest }
+                cursor = text
+            } else { cursor = nil }
+        } while cursor != nil
+        for (name, update) in mcpUpdates where update.epoch > epoch {
+            servers[name] = .init(name: name, status: update.server.status, source: "provider",
+                                 authentication: servers[name]?.authentication)
+        }
+        var snapshot = AgentSetupSnapshot(provider: .codex)
+        snapshot.serversAvailable = true; snapshot.servers = servers.values.sorted { $0.name < $1.name }
+        availableSetup = snapshot
+        for run in Array(runs.values) {
+            guard generation == self.generation else { throw AgentFailure.invalidTransition }
+            await run.setup(snapshot)
+        }
+        return snapshot
+    }
     public func start(_ configuration: AgentSessionConfiguration) async throws -> any AgentRun {
+        guard !configuration.forkSession, configuration.resumeSessionAt == nil else { throw AgentFailure.unsupported }
         let authentication = try await status().authentication
         guard authentication == .subscription else {
             throw authentication == .signedOut ? AgentFailure.authRequired : AgentFailure.unsupported
@@ -138,6 +266,7 @@ public actor CodexBackend: AgentBackend {
         let run = CodexRun(backend: self, wire: connection, session: session, configuration: configuration)
         runs[nativeID] = run
         await run.started()
+        if availableSetup.serversAvailable { await run.setup(availableSetup) }
         return run
     }
     func nativeSessionID(_ id: String) -> AgentSessionID { .init(provider: .codex, profile: profile, nativeID: id) }
@@ -164,12 +293,32 @@ public actor CodexBackend: AgentBackend {
             return
         }
         let parameters = value["params"] ?? .null
+        if method == "mcpServer/oauthLogin/completed", id == nil {
+            if let login = mcpLogin, login.generation == generation,
+               parameters["name"]?.stringValue == login.name, mcpLoginResult == nil {
+                mcpLoginResult = parameters["success"]?.boolValue ?? false
+            }
+            return
+        }
         if method == "account/login/completed", loginInProgress, let loginID = parameters["loginId"]?.stringValue {
             if loginResults.count < 16 { loginResults[loginID] = parameters["success"]?.boolValue ?? false }
             return
         }
         if method == "account/rateLimits/updated", id == nil {
             for run in runs.values { await run.rateLimits(codexRateLimits(parameters)) }
+            return
+        }
+        if method == "mcpServer/startupStatus/updated", id == nil {
+            guard let name = AgentSetupSnapshot.name(parameters["name"]),
+                  let status = parameters["status"]?.stringValue, mcpUpdates.count < 512 || mcpUpdates[name] != nil else { return }
+            let server = AgentSetupServer(name: name, status: AgentSetupServer.status(status), source: "provider",
+                authentication: availableSetup.servers.first { $0.name == name }?.authentication)
+            mcpEpoch += 1; mcpUpdates[name] = (mcpEpoch, server)
+            availableSetup.serversAvailable = true
+            availableSetup.servers.removeAll { $0.name == name }; availableSetup.servers.append(server)
+            availableSetup.servers.sort { $0.name < $1.name }
+            let snapshot = availableSetup
+            for run in Array(runs.values) where generation == self.generation { await run.setup(snapshot) }
             return
         }
         guard let thread = parameters["threadId"]?.stringValue, let run = runs[thread] else {
@@ -184,11 +333,16 @@ public actor CodexBackend: AgentBackend {
     private func disconnected(_ error: AgentFailure, generation: UUID) async {
         guard generation == self.generation else { return }
         let current = runs; runs.removeAll(); wire = nil; transport = nil
+        availableSetup = .init(provider: .codex); mcpUpdates = [:]; mcpEpoch = 0
         for run in current.values { await run.disconnected(error) }
     }
     /// Application-level disposal; shutting down one run leaves other threads alive.
     public func shutdown() async throws {
+        generation = UUID()
+        availableSetup = .init(provider: .codex); mcpUpdates = [:]; mcpEpoch = 0
+        let active = runs; runs.removeAll()
         let current = transport; wire = nil; transport = nil
+        for run in active.values { await run.disconnected(.crashed(exitCode: nil)) }
         if let connecting { connecting.cancel(); _ = try? await connecting.value; self.connecting = nil }
         if let current { try await current.close() }
     }

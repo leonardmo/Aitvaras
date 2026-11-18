@@ -61,6 +61,7 @@ public struct AgentApprovalSuggestion: Sendable, Equatable, Identifiable {
 }
 
 extension AgentRequest {
+    public var canAlwaysAllowInProject: Bool { AgentToolPolicy.canAlwaysAllow(self) }
     public var identity: String { "\(scope.runID.uuidString).\(id.encoded)" }
     public var presentation: AgentActionPresentation {
         switch kind {
@@ -104,7 +105,9 @@ public struct AgentActionPresentation: Sendable, Equatable {
         let paths = input["changes"]?.arrayValue?.compactMap { $0["path"]?.stringValue } ?? []
         let title: String
         let detail: String
-        if let command, !command.isEmpty {
+        if let display = Self.mcpDisplayName(tool.name) {
+            title = "Allow \(display)?"; detail = AgentTranscriptContent.display(input)
+        } else if let command, !command.isEmpty {
             title = input["kind"]?.stringValue == "writeStdin" ? "Send input to command?" : "Run command?"
             detail = Self.displayCommand(command)
         } else if let root = input["grantRoot"]?.stringValue {
@@ -125,6 +128,14 @@ public struct AgentActionPresentation: Sendable, Equatable {
 
 
 extension AgentActionPresentation {
+    public static func mcpDisplayName(_ name: String) -> String? {
+        guard name.hasPrefix("mcp__") else { return nil }
+        let rest = String(name.dropFirst(5))
+        guard let separator = rest.range(of: "__") else { return nil }
+        let server = String(rest[..<separator.lowerBound]), tool = String(rest[separator.upperBound...])
+        guard !server.isEmpty, !tool.isEmpty else { return nil }
+        return server + " · " + tool
+    }
     /// Presentation only: never changes the command sent to the CLI or the input
     /// retained in the expanded tool row. Reject extra arguments and shell syntax
     /// outside one plain quoted -lc argument rather than guessing at shell parsing.
@@ -161,7 +172,9 @@ extension AgentActionPresentation {
         case "todo", "todowrite": verbs = ("Updating tasks", "Updated tasks", "Failed to update tasks")
         case "todoread": verbs = ("Reading tasks", "Read tasks", "Failed to read tasks")
         case "task": verbs = ("Delegating:", "Delegated:", "Failed to delegate:")
-        default: verbs = ("Using \(tool.name)", "Used \(tool.name)", "Failed to use \(tool.name)")
+        default:
+            let label = mcpDisplayName(tool.name) ?? tool.name
+            verbs = ("Using \(label)", "Used \(label)", "Failed to use \(label)")
         }
         let verb = finished ? (isError ? verbs.2 : verbs.1) : verbs.0
         return detail.isEmpty ? verb : "\(verb) \(detail)"

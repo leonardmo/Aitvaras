@@ -1,12 +1,20 @@
 import Foundation
 
 actor ClaudeRun: AgentRun {
-    nonisolated let id = UUID()
+    nonisolated let id: UUID
+    nonisolated let mcpSetup: AgentMCPLaunchStatus?
+    nonisolated let permissionSource: AgentPermissionSource
+    private let validateProjectServers: @Sendable (JSONValue) async throws -> Void
+    private let metadataReader: AgentProjectMetadataReader
+    private(set) var availableSetup = AgentSetupSnapshot(provider: .claude)
+    private var hookPhases: [String: AgentHookEvent.Phase] = [:]
+    private var runtimeFile: AgentMCPRuntimeFile?
     nonisolated let events: AsyncThrowingStream<AgentEvent, Error>
     private let continuation: AsyncThrowingStream<AgentEvent, Error>.Continuation
     private let wire: AgentWire
     private let profile: String
     private var session: AgentSessionID?
+    private let forkSource: AgentSessionID?
     private var input: UUID?
     private var queue: [UUID] = []
     private var writing = false
@@ -14,6 +22,7 @@ actor ClaudeRun: AgentRun {
     private var interrupted = false
     private var assistantFailure: AgentFailure?
     private var closed = false
+    private var terminalFailure: AgentFailure?
     private var modeState: AgentModeState
     private var requests: [AgentRequestID: (AgentRequest, JSONValue)] = [:]
     private var seenResults: Set<String> = []
@@ -22,34 +31,70 @@ actor ClaudeRun: AgentRun {
     private(set) var availableModels: [AgentModel] = []
     private(set) var availableCommands: [AgentCommand]?
 
-    init(executable: URL, environment: [String: String], profile: String, configuration: AgentSessionConfiguration) {
-        self.profile = profile; session = configuration.resume; modeState = AgentModeState(configuration.mode)
+    init(executable: URL, environment: [String: String], profile: String, configuration: AgentSessionConfiguration,
+         id: UUID = UUID(), runtimeFile: AgentMCPRuntimeFile? = nil, mcpSetup: AgentMCPLaunchStatus? = nil,
+         permissionSource: AgentPermissionSource = .repo, metadataReader: AgentProjectMetadataReader? = nil,
+         validateProjectServers: @escaping @Sendable (JSONValue) async throws -> Void) {
+        self.validateProjectServers = validateProjectServers
+        self.id = id; self.runtimeFile = runtimeFile; self.mcpSetup = mcpSetup
+        self.permissionSource = permissionSource
+        self.metadataReader = metadataReader ?? AgentProjectMetadataReader(projectDirectory: configuration.directory)
+        self.profile = profile; session = configuration.forkSession ? nil : configuration.resume; modeState = AgentModeState(configuration.mode)
+        forkSource = configuration.forkSession ? configuration.resume : nil
         var arguments = ["-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose",
                          "--include-partial-messages", "--permission-prompt-tool", "stdio", "--permission-mode",
                          configuration.mode.claudePermission]
         for root in configuration.additionalDirectories { arguments += ["--add-dir", root.path] }
-        if configuration.model != "default" { arguments += ["--model", configuration.model] }
+        arguments += ["--model", ChatSettings.claudeModel(configuration.model)]
         if let resume = configuration.resume { arguments += ["--resume", resume.nativeID] }
-        if let effort = configuration.effort { arguments += ["--effort", effort] }
+        if configuration.forkSession { arguments += ["--fork-session"] }
+        if let message = configuration.resumeSessionAt { arguments += ["--resume-session-at", message] }
+        arguments += ["--effort", ChatSettings.claudeEffort(configuration.effort)]
         if !configuration.instructions.isEmpty { arguments += ["--append-system-prompt", configuration.instructions] }
+        if let settings = configuration.settingsJSON { arguments += ["--settings", settings] }
+        if let file = configuration.mcpConfigPath { arguments += ["--mcp-config", file.path] }
+        if configuration.includeHookEvents { arguments += ["--include-hook-events"] }
+        if configuration.strictMCPConfig { arguments += ["--strict-mcp-config"] }
         wire = AgentWire(process: StreamingProcess(executable: executable, arguments: arguments,
             currentDirectory: configuration.directory, environment: environment), format: .claude)
         (events, continuation) = AsyncThrowingStream.makeStream(bufferingPolicy: .bufferingOldest(4096))
     }
 
     func initialize() async throws {
+        availableSetup.metadata = await metadataReader.read()
         try await wire.open(receive: { [weak self] value, requestID in await self?.receive(value, requestID: requestID) },
                             disconnected: { [weak self] error in await self?.disconnected(error) })
         let hook: (String) -> JSONValue = { .array([.object(["matcher": .null, "hookCallbackIds": .array([.string($0)])])]) }
-        let value = try await wire.request("initialize", .object(["hooks": .object([
-            "PreToolUse": hook("pre"), "PostToolUse": hook("post")])]), id: .string("init"))
+        let value: JSONValue
+        do {
+            value = try await wire.request("initialize", .object(["hooks": .object([
+                "PreToolUse": hook("pre"), "PostToolUse": hook("post")])]), id: .string("init"))
+        } catch { throw terminalFailure ?? error }
+        guard !closed else { throw terminalFailure ?? AgentFailure.invalidTransition }
         if let source = value["account"]?["apiKeySource"], source.stringValue != "none" { throw AgentFailure.unsupported }
         availableCommands = try? AgentCommandCatalog.claude(value)
-        availableModels = (value["models"]?.arrayValue ?? []).compactMap {
+        availableSetup.initialize(value)
+        if availableSetup.commandsAvailable { availableCommands = availableSetup.commands }
+        emit(.setupReported(availableSetup))
+        availableModels = ChatSettings.claudeModels((value["models"]?.arrayValue ?? []).compactMap {
             guard let id = $0["value"]?.stringValue else { return nil }
             return AgentModel(id: id, name: $0["displayName"]?.stringValue ?? id,
                               efforts: $0["supportedEffortLevels"]?.arrayValue?.compactMap(\.stringValue) ?? [])
-        }
+        })
+    }
+
+    var canRefreshSetup: Bool { !closed }
+    func refreshSetup() async throws -> AgentSetupSnapshot {
+        guard !closed else { throw AgentFailure.invalidTransition }
+        let response = try await wire.request("mcp_status", timeout: .seconds(5), failOnTimeout: false)
+        guard !closed else { throw terminalFailure ?? AgentFailure.invalidTransition }
+        var snapshot = availableSetup
+        try snapshot.claudeMCPStatus(response)
+        // Status is an inventory response, which may include disabled entries.
+        // The launch gate and system/init validation decide execution authority.
+        availableSetup = snapshot
+        emit(.setupReported(snapshot))
+        return snapshot
     }
 
     private func scope(item: String? = nil) -> AgentEventScope {
@@ -94,12 +139,6 @@ actor ClaudeRun: AgentRun {
         guard result.jsonString.utf8.count <= StreamingProcess.maximumLineBytes else { throw AgentAttachmentError.tooLarge }
         return result
     }
-    private func activateNext() {
-        guard !interrupted, !queue.isEmpty else { return }
-        input = queue.removeFirst(); acknowledged = false; assistantFailure = nil
-        streamedThinking.removeAll(); streamTools.removeAll(); streamTexts.removeAll(); streamingMessageID = nil
-        emit(.inputActivated)
-    }
     private func acknowledge() {
         if input != nil, !acknowledged { acknowledged = true; emit(.delivery(.acknowledged)) }
     }
@@ -107,12 +146,30 @@ actor ClaudeRun: AgentRun {
     private func receive(_ value: JSONValue, requestID: AgentRequestID?) async {
         guard !closed else { return }
         if let native = value["session_id"]?.stringValue, session == nil {
+            if let source = forkSource, UUID(uuidString: native) == nil || UUID(uuidString: native) == UUID(uuidString: source.nativeID) {
+                await disconnected(.invalidRequest); return
+            }
             session = AgentSessionID(provider: .claude, profile: profile, nativeID: native)
             emit(.sessionStarted(session!))
         }
         switch value["type"]?.stringValue {
         case "system" where value["subtype"]?.stringValue == "init":
-            if value["apiKeySource"]?.stringValue != "none" { await disconnected(.unsupported) }
+            if value["apiKeySource"]?.stringValue != "none" { await disconnected(.unsupported); return }
+            do {
+                // The CLI has consumed the file; retain only the in-memory
+                // redaction cache for subsequent hook diagnostics.
+                try await runtimeFile?.remove(preservingRedactions: true)
+                try await validateProjectServers(value)
+            } catch {
+                await disconnected((error as? AgentFailure) ?? .unapprovedProjectMCP); return
+            }
+            guard !closed else { return }
+            availableSetup.claudeInit(value)
+            if availableSetup.commandsAvailable { availableCommands = availableSetup.commands }
+            emit(.setupReported(availableSetup))
+        case "system" where ["hook_started", "hook_response"].contains(value["subtype"]?.stringValue):
+            await parseHook(value)
+        case "system": break
         case "control_request":
             guard let requestID, case .string = requestID, let raw = value["request"] else { await disconnected(.invalidRequest); return }
             guard !seenRequests.contains(requestID), seenRequests.count < 100_000 else { await disconnected(.invalidRequest); return }
@@ -160,7 +217,7 @@ actor ClaudeRun: AgentRun {
         case "assistant", "user":
             acknowledge()
             if let error = value["error"]?.stringValue { assistantFailure = error == "authentication_failed" ? .authRequired : .unknown }
-            parseMessage(value)
+            await parseMessage(value)
         case "rate_limit_event": emit(.rateLimits(claudeRateLimits(value["rate_limit_info"] ?? .null)))
         case "result":
             if let nativeID = value["uuid"]?.stringValue, !seenResults.insert(nativeID).inserted { return }
@@ -176,8 +233,10 @@ actor ClaudeRun: AgentRun {
             let outcome: AgentTurnOutcome = (interrupted || aborted)
                 ? .interrupted : assistantFailure.map { .failed($0) }
                     ?? (value["is_error"]?.boolValue == false ? .completed : .failed(.unknown))
-            emit(.turnEnded(outcome)); input = nil; requests.removeAll(); modeState.cancel()
-            activateNext()
+            let completed = [input!] + queue
+            continuation.yield(.init(scope: .init(runID: id, session: session, inputID: input,
+                completedInputIDs: completed.count > 1 ? completed : []), kind: .turnEnded(outcome)))
+            input = nil; queue.removeAll(); requests.removeAll(); modeState.cancel()
         default: emit(.unknown(name: value["type"]?.stringValue ?? "unknown", payload: value))
         }
     }
@@ -190,6 +249,8 @@ actor ClaudeRun: AgentRun {
         let payload: JSONValue
         switch response {
         case .continueHook where isHook: payload = .object(["continue": .bool(true)])
+        case .askHook where isHook && raw["callback_id"]?.stringValue == "pre":
+            payload = .object(["hookSpecificOutput": .object(["hookEventName": .string("PreToolUse"), "permissionDecision": .string("ask")])])
         case .deny where isHook:
             payload = .object(["continue": .bool(false), "stopReason": .string("Action denied")])
         case .allow(let updated) where !isHook:
@@ -227,18 +288,55 @@ actor ClaudeRun: AgentRun {
     }
     func disconnected(_ error: AgentFailure) async {
         guard !closed else { return }
-        closed = true; requests.removeAll()
+        closed = true; terminalFailure = error; requests.removeAll()
         if input != nil { emit(.turnEnded(.failed(error))); input = nil }
         continuation.finish(throwing: error)
-        Task { try? await wire.close() }
+        await closeTransport()
     }
     func abort() async {
         closed = true; input = nil; queue.removeAll(); requests.removeAll(); continuation.finish()
-        try? await wire.close()
+        await closeTransport()
     }
     func shutdown() async throws {
         if !closed { closed = true; requests.removeAll(); continuation.finish(); input = nil }
-        try await wire.close()
+        await closeTransport()
+    }
+
+    private func closeTransport() async {
+        try? await wire.close()
+        let file = runtimeFile; runtimeFile = nil
+        try? await file?.remove()
+    }
+
+    private func parseHook(_ value: JSONValue) async {
+        guard let id = AgentSetupSnapshot.name(value["hook_id"]),
+              let rawName = value["hook_name"]?.stringValue, rawName.utf8.count <= 512,
+              let event = value["hook_event"]?.stringValue, event.utf8.count <= 128,
+              hookPhases.count < 2048 || hookPhases[id] != nil else { return }
+        let phase: AgentHookEvent.Phase
+        if value["subtype"]?.stringValue == "hook_started" {
+            guard hookPhases[id] == nil else { return }; phase = .running
+        } else {
+            guard hookPhases[id] == nil || hookPhases[id] == .running else { return }
+            guard let exit = value["exit_code"]?.int, let outcome = value["outcome"]?.stringValue,
+                  ["success", "error"].contains(outcome) else { return }
+            phase = event == "PreToolUse" && exit == 2 ? .blocked : (exit != 0 || outcome == "error" ? .error : .success)
+        }
+        hookPhases[id] = phase
+        let tool = rawName.split(separator: ":", maxSplits: 1).dropFirst().first.map(String.init) ?? ""
+        let status = availableSetup.metadata.statusMessage(event: event, tool: tool)
+        var reason: String?
+        if phase == .blocked || phase == .error {
+            let text = [value["stderr"]?.stringValue, value["output"]?.stringValue, value["stdout"]?.stringValue]
+                .compactMap { $0 }.first { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty } ?? "Hook failed."
+            let runtimeRedacted = await runtimeFile?.redacted(text) ?? text
+            reason = await metadataReader.redact(runtimeRedacted)
+        }
+        let name = await metadataReader.redact(rawName, limit: 512)
+        let safeEvent = await metadataReader.redact(event, limit: 128)
+        let toolID = AgentSetupSnapshot.name(value["tool_use_id"])
+        emit(.hook(.init(id: id, name: name, event: safeEvent, phase: phase, statusMessage: status, reason: reason,
+                         toolUseID: toolID)), item: toolID)
     }
 
     private var streamingMessageID: String?
@@ -278,7 +376,7 @@ actor ClaudeRun: AgentRun {
             }
         }
     }
-    private func parseMessage(_ value: JSONValue) {
+    private func parseMessage(_ value: JSONValue) async {
         let message = value["message"] ?? .null
         let messageID = message["id"]?.stringValue ?? value["uuid"]?.stringValue
         var texts: [String] = []
@@ -290,13 +388,42 @@ actor ClaudeRun: AgentRun {
                     emit(.thinkingDelta(block["thinking"]?.stringValue ?? ""), item: messageID)
                 }
             case "tool_use": emit(.toolStarted(AgentTool(name: block["name"]?.stringValue ?? "", input: block["input"] ?? .null)), item: block["id"]?.stringValue)
-            case "tool_result": emit(.toolFinished(output: block["content"] ?? .null, isError: block["is_error"]?.boolValue ?? false), item: block["tool_use_id"]?.stringValue)
+            case "tool_result":
+                var output = block["content"] ?? .null
+                // Redact before bounding: clipping a long credential first
+                // would leave a prefix which no longer matches the secret.
+                let raw = hookOutputStrings(output).joined(separator: "\n")
+                if raw.contains("hook error:") {
+                    let runtimeRedacted = await runtimeFile?.redacted(raw) ?? raw
+                    output = .string(await metadataReader.redact(runtimeRedacted))
+                }
+                emit(.toolFinished(output: output, isError: block["is_error"]?.boolValue ?? false), item: block["tool_use_id"]?.stringValue)
             default: emit(.unknown(name: block["type"]?.stringValue ?? "content", payload: block), item: messageID)
             }
         }
-        if let messageID, !texts.isEmpty { emit(.message(id: value["uuid"]?.stringValue ?? messageID, role: message["role"]?.stringValue ?? "assistant", text: messageID == streamingMessageID && !streamTexts.isEmpty
-            ? streamTexts.keys.sorted().compactMap { streamTexts[$0] }.joined(separator: "\n")
-            : texts.joined(separator: "\n")), item: messageID) }
+        if message["role"]?.stringValue == "user" { texts = [ClaudeCommandText.display(texts.joined(separator: "\n"))] }
+        if let messageID, !texts.isEmpty {
+            let native = value["uuid"]?.stringValue ?? messageID
+            let role = message["role"]?.stringValue ?? "assistant"
+            let text = messageID == streamingMessageID && !streamTexts.isEmpty
+                ? streamTexts.keys.sorted().compactMap { streamTexts[$0] }.joined(separator: "\n") : texts.joined(separator: "\n")
+            if role == "user", let queuedID = UUID(uuidString: native), queue.contains(queuedID) {
+                let owner = AgentEventScope(runID: id, session: session, inputID: queuedID, itemID: messageID)
+                continuation.yield(.init(scope: owner, kind: .delivery(.acknowledged)))
+                continuation.yield(.init(scope: owner, kind: .message(id: native, role: role, text: text)))
+            } else { emit(.message(id: native, role: role, text: text), item: messageID) }
+        }
+    }
+
+    // Preserve string contents, rather than JSON-escaping credentials before
+    // matching them. The wire already bounds the entire provider message.
+    private func hookOutputStrings(_ value: JSONValue) -> [String] {
+        switch value {
+        case .string(let text): [text]
+        case .array(let values): values.flatMap(hookOutputStrings)
+        case .object(let fields): fields.keys.sorted().flatMap { hookOutputStrings(fields[$0]!) }
+        default: []
+        }
     }
 }
 

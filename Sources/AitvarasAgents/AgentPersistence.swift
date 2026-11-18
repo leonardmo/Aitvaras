@@ -5,6 +5,7 @@ public struct AgentChatSession: Codable, Sendable, Equatable {
     public var id: UUID
     public var chatID: UUID
     public var provider: AgentProvider
+    public var providerProfile: String = "default"
     public var host: String?
     public var profile: String?
     public var nativeID: String?
@@ -14,27 +15,31 @@ public struct AgentChatSession: Codable, Sendable, Equatable {
     public var mode: AgentMode
     public var instructions: String
     public var additionalRootsJSON: String = "[]"
+    public var forkOrigin: AgentForkOrigin?
 
     public init(id: UUID = UUID(), chatID: UUID, provider: AgentProvider, cwd: String,
-                model: String, effort: String? = nil, mode: AgentMode = .ask, instructions: String = "") {
+                model: String, effort: String? = nil, providerProfile: String = "default", mode: AgentMode = .ask, instructions: String = "") {
         self.id = id; self.chatID = chatID; self.provider = provider; self.cwd = cwd
         self.model = model; self.effort = effort; self.mode = mode
-        self.instructions = instructions
+        self.instructions = instructions; self.providerProfile = providerProfile
     }
     private enum CodingKeys: String, CodingKey {
-        case id, chatID, provider, host, profile, nativeID, cwd, model, effort, mode, instructions, additionalRootsJSON
+        case providerProfile, id, chatID, provider, host, profile, nativeID, cwd, model, effort, mode, instructions, additionalRootsJSON, forkOrigin
     }
     public init(from decoder: any Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         id = try c.decode(UUID.self, forKey: .id); chatID = try c.decode(UUID.self, forKey: .chatID)
         provider = try c.decode(AgentProvider.self, forKey: .provider)
+        providerProfile = try c.decodeIfPresent(String.self, forKey: .providerProfile) ?? "default"
         host = try c.decodeIfPresent(String.self, forKey: .host); profile = try c.decodeIfPresent(String.self, forKey: .profile)
         nativeID = try c.decodeIfPresent(String.self, forKey: .nativeID)
         cwd = try c.decode(String.self, forKey: .cwd); model = try c.decode(String.self, forKey: .model)
         effort = try c.decodeIfPresent(String.self, forKey: .effort); mode = try c.decode(AgentMode.self, forKey: .mode)
         instructions = try c.decodeIfPresent(String.self, forKey: .instructions) ?? ""
         additionalRootsJSON = try c.decodeIfPresent(String.self, forKey: .additionalRootsJSON) ?? "[]"
+        forkOrigin = try c.decodeIfPresent(AgentForkOrigin.self, forKey: .forkOrigin)
     }
+    public var choice: AgentProviderChoice { .init(provider: provider, profile: providerProfile) }
     public var sessionID: AgentSessionID? {
         get {
             guard let host, let profile, let nativeID else { return nil }
@@ -46,8 +51,9 @@ public struct AgentChatSession: Codable, Sendable, Equatable {
     public var usesThreadContext: Bool { provider != .local || profile == OpencodeConfiguration.profile }
 
     public var configuration: AgentSessionConfiguration {
-        .init(directory: URL(fileURLWithPath: cwd), resume: sessionID, model: model, effort: effort, mode: mode,
+        .init(directory: URL(fileURLWithPath: cwd), resume: forkOrigin?.pending == true ? forkOrigin?.native : sessionID, model: model, effort: effort, mode: mode,
               instructions: instructions, additionalDirectories: (try? JSONDecoder().decode([String].self, from: Data(additionalRootsJSON.utf8)))?.map { URL(fileURLWithPath: $0) } ?? [])
+            .forking(at: forkOrigin?.pending == true ? forkOrigin?.assistantMessageID : nil)
     }
 }
 
@@ -96,13 +102,18 @@ public struct AgentJournalTurn: Codable, Sendable, Equatable {
 /// Synchronous calls commit before returning, including the willDeliver barrier.
 /// The application injects its single store into its single manager.
 public protocol AgentSessionPersistence: Sendable {
+    func agentProjectID(chatID: UUID) throws -> UUID?
+    func agentAlwaysAllowedTools(chatID: UUID) throws -> Set<String>
+    func allowAgentTool(chatID: UUID, request: AgentRequest) throws
     func requireAgentChatAvailable(chatID: UUID) throws
     func renameAgentChat(chatID: UUID, title: String) throws
     func archiveAgentChat(chatID: UUID, archived: Bool) throws
     func agentSession(chatID: UUID, provider: AgentProvider) throws -> AgentChatSession?
+    func agentSessions(chatID: UUID) throws -> [AgentChatSession]
     func saveAgentSession(_ session: AgentChatSession) throws
     func agentEntries(chatID: UUID) throws -> [AgentTranscriptEntry]
     @discardableResult func saveAgentEntry(_ entry: AgentTranscriptEntry) throws -> AgentTranscriptEntry
+    func orderAgentEntries(chatID: UUID, ids: [UUID]) throws
     func prepareAgentTurn(_ turn: AgentJournalTurn) throws
     func prepareAgentTurn(_ turn: AgentJournalTurn, context: ChatContextProjection?) throws
     func agentTurn(id: UUID) throws -> AgentJournalTurn?
@@ -114,6 +125,16 @@ public protocol AgentSessionPersistence: Sendable {
     func recoverAgentTurns() throws
     func agentContext(session: AgentChatSession) throws -> ChatContextProjection?
     func agentHandover(turnID: UUID) throws -> ChatContextProjection?
+}
+
+extension AgentSessionPersistence {
+    public func agentSessions(chatID: UUID) throws -> [AgentChatSession] {
+        try [AgentProvider.claude, .codex, .local].compactMap { try agentSession(chatID: chatID, provider: $0) }
+    }
+    public func orderAgentEntries(chatID: UUID, ids: [UUID]) throws { throw AgentFailure.unsupported }
+    public func agentProjectID(chatID: UUID) throws -> UUID? { nil }
+    public func agentAlwaysAllowedTools(chatID: UUID) throws -> Set<String> { [] }
+    public func allowAgentTool(chatID: UUID, request: AgentRequest) throws { throw AgentFailure.unsupported }
 }
 
 public protocol AgentNativeSessionPersistence: Sendable {
