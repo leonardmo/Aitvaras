@@ -12,6 +12,16 @@ final class ChatModel {
     let manager: AgentSessionManager
     private let stores: Stores
     let gitActions: AgentGitActionCoordinator
+    let forgeActions: AgentForgeActionCoordinator
+    private(set) var pullRequestBinding: AgentPullRequest?
+    private(set) var pullRequest: ForgePullRequest?
+    private(set) var pullRequestChecks: [ForgeCheck] = []
+    private(set) var forgeError: String?
+    private(set) var forgeBusy = false
+    private(set) var forgeDraft: ForgeRequestDraft?
+    private(set) var forgeKind: ForgeKind?
+    private(set) var forgeNeedsSignIn = false
+    private var forgeRefreshID: UUID?
     let conversationActions: AgentConversationActions
     private(set) var changes: ChangesState?
     private(set) var gitBusy = false
@@ -257,13 +267,14 @@ final class ChatModel {
     private(set) var providerLimits: [AgentProvider: [AgentRateLimitWindow]] = [:]
     private var modelLoads: [AgentProviderChoice: (token: UUID, task: Task<[AgentModel], Error>)] = [:]
 
-    init(manager: AgentSessionManager, stores: Stores, backends: [AgentProvider: any AgentBackend], profileBackends: AgentProfileBackends? = nil, claudeDefaultDirectory: URL? = nil, agentSetup: AgentSetupCoordinator? = nil) {
+    init(manager: AgentSessionManager, stores: Stores, backends: [AgentProvider: any AgentBackend], profileBackends: AgentProfileBackends? = nil, claudeDefaultDirectory: URL? = nil, agentSetup: AgentSetupCoordinator? = nil, forgeEnvironment: [String: String] = ProcessInfo.processInfo.environment) {
         self.claudeDefaultDirectory = claudeDefaultDirectory ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".claude")
         self.profileBackends = profileBackends
         self.manager = manager; self.stores = stores; self.backends = backends
         self.agentSetup = agentSetup
         signInCoordinator = ProviderSignIn(persistence: stores)
         gitActions = AgentGitActionCoordinator(persistence: stores, audit: { _ = try stores.record($0) })
+        forgeActions = AgentForgeActionCoordinator(persistence: stores, registry: ForgeRegistry(environment: forgeEnvironment), audit: { _ = try stores.record($0) })
         let scopedFactory: AgentSessionManager.ProfileBackendFactory? = profileBackends.map { pool in
             { @Sendable choice in try pool.backend(choice) }
         }
@@ -531,6 +542,7 @@ final class ChatModel {
         if loginToken != nil { cancelSignIn() }
         if let pending = try? stores.pendingSend(), pending.session.chatID != id { invalidatePending() }
         state = id.flatMap { sidebarStates[$0] }; error = nil; authProvider = nil; changes = nil; canDiscardChanges = false; branchStatus = nil; pushDisabledReason = "Refresh branch status first."; gitError = nil
+        pullRequest = nil; pullRequestBinding = id.flatMap { try? stores.agentPullRequest(chatID: $0) }; pullRequestChecks = []; forgeError = nil; forgeDraft = nil; forgeKind = nil; forgeNeedsSignIn = false; forgeRefreshID = nil
         do {
             let saved = try stores.value(forKey: id.map { "agent.provider.\($0.uuidString)" } ?? "agent.lastProvider")
             selection.select(id, provider: saved.flatMap(AgentProvider.init(rawValue:)) ?? .local)
@@ -665,7 +677,7 @@ final class ChatModel {
             }
         }
         gitBusy = false
-        if chatID == owner { await refreshChanges() }
+        if chatID == owner { await refreshChanges(); if pushAfterCommit { await refreshPullRequest() } }
     }
 
     func pushGitBranch(owner: UUID, directory: URL, branch: String) async {
@@ -678,7 +690,72 @@ final class ChatModel {
             if chatID == owner { gitError = (error as? AgentGitError)?.message ?? "Push failed. Refresh and try again." }
         }
         gitBusy = false
-        if chatID == owner { await refreshChanges() }
+        if chatID == owner { await refreshChanges(); await refreshPullRequest() }
+    }
+
+    private var forgeEnabled: Bool {
+        let env = ProcessInfo.processInfo.environment
+        return env["AITVARAS_DISABLE_EXTERNAL_INTEGRATIONS"] != "1" && env["AITVARAS_UI_TEST_MODE"] != "1"
+    }
+    var canCreatePullRequest: Bool {
+        guard let branch = branchStatus else { return false }
+        return forgeEnabled && pullRequest == nil && !branch.detached && !branch.isDefaultBranch
+            && branch.upstream == "origin/" + branch.branch && branch.ahead == 0 && branch.behind == 0
+    }
+    func refreshPullRequest() async {
+        guard forgeEnabled, let owner = chatID, let directory = changes?.directory else { return }
+        let token = UUID(); forgeRefreshID = token
+        do {
+            let snapshot = try await forgeActions.refresh(chatID: owner, directory: directory)
+            guard chatID == owner, forgeRefreshID == token else { return }
+            pullRequest = snapshot.request; pullRequestChecks = snapshot.checks; forgeError = snapshot.checkError?.message; forgeNeedsSignIn = false
+            forgeKind = snapshot.forge
+            pullRequestBinding = try? stores.agentPullRequest(chatID: owner)
+        } catch {
+            guard chatID == owner, forgeRefreshID == token else { return }
+            let host = branchStatus?.remoteHost
+            let kind = try? await forgeActions.kind(host: host)
+            guard chatID == owner, forgeRefreshID == token else { return }
+            forgeKind = kind; forgeNeedsSignIn = error as? ForgeError == .signedOut
+            if error as? ForgeError == .notInstalled, let kind {
+                forgeError = "Install \(kind.title) CLI (\(kind.executableName)) to see \(kind.requestName)s"
+            } else { forgeError = (error as? ForgeError)?.message ?? "Could not refresh pull request." }
+        }
+    }
+    func preparePullRequest() async {
+        guard canCreatePullRequest, let owner = chatID, let directory = changes?.directory, !forgeBusy else { return }
+        forgeBusy = true; defer { forgeBusy = false }
+        do {
+            let draft = try await forgeActions.draft(chatID: owner, directory: directory)
+            guard chatID == owner else { return }
+            forgeKind = draft.kind
+            await refreshPullRequest()
+            if chatID == owner, pullRequest == nil { forgeDraft = draft }
+        } catch {
+            guard chatID == owner else { return }
+            let kind = try? await forgeActions.kind(host: branchStatus?.remoteHost)
+            guard chatID == owner else { return }
+            forgeKind = kind
+            forgeNeedsSignIn = error as? ForgeError == .signedOut
+            if error as? ForgeError == .notInstalled, let kind = forgeKind {
+                forgeError = "Install \(kind.title) CLI (\(kind.executableName)) to see \(kind.requestName)s"
+            } else { forgeError = (error as? ForgeError)?.message ?? (error as? AgentGitError)?.message ?? "Could not prepare pull request." }
+        }
+    }
+    func dismissForgeDraft() { forgeDraft = nil }
+    func createPullRequest(_ draft: ForgeRequestDraft, isDraft: Bool, owner: UUID) async -> Bool {
+        guard chatID == owner, !forgeBusy, !gitBusy, !isBusy else { return false }
+        forgeBusy = true; defer { forgeBusy = false }
+        do {
+            let request = try await forgeActions.createPullRequest(chatID: owner, draft: draft, isDraft: isDraft, confirmed: true)
+            guard chatID == owner else { return true }
+            pullRequest = request; pullRequestBinding = try? stores.agentPullRequest(chatID: owner); forgeDraft = nil; forgeError = nil
+            await refreshPullRequest()
+            return true
+        } catch {
+            if chatID == owner { forgeError = (error as? ForgeError)?.message ?? (error as? AgentGitError)?.message ?? "Could not create pull request." }
+            return false
+        }
     }
 
     /// No browser or user message is initiated by opening Chat or Settings.

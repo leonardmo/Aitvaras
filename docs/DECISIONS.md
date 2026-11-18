@@ -852,3 +852,32 @@ only for failed capture summaries and safely identified stored-conversation
 archives through their existing targeted paths; no other job gains Retry.
 D36 stays 🚧 until the maintainer has reviewed the light/dark screenshots and
 the person-only checks in [TESTING.md](TESTING.md#home-attention-d36-issue-18).
+
+## D37 — Forge requests use installed CLIs 🚧 (2026-11-18)
+
+Project Chat uses the already installed and signed-in `gh` (GitHub and
+Enterprise) or `glab` (GitLab and self-hosted) CLI. Git push retains its Git
+credential helper. There is no app account, token extraction, token storage or
+API-key fallback. The origin hostname selects public forges; other hosts must
+appear in exactly one CLI's authentication listing. Unknown hosts retain push
+and show an unsupported-host message. A missing CLI shows an installation hint;
+an installed, signed-out CLI offers a managed, cancellable browser sign-in.
+Browser URLs pass `ProviderSignIn.validate`. Sign-in is never started on open.
+
+Request creation is outbound and always requires a visible confirmation under
+D13. The sheet previews editable commit-derived title/description, the default
+base branch and a segmented Draft choice. A matching branch request is bound
+instead of duplicated. Creation revalidates chat ownership, origin host/repository, branch,
+base and committed tip. The CLI explicitly targets origin rather than choosing
+an unrelated remote. Process output is bounded, commands time out, and failures
+become fixed error kinds without retaining raw diagnostics. Audit includes
+operation, chat provenance, risk and outcome; never titles, bodies or URLs.
+
+One latest request identity is stored per chat. `watch` defaults to false;
+nullable comment/check watermarks reserve the later Auto-fix integration.
+Comments and checks are read-only, transient snapshots. Opening Chat, pushing
+and manual refresh update request/check status; there is no forge polling.
+The toolbar opens the request on the forge website. Merging stays there.
+Connections lists installed CLIs and their signed-in hosts with sign-in fallback.
+Offline fixtures establish parsing and policy behavior; live CLI/browser and
+isolated app acceptance remain required before marking this decision complete.

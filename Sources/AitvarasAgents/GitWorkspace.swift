@@ -63,6 +63,16 @@ public actor GitWorkspace {
             isDefaultBranch: branch != nil && branch == defaultBranch, hasRemote: remote != nil)
     }
 
+    public func defaultBranch(at directory: URL) async throws -> String {
+        if let ref = try await optionalCommand(["symbolic-ref", "-q", "refs/remotes/origin/HEAD"], in: directory, absent: 1), ref.hasPrefix("refs/remotes/origin/") {
+            return String(ref.dropFirst(20))
+        }
+        for name in ["main", "master"] {
+            if try await optionalCommand(["show-ref", "--verify", "--quiet", "refs/remotes/origin/" + name], in: directory, absent: 1) != nil { return name }
+        }
+        throw AgentGitError.invalidOutput
+    }
+
     /// Extract only a hostname from URL or scp syntax. Local paths have no host.
     public static func remoteHost(_ remote: String) -> String? {
         let host: String?
