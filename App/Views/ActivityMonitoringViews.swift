@@ -1,4 +1,5 @@
 import SwiftUI
+import Combine
 import AitvarasCore
 import AitvarasStore
 import AitvarasConnectors
@@ -397,7 +398,7 @@ struct ActivityStatusPanel: View {
         if let run = selectedRun {
             VStack(alignment: .leading, spacing: 0) {
                 Button("Back to Activity", systemImage: "chevron.left") { selectedRun = nil }.padding(.horizontal, 20).padding(.top, 12)
-                ActivityRunDetailView(run: run).environment(model)
+                ActivityRunDetailView(run: run, onClose: { selectedRun = nil }).environment(model)
             }
         } else {
         ScrollView {
@@ -522,160 +523,222 @@ struct ActivityRunDetailView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
     let run: ActivityRun
-    @State private var events: [ActivityEvent] = []
-    @State private var steps: [ActivityRunStep] = []
-    @State private var error: String?
-    @State private var acknowledged = false
-    @State private var conversation: Conversation?
-    private var current: ActivityRun {
-        model.currentActivityRuns.first(where: { $0.id == run.id })
-            ?? model.recentActivityRuns.first(where: { $0.id == run.id }) ?? run
+    let group: ActivityAttentionGroup?
+    let onClose: (() -> Void)?
+    @State private var snapshot: ActivityRunDetailSnapshot?
+    @State private var loadError: String?
+    @State private var actionError: String?
+    @State private var detailsExpanded = false
+    @State private var pendingDestination: ActivityDetailDestination?
+
+    init(run: ActivityRun, group: ActivityAttentionGroup? = nil, onClose: (() -> Void)? = nil) {
+        self.run = group?.latestRun ?? run
+        self.group = group
+        self.onClose = onClose
     }
+
+    private var selection: ActivityRunDetailSelection {
+        group.map { ActivityRunDetailSelection(group: $0) } ?? ActivityRunDetailSelection(run: run)
+    }
+    private var current: ActivityRun { snapshot?.run ?? run }
+    private var presentation: ActivityRunDetailPresentation {
+        ActivityRunDetailPresentation(run: current,
+            destination: loadError == nil ? snapshot?.destination : nil,
+            stopSupported: loadError == nil && model.canStopActivityRun(current),
+            dismissalGroup: loadError == nil ? snapshot?.dismissalGroup : nil)
+    }
+    private var inlineError: String? {
+        if let actionError { return actionError }
+        if let loadError { return loadError }
+        if let snapshot, snapshot.destination == nil, current.referenceID != nil {
+            if current.category == .capture { return "No saved capture is available for this operation." }
+            if [.chat, .voice, .memory].contains(current.category) { return "No saved conversation is available for this operation." }
+        }
+        return nil
+    }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            if let conversation {
-                SavedConversationView(conversation: conversation, onBack: { self.conversation = nil })
-                    .environment(model)
-            } else {
-            HStack {
-                Text(current.title).font(.title3.weight(.semibold))
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .top) {
+                Text(current.title).font(.title3.weight(.semibold)).lineLimit(2)
                 Spacer()
-                Button("Close") { dismiss() }.keyboardShortcut(.escape)
+                Button("Close", action: close).keyboardShortcut(.escape)
+                    .accessibilityIdentifier("activity.detail.close")
             }
             ScrollView {
-                VStack(alignment: .leading, spacing: 12) {
-                    LabeledContent("Status", value: current.state.monitoringTitle)
-                    if current.state == .awaitingApproval {
-                        Text("Review the proposed action in Home or Chat. Nothing executes until you approve it.")
-                            .font(.callout).foregroundStyle(.orange)
+                VStack(alignment: .leading, spacing: 16) {
+                    Text(presentation.summary).font(.callout).foregroundStyle(.secondary)
+                        .accessibilityIdentifier("activity.detail.summary")
+                    if !presentation.actions.isEmpty { mainActions }
+                    if let inlineError {
+                        Text(inlineError).font(.caption).foregroundStyle(.orange)
+                            .accessibilityIdentifier("activity.detail.error")
                     }
-                    if !current.state.isTerminal {
-                        if model.canStopActivityRun(current) {
-                            Button("Stop operation", systemImage: "stop.circle") { model.cancelActivityRun(current.id) }
-                        } else {
-                            Text(current.state == .cancellationRequested ? "Cancellation requested; waiting for the operation to stop." : "Stop is not available for this operation.")
-                                .font(.caption).foregroundStyle(.secondary)
-                        }
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("Result").font(.headline)
+                        Text(recorded(current.outcome)).font(.callout).textSelection(.enabled)
                     }
-                    detail("Stage", current.stage)
-                    LabeledContent("Trigger", value: current.trigger.rawValue.capitalized)
-                    LabeledContent("Category", value: current.category.rawValue.capitalized)
-                    LabeledContent("Started", value: current.startedAt.formatted(date: .abbreviated, time: .standard))
-                    LabeledContent("Elapsed", value: elapsed)
-                    detail("Provider", current.provider)
-                    detail("Execution", current.executionLocation)
                     detail("Data accessed", current.dataAccess)
                     detail("Destination", current.dataDestination)
-                    detail("Result", current.outcome)
-                    if [.failed, .interrupted, .outcomeUnknown].contains(current.state),
-                       current.acknowledgedAt == nil, !acknowledged {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Button("Mark reviewed") {
-                                model.acknowledgeActivityRun(current.id)
-                                if let updated = try? model.stores?.activityRun(id: current.id) {
-                                    acknowledged = updated.acknowledgedAt != nil
-                                }
-                            }
-                            Text("Removes this problem from Home attention. It does not retry or undo the operation.")
-                                .font(.caption).foregroundStyle(.secondary)
-                        }
+                    if let snapshot, group != nil,
+                       current.state == .failed || current.state == .interrupted,
+                       snapshot.representedRuns.count > 1 || current.occurrenceCount > 1 {
+                        earlierFailures(snapshot)
                     }
-                    if let reference = current.referenceID, let id = UUID(uuidString: reference) {
-                        if current.category == .capture {
-                            Button("Open saved capture") {
-                                do {
-                                    if let record = try model.stores?.captureRecord(id: id) { CaptureWindows.shared.showResult(record: record, model: model) }
-                                    else { error = "No saved capture is available for this operation yet." }
-                                } catch { self.error = "The saved capture could not be loaded." }
-                            }
-                        } else if current.category == .chat || current.category == .voice {
-                            Button("Open conversation") {
-                                do {
-                                    conversation = try model.stores?.conversation(id: id)
-                                    if conversation == nil { error = "No saved conversation is linked to this operation." }
-                                }
-                                catch { self.error = "The conversation could not be loaded." }
-                            }
-                        }
+                    DisclosureGroup("Details", isExpanded: $detailsExpanded) {
+                        technicalDetails
                     }
-                    DisclosureGroup("Technical identifiers") {
-                        if let parent = current.parentID { detail("Parent operation", parent.uuidString) }
-                        if let reference = current.referenceID { detail("Reference", reference) }
-                    }
-                    if let error { Text(error).font(.caption).foregroundStyle(.orange) }
-                    if !steps.isEmpty {
-                        Divider()
-                        Text("Stages").font(.headline)
-                        ForEach(steps) { step in
-                            HStack(alignment: .top) {
-                                Image(systemName: step.state.monitoringIcon).foregroundStyle(step.state.monitoringColor)
-                                Text(step.stage).frame(maxWidth: .infinity, alignment: .leading)
-                                Text(step.timestamp.formatted(date: .omitted, time: .standard)).foregroundStyle(.secondary)
-                            }.font(.caption)
-                        }
-                    }
-                    if !events.isEmpty {
-                        Divider()
-                        Text("Recorded events").font(.headline)
-                        ForEach(events) { event in
-                            DisclosureGroup {
-                                Text(event.timestamp.formatted(date: .abbreviated, time: .standard)).font(.caption).foregroundStyle(.secondary)
-                                if let json = event.detailJSON, !json.isEmpty {
-                                    DisclosureGroup("Technical details") {
-                                        Text(json).font(.caption.monospaced()).textSelection(.enabled)
-                                    }
-                                }
-                            } label: { Text(event.summary).font(.callout) }
-                        }
-                    }
-                }.textSelection(.enabled)
+                    .accessibilityIdentifier("activity.detail.details")
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
-            }
-        }.padding(24).frame(width: 570, height: 560)
-        .task(id: current.updatedAt) {
-            do {
-                events = try model.stores?.activityEvents(runID: run.id) ?? []
-                steps = try model.stores?.activityRunSteps(runID: run.id) ?? []
-            }
-            catch { self.error = "Recorded events could not be loaded." }
+            AttentionUndoBar()
+        }
+        .padding(20)
+        .frame(minWidth: 430, idealWidth: 500, maxWidth: 680,
+               minHeight: 300, idealHeight: 440, maxHeight: 760)
+        .accessibilityIdentifier("activity.detail.sheet")
+        .task(id: run.id) { load() }
+        .onChange(of: model.homeAttentionSnapshot) { load() }
+        .onReceive(NotificationCenter.default.publisher(for: .aitvarasMonitoringChanged)
+            .throttle(for: .milliseconds(400), scheduler: RunLoop.main, latest: true)) { _ in load() }
+        .onDisappear {
+            guard let destination = pendingDestination else { return }
+            pendingDestination = nil
+            // The sheet/embedded detail is gone before the saved destination
+            // changes selection or opens its existing capture window.
+            Task { @MainActor in model.openActivityDestination(destination) }
         }
     }
-    @ViewBuilder private func detail(_ title: String, _ value: String?) -> some View {
-        if let value, !value.isEmpty { LabeledContent(title, value: value) }
-        else { LabeledContent(title, value: "Not recorded").foregroundStyle(.secondary) }
+
+    private var mainActions: some View {
+        HStack(spacing: 10) {
+            // Retry belongs here once task 10 supplies a supported retry path.
+            ForEach(presentation.actions.indices, id: \.self) { index in
+                switch presentation.actions[index] {
+                case .open(let destination):
+                    Button(destination.title) { openDestination() }
+                        .accessibilityIdentifier("activity.detail.open")
+                case .stop:
+                    Button("Stop", systemImage: "stop.circle") { model.cancelActivityRun(current.id); load() }
+                        .accessibilityIdentifier("activity.detail.stop")
+                case .dismiss(let group):
+                    Button("Dismiss") { AttentionActions.dismiss(.problem(group), model: model); load() }
+                        .accessibilityIdentifier("activity.detail.dismiss")
+                }
+            }
+            Spacer(minLength: 0)
+        }
+        .controlSize(.small)
+    }
+
+    private var technicalDetails: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            detail("Status", current.state.monitoringTitle)
+            detail("Stage", current.stage)
+            detail("Trigger", current.trigger.rawValue.capitalized)
+            detail("Category", current.category.rawValue.capitalized)
+            detail("Started", current.startedAt.formatted(date: .abbreviated, time: .standard))
+            detail("Finished", current.finishedAt?.formatted(date: .abbreviated, time: .standard))
+            detail("Elapsed", elapsed)
+            detail("Provider", current.provider)
+            detail("Execution", current.executionLocation)
+            Text("Identifiers").font(.headline)
+            detail("Operation", current.id.uuidString)
+            detail("Parent operation", current.parentID?.uuidString)
+            detail("Reference", current.referenceID)
+            detail("Job", current.jobKey)
+            if let acknowledgedAt = current.acknowledgedAt {
+                detail("Reviewed", acknowledgedAt.formatted(date: .abbreviated, time: .standard))
+            }
+            Text("Stages").font(.headline)
+            if let snapshot, !snapshot.steps.isEmpty {
+                ForEach(snapshot.steps) { step in
+                    HStack(alignment: .top, spacing: 8) {
+                        Image(systemName: step.state.monitoringIcon).foregroundStyle(step.state.monitoringColor)
+                        Text(step.stage).frame(maxWidth: .infinity, alignment: .leading)
+                        Text(step.timestamp.formatted(date: .omitted, time: .standard)).foregroundStyle(.secondary)
+                    }.font(.caption)
+                }
+            } else { Text("No stages recorded.").font(.caption).foregroundStyle(.secondary) }
+            Text("Recorded events").font(.headline)
+            if let snapshot, !snapshot.events.isEmpty {
+                ForEach(snapshot.events) { event in
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(event.summary).font(.callout)
+                        Text(event.timestamp.formatted(date: .abbreviated, time: .standard)).font(.caption).foregroundStyle(.secondary)
+                        if let json = event.detailJSON, !json.isEmpty {
+                            Text(json).font(.caption.monospaced()).textSelection(.enabled)
+                        }
+                    }.frame(maxWidth: .infinity, alignment: .leading)
+                }
+            } else { Text("No events recorded.").font(.caption).foregroundStyle(.secondary) }
+        }
+        .padding(.top, 8).textSelection(.enabled)
+    }
+
+    @ViewBuilder private func earlierFailures(_ snapshot: ActivityRunDetailSnapshot) -> some View {
+        let earlier = snapshot.earlierFailures
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Latest run · \(snapshot.representedRuns.reduce(0) { $0 + $1.occurrenceCount }) recorded failures")
+                .font(.caption).foregroundStyle(.secondary)
+            if !earlier.isEmpty {
+                Text("Earlier failures").font(.headline)
+                ForEach(earlier.prefix(5)) { failure in
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(failure.startedAt.formatted(date: .abbreviated, time: .shortened)).font(.caption).foregroundStyle(.secondary)
+                        Text(recorded(failure.outcome)).font(.callout).lineLimit(2)
+                    }
+                }
+                if earlier.count > 5 {
+                    Text("\(earlier.count - 5) more earlier failures are represented in this group.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
+        }
+        .accessibilityIdentifier("activity.detail.earlierFailures")
+    }
+
+    private func load() {
+        guard let stores = model.stores else { loadError = "Operation details are not available yet."; return }
+        do { snapshot = try stores.activityRunDetailSnapshot(selection); loadError = nil }
+        catch { loadError = "Operation details could not be loaded; the last saved view may be stale." }
+    }
+
+    private func openDestination() {
+        actionError = nil
+        guard let stores = model.stores else { actionError = "The saved destination is not available yet."; return }
+        do {
+            guard let destination = try stores.activityDetailDestination(for: current) else {
+                actionError = current.category == .capture
+                    ? "No saved capture is available for this operation."
+                    : "No saved conversation is available for this operation."
+                return
+            }
+            switch destination {
+            case .capture: break
+            case .workspaceChat, .conversation:
+                guard !model.isWorkspaceSelectionBusy else {
+                    actionError = "Finish or stop the active response or voice conversation before changing chats."
+                    return
+                }
+            }
+            pendingDestination = destination
+            close()
+        } catch { actionError = "The saved destination could not be verified; this operation remains open." }
+    }
+
+    private func close() { if let onClose { onClose() } else { dismiss() } }
+    private func recorded(_ value: String?) -> String {
+        guard let value, !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return "Not recorded" }
+        return value
+    }
+    private func detail(_ title: String, _ value: String?) -> some View {
+        LabeledContent(title, value: recorded(value)).font(.callout).textSelection(.enabled)
     }
     private var elapsed: String {
         let seconds = max(0, Int((current.finishedAt ?? .now).timeIntervalSince(current.startedAt)))
         return seconds >= 60 ? "\(seconds / 60)m \(seconds % 60)s" : "\(seconds)s"
-    }
-}
-
-private struct SavedConversationView: View {
-    @Environment(AppModel.self) private var model
-    let conversation: Conversation
-    let onBack: () -> Void
-    @State private var messages: [StoredMessage] = []
-    @State private var error: String?
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Button("Back to Operation", systemImage: "chevron.left", action: onBack)
-            Text(conversation.title).font(.headline)
-            if let error { Text(error).foregroundStyle(.orange) }
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 16) {
-                    ForEach(messages) { message in
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(message.role.capitalized).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
-                            Text(message.content).textSelection(.enabled)
-                        }
-                    }
-                }.frame(maxWidth: .infinity, alignment: .leading)
-            }
-        }.frame(maxWidth: .infinity, maxHeight: .infinity)
-        .task {
-            do { messages = try model.stores?.messages(in: conversation.id) ?? [] }
-            catch { self.error = "Saved messages could not be loaded." }
-        }
     }
 }
 

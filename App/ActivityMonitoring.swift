@@ -45,6 +45,31 @@ struct ActivityMenuControls: View {
 }
 
 extension AppModel {
+    /// Called only after the operation sheet has disappeared. Reuse the
+    /// existing saved-chat and capture destinations, never an in-sheet copy.
+    func openActivityDestination(_ destination: ActivityDetailDestination) {
+        guard let stores else { return }
+        switch destination {
+        case .capture(let id):
+            do {
+                guard let record = try stores.captureRecord(id: id) else {
+                    throw ActivityRunDetailError.runNotFound
+                }
+                CaptureWindows.shared.showResult(record: record, model: self)
+            } catch { presentError(title: "The saved capture could not be opened", error: error) }
+        case .workspaceChat(let id):
+            openWorkspaceChat(id)
+            if selectedWorkspaceChatID == id {
+                NotificationCenter.default.post(name: .init("aitvaras.openWorkspaceChat"), object: nil)
+            }
+        case .conversation(let id):
+            openUnassignedConversation(id)
+            if selectedChatConversationID == id, selectedWorkspaceChatID == nil {
+                NotificationCenter.default.post(name: .init("aitvaras.openWorkspaceChat"), object: nil)
+            }
+        }
+    }
+
     /// Home and History merge the same durable rows and live decisions.
     var attentionCard: HomeAttentionCard {
         let incident = attentionDismissals.visibleMonitoringError.flatMap { message in

@@ -142,7 +142,7 @@ struct AttentionRowsView: View {
     @Environment(AppModel.self) private var model
     let rows: [HomeAttentionRow]
     @Binding var selection: SidebarItem
-    @State private var selectedRun: ActivityRun?
+    @State private var selectedDetail: ActivityRunDetailSelection?
     @State private var selectedHeldUpdate: HeldNotification?
     @State private var reviewAutomaticWork = false
 
@@ -154,7 +154,9 @@ struct AttentionRowsView: View {
                     .accessibilityIdentifier(row.accessibilityIdentifier)
             }
         }
-        .sheet(item: $selectedRun) { run in ActivityRunDetailView(run: run).environment(model) }
+        .sheet(item: $selectedDetail) { selection in
+            ActivityRunDetailView(run: selection.run, group: selection.group).environment(model)
+        }
         .sheet(item: $selectedHeldUpdate) { item in
             VStack(alignment: .leading, spacing: 16) {
                 HStack {
@@ -203,7 +205,7 @@ struct AttentionRowsView: View {
             }
         case .problem(let group):
             HStack(alignment: .center, spacing: 8) {
-                Button { selectedRun = group.latestRun } label: {
+                Button { selectedDetail = ActivityRunDetailSelection(group: group) } label: {
                     HomeAttentionSummary(title: group.latestRun.title, detail: group.latestRun.outcome,
                         icon: group.latestRun.state.monitoringIcon, tint: .orange,
                         count: group.totalCount > 1 ? group.totalCount : nil)
