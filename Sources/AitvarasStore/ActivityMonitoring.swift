@@ -34,6 +34,8 @@ extension Stores {
         }
     }
 
+    /// Legacy bounded list for the current monitoring UI. New attention
+    /// consumers share the complete activityAttentionSnapshot() projection.
     public func activityAttentionRuns(limit: Int = 100) throws -> [ActivityRun] {
         try db.queue.read { dbc in
             try ActivityRun.filter(["failed", "interrupted", "outcomeUnknown"].contains(Column("state")))

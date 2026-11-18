@@ -670,6 +670,16 @@ isolated profile with `AITVARAS_UI_TEST_MODE=1`. Use `--open-history` and
 --open-background-review` for the one-time review. No live provider invocation is
 needed. Cached native screenshots do not replace supervised installed-app checks.
 
+`ActivityAttentionTests` verifies the package's uncapped
+`Stores.activityAttentionSnapshot()` problem projection against persisted runs:
+exact-key recovery ordering, grouped occurrence counts, unknown outcomes,
+helper ownership, restart and queues beyond 100 failures. Reads preserve the
+original runs, acknowledgements, stages and events. Coded background problems
+remain manual-only while no producer records success for their problem key;
+service-check counters and successful jobs with other keys do not resolve them.
+This projection is the shared input for subsequent Home, bulk-dismissal and
+History attention integration; these package checks do not establish UI behaviour.
+
 Aitvaras is an always-on assistant with local models, OS permissions and
 personal state: exactly the kind of app that degenerates into "the developer
 clicks around and hopes". This document defines the layers that replace that,
