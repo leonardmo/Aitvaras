@@ -87,6 +87,12 @@ private struct AgentSetupContent: View {
                     Text(reason).font(.caption).foregroundStyle(.secondary)
                 }
             }.frame(maxWidth: .infinity, alignment: .leading)
+            // A server waiting for OAuth gets a visible action, not only a menu item.
+            if row.indicator == .needsSignIn, row.canSignIn {
+                Button("Sign in") { setup.signIn(row) }
+                    .disabled(setup.busy)
+                    .accessibilityIdentifier("agentSetup.signIn.\(row.name)")
+            }
             Menu {
                 if row.isApproved { Button("Revoke approval") { setup.edit(.revoke(name: row.name)) } }
                 if row.canApprove, let fingerprint = row.fingerprint {

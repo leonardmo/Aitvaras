@@ -4,9 +4,9 @@ import Testing
 @testable import AitvarasAgents
 
 @Suite(.timeLimit(.minutes(2))) struct AgentMCPLoginTests {
-    @Test func claudeLoginUsesTheProjectDirectoryAndNoRuntimeFlags() async throws {
+    @Test func claudeLoginUsesTheProjectDirectoryAndPassesOnlyTheServerApproval() async throws {
         let fixture = try AgentExecutableFixture(#"""
-        test "$1" = mcp && test "$2" = login && test "$3" = -- && test "$4" = docs && test "$#" = 4 || exit 9
+        test "$1" = --settings && test "$2" = '{"enabledMcpjsonServers":["docs"]}' && test "$3" = mcp && test "$4" = login && test "$5" = -- && test "$6" = docs && test "$#" = 6 || exit 9
         pwd > login.cwd
         printf 'Open https://auth.example.invalid/authorize?state=synthetic-browser-value\n' >&2
         printf 'Open https://auth.example.invalid/authorize?state=synthetic-browser-value\n'
