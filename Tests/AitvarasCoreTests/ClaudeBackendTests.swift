@@ -4,6 +4,88 @@ import Testing
 
 @Suite(.timeLimit(.minutes(2)))
 struct ClaudeBackendTests {
+    @Test(arguments: ["five_hour", "seven_day"])
+    func quotaUsesTheRejectedWindowAndClearsBetweenInputs(window: String) async throws {
+        let fixture = try BackendExecutableFixture(script: """
+claude_init()
+read()
+info={'status':'rejected','rateLimitType':'\(window)','resetsAt':2100000000,'unifiedWindows':{'five_hour':{'resetsAt':2000000000},'seven_day':{'resetsAt':1900000000}}}
+for _ in range(2): emit({'type':'rate_limit_event','rate_limit_info':info})
+emit({'type':'assistant','error':'rate_limit','message':{'role':'assistant','content':[]}})
+emit({'type':'result','uuid':'quota-result','is_error':True})
+read()
+emit({'type':'result','uuid':'next-result','is_error':False})
+done()
+""")
+        defer { fixture.remove() }
+        let backend = ClaudeBackend(executable: fixture.executable, environment: fixture.environment)
+        let run = try await backend.start(.init(directory: fixture.directory, model: "test"))
+        let input = AgentInput(text: "test")
+        try await run.send(input, willDeliver: {})
+        let events = try await collectTurn(run)
+        let reset = Date(timeIntervalSince1970: window == "five_hour" ? 2_000_000_000 : 1_900_000_000)
+        #expect(events.last?.kind == .turnEnded(.failed(.quota(resetsAt: reset))))
+        #expect(events.contains { $0.scope.inputID == input.id && $0.kind == .usageLimit(.init(status: .rejected, windowID: window, resetsAt: reset)) })
+        try await run.send(.init(text: "next"), willDeliver: {})
+        #expect(try await collectTurn(run).last?.kind == .turnEnded(.completed))
+        try fixture.assertComplete()
+        try await run.shutdown()
+    }
+
+    @Test(arguments: ["allowed", "warning", "future"])
+    func nonRejectionDoesNotFailTurn(status: String) async throws {
+        let fixture = try BackendExecutableFixture(script: """
+claude_init()
+read()
+emit({'type':'rate_limit_event','rate_limit_info':{'status':'\(status)','rateLimitType':'five_hour','resetsAt':2000000000}})
+emit({'type':'result','is_error':False})
+done()
+""")
+        defer { fixture.remove() }
+        let backend = ClaudeBackend(executable: fixture.executable, environment: fixture.environment)
+        let run = try await backend.start(.init(directory: fixture.directory, model: "test"))
+        try await run.send(.init(text: "test"), willDeliver: {})
+        #expect(try await collectTurn(run).last?.kind == .turnEnded(.completed))
+        try fixture.assertComplete()
+        try await run.shutdown()
+    }
+
+    @Test(arguments: [false, true])
+    func rejectedQuotaWithoutResetRespectsStop(interrupt: Bool) async throws {
+        let fixture = try BackendExecutableFixture(script: """
+claude_init()
+read()
+emit({'type':'rate_limit_event','rate_limit_info':{'status':'rejected'}})
+if \(interrupt ? "True" : "False"):
+    emit({'type':'stream_event','event':{'type':'content_block_delta','delta':{'text':'working'}}})
+    r=read()
+    emit({'type':'result','is_error':True,'terminal_reason':'aborted_streaming'})
+    emit({'type':'control_response','response':{'subtype':'success','request_id':r['request_id'],'response':{}}})
+else:
+    emit({'type':'assistant','error':'rate_limit','message':{'role':'assistant','content':[]}})
+    emit({'type':'result','is_error':True})
+done()
+""")
+        defer { fixture.remove() }
+        let backend = ClaudeBackend(executable: fixture.executable, environment: fixture.environment)
+        let run = try await backend.start(.init(directory: fixture.directory, model: "test"))
+        try await run.send(.init(text: "test"), willDeliver: {})
+        let events = try await collectTurn(run, interrupt: interrupt)
+        #expect(events.last?.kind == .turnEnded(interrupt ? .interrupted : .failed(.quota(resetsAt: nil))))
+        try fixture.assertComplete()
+        try await run.shutdown()
+    }
+
+    @Test func quotaEvidenceValidatesWindowAndReset() {
+        for info in ["{}", "{\"status\":\"rejected\",\"rateLimitType\":\"future\",\"resetsAt\":2000000000}",
+                     "{\"status\":\"rejected\",\"rateLimitType\":\"five_hour\",\"resetsAt\":-1}"] {
+            #expect(AgentUsageLimit.claude(JSONValue.parse(info)!).resetsAt == nil)
+        }
+        let info = JSONValue.parse(#"{"status":"rejected","rateLimitType":"seven_day","resetsAt":2000000000,"unifiedWindows":{"seven_day":{"resetsAt":"garbage"}}}"#)!
+        #expect(AgentUsageLimit.claude(info).resetsAt == Date(timeIntervalSince1970: 2_000_000_000))
+        #expect(AgentUsageLimit.claude(info).status == .rejected)
+    }
+
     @Test func defaultModelUsesTheOpusAliasAndMediumEffort() async throws {
         let fixture = try BackendExecutableFixture(script: #"""
 assert sys.argv[sys.argv.index('--model')+1]=='opus'

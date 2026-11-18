@@ -1470,3 +1470,28 @@ In a disposable profile with external integrations disabled:
 The App wrapper and composer key handling still require `make app`, project
 regeneration and the host's isolated-profile native interaction checks. Package
 builds do not compile the SwiftUI App target or prove IME/focus behavior.
+
+
+### Usage-reset continuation (D36, issue #27)
+
+The foundation is delivered before the issue #23 Stopped row. Production arming
+remains inactive until that row exposes both persisted choices and Cancel.
+Offline acceptance covers rejected versus allowed provider events, the exact
+hit-window reset, account/profile isolation, malformed/missing evidence, durable
+pending transitions and audit rollback, restart recovery, and fake-clock reset,
+polling and fallback deadlines. Fallback intervals yield elapsed minutes 5, 15,
+35, 65 and then every thirty minutes, bounded to twelve hours. Known-reset
+recovery expires at twenty-four hours. These tests use synthetic identities and
+fake provider executables; they never launch installed providers or spend usage.
+
+Later integration acceptance must additionally cover cancellation racing send,
+poll and wake; one dispatch across duplicate triggers; uncertain-delivery
+recovery without replay; exact same-session continuation; and suppression of the
+automatic user input through native reconciliation. Host-only checks require an
+isolated profile with external integrations disabled: launch/wake, quit and
+cancelled termination, AC/battery transitions, assertion release, and normal
+closed-lid sleep without an external display. The idle-sleep assertion does not
+wake the Mac. App compilation and real power behavior are not established by
+package tests. Part B also needs accessible row controls, light/dark and narrow
+layout review, and the automatic marker without a user bubble. Any live provider
+check uses Haiku or the smallest available Codex model.

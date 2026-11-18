@@ -21,6 +21,7 @@ actor ClaudeRun: AgentRun {
     private var acknowledged = false
     private var interrupted = false
     private var assistantFailure: AgentFailure?
+    private var usageFailure: AgentFailure?
     private var closed = false
     private var terminalFailure: AgentFailure?
     private var modeState: AgentModeState
@@ -112,7 +113,7 @@ actor ClaudeRun: AgentRun {
     func send(_ value: AgentInput, willDeliver: @escaping @Sendable () async throws -> Void) async throws {
         guard !closed, input == nil, !writing else { throw AgentFailure.invalidTransition }
         let frame = try userFrame(value)
-        input = value.id; acknowledged = false; interrupted = false; assistantFailure = nil; streamedThinking.removeAll(); streamTools.removeAll(); streamTexts.removeAll(); streamingMessageID = nil
+        input = value.id; acknowledged = false; interrupted = false; assistantFailure = nil; usageFailure = nil; streamedThinking.removeAll(); streamTools.removeAll(); streamTexts.removeAll(); streamingMessageID = nil
         do { try await willDeliver() } catch { input = nil; throw error }
         guard !closed, input == value.id, !interrupted else { throw AgentFailure.invalidTransition }
         emit(.delivery(.deliveryUnknown))
@@ -216,9 +217,19 @@ actor ClaudeRun: AgentRun {
             parseStream(value["event"] ?? .null)
         case "assistant", "user":
             acknowledge()
-            if let error = value["error"]?.stringValue { assistantFailure = error == "authentication_failed" ? .authRequired : .unknown }
+            if let error = value["error"]?.stringValue {
+                if error == "authentication_failed" { assistantFailure = .authRequired }
+                else if ["rate_limit", "rate_limit_error", "usage_limit_reached"].contains(error) {
+                    usageFailure = usageFailure ?? .quota(resetsAt: nil)
+                } else { assistantFailure = .unknown }
+            }
             await parseMessage(value)
-        case "rate_limit_event": emit(.rateLimits(claudeRateLimits(value["rate_limit_info"] ?? .null)))
+        case "rate_limit_event":
+            let info = value["rate_limit_info"] ?? .null
+            let evidence = AgentUsageLimit.claude(info)
+            emit(.rateLimits(claudeRateLimits(info)))
+            emit(.usageLimit(evidence))
+            if input != nil, evidence.status == .rejected { usageFailure = .quota(resetsAt: evidence.resetsAt) }
         case "result":
             if let nativeID = value["uuid"]?.stringValue, !seenResults.insert(nativeID).inserted { return }
             guard input != nil else { return }
@@ -231,7 +242,7 @@ actor ClaudeRun: AgentRun {
             // That error must not turn a user Stop into an unknown failure.
             let aborted = value["terminal_reason"]?.stringValue == "aborted_streaming"
             let outcome: AgentTurnOutcome = (interrupted || aborted)
-                ? .interrupted : assistantFailure.map { .failed($0) }
+                ? .interrupted : (assistantFailure == .authRequired ? assistantFailure : usageFailure ?? assistantFailure).map { .failed($0) }
                     ?? (value["is_error"]?.boolValue == false ? .completed : .failed(.unknown))
             let completed = [input!] + queue
             continuation.yield(.init(scope: .init(runID: id, session: session, inputID: input,
@@ -435,6 +446,6 @@ func claudeRateLimits(_ value: JSONValue) -> [AgentRateLimitWindow] {
     (value["unifiedWindows"]?.objectValue ?? [:]).sorted { $0.key < $1.key }.map { key, window in
         AgentRateLimitWindow(id: key, utilization: window["utilization"]?.doubleValue.map { min(1, max(0, $0)) },
             duration: key == "five_hour" ? 5 * 3600 : key == "seven_day" ? 7 * 86400 : nil,
-            resetsAt: window["resetsAt"]?.date)
+            resetsAt: window["resetsAt"]?.usageResetDate)
     }
 }

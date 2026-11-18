@@ -798,3 +798,46 @@ Host profiling and native interaction checks remain required for long chats.
 The existing vertical composer keeps its selection binding and draft-edit path.
 Shift/Option-Return replace the selection with a newline; plain Return accepts
 an open completion or sends. Marked text defers Return to the input method.
+
+
+## D36 — Continue once after a provider usage reset ✅ (2026-11-18)
+
+A usage-limit Stopped row offers “Continue automatically after reset”, on by
+default, plus Cancel and the next continuation/check time. “Keep Mac awake
+until it continues” defaults off. These controls belong to the row, not Settings.
+The saved row choice authorizes one bounded continuation through the existing
+policy/action coordinator; it never grants approval to subsequent tools.
+
+The continuation sends exactly “Continue where you stopped.” to the failed
+turn's native session and provider profile. Aitvaras shows “Continued automatically
+after the usage reset”, never a user bubble. Native-history reconciliation must
+recognize only the exact recorded automatic input, not matching user-authored text.
+Any valid new-message submission in that chat cancels the pending intent, even
+if subsequent provider startup fails. A later usage stop gets fresh defaults.
+
+Reset evidence comes first from the failing request's hit window, then the last
+relevant observation for that provider account/profile. Codex also polls its
+CLI's account/rateLimits/read every ten minutes while waiting, without a model
+prompt. With no usable reset, retry intervals are five, ten, twenty, then thirty
+minutes repeatedly: elapsed minutes 5, 15, 35, 65, and so on. This fallback ends
+after twelve hours; definite quota rejections may advance the same intent.
+Unknown delivery is never automatically replayed. A successful continuation
+consumes the intent; a later usage stop creates a new one.
+
+Pending work and both choices survive quit/sleep. Launch and NSWorkspace didWake
+re-evaluate it, requiring the choice still on, no intervening chat input, and a
+known reset less than twenty-four hours old. Missing/deleted profiles or changed
+native-session identity never redirect execution. Scheduled, cancelled, fired
+and expired transitions are durably audited with provenance and metadata only.
+
+An optional idle-system-sleep IOPMAssertion is held only while eligible work is
+pending and AC power is positively known, and is released on battery/unknown
+power, firing, cancellation, expiry or shutdown. It does not override normal
+closed-lid sleep without an external display, wake a sleeping Mac, or survive
+app termination. Wake alarms remain outside this feature (issue #28).
+
+Implementation is split at issue #23: Part A supplies persistence, provider
+mapping, scheduling logic and lifecycle infrastructure; production arming stays
+inactive until Part B provides the Stopped-row controls and marker. Offline
+fake-provider and clock tests spend no usage. Any later live check uses Haiku
+or the smallest available Codex model.

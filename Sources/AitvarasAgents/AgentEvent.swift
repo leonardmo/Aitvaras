@@ -153,6 +153,7 @@ public struct AgentEvent: Sendable, Equatable {
         case planUpdated(JSONValue)
         case usage(AgentUsage)
         case rateLimits([AgentRateLimitWindow])
+        case usageLimit(AgentUsageLimit)
         case turnEnded(AgentTurnOutcome)
         case unknown(name: String, payload: JSONValue)
     }
