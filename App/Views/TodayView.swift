@@ -9,7 +9,6 @@ struct TodayView: View {
     @Binding var selection: SidebarItem
     @State private var selectedRun: ActivityRun?
     @State private var reviewAutomaticWork = false
-    @State private var selectedHeldUpdate: HeldNotification?
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
@@ -28,17 +27,6 @@ struct TodayView: View {
         .navigationTitle("Home")
         .toolbar { Button("Refresh", systemImage: "arrow.clockwise") { model.refreshSidebandData(); model.refreshMonitoring() } }
         .sheet(item: $selectedRun) { run in ActivityRunDetailView(run: run).environment(model) }
-        .sheet(item: $selectedHeldUpdate) { item in
-            VStack(alignment: .leading, spacing: 16) {
-                HStack {
-                    Text(item.title).font(.headline)
-                    Spacer()
-                    Button("Close") { selectedHeldUpdate = nil }.keyboardShortcut(.escape)
-                }
-                ScrollView { Text(item.body).frame(maxWidth: .infinity, alignment: .leading).textSelection(.enabled) }
-            }
-            .padding(24).frame(minWidth: 360, idealWidth: 440, maxWidth: 600, minHeight: 180, idealHeight: 280, maxHeight: 500)
-        }
         .sheet(isPresented: $reviewAutomaticWork) {
             VStack(spacing: 0) {
                 HStack { Spacer(); Button("Close") { reviewAutomaticWork = false }.keyboardShortcut(.escape) }.padding()
@@ -47,27 +35,17 @@ struct TodayView: View {
         }
     }
 
-    private var attention: HomeAttentionCard {
-        let holder = model.attentionDismissals
-        let incident = holder.visibleMonitoringError.flatMap { message in
-            holder.monitoringIncidentID.map { HomeMonitoringIncident(id: $0, message: message) }
-        }
-        return HomeAttentionCard(snapshot: model.homeAttentionSnapshot ?? .init(),
-            approvals: model.chatModel?.approvalSuggestions ?? [], monitoring: incident)
-    }
-
     private var attentionCard: some View {
-        let card = attention
+        let card = model.attentionCard
         return HomeCard(title: "Needs your attention", icon: "hand.raised", tint: .orange,
                         actionTitle: card.canDismissAll ? "Dismiss all" : nil,
-                        actionIdentifier: "home.attention.dismissAll", action: dismissAllAttention) {
-            ForEach(card.visibleRows) { row in
-                attentionRow(row)
-                    .accessibilityElement(children: .contain)
-                    .accessibilityIdentifier(row.accessibilityIdentifier)
-            }
+                        actionIdentifier: "home.attention.dismissAll", action: { AttentionActions.dismissAll(model: model) }) {
+            AttentionRowsView(rows: card.visibleRows, selection: $selection)
             if card.overflowCount > 0 {
-                Button("\(card.overflowCount) more", systemImage: "arrow.right") { selection = .activity }
+                Button("\(card.overflowCount) more", systemImage: "arrow.right") {
+                    model.historyAttentionRequested = true
+                    selection = .activity
+                }
                     .font(.callout).buttonStyle(.plain).foregroundStyle(Color.accentColor)
                     .accessibilityLabel("\(card.overflowCount) more attention items in History")
                     .accessibilityIdentifier("home.attention.more")
@@ -78,138 +56,9 @@ struct TodayView: View {
                      : "Nothing needs your attention right now.")
                     .font(.callout).foregroundStyle(.secondary)
             }
-            if let receipt = model.attentionDismissals.receipt, model.attentionDismissals.canUndo {
-                HStack(spacing: 5) {
-                    Text("Dismissed \(receipt.itemCount) \(receipt.itemCount == 1 ? "item" : "items") ·")
-                        .foregroundStyle(.secondary)
-                    Button("Undo", action: undoAttentionDismissal)
-                        .buttonStyle(.plain).foregroundStyle(Color.accentColor)
-                        .keyboardShortcut("z", modifiers: .command)
-                        .accessibilityIdentifier("home.attention.undo")
-                    Spacer()
-                }
-                .font(.callout).padding(.top, 4)
-                .accessibilityElement(children: .contain)
-                .accessibilityIdentifier("home.attention.undoBar")
-            }
+            AttentionUndoBar()
         }
         .accessibilityIdentifier("home.attention.card")
-    }
-
-    @ViewBuilder private func attentionRow(_ row: HomeAttentionRow) -> some View {
-        switch row {
-        case .approval(let suggestion):
-            if let chat = model.chatModel { HomeAgentApprovalRow(suggestion: suggestion, chat: chat) }
-        case .suggestion(let suggestion):
-            VStack(alignment: .leading, spacing: 6) {
-                HomeAttentionSummary(title: suggestion.title, detail: suggestion.detail, icon: "hand.raised", tint: .accentColor)
-                HStack {
-                    Spacer()
-                    Button("Reject") { model.reject(suggestion) }
-                        .accessibilityIdentifier(row.accessibilityIdentifier + ".reject")
-                    Button("Approve") { model.accept(suggestion) }.buttonStyle(.borderedProminent)
-                        .accessibilityIdentifier(row.accessibilityIdentifier + ".approve")
-                }.controlSize(.small).disabled(model.hub == nil)
-            }
-        case .unsavedCapture(let run):
-            VStack(alignment: .leading, spacing: 6) {
-                HomeAttentionSummary(title: run.title, detail: "Capture needs to be saved", icon: "record.circle", tint: .orange)
-                HStack {
-                    Spacer()
-                    Button("Open") { selection = .capture }
-                        .accessibilityIdentifier(row.accessibilityIdentifier + ".open")
-                    Button("Save") { if canSaveCapture(run) { model.toggleCapture() } }
-                        .disabled(!canSaveCapture(run))
-                        .accessibilityIdentifier(row.accessibilityIdentifier + ".save")
-                }.controlSize(.small)
-            }
-        case .problem(let group):
-            HStack(alignment: .center, spacing: 8) {
-                Button { selectedRun = group.latestRun } label: {
-                    HomeAttentionSummary(title: group.latestRun.title, detail: group.latestRun.outcome,
-                        icon: group.latestRun.state.monitoringIcon, tint: .orange,
-                        count: group.totalCount > 1 ? group.totalCount : nil)
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("Open details: \(group.latestRun.title)")
-                .accessibilityValue("\(group.latestRun.state.monitoringTitle), \(group.totalCount) occurrences")
-                .accessibilityIdentifier(row.accessibilityIdentifier + ".open")
-                HomeAttentionDismissButton(row: row) { dismissAttention(row) }
-            }
-        case .monitoring(let incident):
-            HStack(alignment: .center, spacing: 8) {
-                HomeAttentionSummary(title: row.title, detail: incident.message, icon: "exclamationmark.shield", tint: .orange)
-                HomeAttentionDismissButton(row: row) { dismissAttention(row) }
-            }
-        case .heldUpdate(let item):
-            HStack(alignment: .center, spacing: 8) {
-                Button { selectedHeldUpdate = item } label: {
-                    HomeAttentionSummary(title: item.title, detail: item.body, icon: "tray", tint: .accentColor)
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("Open update: \(item.title)")
-                .accessibilityIdentifier(row.accessibilityIdentifier + ".open")
-                HomeAttentionDismissButton(row: row) { dismissAttention(row) }
-            }
-        case .automaticWork:
-            HStack(alignment: .center, spacing: 8) {
-                Button { reviewAutomaticWork = true } label: {
-                    HomeAttentionSummary(title: row.title,
-                        detail: "Choose which automatic features may run. They remain off until you save your choices.",
-                        icon: "clock.badge.checkmark", tint: .accentColor)
-                }
-                .buttonStyle(.plain)
-                .accessibilityIdentifier(row.accessibilityIdentifier + ".open")
-                HomeAttentionDismissButton(row: row) { dismissAttention(row) }
-            }
-        }
-    }
-
-    private func canSaveCapture(_ run: ActivityRun) -> Bool {
-        guard let capture = model.capture else { return false }
-        return capture.activityRunID == run.id && capture.canFinish
-            && !capture.isActive && !capture.isStarting && !capture.isFinishing
-    }
-
-    private func dismissAllAttention() {
-        performDismissal { try $0.dismissAllAttention() }
-    }
-
-    private func dismissAttention(_ row: HomeAttentionRow) {
-        switch row {
-        case .problem(let group):
-            performDismissal {
-                if group.latestRun.state == .outcomeUnknown {
-                    return try $0.dismissUnknownOutcome(id: group.latestRun.id)
-                }
-                return try $0.dismissAttentionProblemGroup(group)
-            }
-        case .heldUpdate(let item): performDismissal { try $0.dismissHeldUpdates(ids: [item.id]) }
-        case .automaticWork: performDismissal { try $0.deferAutomaticWorkPrompt() }
-        case .monitoring(let incident):
-            guard let stores = model.stores, model.attentionDismissals.monitoringIncidentID == incident.id else { return }
-            do { _ = try model.attentionDismissals.hideMonitoringIncident(using: stores) }
-            catch { model.presentError(title: "Warning could not be hidden", error: error) }
-        default: break // Approvals and at-risk captures never enter dismissal.
-        }
-    }
-
-    private func performDismissal(_ action: (Stores) throws -> AttentionDismissalReceipt) {
-        guard let stores = model.stores else { return }
-        do {
-            model.attentionDismissals.present(try action(stores))
-            model.refreshSidebandData()
-        } catch { model.presentError(title: "Attention could not be dismissed", error: error) }
-    }
-
-    private func undoAttentionDismissal() {
-        guard let stores = model.stores else { return }
-        do {
-            if let result = try model.attentionDismissals.undo(using: stores),
-               !result.runIDs.isEmpty || !result.heldUpdateIDs.isEmpty || result.restoredPrompt {
-                model.refreshSidebandData()
-            }
-        } catch { model.presentError(title: "Dismissal could not be undone", error: error) }
     }
 
     private var nowCard: some View {
@@ -285,6 +134,189 @@ struct TodayView: View {
         case 12..<18: "Good afternoon"
         default: "Good evening"
         }
+    }
+}
+
+/// The same decision, dismissal and navigation controls on Home and History.
+struct AttentionRowsView: View {
+    @Environment(AppModel.self) private var model
+    let rows: [HomeAttentionRow]
+    @Binding var selection: SidebarItem
+    @State private var selectedRun: ActivityRun?
+    @State private var selectedHeldUpdate: HeldNotification?
+    @State private var reviewAutomaticWork = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            ForEach(rows) { row in
+                attentionRow(row)
+                    .accessibilityElement(children: .contain)
+                    .accessibilityIdentifier(row.accessibilityIdentifier)
+            }
+        }
+        .sheet(item: $selectedRun) { run in ActivityRunDetailView(run: run).environment(model) }
+        .sheet(item: $selectedHeldUpdate) { item in
+            VStack(alignment: .leading, spacing: 16) {
+                HStack {
+                    Text(item.title).font(.headline)
+                    Spacer()
+                    Button("Close") { selectedHeldUpdate = nil }.keyboardShortcut(.escape)
+                }
+                ScrollView { Text(item.body).frame(maxWidth: .infinity, alignment: .leading).textSelection(.enabled) }
+            }
+            .padding(24).frame(minWidth: 360, idealWidth: 440, maxWidth: 600, minHeight: 180, idealHeight: 280, maxHeight: 500)
+        }
+        .sheet(isPresented: $reviewAutomaticWork) {
+            VStack(spacing: 0) {
+                HStack { Spacer(); Button("Close") { reviewAutomaticWork = false }.keyboardShortcut(.escape) }.padding()
+                BackgroundReviewView().environment(model)
+            }.frame(width: 650, height: 650)
+        }
+    }
+
+    @ViewBuilder private func attentionRow(_ row: HomeAttentionRow) -> some View {
+        switch row {
+        case .approval(let suggestion):
+            if let chat = model.chatModel { HomeAgentApprovalRow(suggestion: suggestion, chat: chat) }
+        case .suggestion(let suggestion):
+            VStack(alignment: .leading, spacing: 6) {
+                HomeAttentionSummary(title: suggestion.title, detail: suggestion.detail, icon: "hand.raised", tint: .accentColor)
+                HStack {
+                    Spacer()
+                    Button("Reject") { model.reject(suggestion) }
+                        .accessibilityIdentifier(row.accessibilityIdentifier + ".reject")
+                    Button("Approve") { model.accept(suggestion) }.buttonStyle(.borderedProminent)
+                        .accessibilityIdentifier(row.accessibilityIdentifier + ".approve")
+                }.controlSize(.small).disabled(model.hub == nil)
+            }
+        case .unsavedCapture(let run):
+            VStack(alignment: .leading, spacing: 6) {
+                HomeAttentionSummary(title: run.title, detail: "Capture needs to be saved", icon: "record.circle", tint: .orange)
+                HStack {
+                    Spacer()
+                    Button("Open") { selection = .capture }
+                        .accessibilityIdentifier(row.accessibilityIdentifier + ".open")
+                    Button("Save") { if canSaveCapture(run) { model.toggleCapture() } }
+                        .disabled(!canSaveCapture(run))
+                        .accessibilityIdentifier(row.accessibilityIdentifier + ".save")
+                }.controlSize(.small)
+            }
+        case .problem(let group):
+            HStack(alignment: .center, spacing: 8) {
+                Button { selectedRun = group.latestRun } label: {
+                    HomeAttentionSummary(title: group.latestRun.title, detail: group.latestRun.outcome,
+                        icon: group.latestRun.state.monitoringIcon, tint: .orange,
+                        count: group.totalCount > 1 ? group.totalCount : nil)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Open details: \(group.latestRun.title)")
+                .accessibilityValue("\(group.latestRun.state.monitoringTitle), \(group.totalCount) occurrences")
+                .accessibilityIdentifier(row.accessibilityIdentifier + ".open")
+                HomeAttentionDismissButton(row: row) { AttentionActions.dismiss(row, model: model) }
+            }
+        case .monitoring(let incident):
+            HStack(alignment: .center, spacing: 8) {
+                VStack(alignment: .leading, spacing: 6) {
+                    HomeAttentionSummary(title: row.title, detail: incident.message, icon: "exclamationmark.shield", tint: .orange)
+                    if model.stores == nil || model.recentActivityRuns.contains(where: { $0.category == .startup && $0.state == .failed }) {
+                        Button("Retry startup") { Task { await model.bootstrapIfNeeded() } }
+                            .controlSize(.small)
+                            .accessibilityIdentifier(row.accessibilityIdentifier + ".retryStartup")
+                    }
+                }
+                HomeAttentionDismissButton(row: row) { AttentionActions.dismiss(row, model: model) }
+            }
+        case .heldUpdate(let item):
+            HStack(alignment: .center, spacing: 8) {
+                Button { selectedHeldUpdate = item } label: {
+                    HomeAttentionSummary(title: item.title, detail: item.body, icon: "tray", tint: .accentColor)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Open update: \(item.title)")
+                .accessibilityIdentifier(row.accessibilityIdentifier + ".open")
+                HomeAttentionDismissButton(row: row) { AttentionActions.dismiss(row, model: model) }
+            }
+        case .automaticWork:
+            HStack(alignment: .center, spacing: 8) {
+                Button { reviewAutomaticWork = true } label: {
+                    HomeAttentionSummary(title: row.title,
+                        detail: "Choose which automatic features may run. They remain off until you save your choices.",
+                        icon: "clock.badge.checkmark", tint: .accentColor)
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier(row.accessibilityIdentifier + ".open")
+                HomeAttentionDismissButton(row: row) { AttentionActions.dismiss(row, model: model) }
+            }
+        }
+    }
+
+    private func canSaveCapture(_ run: ActivityRun) -> Bool {
+        guard let capture = model.capture else { return false }
+        return capture.activityRunID == run.id && capture.canFinish
+            && !capture.isActive && !capture.isStarting && !capture.isFinishing
+    }
+}
+
+struct AttentionUndoBar: View {
+    @Environment(AppModel.self) private var model
+    var body: some View {
+        if let receipt = model.attentionDismissals.receipt, model.attentionDismissals.canUndo {
+            HStack(spacing: 5) {
+                Text("Dismissed \(receipt.itemCount) \(receipt.itemCount == 1 ? "item" : "items") ·")
+                    .foregroundStyle(.secondary)
+                Button("Undo", action: { AttentionActions.undo(model: model) })
+                    .buttonStyle(.plain).foregroundStyle(Color.accentColor)
+                    .keyboardShortcut("z", modifiers: .command)
+                    .accessibilityIdentifier("home.attention.undo")
+                Spacer()
+            }
+            .font(.callout).padding(.top, 4)
+            .accessibilityElement(children: .contain)
+            .accessibilityIdentifier("home.attention.undoBar")
+        }
+    }
+}
+
+@MainActor enum AttentionActions {
+    static func dismissAll(model: AppModel) {
+        performDismissal(model: model) { try $0.dismissAllAttention() }
+    }
+
+    static func dismiss(_ row: HomeAttentionRow, model: AppModel) {
+        switch row {
+        case .problem(let group):
+            performDismissal(model: model) {
+                if group.latestRun.state == .outcomeUnknown {
+                    return try $0.dismissUnknownOutcome(id: group.latestRun.id)
+                }
+                return try $0.dismissAttentionProblemGroup(group)
+            }
+        case .heldUpdate(let item): performDismissal(model: model) { try $0.dismissHeldUpdates(ids: [item.id]) }
+        case .automaticWork: performDismissal(model: model) { try $0.deferAutomaticWorkPrompt() }
+        case .monitoring(let incident):
+            guard let stores = model.stores, model.attentionDismissals.monitoringIncidentID == incident.id else { return }
+            do { _ = try model.attentionDismissals.hideMonitoringIncident(using: stores) }
+            catch { model.presentError(title: "Warning could not be hidden", error: error) }
+        default: break // Approvals and at-risk captures never enter dismissal.
+        }
+    }
+
+    private static func performDismissal(model: AppModel, _ action: (Stores) throws -> AttentionDismissalReceipt) {
+        guard let stores = model.stores else { return }
+        do {
+            model.attentionDismissals.present(try action(stores))
+            model.refreshSidebandData()
+        } catch { model.presentError(title: "Attention could not be dismissed", error: error) }
+    }
+
+    static func undo(model: AppModel) {
+        guard let stores = model.stores else { return }
+        do {
+            if let result = try model.attentionDismissals.undo(using: stores),
+               !result.runIDs.isEmpty || !result.heldUpdateIDs.isEmpty || result.restoredPrompt {
+                model.refreshSidebandData()
+            }
+        } catch { model.presentError(title: "Dismissal could not be undone", error: error) }
     }
 }
 

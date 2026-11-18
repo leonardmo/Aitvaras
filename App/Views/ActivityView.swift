@@ -6,6 +6,7 @@ import AitvarasStore
 /// Filter and page the durable database, not the bounded home snapshot.
 struct ActivityView: View {
     @Environment(AppModel.self) private var model
+    @Binding var selection: SidebarItem
     @State private var roots: [ActivityRun] = []
     @State private var legacy: [ActivityEvent] = []
     @State private var serviceSummaries: [ServiceCheckSummary] = []
@@ -13,12 +14,8 @@ struct ActivityView: View {
     @State private var summaryOffset = 0
     @State private var moreSummaries = false
     @State private var summaryError: String?
-    @State private var search = ""
-    @State private var category: ActivityCategory?
-    @State private var state: ActivityRunState?
-    @State private var period = "all"
-    @State private var fromDate = Calendar.current.startOfDay(for: .now)
-    @State private var throughDate = Date.now
+    @State private var history = ActivityHistoryFilters()
+    @State private var attentionLimit = 50
     @State private var runOffset = 0
     @State private var legacyOffset = 0
     @State private var moreRuns = false
@@ -28,70 +25,128 @@ struct ActivityView: View {
     @State private var selectedEvent: ActivityEvent?
     private let pageSize = 50
 
+    init(selection: Binding<SidebarItem>, attentionRequested: Bool = false) {
+        _selection = selection
+        var initialFilters = ActivityHistoryFilters()
+        if attentionRequested { initialFilters.select(.attention) }
+        _history = State(initialValue: initialFilters)
+    }
+
     var body: some View {
-        VStack(spacing: 0) {
-            filters
-            Divider()
-            List {
-                if let loadingError {
-                    Section { Label(loadingError, systemImage: "exclamationmark.triangle").foregroundStyle(.orange) }
-                }
-                if roots.isEmpty && loadingError == nil {
-                    Section {
-                        Text(model.stores == nil ? "Starting; history is not available yet." : "No operations match these filters.").foregroundStyle(.secondary)
-                    }
-                }
-                if !roots.isEmpty {
-                    Text("Grouped by parent operation. Expanded groups include related work and recorded events.")
-                        .font(.caption).foregroundStyle(.secondary)
-                }
-                ForEach(days, id: \.self) { day in
-                    Section(day.formatted(date: .complete, time: .omitted)) {
-                        ForEach(roots.filter { Calendar.current.startOfDay(for: $0.startedAt) == day }) { run in
-                            RunHistoryGroup(run: run, selectedRun: $selectedRun, selectedEvent: $selectedEvent)
-                        }
-                    }
-                }
-                if moreRuns {
-                    Section { Button("Load more operations") { loadRuns(reset: false) } }
-                }
-                backgroundChecksSection
-                Section("Earlier activity · legacy entries") {
-                    Text("These historical events predate operation tracking. Their completion state is not inferred.")
-                        .font(.caption).foregroundStyle(.secondary)
-                    if category != nil || state != nil {
-                        Text("Clear category and state filters to include legacy entries, which do not have these fields.")
-                            .font(.caption).foregroundStyle(.secondary)
-                    } else {
-                        ForEach(legacy) { event in
-                            Button { selectedEvent = event } label: {
-                                VStack(alignment: .leading, spacing: 4) {
-                                    Text(event.summary).font(.callout)
-                                    Text(event.timestamp.formatted(date: .abbreviated, time: .shortened)).font(.caption2).foregroundStyle(.secondary)
-                                }.frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
-                            }.buttonStyle(.plain)
-                        }
-                        if legacy.isEmpty { Text("No matching legacy events.").font(.caption).foregroundStyle(.secondary) }
-                        if moreLegacy { Button("Load more legacy events") { loadLegacy(reset: false) } }
-                    }
-                }
+        Group {
+            if history.mode == .attention {
+                historyContent
+            } else {
+                historyContent.searchable(text: $history.search, prompt: "Search operations and earlier activity")
             }
         }
         .navigationTitle("History")
-        .searchable(text: $search, prompt: "Search operations and earlier activity")
         .toolbar { Button("Refresh", systemImage: "arrow.clockwise") { reload() } }
-        .task { reload() }
-        .onChange(of: search) { reload() }
-        .onChange(of: category) { reload() }
-        .onChange(of: state) { reload() }
-        .onChange(of: period) { reload() }
-        .onChange(of: fromDate) { if period == "custom" { reload() } }
-        .onChange(of: throughDate) { if period == "custom" { reload() } }
-        .onChange(of: checksExpanded) { if checksExpanded { loadSummaries(reset: true) } }
+        .task { applyAttentionRequest(); reload() }
+        .onChange(of: model.historyAttentionRequested) {
+            if model.historyAttentionRequested { applyAttentionRequest() }
+        }
+        .onChange(of: history) { reload() }
+        .onChange(of: checksExpanded) { if checksExpanded && history.mode == .all { loadSummaries(reset: true) } }
         .onReceive(NotificationCenter.default.publisher(for: .aitvarasMonitoringChanged)
             .throttle(for: .milliseconds(400), scheduler: RunLoop.main, latest: true)) { _ in reload(preserveDepth: true) }
         .sheet(item: $selectedRun) { run in ActivityRunDetailView(run: run).environment(model) }
         .sheet(item: $selectedEvent) { event in ProvenanceSheet(event: event).environment(model) }
+    }
+
+    private var historyContent: some View {
+        VStack(spacing: 0) {
+            filters
+            Divider()
+            if history.mode == .attention {
+                attentionList
+                if model.attentionDismissals.canUndo {
+                    Divider()
+                    AttentionUndoBar().padding(14)
+                }
+            } else { ordinaryList }
+        }
+    }
+
+    private var ordinaryList: some View {
+        List {
+            if let loadingError {
+                Section { Label(loadingError, systemImage: "exclamationmark.triangle").foregroundStyle(.orange) }
+            }
+            if roots.isEmpty && loadingError == nil {
+                Section {
+                    Text(model.stores == nil ? "Starting; history is not available yet." : "No operations match these filters.").foregroundStyle(.secondary)
+                }
+            }
+            if !roots.isEmpty {
+                Text("Grouped by parent operation. Expanded groups include related work and recorded events.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            ForEach(days, id: \.self) { day in
+                Section(day.formatted(date: .complete, time: .omitted)) {
+                    ForEach(roots.filter { Calendar.current.startOfDay(for: $0.startedAt) == day }) { run in
+                        RunHistoryGroup(run: run, selectedRun: $selectedRun, selectedEvent: $selectedEvent)
+                    }
+                }
+            }
+            if moreRuns {
+                Section { Button("Load more operations") { loadRuns(reset: false) } }
+            }
+            backgroundChecksSection
+            Section("Earlier activity · legacy entries") {
+                Text("These historical events predate operation tracking. Their completion state is not inferred.")
+                    .font(.caption).foregroundStyle(.secondary)
+                if history.category != nil || history.state != nil {
+                    Text("Clear category and state filters to include legacy entries, which do not have these fields.")
+                        .font(.caption).foregroundStyle(.secondary)
+                } else {
+                    ForEach(legacy) { event in
+                        Button { selectedEvent = event } label: {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(event.summary).font(.callout)
+                                Text(event.timestamp.formatted(date: .abbreviated, time: .shortened)).font(.caption2).foregroundStyle(.secondary)
+                            }.frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
+                        }.buttonStyle(.plain)
+                    }
+                    if legacy.isEmpty { Text("No matching legacy events.").font(.caption).foregroundStyle(.secondary) }
+                    if moreLegacy { Button("Load more legacy events") { loadLegacy(reset: false) } }
+                }
+            }
+        }
+    }
+
+    private var attentionList: some View {
+        let card = model.attentionCard
+        let page = AttentionHistoryPage(card: card, limit: attentionLimit)
+        return List {
+            Section {
+                if page.rows.isEmpty {
+                    Text(model.homeAttentionSnapshot == nil
+                         ? "Starting; attention items are not available yet."
+                         : "Nothing needs your attention right now.")
+                        .foregroundStyle(.secondary)
+                }
+                AttentionRowsView(rows: page.rows, selection: $selection)
+                if page.hasMore {
+                    Button("Load more attention items") { attentionLimit += pageSize }
+                        .accessibilityIdentifier("history.attention.more")
+                }
+            } header: {
+                HStack {
+                    Text("Needs attention")
+                    Spacer()
+                    if card.canDismissAll {
+                        Button("Dismiss all") { AttentionActions.dismissAll(model: model) }
+                            .controlSize(.small).accessibilityIdentifier("history.attention.dismissAll")
+                    }
+                }
+            }
+        }
+        .accessibilityIdentifier("history.attention.list")
+    }
+
+    private func applyAttentionRequest() {
+        history.consumeAttentionRequest(&model.historyAttentionRequested)
     }
 
     private var backgroundChecksSection: some View {
@@ -127,47 +182,60 @@ struct ActivityView: View {
 
     private var filters: some View {
         VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Picker("Category", selection: $category) {
-                    Text("All categories").tag(Optional<ActivityCategory>.none)
-                    ForEach(ActivityCategory.allCases, id: \.self) { value in Text(value.rawValue.capitalized).tag(Optional(value)) }
-                }
-                Picker("State", selection: $state) {
-                    Text("All states").tag(Optional<ActivityRunState>.none)
-                    ForEach(ActivityRunState.allCases, id: \.self) { value in Text(value.monitoringTitle).tag(Optional(value)) }
-                }
-                Picker("Date", selection: $period) {
-                    Text("All dates").tag("all")
-                    Text("Today").tag("today")
-                    Text("Last 7 days").tag("week")
-                    Text("Last 30 days").tag("month")
-                    Text("Date range").tag("custom")
-                }
+            Picker("History", selection: Binding(get: { history.mode }, set: { history.select($0) })) {
+                Text("All history").tag(ActivityHistoryFilters.Mode.all)
+                Text("Needs attention").tag(ActivityHistoryFilters.Mode.attention)
             }
-            if period == "custom" {
+            .pickerStyle(.segmented).frame(maxWidth: 350)
+            .accessibilityIdentifier("history.filter")
+            if history.mode == .all {
                 HStack {
-                    DatePicker("From", selection: $fromDate, displayedComponents: .date)
-                    DatePicker("Through", selection: $throughDate, in: fromDate..., displayedComponents: .date)
+                    Picker("Category", selection: $history.category) {
+                        Text("All categories").tag(Optional<ActivityCategory>.none)
+                        ForEach(ActivityCategory.allCases, id: \.self) { value in Text(value.rawValue.capitalized).tag(Optional(value)) }
+                    }
+                    Picker("State", selection: $history.state) {
+                        Text("All states").tag(Optional<ActivityRunState>.none)
+                        ForEach(ActivityRunState.allCases, id: \.self) { value in Text(value.monitoringTitle).tag(Optional(value)) }
+                    }
+                    Picker("Date", selection: $history.period) {
+                        Text("All dates").tag("all")
+                        Text("Today").tag("today")
+                        Text("Last 7 days").tag("week")
+                        Text("Last 30 days").tag("month")
+                        Text("Date range").tag("custom")
+                    }
+                }
+                if history.period == "custom" {
+                    HStack {
+                        DatePicker("From", selection: $history.fromDate, displayedComponents: .date)
+                        DatePicker("Through", selection: $history.throughDate, in: history.fromDate..., displayedComponents: .date)
+                    }
                 }
             }
         }.padding(14)
     }
     private var days: [Date] { Array(Set(roots.map { Calendar.current.startOfDay(for: $0.startedAt) })).sorted(by: >) }
     private var since: Date? {
-        switch period {
+        switch history.period {
         case "today": Calendar.current.startOfDay(for: .now)
         case "week": Calendar.current.date(byAdding: .day, value: -7, to: .now)
         case "month": Calendar.current.date(byAdding: .day, value: -30, to: .now)
-        case "custom": Calendar.current.startOfDay(for: fromDate)
+        case "custom": Calendar.current.startOfDay(for: history.fromDate)
         default: nil
         }
     }
     private var until: Date? {
-        guard period == "custom" else { return nil }
-        return Calendar.current.date(byAdding: .day, value: 1, to: Calendar.current.startOfDay(for: max(fromDate, throughDate)))?.addingTimeInterval(-0.001)
+        guard history.period == "custom" else { return nil }
+        return Calendar.current.date(byAdding: .day, value: 1, to: Calendar.current.startOfDay(for: max(history.fromDate, history.throughDate)))?.addingTimeInterval(-0.001)
     }
     private func reload(preserveDepth: Bool = false) {
         loadingError = nil
+        if history.mode == .attention {
+            if !preserveDepth { attentionLimit = pageSize }
+            model.refreshMonitoring()
+            return
+        }
         loadRuns(reset: true, limit: preserveDepth ? max(pageSize, runOffset) : pageSize)
         loadLegacy(reset: true, limit: preserveDepth ? max(pageSize, legacyOffset) : pageSize)
         if checksExpanded { loadSummaries(reset: true, limit: preserveDepth ? max(pageSize, summaryOffset) : pageSize) }
@@ -176,7 +244,7 @@ struct ActivityView: View {
         guard let stores = model.stores else { return }
         do {
             let offset = reset ? 0 : runOffset
-            let page = try stores.activityRuns(filter: ActivityRunFilter(category: category, state: state, search: search, since: since, until: until), limit: limit, offset: offset)
+            let page = try stores.activityRuns(filter: ActivityRunFilter(category: history.category, state: history.state, search: history.search, since: since, until: until), limit: limit, offset: offset)
             var result = reset ? [] : roots
             for entry in page {
                 var root = entry
@@ -198,7 +266,7 @@ struct ActivityView: View {
         guard let stores = model.stores else { return }
         do {
             let offset = reset ? 0 : legacyOffset
-            let page = try stores.legacyActivity(limit: limit, offset: offset, search: search, since: since, until: until)
+            let page = try stores.legacyActivity(limit: limit, offset: offset, search: history.search, since: since, until: until)
             legacy = reset ? page : legacy + page
             legacyOffset = offset + page.count
             moreLegacy = page.count == limit

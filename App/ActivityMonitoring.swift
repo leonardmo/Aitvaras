@@ -45,6 +45,15 @@ struct ActivityMenuControls: View {
 }
 
 extension AppModel {
+    /// Home and History merge the same durable rows and live decisions.
+    var attentionCard: HomeAttentionCard {
+        let incident = attentionDismissals.visibleMonitoringError.flatMap { message in
+            attentionDismissals.monitoringIncidentID.map { HomeMonitoringIncident(id: $0, message: message) }
+        }
+        return HomeAttentionCard(snapshot: homeAttentionSnapshot ?? .init(),
+            approvals: chatModel?.approvalSuggestions ?? [], monitoring: incident)
+    }
+
     var topLevelCurrentActivity: [ActivityRun] {
         let activeIDs = Set(currentActivityRuns.map(\.id))
         return currentActivityRuns.filter { $0.parentID == nil || !activeIDs.contains($0.parentID!) }

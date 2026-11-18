@@ -85,6 +85,7 @@ final class AppModel {
     var currentActivityRuns: [ActivityRun] = []
     var recentActivityRuns: [ActivityRun] = []
     var homeAttentionSnapshot: HomeAttentionSnapshot?
+    var historyAttentionRequested = false
     var monitoredServices: [ServiceStatus] = []
     var backgroundPolicy = BackgroundWorkPolicy()
     let attentionDismissals = AttentionDismissalHolder()
