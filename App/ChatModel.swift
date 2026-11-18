@@ -15,6 +15,9 @@ final class ChatModel {
     let conversationActions: AgentConversationActions
     private(set) var changes: ChangesState?
     private(set) var gitBusy = false
+    private(set) var branchStatus: GitBranchStatus?
+    private(set) var pushDisabledReason: String? = "Refresh branch status first."
+    private(set) var gitError: String?
     private(set) var canDiscardChanges = false
     private let claudeDefaultDirectory: URL
     private let profileBackends: AgentProfileBackends?
@@ -527,7 +530,7 @@ final class ChatModel {
         // View changes cancel a browser flow and invalidate its automatic send.
         if loginToken != nil { cancelSignIn() }
         if let pending = try? stores.pendingSend(), pending.session.chatID != id { invalidatePending() }
-        state = id.flatMap { sidebarStates[$0] }; error = nil; authProvider = nil; changes = nil; canDiscardChanges = false
+        state = id.flatMap { sidebarStates[$0] }; error = nil; authProvider = nil; changes = nil; canDiscardChanges = false; branchStatus = nil; pushDisabledReason = "Refresh branch status first."; gitError = nil
         do {
             let saved = try stores.value(forKey: id.map { "agent.provider.\($0.uuidString)" } ?? "agent.lastProvider")
             selection.select(id, provider: saved.flatMap(AgentProvider.init(rawValue:)) ?? .local)
@@ -610,42 +613,72 @@ final class ChatModel {
         AitvarasPaths.stateDirectory.appendingPathComponent("AgentChats/\(id.uuidString)", isDirectory: true)
     }
 
-    func refreshChanges() async {
-        guard let owner = chatID, let directory = projectDirectory, !gitBusy else { return }
+    func refreshChanges(allowWhileBusy: Bool = false) async {
+        guard let owner = chatID, let directory = projectDirectory, !gitBusy || allowWhileBusy else { return }
         do {
-            let owned = try await gitActions.mapping(chatID: owner)
             let value = try await gitActions.changes(in: directory)
-            guard chatID == owner, projectDirectory == directory else { return }
-            changes = value; canDiscardChanges = owned?.worktreePath == value.directory.path
-            if error == "Changes could not be refreshed." { error = nil }
+            let branch = try await gitActions.branchStatus(at: value.directory)
+            guard chatID == owner, projectDirectory == directory, !gitBusy || allowWhileBusy else { return }
+            changes = value; branchStatus = branch
+            do {
+                let owned = try await gitActions.mapping(chatID: owner)
+                guard chatID == owner, projectDirectory == directory, !gitBusy || allowWhileBusy else { return }
+                canDiscardChanges = owned?.worktreePath == value.directory.path
+                pushDisabledReason = branch.pushRefusal(ownedBranch: owned.map { _ in "aitvaras/chat-\(owner.uuidString.lowercased())" })?.message
+            } catch is CancellationError { throw CancellationError() }
+            catch {
+                guard chatID == owner, projectDirectory == directory, !gitBusy || allowWhileBusy else { return }
+                canDiscardChanges = false
+                pushDisabledReason = (branch.detached ? AgentGitError.detachedHEAD : (error as? AgentGitError) ?? .ownershipConflict).message
+            }
+            if gitError == "Changes could not be refreshed." { gitError = nil }
         } catch is CancellationError { return }
         catch {
             guard chatID == owner else { return }
             // Keep the last review visible on a failed refresh; never mistake
             // an unavailable git command for a clean checkout.
-            if changes != nil, self.error == nil { self.error = "Changes could not be refreshed." }
+            if changes != nil, gitError == nil { gitError = "Changes could not be refreshed." }
+            branchStatus = nil; pushDisabledReason = "Refresh branch status first."
             canDiscardChanges = false
         }
     }
-    func applyGitChanges(_ expected: ChangesState, owner: UUID, message: String?) async {
+    func applyGitChanges(_ expected: ChangesState, owner: UUID, message: String?, pushAfterCommit: Bool = false, expectedBranch: String? = nil) async {
         guard chatID == owner, !isBusy, !gitBusy else { return }
         gitBusy = true
+        var committed = false
         do {
             if let message {
                 try await gitActions.commit(chatID: owner, expected: expected, message: message, confirmed: true)
+                committed = true
+                if chatID == owner { await refreshChanges(allowWhileBusy: true) }
+                if pushAfterCommit {
+                    try await gitActions.push(chatID: owner, confirmed: true, expectedDirectory: expected.directory, expectedBranch: expectedBranch)
+                }
             } else {
                 try await gitActions.discard(chatID: owner, expected: expected, confirmed: true)
             }
-            if chatID == owner { error = nil }
+            if chatID == owner { gitError = nil }
         } catch {
             if chatID == owner {
-                self.error = error as? AgentGitError == .staleChanges
-                    ? "Files changed. Review the refreshed diff and try again."
-                    : "Git operation failed. Review the files and try again."
+                let reason = (error as? AgentGitError)?.message ?? "Git operation failed. Refresh and try again."
+                gitError = committed ? "Committed locally. " + reason : reason
             }
         }
         gitBusy = false
-        await refreshChanges()
+        if chatID == owner { await refreshChanges() }
+    }
+
+    func pushGitBranch(owner: UUID, directory: URL, branch: String) async {
+        guard chatID == owner, !isBusy, !gitBusy else { return }
+        gitBusy = true
+        do {
+            try await gitActions.push(chatID: owner, confirmed: true, expectedDirectory: directory, expectedBranch: branch)
+            if chatID == owner { gitError = nil }
+        } catch {
+            if chatID == owner { gitError = (error as? AgentGitError)?.message ?? "Push failed. Refresh and try again." }
+        }
+        gitBusy = false
+        if chatID == owner { await refreshChanges() }
     }
 
     /// No browser or user message is initiated by opening Chat or Settings.

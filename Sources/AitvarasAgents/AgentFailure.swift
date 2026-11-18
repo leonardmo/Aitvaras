@@ -53,6 +53,8 @@ public enum AgentFailure: Error, Sendable, Equatable {
         }
         if let failure = error as? AgentGitError {
             switch failure {
+            case .authenticationRequired, .rejectedNonFastForward, .noRemote, .network, .timedOut,
+                 .detachedHEAD, .defaultBranch, .unsafeBranch: return failure.message
             case .commandFailed: return "The project’s Git operation failed."
             case .invalidOutput: return "The project’s Git status could not be read."
             case .notRepository: return "The project’s Git repository is unavailable."

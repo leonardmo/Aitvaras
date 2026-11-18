@@ -410,6 +410,23 @@ Commit and confirmed Discard pass the autonomy policy and metadata-only activity
 audit. Discard clears reviewed changes only inside the selected owned worktree;
 it never force-removes a worktree or branch. Ordinary checkouts allow explicit
 Commit, with the user's message and native git hooks, without added attribution.
+The Git panel also shows the current branch, upstream and locally known
+ahead/behind counts (refresh does not fetch). Explicit Push and Commit and push
+require a visible outbound confirmation under D13 and the Git autonomy policy.
+Push only sends the current branch to the same name on origin, setting upstream;
+force, refspec-like branch names and arbitrary refspecs are unavailable. Detached HEAD and the origin default
+branch are refused (origin/HEAD, falling back to existing origin/main or
+origin/master). Owned worktrees may push only their chat's recorded
+`aitvaras/chat-…` branch; ordinary checkouts may push their current non-default
+branch. Ownership and branch are rechecked after authorization, and pushes share
+the coordinator's serialization. Native hooks and configured credential helpers
+run normally: push inherits HOME/PATH and credential-helper variables, allowing
+only GIT_ASKPASS among inherited GIT_* variables, and disables terminal prompts.
+Repository/config/transport overrides stay stripped. Push has a 120-second limit,
+never retries or forces a rejection, and reports fixed error kinds. Remote URLs,
+credentials, paths, file contents and commit messages never enter Git activity
+payloads; branch UI retains only the remote host. A failed push after a successful
+commit preserves the local commit for a later explicit Push.
 
 Local chat now follows D33: sandboxed opencode with Ollama, with the tool-free
 AgentLoop adapter used only when opencode is not installed. The former

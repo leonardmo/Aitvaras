@@ -3,6 +3,49 @@ import Foundation
 public enum AgentGitError: Error, Sendable, Equatable {
     case commandFailed, invalidOutput, notRepository, ownershipConflict, creationFailed
     case staleChanges, busy, confirmationRequired, emptyMessage, noChanges
+    case authenticationRequired, rejectedNonFastForward, noRemote, network, timedOut
+    case detachedHEAD, defaultBranch, unsafeBranch
+
+    public var message: String {
+        switch self {
+        case .authenticationRequired: "Sign in with your Git credential helper, then try again."
+        case .rejectedNonFastForward: "Pull or rebase before pushing again."
+        case .noRemote: "Configure an origin remote before pushing."
+        case .network: "Could not reach the Git remote. Try again."
+        case .timedOut: "Push timed out. Check the remote before trying again."
+        case .detachedHEAD: "Switch to a branch before pushing."
+        case .defaultBranch: "Switch off the default branch before pushing."
+        case .unsafeBranch: "Rename this branch before pushing."
+        case .ownershipConflict: "This branch does not belong to this chat."
+        case .staleChanges: "Files changed. Review the refreshed diff and try again."
+        case .busy: "A Git operation is already running."
+        case .confirmationRequired: "Confirm this Git operation first."
+        case .emptyMessage: "Enter a commit message."
+        case .noChanges: "There are no changes to commit."
+        default: "Git operation failed. Refresh and try again."
+        }
+    }
+}
+
+/// Remote URLs are transient process output; only a host may enter UI state.
+public struct GitBranchStatus: Sendable, Equatable {
+    public let branch: String
+    public let detached: Bool
+    public let upstream: String?
+    public let ahead: Int
+    public let behind: Int
+    public let remoteHost: String?
+    public let isDefaultBranch: Bool
+    public let hasRemote: Bool
+
+    public func pushRefusal(ownedBranch: String? = nil) -> AgentGitError? {
+        if detached { return .detachedHEAD }
+        if isDefaultBranch { return .defaultBranch }
+        if branch.hasPrefix("+") || branch.hasPrefix("-") || branch.hasPrefix("refs/") || branch.contains(":") { return .unsafeBranch }
+        if let ownedBranch, branch != ownedBranch { return .ownershipConflict }
+        if !hasRemote { return .noRemote }
+        return nil
+    }
 }
 
 public struct AgentFileChange: Identifiable, Sendable, Equatable {
