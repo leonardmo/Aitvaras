@@ -62,7 +62,11 @@ extension Stores {
     public static let automaticWorkPromptDeferredKey = "home.automaticWorkPromptDeferred"
 
     public func automaticWorkPromptDeferred() throws -> Bool {
-        try db.queue.read { try AttentionSetting.fetchOne($0, key: Self.automaticWorkPromptDeferredKey) != nil }
+        try db.queue.read { try Self.automaticWorkPromptDeferred(in: $0) }
+    }
+
+    static func automaticWorkPromptDeferred(in db: Database) throws -> Bool {
+        try AttentionSetting.fetchOne(db, key: Self.automaticWorkPromptDeferredKey) != nil
     }
 
     /// The represented records are a click-time snapshot. A newer occurrence
@@ -222,7 +226,7 @@ extension Stores {
         return receipt
     }
 
-    private static func attentionBackgroundPolicy(in db: Database) throws -> BackgroundWorkPolicy {
+    static func attentionBackgroundPolicy(in db: Database) throws -> BackgroundWorkPolicy {
         guard let setting = try AttentionSetting.fetchOne(db, key: "backgroundWorkPolicy.v1") else { return BackgroundWorkPolicy() }
         let policy = try JSONDecoder().decode(BackgroundWorkPolicy.self, from: Data(setting.value.utf8))
         guard policy.version == BackgroundWorkPolicy.currentVersion else { throw ActivityMonitoringError.unsupportedPolicyVersion }

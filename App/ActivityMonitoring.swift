@@ -73,6 +73,7 @@ extension AppModel {
                 .sorted { $0.startedAt > $1.startedAt }
             monitoredServices = try stores.serviceStatuses()
             backgroundPolicy = try stores.backgroundWorkPolicy()
+            homeAttentionSnapshot = try stores.homeAttentionSnapshot()
             monitoringReady = true
             monitoringError = activityReporter?.failureMessage
             if monitoringError != nil, !monitoringFailureHandled {
