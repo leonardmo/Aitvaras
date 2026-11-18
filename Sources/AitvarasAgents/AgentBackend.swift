@@ -122,6 +122,8 @@ public protocol AgentBackend: Actor {
     func status() async throws -> AgentStatus
     /// Browser URLs are transient, never transcript or Activity content.
     func signIn(onBrowserURL: @escaping @Sendable (URL) async -> Void) async throws
+    func rateLimits() async throws -> [AgentRateLimitWindow]
+    func rateLimitUpdates() async throws -> AsyncStream<[AgentRateLimitWindow]>
     func models() async throws -> [AgentModel]
     func commands(directory: URL) async throws -> [AgentCommand]
     func commands(directory: URL, projectID: UUID?) async throws -> [AgentCommand]
@@ -139,6 +141,8 @@ public protocol AgentBackend: Actor {
 }
 
 extension AgentBackend {
+    public func rateLimits() async throws -> [AgentRateLimitWindow] { throw AgentFailure.unsupported }
+    public func rateLimitUpdates() async throws -> AsyncStream<[AgentRateLimitWindow]> { throw AgentFailure.unsupported }
     public func nativeSessions(folder: URL?, cursor: String?, archived: Bool) async throws -> AgentPage<AgentSessionSummary> {
         guard let folder, !archived else { throw AgentFailure.unsupported }
         return try await listSessions(folder: folder, cursor: cursor)

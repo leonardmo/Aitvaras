@@ -1484,6 +1484,14 @@ polling and fallback deadlines. Fallback intervals yield elapsed minutes 5, 15,
 recovery expires at twenty-four hours. These tests use synthetic identities and
 fake provider executables; they never launch installed providers or spend usage.
 
+`CodexBackendTests` covers typed RPC/turn quota failures, hit-window selection,
+idle account updates and non-disconnecting polling timeouts.
+`AgentAutoContinueStoreTests` covers the additive migration, scoped reset cache,
+choices, claims, delivery evidence, input cancellation and atomic activity audit.
+`AgentUsageResetResolverTests` and `AgentAutoContinueScheduleTests` use a manual
+clock for source precedence, scope isolation, retry intervals and cutoff boundaries.
+These are dormant foundations; provider dispatch and row controls are separate work.
+
 Later integration acceptance must additionally cover cancellation racing send,
 poll and wake; one dispatch across duplicate triggers; uncertain-delivery
 recovery without replay; exact same-session continuation; and suppression of the

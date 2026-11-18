@@ -19,6 +19,31 @@ public struct AgentUsageLimit: Sendable, Equatable {
             ?? (window == nil ? nil : value["resetsAt"]?.usageResetDate)
         return .init(status: status, windowID: window, resetsAt: reset)
     }
+
+    func resolving(windows: [AgentRateLimitWindow]) -> Self {
+        let exhausted = windows.filter { $0.utilization == 1 }
+        let window = windowID.flatMap { id in windows.first { $0.id == id } }
+            ?? (windowID == nil && exhausted.count == 1 ? exhausted.first : nil)
+        return .init(status: status, windowID: windowID ?? window?.id, resetsAt: resetsAt ?? window?.resetsAt)
+    }
+
+    /// Only a typed usage error proves quota exhaustion; HTTP 429 alone does not.
+    static func codex(_ error: JSONValue, windows: [AgentRateLimitWindow] = []) -> Self? {
+        let data = error["data"] ?? error
+        let info = data["codexErrorInfo"] ?? error["codexErrorInfo"]
+        guard info?.stringValue == "usageLimitExceeded"
+            || data["type"]?.stringValue == "usage_limit_reached"
+            || data["code"]?.stringValue == "usage_limit_reached" else { return nil }
+        let exhausted = windows.filter { $0.utilization == 1 }
+        let name = data["rateLimitType"]?.stringValue
+        let limitID = data["limitId"]?.stringValue ?? "codex"
+        let explicitID = name.flatMap { ["primary", "secondary"].contains($0) ? limitID + "." + $0 : nil }
+        let window = explicitID.flatMap { id in windows.first { $0.id == id } }
+            ?? (explicitID == nil && exhausted.count == 1 ? exhausted.first : nil)
+        return .init(status: .rejected, windowID: explicitID ?? window?.id,
+                     resetsAt: data["resetsAt"]?.usageResetDate ?? window?.resetsAt)
+    }
+
 }
 
 extension JSONValue {
@@ -28,4 +53,9 @@ extension JSONValue {
               seconds < 253_402_300_800 else { return nil }
         return Date(timeIntervalSince1970: seconds)
     }
+}
+
+/// Carries normalized evidence across the RPC barrier without raw error text.
+struct AgentUsageLimitRejection: Error {
+    let evidence: AgentUsageLimit
 }

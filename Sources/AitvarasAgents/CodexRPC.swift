@@ -14,6 +14,8 @@ actor CodexRun: AgentRun {
     private var userInputs: [AgentInput] = []
     private var steering = false
     private var acknowledged = false
+    private var limitWindows: [AgentRateLimitWindow] = []
+    private var turnFailure: AgentFailure?
     private var closed = false
     private var requests: [AgentRequestID: AgentRequest] = [:]
     private var seenRequests: Set<AgentRequestID> = []
@@ -51,15 +53,21 @@ actor CodexRun: AgentRun {
         guard !closed, input == nil else { throw AgentFailure.invalidTransition }
         let content = try contentForDelivery(value)
         input = value.id; userInputs = [value]; turn = nil; acknowledged = false; completedItems.removeAll(); items.removeAll()
-        proposedPlan = nil; planRequestID = nil; executingApprovedPlan = false
+        proposedPlan = nil; planRequestID = nil; executingApprovedPlan = false; turnFailure = nil
         do { try await willDeliver() } catch { input = nil; throw error }
         guard !closed, input == value.id else { throw AgentFailure.invalidTransition }
         emit(.delivery(.deliveryUnknown))
         do {
             try await startTurn(content: content, mode: mode)
         } catch {
-            if input == value.id { emit(.turnEnded(.failed((error as? AgentFailure) ?? .unknown))); input = nil; requests.removeAll() }
-            throw error
+            var failure = (error as? AgentFailure) ?? .unknown
+            var thrown = error
+            if let rejection = error as? AgentUsageLimitRejection {
+                let evidence = rejection.evidence.resolving(windows: limitWindows)
+                emit(.usageLimit(evidence)); failure = .quota(resetsAt: evidence.resetsAt); thrown = failure
+            }
+            if input == value.id { emit(.turnEnded(.failed(failure))); input = nil; requests.removeAll() }
+            throw thrown
         }
     }
     func followup(_ value: AgentInput, willDeliver: @escaping @Sendable () async throws -> Void) async throws {
@@ -165,12 +173,17 @@ actor CodexRun: AgentRun {
                 outputTokens: last["outputTokens"]?.int, cachedInputTokens: last["cachedInputTokens"]?.int,
                 cacheWriteInputTokens: last["cacheWriteInputTokens"]?.int, thinkingTokens: last["reasoningOutputTokens"]?.int,
                 contextTokens: usage["total"]?["totalTokens"]?.int, contextLimit: usage["modelContextWindow"]?.int)))
+        case "error":
+            if p["willRetry"]?.boolValue != true {
+                turnFailure = quotaFailure(p["error"] ?? .null)
+            }
         case "turn/completed":
             guard let owner = input else { return }
             acknowledge()
             for item in p["turn"]?["items"]?.arrayValue ?? [] { complete(item) }
             let status = p["turn"]?["status"]?.stringValue
-            let outcome: AgentTurnOutcome = status == "completed" ? .completed : status == "interrupted" ? .interrupted : .failed(.unknown)
+            let outcome: AgentTurnOutcome = status == "completed" ? .completed : status == "interrupted" ? .interrupted
+                : .failed(p["turn"]?["error"].flatMap { $0 == .null ? nil : quotaFailure($0) } ?? turnFailure ?? .unknown)
             if let turn { completedTurns.insert(turn) }
             let unfinished = Set(items.filter { Self.toolTypes.contains($0.value["type"]?.stringValue ?? "") }.keys)
             if let turn, !unfinished.isEmpty {
@@ -320,7 +333,14 @@ actor CodexRun: AgentRun {
     func resolved(_ requestID: AgentRequestID) {
         if requests.removeValue(forKey: requestID) != nil { emit(.requestResolved(requestID)) }
     }
-    func rateLimits(_ windows: [AgentRateLimitWindow]) { emit(.rateLimits(windows)) }
+    private func quotaFailure(_ error: JSONValue) -> AgentFailure {
+        guard let evidence = AgentUsageLimit.codex(error, windows: limitWindows) else { return .unknown }
+        emit(.usageLimit(evidence))
+        return .quota(resetsAt: evidence.resetsAt)
+    }
+    func rateLimits(_ windows: [AgentRateLimitWindow]) {
+        limitWindows = windows; emit(.rateLimits(windows))
+    }
     func disconnected(_ error: AgentFailure) {
         guard !closed else { return }
         closed = true; requests.removeAll()

@@ -167,3 +167,21 @@ extension AgentTranscriptEntry {
         }
     }
 }
+
+/// Dormant storage seam; scheduling/dispatch is wired only after row controls exist.
+public protocol AgentAutoContinuePersistence: Sendable {
+    func pending() throws -> [AgentAutoContinue]
+    func continuation(id: UUID) throws -> AgentAutoContinue?
+    func inputRevision(chatID: UUID) throws -> Int
+    @discardableResult func schedule(_ value: AgentAutoContinue, causedBy: UUID?) throws -> AgentAutoContinue
+    @discardableResult func setOptions(id: UUID, enabled: Bool, keepAwake: Bool, now: Date) throws -> AgentAutoContinue
+    @discardableResult func reschedule(id: UUID, version: Int, windowID: String?, resetsAt: Date?, source: AgentUsageResetSource,
+                                      nextCheckAt: Date, nextPollAt: Date?, now: Date) throws -> AgentAutoContinue
+    @discardableResult func claim(id: UUID, version: Int, inputID: UUID, now: Date) throws -> AgentAutoContinue
+    @discardableResult func advanceDelivery(id: UUID, inputID: UUID, to: AgentDeliveryState, now: Date) throws -> AgentAutoContinue
+    @discardableResult func retryAfterQuota(id: UUID, inputID: UUID, nextCheckAt: Date, now: Date) throws -> AgentAutoContinue
+    @discardableResult func finish(id: UUID, state: AgentAutoContinue.State, now: Date) throws -> AgentAutoContinue
+    func noteNewInput(chatID: UUID, now: Date) throws
+    func observe(_ observation: AgentUsageResetObservation) throws
+    func observations(scope: AgentUsageLimitScope) throws -> [AgentUsageResetObservation]
+}

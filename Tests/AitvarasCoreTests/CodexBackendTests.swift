@@ -4,6 +4,126 @@ import Testing
 
 @Suite(.timeLimit(.minutes(2)))
 struct CodexBackendTests {
+    @Test(arguments: ["rpc", "rpc-secondary", "terminal", "notification"])
+    func usageLimitRetainsResetForTheFailingInput(path: String) async throws {
+        let fixture = try BackendExecutableFixture(script: """
+codex_init()
+start_thread()
+r=read()
+assert r['method']=='turn/start'
+emit({'method':'account/rateLimits/updated','params':{'rateLimits':{'limitId':'codex','primary':{'usedPercent':100,'resetsAt':2000000000},'secondary':{'usedPercent':20,'resetsAt':1900000000}}}})
+error={'message':'PRIVATE_ERROR_CANARY','codexErrorInfo':'usageLimitExceeded'}
+if '\(path)'=='rpc-secondary':
+    error['rateLimitType']='secondary'
+if '\(path)' in ['rpc','rpc-secondary']:
+    emit({'id':r['id'],'error':{'code':-32000,'data':error}})
+else:
+    emit({'id':r['id'],'result':{'turn':{'id':'quota-turn'}}})
+    if '\(path)'=='notification':
+        emit({'method':'error','params':{'threadId':'thread-test','turnId':'quota-turn','willRetry':False,'error':error}})
+    emit({'method':'turn/completed','params':{'threadId':'thread-test','turn':{'id':'quota-turn','status':'failed','error':error if '\(path)'=='terminal' else None}}})
+done()
+""")
+        defer { fixture.remove() }
+        let backend = CodexBackend(executable: fixture.executable, environment: fixture.environment)
+        let run = try await backend.start(.init(directory: fixture.directory, model: "test"))
+        let input = AgentInput(text: "test")
+        let reset = Date(timeIntervalSince1970: path == "rpc-secondary" ? 1_900_000_000 : 2_000_000_000)
+        let windowID = path == "rpc-secondary" ? "codex.secondary" : "codex.primary"
+        if path == "rpc" || path == "rpc-secondary" {
+            await #expect(throws: AgentFailure.quota(resetsAt: reset)) { try await run.send(input, willDeliver: {}) }
+        } else { try await run.send(input, willDeliver: {}) }
+        let events = try await collectTurn(run)
+        #expect(events.last?.kind == .turnEnded(.failed(.quota(resetsAt: reset))))
+        #expect(events.contains { $0.scope.inputID == input.id && $0.kind == .usageLimit(.init(status: .rejected, windowID: windowID, resetsAt: reset)) })
+        #expect(!String(describing: events).contains("PRIVATE_ERROR_CANARY"))
+        try fixture.assertComplete()
+        try await run.shutdown(); try await backend.shutdown()
+    }
+
+    @Test func quotaMappingRejectsUntypedErrorsAndAmbiguousWindows() {
+        let windows: [AgentRateLimitWindow] = [
+            .init(id: "codex.primary", utilization: 1, resetsAt: Date(timeIntervalSince1970: 2_000_000_000)),
+            .init(id: "codex.secondary", utilization: 1, resetsAt: Date(timeIntervalSince1970: 2_100_000_000))]
+        let typed = JSONValue.parse(#"{"codexErrorInfo":"usageLimitExceeded"}"#)!
+        #expect(AgentUsageLimit.codex(typed, windows: windows)?.resetsAt == nil)
+        #expect(AgentUsageLimit.codex(typed, windows: windows)?.windowID == nil)
+        let specific = JSONValue.parse(#"{"data":{"type":"usage_limit_reached","rateLimitType":"secondary","resetsAt":-1}}"#)!
+        #expect(AgentUsageLimit.codex(specific, windows: windows)?.resetsAt == windows[1].resetsAt)
+        for value in [#"{"message":"usage limit exceeded"}"#, #"{"codexErrorInfo":{"httpConnectionFailed":{"httpStatusCode":429}}}"#, "null"] {
+            #expect(AgentUsageLimit.codex(JSONValue.parse(value)!, windows: windows) == nil)
+        }
+    }
+
+    @Test func accountUpdatesRemainAvailableWithoutRuns() async throws {
+        let fixture = try BackendExecutableFixture(script: #"""
+codex_init()
+r=read()
+assert r['method']=='account/read'
+account(r)
+emit({'method':'account/rateLimits/updated','params':{'rateLimits':{'primary':{'usedPercent':100,'resetsAt':2000000000}}}})
+done()
+"""#)
+        defer { fixture.remove() }
+        let backend = CodexBackend(executable: fixture.executable, environment: fixture.environment)
+        let updates = await backend.rateLimitUpdates()
+        _ = try await backend.status()
+        for await windows in updates where !windows.isEmpty {
+            #expect(windows.first?.resetsAt == Date(timeIntervalSince1970: 2_000_000_000))
+            break
+        }
+        var latest = await backend.rateLimitUpdates().makeAsyncIterator()
+        #expect(await latest.next()?.first?.utilization == 1)
+        try fixture.assertComplete(); try await backend.shutdown()
+    }
+
+    @Test func pollingTimeoutAndLateReplyDoNotDisconnectRunningChat() async throws {
+        let fixture = try BackendExecutableFixture(script: #"""
+codex_init()
+start_thread()
+r=read()
+assert r['method']=='turn/start'
+emit({'id':r['id'],'result':{'turn':{'id':'live-turn'}}})
+poll=read()
+assert poll['method']=='account/rateLimits/read'
+r=read()
+assert r['method']=='account/read'
+emit({'id':poll['id'],'result':{'rateLimits':{'primary':{'usedPercent':50}}}})
+account(r)
+emit({'method':'turn/completed','params':{'threadId':'thread-test','turn':{'id':'live-turn','status':'completed'}}})
+done()
+"""#)
+        defer { fixture.remove() }
+        let backend = CodexBackend(executable: fixture.executable, environment: fixture.environment)
+        let run = try await backend.start(.init(directory: fixture.directory, model: "test"))
+        try await run.send(.init(text: "test"), willDeliver: {})
+        await #expect(throws: AgentFailure.offline) { _ = try await backend.rateLimits(timeout: .milliseconds(20)) }
+        #expect(try await backend.status().authentication == .subscription)
+        #expect(try await collectTurn(run).last?.kind == .turnEnded(.completed))
+        try fixture.assertComplete(); try await run.shutdown(); try await backend.shutdown()
+    }
+
+    @Test(arguments: [true, false])
+    func ordinaryErrorsAndRecoveredQuotaDoNotBecomeQuotaFailures(recovered: Bool) async throws {
+        let fixture = try BackendExecutableFixture(script: """
+codex_init()
+start_thread()
+r=read()
+emit({'id':r['id'],'result':{'turn':{'id':'test-turn'}}})
+emit({'method':'error','params':{'threadId':'thread-test','turnId':'test-turn','willRetry':\(recovered ? "True" : "False"),'error':{'codexErrorInfo':'\(recovered ? "usageLimitExceeded" : "other")','message':'PRIVATE_ERROR_CANARY'}}})
+emit({'method':'turn/completed','params':{'threadId':'thread-test','turn':{'id':'test-turn','status':'\(recovered ? "completed" : "failed")','error':None}}})
+done()
+""")
+        defer { fixture.remove() }
+        let backend = CodexBackend(executable: fixture.executable, environment: fixture.environment)
+        let run = try await backend.start(.init(directory: fixture.directory, model: "test"))
+        try await run.send(.init(text: "test"), willDeliver: {})
+        let events = try await collectTurn(run)
+        #expect(events.last?.kind == .turnEnded(recovered ? .completed : .failed(.unknown)))
+        #expect(!String(describing: events).contains("PRIVATE_ERROR_CANARY"))
+        try fixture.assertComplete(); try await run.shutdown(); try await backend.shutdown()
+    }
+
     @Test func loginCancellationReachesNativeProvider() async throws {
         let fixture = try BackendExecutableFixture(script: #"""
 codex_init()

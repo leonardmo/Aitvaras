@@ -89,7 +89,9 @@ actor AgentWire {
                   let continuation = pending.removeValue(forKey: id) else { return }
             timers.removeValue(forKey: id)?.cancel()
             if response["error"] != nil || response["subtype"]?.stringValue == "error" {
-                continuation.resume(throwing: AgentFailure.unknown)
+                let quota = format == .codex ? AgentUsageLimit.codex(response["error"] ?? .null) : nil
+                if let quota { continuation.resume(throwing: AgentUsageLimitRejection(evidence: quota)) }
+                else { continuation.resume(throwing: AgentFailure.unknown) }
             } else {
                 continuation.resume(returning: response[format == .claude ? "response" : "result"] ?? .null)
             }
