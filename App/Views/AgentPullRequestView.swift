@@ -40,6 +40,14 @@ struct AgentPullRequestSheet: View {
 
 struct AgentPullRequestBar: View {
     @Bindable var chat: ChatModel
+    static func mergeLabel(_ value: ForgePullRequest.Mergeable) -> String? {
+        switch value {
+        case .yes: "Mergeable"
+        case .no: "Not mergeable"
+        case .conflicting: "Conflicts"
+        case .unknown: nil
+        }
+    }
     var body: some View {
         if let pr = chat.pullRequest {
             HStack(spacing: 7) {
@@ -52,10 +60,14 @@ struct AgentPullRequestBar: View {
                 }.gaugeStyle(.accessoryCircularCapacity).tint(failing.isEmpty ? .green : .red).scaleEffect(0.55).frame(width: 24, height: 24)
                     .accessibilityLabel("\(passing) passing, \(failing.count) failing, \(pending) pending checks")
                     .help("\(passing) passing · \(failing.count) failing · \(pending) pending\n" + failing.map(\.name).joined(separator: "\n"))
-                Text("\(passing)✓ \(failing.count)× \(pending)…").font(.caption2).monospacedDigit()
-                    .help("Passing / failing / pending")
+                Text(chat.pullRequestChecks.isEmpty ? "No checks"
+                     : failing.isEmpty ? "\(passing)/\(chat.pullRequestChecks.count) passed"
+                     : "\(failing.count) failing").font(.caption2).monospacedDigit().lineLimit(1).fixedSize()
+                    .help("\(passing) passing · \(failing.count) failing · \(pending) pending")
                 if let review = pr.reviewDecision, !review.isEmpty { Text(review.replacingOccurrences(of: "_", with: " ").lowercased()).font(.caption2) }
-                Text(pr.mergeable.rawValue).font(.caption2).help("Mergeability")
+                if let label = Self.mergeLabel(pr.mergeable) {
+                    Text(label).font(.caption2).lineLimit(1).fixedSize().foregroundStyle(pr.mergeable == .yes ? Color.secondary : Color.orange)
+                }
                 Button { Task { await chat.refreshPullRequest() } } label: { Image(systemName: "arrow.clockwise") }
                     .help("Refresh request").accessibilityLabel("Refresh request")
                 Button { if (try? ProviderSignIn.validate(pr.url)) != nil { NSWorkspace.shared.open(pr.url) } } label: { Image(systemName: "arrow.up.right.square") }

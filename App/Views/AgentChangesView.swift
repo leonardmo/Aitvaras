@@ -163,6 +163,10 @@ struct AgentChangesView: View {
         .sheet(isPresented: Binding(get: { chat.forgeDraft != nil }, set: { if !$0 { chat.dismissForgeDraft() } })) {
             if let draft = chat.forgeDraft { AgentPullRequestSheet(chat: chat, owner: owner, initial: draft) }
         }
+        .onChange(of: changes.hasChanges) { _, hasChanges in
+            // A successful commit empties the change set; start the next one blank.
+            if !hasChanges { message = "" }
+        }
         .onChange(of: selected?.path) { resetLineSelection() }
         .onChange(of: selected?.diff) { resetLineSelection() }
         .confirmationDialog("Discard changes in this chat’s worktree?", isPresented: Binding(
