@@ -50,6 +50,29 @@ import Testing
         }
     }
 
+    @Test func repeatedCatalogLookupsForOneProjectStartTheCLIOnce() async throws {
+        let fixture = try AgentExecutableFixture(#"""
+        exec /usr/bin/python3 -u -c '
+        import os, sys, json, time
+        def emit(value): print(json.dumps(value), flush=True)
+        if sys.argv[1:3] == ["auth", "status"]:
+            emit({"loggedIn":True,"authMethod":"claude.ai","apiKeySource":"none","apiProvider":"firstParty","subscriptionType":"pro"})
+        else:
+            open(os.path.join(os.getcwd(), "..", "launches"), "a").write("x")
+            request=json.loads(sys.stdin.readline())
+            emit({"type":"control_response","response":{"subtype":"success","request_id":request["request_id"],"response":{"commands":[{"name":"shout","description":"Example"}]}}})
+            for _ in range(15): time.sleep(1)
+        ' "$@"
+        """#)
+        defer { fixture.remove() }
+        let backend = ClaudeBackend(executable: fixture.executable, environment: fixture.environment)
+        let directory = fixture.directory.appendingPathComponent("project")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        for _ in 0..<3 { #expect(try await backend.commands(directory: directory).map(\.name) == ["shout"]) }
+        let launches = try String(contentsOf: fixture.directory.appendingPathComponent("launches"), encoding: .utf8)
+        #expect(launches == "x")
+    }
+
     @Test func slashArgumentsRemainUserTextAfterSelectingTheHintedCommand() async throws {
         let fixture = try BackendExecutableFixture(script: #"""
 claude_init()

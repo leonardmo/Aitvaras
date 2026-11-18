@@ -66,12 +66,13 @@ public struct AgentCommandSources: Sendable, Equatable {
                 includingPropertiesForKeys: [.isDirectoryKey, .isRegularFileKey])) ?? [])
                 .sorted { $0.lastPathComponent < $1.lastPathComponent }.prefix(2048).map { $0 }
         }
+        // User skills are often symlinked folders; fileExists follows links.
         let skills = entries("skills").filter {
-            (try? $0.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true
-                && manager.fileExists(atPath: $0.appendingPathComponent("SKILL.md").path)
+            manager.fileExists(atPath: $0.appendingPathComponent("SKILL.md").path)
         }.map(\.lastPathComponent)
         let commands = entries("commands").filter {
-            $0.pathExtension == "md" && (try? $0.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true
+            var directory: ObjCBool = false
+            return $0.pathExtension == "md" && manager.fileExists(atPath: $0.path, isDirectory: &directory) && !directory.boolValue
         }.map { $0.deletingPathExtension().lastPathComponent }
         return Set(skills + commands)
     }

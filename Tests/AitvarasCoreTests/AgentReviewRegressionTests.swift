@@ -150,10 +150,18 @@ done()
             try Data([0xff]).write(to: root.appendingPathComponent("commands/" + name + "-command.md"))
         }
         try manager.createDirectory(at: project.appendingPathComponent(".claude/skills/incomplete"), withIntermediateDirectories: true)
+        // User skills and commands are often symlinks into another folder.
+        let linked = fixture.directory.appendingPathComponent("elsewhere/linked-skill")
+        try manager.createDirectory(at: linked, withIntermediateDirectories: true)
+        try Data([0xff]).write(to: linked.appendingPathComponent("SKILL.md"))
+        try manager.createSymbolicLink(at: user.appendingPathComponent("skills/linked-skill"), withDestinationURL: linked)
+        try Data([0xff]).write(to: fixture.directory.appendingPathComponent("elsewhere/linked-command.md"))
+        try manager.createSymbolicLink(at: user.appendingPathComponent("commands/linked-command.md"),
+                                       withDestinationURL: fixture.directory.appendingPathComponent("elsewhere/linked-command.md"))
         let metadata = await AgentProjectMetadataReader(projectDirectory: project, userDirectory: user).read()
         let sources = metadata.commandSources
         #expect(sources.project == ["project-skill", "project-skill-command"])
-        #expect(sources.user == ["user-skill", "user-skill-command"])
+        #expect(sources.user == ["user-skill", "user-skill-command", "linked-skill", "linked-command"])
         for name in sources.project { #expect(sources.group(for: .init(name: name, description: "")) == .project) }
         for name in sources.user { #expect(sources.group(for: .init(name: name, description: "")) == .user) }
         #expect(sources.group(for: .init(name: "plugin:check", description: "")) == .plugin)

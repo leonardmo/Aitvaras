@@ -93,12 +93,33 @@ public actor ClaudeBackend: AgentBackend {
         try await commandCatalog(directory: directory, projectID: projectID).commands
     }
     public func commandCatalog(directory: URL, projectID: UUID?) async throws -> (commands: [AgentCommand], setup: AgentMCPLaunchStatus?) {
+        // Starting a CLI only to list commands takes seconds, so the composer
+        // popup reuses a running chat's catalog or a recent probe for the same
+        // project and MCP setup revision.
+        let revision = try mcpPolicy.snapshot(directory: directory, projectID: projectID).status.revision
+        let key = CatalogKey(directory: directory, projectID: projectID, revision: revision)
+        liveRuns = liveRuns.filter { $0.value.run != nil }
+        for existing in liveRuns.values where existing.directory == directory && existing.projectID == projectID {
+            if let run = existing.run, run.mcpSetup?.revision == revision, let commands = await run.availableCommands {
+                catalogCache[key] = .init(commands: commands, setup: run.mcpSetup, date: .now)
+                return (commands, run.mcpSetup)
+            }
+        }
+        if let cached = catalogCache[key], Date.now.timeIntervalSince(cached.date) < Self.catalogLifetime {
+            return (cached.commands, cached.setup)
+        }
         let run = try await makeRun(.init(directory: directory, model: "default", projectID: projectID))
         let commands = await run.availableCommands
         try await run.shutdown()
         guard let commands else { throw AgentFailure.unsupported }
+        catalogCache = catalogCache.filter { Date.now.timeIntervalSince($0.value.date) < Self.catalogLifetime }
+        catalogCache[key] = .init(commands: commands, setup: run.mcpSetup, date: .now)
         return (commands, run.mcpSetup)
     }
+    private struct CatalogKey: Hashable { let directory: URL; let projectID: UUID?; let revision: String }
+    private struct CachedCatalog { let commands: [AgentCommand]; let setup: AgentMCPLaunchStatus?; let date: Date }
+    private var catalogCache: [CatalogKey: CachedCatalog] = [:]
+    static let catalogLifetime: TimeInterval = 120
     public func setup(directory: URL, projectID: UUID?) async throws -> AgentSetupSnapshot {
         liveRuns = liveRuns.filter { $0.value.run != nil }
         let revision = try mcpPolicy.snapshot(directory: directory, projectID: projectID).status.revision
