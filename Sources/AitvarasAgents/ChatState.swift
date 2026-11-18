@@ -126,6 +126,7 @@ public struct ChatState: Sendable, Equatable {
                 if let index = entries.firstIndex(where: { $0.sessionID == sessionID && $0.nativeMessageID == nativeID }) {
                     if role != "user" { entries[index].text = text }
                 } else if role == "user", let index = entries.firstIndex(where: { $0.id == inputID }) {
+                    guard entries[index].nativeMessageID == nil || entries[index].nativeMessageID == nativeID else { return }
                     entries[index].nativeMessageID = nativeID
                 } else {
                     let key = event.scope.itemID ?? "text"

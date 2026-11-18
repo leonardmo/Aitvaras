@@ -423,8 +423,9 @@ actor ClaudeRun: AgentRun {
     private func parseMessage(_ value: JSONValue) async {
         let message = value["message"] ?? .null
         let messageID = message["id"]?.stringValue ?? value["uuid"]?.stringValue
+        let blocks = message["content"]?.arrayValue ?? []
         var texts: [String] = []
-        for block in message["content"]?.arrayValue ?? [] {
+        for block in blocks {
             switch block["type"]?.stringValue {
             case "text": if let text = block["text"]?.stringValue { texts.append(text) }
             case "thinking":
@@ -448,7 +449,12 @@ actor ClaudeRun: AgentRun {
             default: emit(.unknown(name: block["type"]?.stringValue ?? "content", payload: block), item: messageID)
             }
         }
-        if message["role"]?.stringValue == "user" { texts = [ClaudeCommandText.display(texts.joined(separator: "\n"))] }
+        if message["role"]?.stringValue == "user" {
+            // Tool-result UUIDs identify tool output, not an echo of our input.
+            // Emit their completions above without binding a user message ID.
+            if !blocks.isEmpty, blocks.allSatisfy({ $0["type"]?.stringValue == "tool_result" }) { return }
+            texts = [ClaudeCommandText.display(texts.joined(separator: "\n"))]
+        }
         if let messageID, !texts.isEmpty {
             let native = value["uuid"]?.stringValue ?? messageID
             let role = message["role"]?.stringValue ?? "assistant"

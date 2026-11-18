@@ -421,7 +421,8 @@ public actor AgentSessionManager {
                 try persistence.saveAgentSession(session)
                 live[chatID]?.session = session
             case .message(let nativeID, "user", _) where event.scope.inputID != slot.inputID:
-                if let index = states[chatID]?.entries.firstIndex(where: { $0.id == event.scope.inputID }) {
+                if let index = states[chatID]?.entries.firstIndex(where: { $0.id == event.scope.inputID }),
+                   states[chatID]?.entries[index].nativeMessageID == nil || states[chatID]?.entries[index].nativeMessageID == nativeID {
                     states[chatID]?.entries[index].nativeMessageID = nativeID
                     try persistEntries(chatID)
                 }

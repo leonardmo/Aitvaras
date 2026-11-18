@@ -66,6 +66,25 @@ import AitvarasAgents
         #expect(restored.entries == state.entries)
     }
 
+    @Test(arguments: [AgentProvider.claude, .codex])
+    func userNativeIdentityBindsOnceAndIgnoresDifferentEchoes(provider: AgentProvider) throws {
+        let input = AgentInput(text: "original input")
+        let session = AgentChatSession(chatID: UUID(), provider: provider, cwd: "/tmp", model: "fixture")
+        var state = ChatState(chatID: session.chatID)
+        state.begin(input, session: session, outputID: UUID())
+        let scope = AgentEventScope(runID: UUID(), inputID: input.id)
+        state.reduce(.init(scope: scope, kind: .message(id: "native-input", role: "user", text: "wire text")), newEntryID: UUID())
+        let bound = state.entries
+        #expect(bound.first?.nativeMessageID == "native-input")
+        // Duplicate echoes are idempotent; a different identity cannot replace
+        // the bound one or become an extra user row.
+        for nativeID in ["native-input", "result-uuid-one", "result-uuid-two"] {
+            state.reduce(.init(scope: scope, kind: .message(id: nativeID, role: "user", text: "")), newEntryID: UUID())
+            #expect(state.entries == bound)
+        }
+        #expect(state.entries.map(\.text) == [input.text])
+    }
+
     @Test(arguments: [AgentProvider.claude, .codex], ["tool", "delta", "message"])
     func laterWorkClosesEarlierToolsWithoutClaimingSuccess(provider: AgentProvider, progress: String) throws {
         let chat = UUID(), run = UUID()

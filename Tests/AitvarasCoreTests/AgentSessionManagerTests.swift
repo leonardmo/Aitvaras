@@ -512,6 +512,39 @@ import AitvarasStore
         try await manager.shutdown()
     }
 
+    @Test func queuedInputNativeIdentityCannotBeOverwrittenByAnotherEcho() async throws {
+        let stores = try inMemoryStores()
+        let (chat, _) = try agentStoreChat(stores, provider: .claude)
+        let backend = ManagerTestBackend()
+        let manager = try AgentSessionManager(persistence: stores, backend: { _ in backend }, audit: { _ in })
+        let first = AgentInput(text: "first"), queued = AgentInput(text: "queued input")
+        try await manager.send(chatID: chat.id, provider: .claude, input: first)
+        try await manager.send(chatID: chat.id, provider: .claude, input: queued)
+        let run = try #require(await backend.runs.first)
+        await run.emit(.message(id: "queued-native", role: "user", text: "wire text"), input: queued.id)
+        try await waitManager {
+            try stores.agentEntries(chatID: chat.id).first { $0.id == queued.id }?.nativeMessageID == "queued-native"
+        }
+        await run.emit(.message(id: "queued-native", role: "user", text: "wire text"), input: queued.id)
+        await run.emit(.message(id: "different-native", role: "user", text: ""), input: queued.id)
+        // A subsequent root event proves the conflicting echo was consumed.
+        await run.emit(.textDelta("still running"), input: first.id)
+        try await waitManager {
+            let state = try await manager.state(chatID: chat.id)
+            return !state.isRunning || state.streamingText == "still running"
+        }
+        let state = try await manager.state(chatID: chat.id)
+        #expect(state.isRunning)
+        #expect(state.streamingText == "still running")
+        #expect(state.entries.first { $0.id == queued.id }?.nativeMessageID == "queued-native")
+        let users = try stores.agentEntries(chatID: chat.id).filter { $0.kind == "user" }
+        #expect(users.map(\.id) == [first.id, queued.id])
+        #expect(users.last?.nativeMessageID == "queued-native")
+        #expect(users.last?.text == queued.text)
+        #expect(try stores.agentTurn(id: queued.id)?.state == .running)
+        try await manager.shutdown()
+    }
+
     @Test func reducerStableMessagesToolsHooksUsageAndOutcome() {
         let chat = UUID(); let input = AgentInput(text: "test")
         let session = AgentChatSession(chatID: chat, provider: .claude, cwd: "/tmp", model: "test")
@@ -648,6 +681,9 @@ private actor ManagerTestRun: AgentRun {
         inputs.append(input)
         writes += 1
         if failure == .after { throw AgentFailure.offline }
+    }
+    func followup(_ input: AgentInput, willDeliver: @escaping @Sendable () async throws -> Void) async throws {
+        try await send(input, willDeliver: willDeliver)
     }
     func respond(to request: AgentRequest, with response: AgentResponse) { responses.append(response) }
     func setMode(_ mode: AgentMode) {}

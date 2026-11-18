@@ -1,9 +1,85 @@
 import Foundation
 import Testing
+import AitvarasStore
 @testable import AitvarasAgents
 
 @Suite(.timeLimit(.minutes(2)))
 struct ClaudeBackendTests {
+    @Test(arguments: [2, 3])
+    func toolResultUUIDsDoNotConflictWithPersistedUserIdentity(tools: Int) async throws {
+        let fixture = try BackendExecutableFixture(script: AgentMultiToolTurnTests.script(tools: tools, hooks: false))
+        defer { fixture.remove() }
+        let stores = try inMemoryStores()
+        let (chat, session) = try agentStoreChat(stores, provider: .claude, cwd: fixture.directory.path)
+        let backend = ClaudeBackend(executable: fixture.executable, environment: fixture.environment)
+        let run = try await backend.start(session.configuration)
+        let input = AgentInput(text: "run some commands")
+        try await run.send(input, willDeliver: {})
+        let events = try await collectTurn(run)
+        try await run.shutdown()
+        var state = ChatState(chatID: chat.id)
+        state.begin(input, session: session, outputID: UUID())
+        // Exercise the same identity checks as manager persistence without its
+        // catch-all hiding the concrete store error behind AgentFailure.unknown.
+        for event in events {
+            state.reduce(event, newEntryID: UUID())
+            for entry in state.entries { _ = try stores.saveAgentEntry(entry) }
+        }
+        let users = try stores.agentEntries(chatID: chat.id).filter { $0.kind == "user" }
+        #expect(users.map(\.id) == [input.id])
+        #expect(users.first?.nativeMessageID == nil)
+        #expect(state.outcome == .completed)
+        try fixture.assertComplete()
+    }
+
+    @Test(arguments: ["tool-results", "mixed", "text", "attachment", "empty-text", "empty-content"])
+    func userFramesOnlySuppressMessagesForPureToolResults(content: String) async throws {
+        let fixture = try BackendExecutableFixture(script: """
+claude_init()
+original=read()
+kind='\(content)'
+results=[{'type':'tool_result','tool_use_id':'tool-one','content':'first output','is_error':False},
+         {'type':'tool_result','tool_use_id':'tool-two','content':[{'type':'text','text':'second output'}],'is_error':True}]
+if kind=='tool-results': blocks=results
+elif kind=='mixed': blocks=[results[0],{'type':'text','text':'first line'},results[1],{'type':'text','text':'second line'}]
+elif kind=='text': blocks=[{'type':'text','text':'echo'}]
+elif kind=='attachment': blocks=[{'type':'image','source':{'type':'base64','media_type':'image/png','data':'Zml4dHVyZQ=='}}]
+elif kind=='empty-text': blocks=[{'type':'text','text':''}]
+else: blocks=[]
+emit({'type':'user','uuid':original['uuid'],'message':{'role':'user','content':blocks}})
+emit({'type':'assistant','uuid':'reply','message':{'role':'assistant','content':[{'type':'text','text':'done'}]}})
+emit({'type':'result','is_error':False})
+done()
+""")
+        defer { fixture.remove() }
+        let backend = ClaudeBackend(executable: fixture.executable, environment: fixture.environment)
+        let run = try await backend.start(.init(directory: fixture.directory, model: "test"))
+        let input = AgentInput(text: "echo")
+        try await run.send(input, willDeliver: {})
+        let events = try await collectTurn(run)
+        let messages: [(String, String)] = events.compactMap {
+            if case .message(let id, "user", let text) = $0.kind { return (id, text) }
+            return nil
+        }
+        if content == "tool-results" {
+            #expect(messages.isEmpty)
+        } else {
+            #expect(messages.count == 1)
+            #expect(messages.first?.0 == input.id.uuidString)
+            let expected = content == "mixed" ? "first line\nsecond line" : content == "text" ? "echo" : ""
+            #expect(messages.first?.1 == expected)
+        }
+        let results: [AgentEvent] = events.filter { if case .toolFinished = $0.kind { true } else { false } }
+        if ["tool-results", "mixed"].contains(content) {
+            #expect(results.map(\.scope.itemID) == ["tool-one", "tool-two"])
+            #expect(results.first?.kind == .toolFinished(output: .string("first output"), isError: false))
+            #expect(results.last?.kind == .toolFinished(output: .array([.object(["type": .string("text"), "text": .string("second output")])]), isError: true))
+        } else { #expect(results.isEmpty) }
+        #expect(events.last?.kind == .turnEnded(.completed))
+        try fixture.assertComplete()
+        try await run.shutdown()
+    }
+
     @Test func defaultModelUsesTheOpusAliasAndMediumEffort() async throws {
         let fixture = try BackendExecutableFixture(script: #"""
 assert sys.argv[sys.argv.index('--model')+1]=='opus'
