@@ -1077,6 +1077,23 @@ Confirm Discard is disabled on ordinary checkouts. Edit externally between revie
 and click, fail a hook and interrupt git; verify a single inline error and safe
 refresh. These checks need the host and do not follow from package tests alone.
 
+Git branch/push (G1): `AgentGitPushTests` uses local bare repositories for upstream,
+ahead/behind, detached/default branch detection, ordinary/owned push, confirmation,
+foreign-branch refusal and non-fast-forward rejection without force. Fake git
+executables cover credential environment filtering, typed/redacted errors,
+exact same-name push arguments, one attempt and timeout. Activity assertions allow
+only chatID, risk and result metadata. Refresh reads local refs without fetching.
+On the host, build the App and use an isolated profile with a disposable remote.
+Verify the clean-checkout panel still opens, the branch/upstream gauge refreshes
+after commit/push, Push and Commit and push require a visible confirmation, and
+Cancel sends nothing. Check disabled reasons for default/detached/foreign branches,
+credential-helper success and signed-out failure, non-fast-forward guidance,
+timeout guidance, and a successful commit followed by failed push (local
+commit survives, then explicit Push retries). Inspect one-line errors, minimum
+width, light/dark and accessibility labels. Any provider-driven live checks use
+cheap models only (Haiku); package tests do not establish native credential or UI
+behavior.
+
 Background chat lifecycle (M3.12): `AgentLifecycleTests` replays the checked-in
 Claude/Codex interrupt recordings and uses fake executables for parallel running
 chats, scoped approval/status, subscriber detach/reattach, active archive,

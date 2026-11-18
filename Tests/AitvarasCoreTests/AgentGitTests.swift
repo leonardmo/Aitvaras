@@ -33,6 +33,19 @@ private struct GitFixture {
     func owned(folders: [URL]? = nil) async throws -> AgentWorktree {
         try await actions.create(chatID: chat.id, projectID: chat.projectID, folders: folders ?? [root], storage: root.appendingPathComponent("owned"))
     }
+    func remote() async throws -> URL {
+        let remote = root.appendingPathComponent("remote.git")
+        try await git.command(["init", "--bare", "-b", "main", remote.path], in: root)
+        try await git.command(["remote", "add", "origin", remote.path], in: root)
+        try await git.command(["push", "origin", "main"], in: root)
+        return remote
+    }
+    func commit(_ text: String, at directory: URL? = nil) async throws {
+        let directory = directory ?? root
+        try write(text, "file.txt", directory: directory)
+        try await git.command(["add", "--", "file.txt"], in: directory)
+        try await git.command(["commit", "-m", "Update fixture"], in: directory)
+    }
     func remove() { try? FileManager.default.removeItem(at: root) }
 }
 
@@ -254,6 +267,227 @@ exec /usr/bin/git "$@"
         cancelled.cancel()
         await #expect(throws: CancellationError.self) { try await cancelled.value }
         #expect(try await f.git.changes(in: f.root).fingerprint == before.fingerprint)
+    }
+}
+
+@Suite(.timeLimit(.minutes(2))) struct AgentGitPushTests {
+    @Test func branchStatusTracksUpstreamAheadBehindAndDetached() async throws {
+        let f = try GitFixture(); defer { f.remove() }; try await f.initialize()
+        let initial = try await f.git.branchStatus(at: f.root)
+        #expect(initial.branch == "main" && !initial.detached && initial.upstream == nil && !initial.hasRemote)
+        #expect(initial.ahead == 0 && initial.behind == 0)
+        _ = try await f.remote()
+        #expect(try await f.git.branchStatus(at: f.root).isDefaultBranch)
+        try await f.git.command(["checkout", "-b", "feature"], in: f.root)
+        #expect(try await f.git.branchStatus(at: f.root).upstream == nil)
+        try await f.git.push(at: f.root, branch: "feature")
+        let published = try await f.git.branchStatus(at: f.root)
+        #expect(published.upstream == "origin/feature" && !published.isDefaultBranch && published.remoteHost == nil)
+        try await f.commit("ahead")
+        #expect(try await f.git.branchStatus(at: f.root).ahead == 1)
+        try await f.git.push(at: f.root, branch: "feature")
+        try await f.git.command(["reset", "--hard", "HEAD^"], in: f.root)
+        let behind = try await f.git.branchStatus(at: f.root)
+        #expect(behind.behind == 1 && behind.ahead == 0)
+        try await f.git.command(["checkout", "--detach"], in: f.root)
+        let detached = try await f.git.branchStatus(at: f.root)
+        #expect(detached.detached && detached.upstream == nil)
+    }
+
+    @Test func defaultBranchUsesOriginHeadThenMainOrMasterFallback() async throws {
+        let f = try GitFixture(); defer { f.remove() }; try await f.initialize(); _ = try await f.remote()
+        try await f.git.command(["checkout", "-b", "trunk"], in: f.root)
+        try await f.git.command(["push", "origin", "trunk"], in: f.root)
+        try await f.git.command(["symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/trunk"], in: f.root)
+        #expect(try await f.git.branchStatus(at: f.root).isDefaultBranch)
+        try await f.git.command(["symbolic-ref", "--delete", "refs/remotes/origin/HEAD"], in: f.root)
+        #expect(try await f.git.branchStatus(at: f.root).isDefaultBranch == false)
+        try await f.git.command(["update-ref", "-d", "refs/remotes/origin/main"], in: f.root)
+        try await f.git.command(["update-ref", "refs/remotes/origin/master", "HEAD"], in: f.root)
+        try await f.git.command(["checkout", "-b", "master"], in: f.root)
+        #expect(try await f.git.branchStatus(at: f.root).isDefaultBranch)
+    }
+
+    @Test func ordinaryPushRequiresConfirmationAndAuditsMetadataOnly() async throws {
+        let f = try GitFixture(); defer { f.remove() }; try await f.initialize(); _ = try await f.remote()
+        try await f.git.command(["checkout", "-b", "feature"], in: f.root)
+        await #expect(throws: AgentGitError.confirmationRequired) { try await f.actions.push(chatID: f.chat.id, confirmed: false) }
+        #expect(try await f.git.branchStatus(at: f.root).upstream == nil)
+        await #expect(throws: AgentGitError.ownershipConflict) {
+            try await f.actions.push(chatID: f.chat.id, confirmed: true, expectedDirectory: f.root, expectedBranch: "previous-branch")
+        }
+        try await f.actions.push(chatID: f.chat.id, confirmed: true)
+        #expect(try await f.git.branchStatus(at: f.root).upstream == "origin/feature")
+        let events = try f.stores.recentActivity(limit: 20).filter { $0.connectorID == "git" }
+        #expect(events.contains { $0.summary == "Git push: completed" })
+        for event in events {
+            let detail = try #require(event.detailJSON)
+            let object = try #require(JSONSerialization.jsonObject(with: Data(detail.utf8)) as? [String: String])
+            #expect(Set(object.keys) == ["chatID", "risk", "result"])
+            #expect(object["chatID"] == f.chat.id.uuidString && object["risk"] == "confirmable")
+            #expect(!detail.contains(f.root.path) && !detail.contains("feature") && !detail.contains("file.txt"))
+        }
+        let foreign = try GitFixture(); defer { foreign.remove() }; try await foreign.initialize()
+        await #expect(throws: AgentGitError.ownershipConflict) {
+            try await f.actions.push(chatID: f.chat.id, confirmed: true, expectedDirectory: foreign.root)
+        }
+    }
+
+    @Test func refusesDefaultDetachedAndForeignOwnedBranches() async throws {
+        let f = try GitFixture(); defer { f.remove() }; try await f.initialize(); _ = try await f.remote()
+        await #expect(throws: AgentGitError.defaultBranch) { try await f.actions.push(chatID: f.chat.id, confirmed: true) }
+        try await f.git.command(["checkout", "--detach"], in: f.root)
+        await #expect(throws: AgentGitError.detachedHEAD) { try await f.actions.push(chatID: f.chat.id, confirmed: true) }
+        try await f.git.command(["checkout", "main"], in: f.root)
+        let owned = try await f.owned(), directory = URL(fileURLWithPath: owned.worktreePath)
+        try await f.actions.push(chatID: f.chat.id, confirmed: true)
+        #expect(try await f.git.branchStatus(at: directory).upstream == "origin/" + owned.branch)
+        try await f.git.command(["checkout", "-b", "foreign"], in: directory)
+        await #expect(throws: AgentGitError.ownershipConflict) { try await f.actions.push(chatID: f.chat.id, confirmed: true) }
+        try await f.git.command(["checkout", "--detach"], in: directory)
+        await #expect(throws: AgentGitError.detachedHEAD) { try await f.actions.push(chatID: f.chat.id, confirmed: true) }
+    }
+
+    @Test func nonFastForwardNeverOverwritesRemote() async throws {
+        let f = try GitFixture(); defer { f.remove() }; try await f.initialize(); let remote = try await f.remote()
+        try await f.git.command(["checkout", "-b", "feature"], in: f.root)
+        try await f.git.push(at: f.root, branch: "feature")
+        try await f.commit("remote commit")
+        try await f.git.push(at: f.root, branch: "feature")
+        let remoteTip = try await f.git.command(["rev-parse", "refs/heads/feature"], in: remote)
+        try await f.git.command(["reset", "--hard", "HEAD^"], in: f.root)
+        try await f.commit("divergent commit")
+        await #expect(throws: AgentGitError.rejectedNonFastForward) { try await f.actions.push(chatID: f.chat.id, confirmed: true) }
+        #expect(try await f.git.command(["rev-parse", "refs/heads/feature"], in: remote) == remoteTip)
+        let divergent = try await f.git.branchStatus(at: f.root)
+        #expect(divergent.ahead == 1 && divergent.behind == 1)
+    }
+
+    @Test func noRemoteAuditFailureAndBranchMismatchPreventPush() async throws {
+        let f = try GitFixture(); defer { f.remove() }; try await f.initialize()
+        try await f.git.command(["checkout", "-b", "feature"], in: f.root)
+        await #expect(throws: AgentGitError.noRemote) { try await f.actions.push(chatID: f.chat.id, confirmed: true) }
+        _ = try await f.remote()
+        let failing = AgentGitActionCoordinator(git: f.git, persistence: f.stores, audit: { _ in throw AgentFailure.unknown })
+        await #expect(throws: AgentFailure.unknown) { try await failing.push(chatID: f.chat.id, confirmed: true) }
+        #expect(try await f.git.branchStatus(at: f.root).upstream == nil)
+        await #expect(throws: AgentGitError.ownershipConflict) { try await f.git.push(at: f.root, branch: "main") }
+        await #expect(throws: AgentGitError.unsafeBranch) { try await f.git.push(at: f.root, branch: "+feature:main") }
+        try await f.git.command(["checkout", "-b", "+feature"], in: f.root)
+        await #expect(throws: AgentGitError.unsafeBranch) { try await f.actions.push(chatID: f.chat.id, confirmed: true) }
+        await #expect(throws: AgentGitError.unsafeBranch) { try await f.git.push(at: f.root, branch: "+feature") }
+        try await f.git.command(["checkout", "-b", "refs/heads/feature"], in: f.root)
+        await #expect(throws: AgentGitError.unsafeBranch) { try await f.git.push(at: f.root, branch: "refs/heads/feature") }
+    }
+
+    @Test func branchChangeDuringAuthorizationPreventsPush() async throws {
+        let f = try GitFixture(); defer { f.remove() }; try await f.initialize(); let remote = try await f.remote()
+        try await f.git.command(["checkout", "-b", "feature"], in: f.root)
+        let actions = AgentGitActionCoordinator(git: f.git, persistence: f.stores, audit: { event in
+            if event.summary == "Git push: authorized" {
+                try await f.git.command(["checkout", "-b", "changed-branch"], in: f.root)
+            }
+        })
+        await #expect(throws: AgentGitError.ownershipConflict) { try await actions.push(chatID: f.chat.id, confirmed: true) }
+        #expect(try await f.git.command(["for-each-ref", "--format=%(refname)", "refs/heads/feature", "refs/heads/changed-branch"], in: remote).isEmpty)
+    }
+
+    @Test func busyPushBlocksOtherWritesAndCancellationKeepsRemoteUnchanged() async throws {
+        let f = try GitFixture(); defer { f.remove() }; try await f.initialize(); let remote = try await f.remote()
+        let owned = try await f.owned(), directory = URL(fileURLWithPath: owned.worktreePath)
+        try f.write("edit", "file.txt", directory: directory)
+        let expected = try await f.git.changes(in: directory)
+        let hook = f.root.appendingPathComponent(".git/hooks/pre-push")
+        try Data("#!/bin/sh\ntouch push-started\nsleep 10\n".utf8).write(to: hook)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: hook.path)
+        let push = Task { try await f.actions.push(chatID: f.chat.id, confirmed: true) }
+        let signal = directory.appendingPathComponent("push-started")
+        let deadline = ContinuousClock.now.advanced(by: .seconds(5))
+        while !FileManager.default.fileExists(atPath: signal.path), ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        guard FileManager.default.fileExists(atPath: signal.path) else { push.cancel(); try? await push.value; Issue.record("Push did not reach the fixture hook"); return }
+        await #expect(throws: AgentGitError.busy) { try await f.actions.push(chatID: f.chat.id, confirmed: true) }
+        await #expect(throws: AgentGitError.busy) {
+            try await f.actions.commit(chatID: f.chat.id, expected: expected, message: "Edit", confirmed: true)
+        }
+        push.cancel()
+        await #expect(throws: CancellationError.self) { try await push.value }
+        #expect(try await f.git.command(["for-each-ref", "--format=%(refname)", "refs/heads/" + owned.branch], in: remote).isEmpty)
+        #expect(try f.stores.recentActivity(limit: 20).contains { $0.summary == "Git push: interrupted" })
+    }
+
+    @Test func hostParsingDropsCredentialsAndPaths() {
+        #expect(GitWorkspace.remoteHost("https://user:fixture-password@git.example.org/team/repo.git") == "git.example.org")
+        #expect(GitWorkspace.remoteHost("ssh://user@git.example.org:2222/team/repo.git") == "git.example.org")
+        #expect(GitWorkspace.remoteHost("git@git.example.org:team/repo.git") == "git.example.org")
+        #expect(GitWorkspace.remoteHost("/tmp/remote.git") == nil)
+        #expect(GitWorkspace.remoteHost("file:///tmp/remote.git") == nil)
+    }
+
+    @Test func pushEnvironmentKeepsCredentialsAndStripsOverrides() async throws {
+        let fake = try AgentExecutableFixture(#"""
+case "$2" in
+  symbolic-ref) printf feature ;;
+  check-ref-format) exit 0 ;;
+  rev-parse) printf refs/heads/feature ;;
+  remote) printf /tmp/remote.git ;;
+  push)
+    test "$#" = 5 && test "$3" = -u && test "$4" = origin && test "$5" = feature || exit 9
+    test "$GIT_TERMINAL_PROMPT" = 0 && test "$GIT_OPTIONAL_LOCKS" = 0 && test "$GIT_LITERAL_PATHSPECS" = 1 || exit 9
+    test "$GIT_ASKPASS" = fixture-askpass && test "$GH_TOKEN" = fixture-value && test "$SSH_AUTH_SOCK" = fixture-socket || exit 9
+    test -n "$HOME" && test "$PATH" = /usr/bin:/bin || exit 9
+    test -z "$GIT_DIR$GIT_WORK_TREE$GIT_INDEX_FILE$GIT_CONFIG_COUNT$GIT_CONFIG_KEY_0$GIT_CONFIG_VALUE_0$GIT_SSH_COMMAND$GIT_EXEC_PATH$GIT_TEST_SENTINEL" || exit 9
+    printf called >> "$HOME/push-calls" ;;
+  *) exit 9 ;;
+esac
+"""#); defer { fake.remove() }
+        var environment = fake.environment
+        for key in ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_0", "GIT_CONFIG_VALUE_0", "GIT_SSH_COMMAND", "GIT_EXEC_PATH", "GIT_TEST_SENTINEL"] { environment[key] = "invalid" }
+        environment.merge(["GIT_ASKPASS": "fixture-askpass", "GH_TOKEN": "fixture-value", "SSH_AUTH_SOCK": "fixture-socket", "GIT_TERMINAL_PROMPT": "1"]) { _, new in new }
+        let git = GitWorkspace(executable: fake.executable, environment: environment)
+        try await git.push(at: fake.directory, branch: "feature")
+        #expect(try String(contentsOf: fake.directory.appendingPathComponent("push-calls"), encoding: .utf8) == "called")
+    }
+
+    @Test(arguments: [
+        ("Authentication failed for https://user:fixture-password@git.example.org/repo", AgentGitError.authenticationRequired),
+        ("Permission denied (publickey).", .authenticationRequired),
+        ("Could not resolve host: git.example.org", .network),
+        ("! [rejected] feature -> feature (non-fast-forward)", .rejectedNonFastForward),
+        ("remote: hook declined https://user:fixture-password@git.example.org/repo", .commandFailed)
+    ])
+    func errorsAreTypedAndDoNotExposeOutput(diagnostic: String, expected: AgentGitError) async throws {
+        let fake = try AgentExecutableFixture(#"""
+case "$2" in
+  symbolic-ref) printf feature ;;
+  check-ref-format) exit 0 ;;
+  rev-parse) printf refs/heads/feature ;;
+  remote) printf /tmp/remote.git ;;
+  push) printf called >> "$HOME/push-calls"; printf '%s' "$FIXTURE_DIAGNOSTIC" >&2; exit 1 ;;
+  *) exit 9 ;;
+esac
+"""#); defer { fake.remove() }
+        let git = GitWorkspace(executable: fake.executable, environment: fake.environment.merging(["FIXTURE_DIAGNOSTIC": diagnostic]) { _, new in new })
+        await #expect(throws: expected) { try await git.push(at: fake.directory, branch: "feature") }
+        #expect(try String(contentsOf: fake.directory.appendingPathComponent("push-calls"), encoding: .utf8) == "called")
+        #expect(!expected.message.contains("https:") && !expected.message.contains("fixture-password"))
+    }
+
+    @Test func pushTimesOutWithoutRetry() async throws {
+        let fake = try AgentExecutableFixture(#"""
+case "$2" in
+  symbolic-ref) printf feature ;;
+  check-ref-format) exit 0 ;;
+  rev-parse) printf refs/heads/feature ;;
+  remote) printf /tmp/remote.git ;;
+  push) printf called >> "$HOME/push-calls"; exec /bin/sleep 10 ;;
+  *) exit 9 ;;
+esac
+"""#); defer { fake.remove() }
+        let git = GitWorkspace(executable: fake.executable, environment: fake.environment, pushTimeout: .milliseconds(100))
+        await #expect(throws: AgentGitError.timedOut) { try await git.push(at: fake.directory, branch: "feature") }
+        #expect(try String(contentsOf: fake.directory.appendingPathComponent("push-calls"), encoding: .utf8) == "called")
     }
 }
 

@@ -10,6 +10,13 @@ struct AgentChangesView: View {
     @State private var selectedPath: String?
     @State private var message = ""
     @State private var discarding: ChangesState?
+    @State private var pushConfirmation: PushConfirmation?
+    private struct PushConfirmation {
+        let expected: ChangesState?
+        let message: String
+        let directory: URL
+        let branch: String
+    }
     @State private var lineSelection = AgentDiffSelection()
     @State private var lineFrames: [Int: CGRect] = [:]
     @State private var draggingLines = false
@@ -26,6 +33,14 @@ struct AgentChangesView: View {
                     .buttonStyle(.borderless).disabled(chat.gitBusy)
                     .accessibilityLabel("Refresh changes").accessibilityIdentifier("chat.changes.refresh")
                 Text("\(changes.files.count)").monospacedDigit().foregroundStyle(.secondary)
+            }
+            branchHeader
+            if let reason = chat.pushDisabledReason {
+                Text(reason).font(.caption).foregroundStyle(.secondary).lineLimit(1).help(reason)
+            }
+            if let error = chat.gitError {
+                Text(error).font(.caption).foregroundStyle(.red).lineLimit(1).help(error)
+                    .accessibilityIdentifier("chat.changes.error")
             }
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
@@ -107,18 +122,28 @@ struct AgentChangesView: View {
             TextField("Commit message", text: $message, axis: .vertical)
                 .lineLimit(1...3).textFieldStyle(.roundedBorder)
                 .accessibilityIdentifier("chat.changes.message")
-            HStack {
-                Button("Discard", role: .destructive) { discarding = changes }
-                    .disabled(!chat.canDiscardChanges)
-                    .accessibilityIdentifier("chat.changes.discard")
-                Spacer()
-                if chat.gitBusy { ProgressView().controlSize(.mini) }
-                Button("Commit") {
-                    let text = message
-                    Task { await chat.applyGitChanges(changes, owner: owner, message: text) }
+            VStack(spacing: 6) {
+                HStack {
+                    Button("Discard", role: .destructive) { discarding = changes }
+                        .disabled(!chat.canDiscardChanges || !changes.hasChanges)
+                        .accessibilityIdentifier("chat.changes.discard")
+                    Spacer()
+                    if chat.gitBusy { ProgressView().controlSize(.mini) }
                 }
-                .disabled(message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                .accessibilityIdentifier("chat.changes.commit")
+                HStack {
+                    Spacer(minLength: 0)
+                    Button("Commit and push") {
+                        pushConfirmation = .init(expected: changes, message: message, directory: changes.directory, branch: chat.branchStatus?.branch ?? "")
+                    }
+                    .disabled(!changes.hasChanges || message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || chat.pushDisabledReason != nil)
+                    .accessibilityIdentifier("chat.changes.commitAndPush")
+                    Button("Commit") {
+                        let text = message
+                        Task { await chat.applyGitChanges(changes, owner: owner, message: text) }
+                    }
+                    .disabled(!changes.hasChanges || message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .accessibilityIdentifier("chat.changes.commit")
+                }
             }.controlSize(.small).disabled(chat.isBusy || chat.gitBusy)
         }
         .padding(12).frame(minWidth: 230, idealWidth: 270, maxWidth: 320)
@@ -133,6 +158,48 @@ struct AgentChangesView: View {
                 Task { await chat.applyGitChanges(expected, owner: owner, message: nil) }
             }.accessibilityIdentifier("chat.changes.discard.confirm")
             Button("Cancel", role: .cancel) { discarding = nil }
+        }
+    }
+    private var branchHeader: some View {
+        HStack(spacing: 6) {
+            if let branch = chat.branchStatus {
+                Label(branch.detached ? "Detached HEAD" : branch.branch, systemImage: "arrow.triangle.branch")
+                    .font(.caption).lineLimit(1).truncationMode(.middle)
+                    .help(branch.branch).accessibilityIdentifier("chat.changes.branch")
+                Spacer(minLength: 0)
+                HStack(spacing: 4) {
+                    if branch.upstream == nil {
+                        Text("Not pushed yet")
+                    } else if branch.ahead == 0, branch.behind == 0 {
+                        Image(systemName: "checkmark.circle").accessibilityLabel("Up to date")
+                    } else {
+                        if branch.ahead > 0 { Label("\(branch.ahead)", systemImage: "arrow.up") }
+                        if branch.behind > 0 { Label("\(branch.behind)", systemImage: "arrow.down") }
+                    }
+                }.font(.caption2).monospacedDigit().foregroundStyle(.secondary)
+                    .help(branch.upstream.map { "Upstream: " + $0 + " · ↑ \(branch.ahead) · ↓ \(branch.behind)" } ?? "Not pushed yet")
+                    .accessibilityIdentifier("chat.changes.upstream")
+            }
+            Button("Push") { pushConfirmation = .init(expected: nil, message: "", directory: changes.directory, branch: chat.branchStatus?.branch ?? "") }
+                .controlSize(.small)
+                .disabled(chat.isBusy || chat.gitBusy || chat.pushDisabledReason != nil)
+                .help(chat.pushDisabledReason ?? "Push the current branch to origin")
+                .accessibilityIdentifier("chat.changes.push")
+        }
+        .confirmationDialog("Push this branch to origin?", isPresented: Binding(
+            get: { pushConfirmation != nil }, set: { if !$0 { pushConfirmation = nil } }), titleVisibility: .visible) {
+            Button(pushConfirmation?.expected == nil ? "Push" : "Commit and push") {
+                guard let pending = pushConfirmation else { return }
+                pushConfirmation = nil
+                Task {
+                    if let expected = pending.expected {
+                        await chat.applyGitChanges(expected, owner: owner, message: pending.message, pushAfterCommit: true, expectedBranch: pending.branch)
+                    } else { await chat.pushGitBranch(owner: owner, directory: pending.directory, branch: pending.branch) }
+                }
+            }.accessibilityIdentifier("chat.changes.push.confirm")
+            Button("Cancel", role: .cancel) { pushConfirmation = nil }
+        } message: {
+            Text("Publish \(pushConfirmation?.branch ?? "this branch")\(chat.branchStatus?.remoteHost.map { " to " + $0 } ?? "") with your configured Git credentials.")
         }
     }
     private func lineID(at point: CGPoint) -> Int? {

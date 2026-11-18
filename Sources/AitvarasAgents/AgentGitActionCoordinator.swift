@@ -96,6 +96,57 @@ public actor AgentGitActionCoordinator {
         try await git.verify(value); return value
     }
     public func changes(in directory: URL) async throws -> ChangesState { try await git.changes(in: directory) }
+    public func branchStatus(at directory: URL) async throws -> GitBranchStatus { try await git.branchStatus(at: directory) }
+
+    public func push(chatID: UUID, confirmed: Bool, expectedDirectory: URL? = nil, expectedBranch: String? = nil) async throws {
+        guard !busy else { throw AgentGitError.busy }; busy = true; defer { busy = false }
+        do {
+            let (directory, branch) = try await pushTarget(chatID: chatID, expectedDirectory: expectedDirectory)
+            if let expectedBranch, branch != expectedBranch { throw AgentGitError.ownershipConflict }
+            try await authorize("push", chatID: chatID, risk: .confirmable, confirmed: confirmed)
+            try Task.checkCancellation()
+            // Audit/storage can yield. Recheck ownership and the current branch
+            // after authorization, before any outbound command.
+            let current = try await pushTarget(chatID: chatID, expectedDirectory: expectedDirectory)
+            guard current.0 == directory, current.1 == branch else { throw AgentGitError.ownershipConflict }
+            try await git.push(at: directory, branch: branch)
+            try await record("push", chatID: chatID, result: "completed", risk: .confirmable)
+        } catch {
+            try? await record("push", chatID: chatID, result: error is CancellationError ? "interrupted" : "failed", risk: .confirmable)
+            throw error
+        }
+    }
+
+    private func pushTarget(chatID: UUID, expectedDirectory: URL?) async throws -> (URL, String) {
+        let owned = try persistence.agentWorktree(chatID: chatID)
+        if owned == nil, try persistence.requiresAgentWorktree(chatID: chatID) { throw AgentGitError.creationFailed }
+        let directory: URL
+        if let owned {
+            directory = URL(fileURLWithPath: owned.worktreePath)
+            if let expectedDirectory, expectedDirectory != directory { throw AgentGitError.ownershipConflict }
+        } else {
+            let allowed = try persistence.agentGitDirectories(chatID: chatID)
+            if let expectedDirectory {
+                var matches = false
+                for candidate in allowed {
+                    if let root = try? await git.repository(at: candidate), root == expectedDirectory { matches = true; break }
+                }
+                guard matches else { throw AgentGitError.ownershipConflict }
+                directory = expectedDirectory
+            } else {
+                guard let first = allowed.first else { throw AgentGitError.notRepository }
+                directory = try await git.repository(at: first)
+            }
+        }
+        let status = try await git.branchStatus(at: directory)
+        let expectedBranch = owned.map { _ in "aitvaras/chat-\(chatID.uuidString.lowercased())" }
+        if let refusal = status.pushRefusal(ownedBranch: expectedBranch) { throw refusal }
+        if let owned {
+            guard owned.branch == expectedBranch else { throw AgentGitError.ownershipConflict }
+            try await git.verify(owned)
+        }
+        return (directory, status.branch)
+    }
 
     public func commit(chatID: UUID, expected: ChangesState, message: String, confirmed: Bool) async throws {
         guard !message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, !message.contains("\0"), message.utf8.count <= 8192 else {
