@@ -54,7 +54,7 @@ jobs:
           xcodegen generate --quiet
           ARGS=(-project Aitvaras.xcodeproj -scheme Aitvaras -configuration Release
                 -derivedDataPath .build/DerivedData
-                -skipMacroValidation -skipPackagePluginValidation)
+                -skipMacroValidation -skipPackagePluginValidation ARCHS=arm64)
           if [ "$SIGNED" = true ]; then
             ARGS+=(CODE_SIGN_STYLE=Manual "CODE_SIGN_IDENTITY=$MACOS_SIGNING_IDENTITY"
                    "DEVELOPMENT_TEAM=$APPLE_TEAM_ID" ENABLE_HARDENED_RUNTIME=YES

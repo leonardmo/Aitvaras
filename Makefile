@@ -2,8 +2,10 @@
 SHELL := /bin/bash
 .DEFAULT_GOAL := help
 
+# Apple Silicon only (target hardware). On the command line so Swift package
+# targets follow too; a project.yml setting would only cover the app's targets.
 XCODE_FLAGS := -project Aitvaras.xcodeproj -scheme Aitvaras \
-	-skipMacroValidation -skipPackagePluginValidation
+	-skipMacroValidation -skipPackagePluginValidation ARCHS=arm64
 NODE_TESTS := scripts/test-claude-interactive.mjs scripts/check-codex-interactive.mjs \
 	scripts/check-codex-native.mjs scripts/check-codex-shared-runtime.mjs
 
