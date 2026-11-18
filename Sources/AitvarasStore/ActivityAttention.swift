@@ -9,36 +9,39 @@ extension Stores {
     /// successful run with the same problem key. Service counters and successful
     /// runs with other keys are deliberately not recovery evidence.
     public func activityAttentionSnapshot() throws -> ActivityAttentionSnapshot {
-        try db.queue.read { db in
-            let problem = TableAlias<ActivityRun>(name: "attentionProblem")
-            let success = TableAlias<ActivityRun>(name: "attentionSuccess")
-            let laterSuccess = ActivityRun.aliased(success)
-                .filter(success["state"] == ActivityRunState.succeeded.rawValue)
-                .filter(success["jobKey"] == problem["jobKey"])
-                .filter(success["id"] != problem["id"])
-                .filter(success["startedAt"] > problem["finishedAt"])
-            // SQL NULL comparisons cannot establish recovery for an unkeyed
-            // run or a failure whose finish was never recorded.
-            let candidates = try ActivityRun.aliased(problem)
-                .filter([ActivityRunState.failed.rawValue, ActivityRunState.interrupted.rawValue,
-                         ActivityRunState.outcomeUnknown.rawValue].contains(problem["state"]))
-                .filter(problem["acknowledgedAt"] == nil)
-                .filter(problem["state"] == ActivityRunState.outcomeUnknown.rawValue || !laterSuccess.exists())
-                .order(problem["updatedAt"].desc, problem["startedAt"].desc, problem["id"].desc)
-                .fetchAll(db)
+        try db.queue.read { try Self.activityAttentionSnapshot(in: $0) }
+    }
 
-            let ancestors = try ActivityAttentionQuery.ancestors(of: candidates, in: db)
-            let visible = candidates.filter { !ActivityAttentionQuery.isCompletedHelper($0, ancestors: ancestors) }
-            let members = Dictionary(grouping: visible, by: ActivityAttentionQuery.groupID)
-            var emitted: Set<ActivityAttentionGroup.ID> = []
-            let groups: [ActivityAttentionGroup] = visible.compactMap { run in
-                let id = ActivityAttentionQuery.groupID(run)
-                guard emitted.insert(id).inserted else { return nil }
-                return ActivityAttentionGroup(id: id, latestRun: run,
-                    earlierRuns: Array(members[id, default: []].dropFirst()))
-            }
-            return ActivityAttentionSnapshot(groups: groups)
+    /// Also used inside dismissal/Undo transactions; recovery is identical.
+    static func activityAttentionSnapshot(in db: Database, includingAcknowledged ids: Set<UUID> = []) throws -> ActivityAttentionSnapshot {
+        let problem = TableAlias<ActivityRun>(name: "attentionProblem")
+        let success = TableAlias<ActivityRun>(name: "attentionSuccess")
+        let laterSuccess = ActivityRun.aliased(success)
+            .filter(success["state"] == ActivityRunState.succeeded.rawValue)
+            .filter(success["jobKey"] == problem["jobKey"])
+            .filter(success["id"] != problem["id"])
+            .filter(success["startedAt"] > problem["finishedAt"])
+        // SQL NULL comparisons cannot establish recovery for an unkeyed
+        // run or a failure whose finish was never recorded.
+        let candidates = try ActivityRun.aliased(problem)
+            .filter([ActivityRunState.failed.rawValue, ActivityRunState.interrupted.rawValue,
+                     ActivityRunState.outcomeUnknown.rawValue].contains(problem["state"]))
+            .filter(problem["acknowledgedAt"] == nil || ids.contains(problem["id"]))
+            .filter(problem["state"] == ActivityRunState.outcomeUnknown.rawValue || !laterSuccess.exists())
+            .order(problem["updatedAt"].desc, problem["startedAt"].desc, problem["id"].desc)
+            .fetchAll(db)
+
+        let ancestors = try ActivityAttentionQuery.ancestors(of: candidates, in: db)
+        let visible = candidates.filter { !ActivityAttentionQuery.isCompletedHelper($0, ancestors: ancestors) }
+        let members = Dictionary(grouping: visible, by: ActivityAttentionQuery.groupID)
+        var emitted: Set<ActivityAttentionGroup.ID> = []
+        let groups: [ActivityAttentionGroup] = visible.compactMap { run in
+            let id = ActivityAttentionQuery.groupID(run)
+            guard emitted.insert(id).inserted else { return nil }
+            return ActivityAttentionGroup(id: id, latestRun: run,
+                earlierRuns: Array(members[id, default: []].dropFirst()))
         }
+        return ActivityAttentionSnapshot(groups: groups)
     }
 }
 

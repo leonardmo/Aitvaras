@@ -37,10 +37,13 @@ public struct Stores: Sendable {
     public static let maximumPendingSuggestions = 100
     public let db: AitvarasDatabase
     let heldNotificationClock: @Sendable () -> Date
+    let attentionUndoClock: AttentionUndoClock
 
-    public init(db: AitvarasDatabase, heldNotificationClock: @escaping @Sendable () -> Date = { .now }) {
+    public init(db: AitvarasDatabase, heldNotificationClock: @escaping @Sendable () -> Date = { .now },
+                attentionUndoClock: AttentionUndoClock = .continuous) {
         self.db = db
         self.heldNotificationClock = heldNotificationClock
+        self.attentionUndoClock = attentionUndoClock
     }
 
     // MARK: Activity log

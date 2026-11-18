@@ -86,7 +86,10 @@ final class AppModel {
     var recentActivityRuns: [ActivityRun] = []
     var monitoredServices: [ServiceStatus] = []
     var backgroundPolicy = BackgroundWorkPolicy()
-    var monitoringError: String?
+    let attentionDismissals = AttentionDismissalHolder()
+    var monitoringError: String? {
+        didSet { attentionDismissals.updateMonitoringError(monitoringError) }
+    }
     var monitoringReady = false
     var monitoringObserver: NSObjectProtocol?
     var automaticTasks: [String: Task<Void, Never>] = [:]
@@ -1599,6 +1602,7 @@ final class AppModel {
     }
 
     func refreshSidebandData() {
+        attentionDismissals.expireIfNeeded()
         guard let stores else { return }
         do {
             try stores.sweepHeldNotifications()

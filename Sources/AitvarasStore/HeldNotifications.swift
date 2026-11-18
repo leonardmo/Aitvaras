@@ -7,6 +7,8 @@ import AitvarasCore
 public struct HeldNotificationDismissal: Sendable, Equatable {
     public let id: UUID
     public let dismissedAt: Date
+    /// Only active rows can be dismissed, so the exact prior marker is nil.
+    public var previousDismissedAt: Date? { nil }
 
     public init(id: UUID, dismissedAt: Date) {
         self.id = id
@@ -52,22 +54,7 @@ extension Stores {
         let now = heldNotificationClock()
         let (changes, expired) = try db.queue.write { db in
             let expired = try Self.expireHeldNotifications(in: db, at: now)
-            var changes: [HeldNotificationDismissal] = []
-            for batch in Self.heldNotificationIDBatches(ids) {
-                let records = try Self.activeHeldNotificationRequest(at: now)
-                    .filter(batch.contains(Column("id"))).fetchAll(db)
-                for var record in records {
-                    record.dismissedAt = now
-                    try record.update(db)
-                    // Return the database's date precision, not a wall-clock
-                    // value that may differ after GRDB's date encoding.
-                    if let persisted = try HeldNotification.fetchOne(db, key: record.id),
-                       let marker = persisted.dismissedAt {
-                        changes.append(HeldNotificationDismissal(id: record.id, dismissedAt: marker))
-                    }
-                }
-            }
-            try Self.auditHeldNotificationChange(.dismissed, ids: changes.map(\.id), at: now, in: db)
+            let changes = try Self.softDismissHeldNotifications(ids: ids, in: db, at: now)
             return (changes, expired)
         }
         Self.notifyHeldNotificationsChanged(if: !changes.isEmpty || expired > 0)
@@ -82,16 +69,7 @@ extension Stores {
         let now = heldNotificationClock()
         let (restored, expired) = try db.queue.write { db in
             let expired = try Self.expireHeldNotifications(in: db, at: now)
-            var restored: [UUID] = []
-            for change in changes where now < change.dismissedAt.addingTimeInterval(Self.heldNotificationUndoWindow) {
-                guard var record = try HeldNotification.filter(Column("id") == change.id)
-                    .filter(Column("dismissedAt") == change.dismissedAt)
-                    .filter(Self.unexpiredHeldNotificationPredicate(at: now)).fetchOne(db) else { continue }
-                record.dismissedAt = nil
-                try record.update(db)
-                restored.append(record.id)
-            }
-            try Self.auditHeldNotificationChange(.restored, ids: restored, at: now, in: db)
+            let restored = try Self.restoreHeldNotifications(ifUnchanged: changes, in: db, at: now)
             return (restored, expired)
         }
         Self.notifyHeldNotificationsChanged(if: !restored.isEmpty || expired > 0)
@@ -157,6 +135,42 @@ extension Stores {
 
     static func activeHeldNotificationRequest(at now: Date) -> QueryInterfaceRequest<HeldNotification> {
         HeldNotification.filter(Column("dismissedAt") == nil).filter(unexpiredHeldNotificationPredicate(at: now))
+    }
+
+    // Transaction-taking primitives shared with attention receipts. Callers
+    // expire rows first and publish notifications only after commit.
+    static func softDismissHeldNotifications(ids: [UUID], in db: Database, at now: Date) throws -> [HeldNotificationDismissal] {
+        var changes: [HeldNotificationDismissal] = []
+        for batch in Self.heldNotificationIDBatches(ids) {
+            let records = try Self.activeHeldNotificationRequest(at: now)
+                .filter(batch.contains(Column("id"))).fetchAll(db)
+            for var record in records {
+                record.dismissedAt = now
+                try record.update(db)
+                // Return the database's date precision, not a wall-clock
+                // value that may differ after GRDB's date encoding.
+                if let persisted = try HeldNotification.fetchOne(db, key: record.id),
+                   let marker = persisted.dismissedAt {
+                    changes.append(HeldNotificationDismissal(id: record.id, dismissedAt: marker))
+                }
+            }
+        }
+        try Self.auditHeldNotificationChange(.dismissed, ids: changes.map(\.id), at: now, in: db)
+        return changes
+    }
+
+    static func restoreHeldNotifications(ifUnchanged changes: [HeldNotificationDismissal], in db: Database, at now: Date) throws -> [UUID] {
+        var restored: [UUID] = []
+        for change in changes where now < change.dismissedAt.addingTimeInterval(Self.heldNotificationUndoWindow) {
+            guard var record = try HeldNotification.filter(Column("id") == change.id)
+                .filter(Column("dismissedAt") == change.dismissedAt)
+                .filter(Self.unexpiredHeldNotificationPredicate(at: now)).fetchOne(db) else { continue }
+            record.dismissedAt = nil
+            try record.update(db)
+            restored.append(record.id)
+        }
+        try Self.auditHeldNotificationChange(.restored, ids: restored, at: now, in: db)
+        return restored
     }
 
     static func expireHeldNotifications(in db: Database, at now: Date) throws -> Int {
