@@ -798,3 +798,51 @@ Host profiling and native interaction checks remain required for long chats.
 The existing vertical composer keeps its selection binding and draft-edit path.
 Shift/Option-Return replace the selection with a newline; plain Return accepts
 an open completion or sends. Marked text defers Return to the input method.
+
+## D36 — Home attention dismissal and recovery ✅ (2026-11-18)
+
+Home shows at most five attention rows in Decisions, Problems, Notices order,
+with approvals first and one “N more” link into History's attention mode for
+all remaining kinds. Approval and tool-suggestion rows have labeled Approve
+and Reject buttons, no ✕ and no Undo; rejection retains the existing policy
+and audit paths. Captures waiting to be saved have Save/Open actions only.
+
+Dismiss all acknowledges failed/interrupted problems, dismisses held updates
+and defers the automatic-work review prompt. It skips approvals, unsaved
+captures, every `outcomeUnknown` run and the monitoring error. A problem's own
+accessible ✕ sets `acknowledgedAt`; for an unknown outcome this counts as
+review, never retry or reversal. A monitoring incident's ✕ hides only that
+Home warning, without clearing the failure or resuming automatic work.
+“Later” persistently removes the review prompt from Home while keeping
+Settings → Automatic Work available and the unreviewed policy closed.
+
+Single ✕ and Dismiss all offer an inline “Dismissed N items · Undo” bar for
+about eight seconds; ⌘Z undoes while the bar is visible. Undo conditionally
+restores only that action's unchanged state, never consumed/expired updates
+or problems already recovered by a later success. Activity runs and their
+original outcomes always remain in History.
+
+Only background job owners receive an optional explicit `jobKey`: startup,
+consolidation, indexing, conversation archiving, capture summary/refinement,
+model preparation/download, routines, queued delivery and keyed background
+problems. The operation and stable subject identify the job, not its title.
+Failed/interrupted runs group by key with a count; a group's ✕ acknowledges
+all represented runs. A distinct successful run with the same key that started
+after the failure finished clears it through a database query over persisted
+evidence, without writing an automatic acknowledgement or using the recent-run
+window. Unkeyed runs neither group nor auto-clear; unknown outcomes never
+auto-clear. Chat responses and confirmed connector actions remain unkeyed.
+Existing parent/child ownership stays intact; a failed helper under a succeeded
+keyed owner does not add its own Home row.
+
+Held updates leave through ✕, Dismiss all, existing briefing consumption or a
+fixed 24-hour expiry. Dismissal is soft during Undo, then deletes the held row;
+expiry and consumption also delete with audit. Dismissed/expired rows cannot
+enter a later briefing. Opening their source elsewhere does not clear them.
+
+Operation details stay in a smaller resizable sheet: summary and main actions,
+result and privacy fields, then one collapsed Details section including raw
+JSON. Groups show the latest run and a short list of earlier failures.
+Open conversation/capture closes the sheet before navigating. Retry is offered
+only for failed capture summaries and safely identified stored-conversation
+archives through their existing targeted paths; no other job gains Retry.

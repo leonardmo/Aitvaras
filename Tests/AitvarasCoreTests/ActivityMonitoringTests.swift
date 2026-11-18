@@ -238,6 +238,9 @@ import AitvarasStore
                 try db.execute(sql: "DELETE FROM grdb_migrations WHERE identifier = 'v13-activity-monitoring'")
                 try db.execute(sql: "DELETE FROM grdb_migrations WHERE identifier = 'v15-activity-review'")
                 try db.execute(sql: "DELETE FROM grdb_migrations WHERE identifier = 'v14-service-check-summaries'")
+                try db.execute(sql: "ALTER TABLE heldNotification DROP COLUMN dismissedAt")
+                try Table<Row>("grdb_migrations")
+                    .filter(Column("identifier") == "v36-home-attention").deleteAll(db)
             }
         }
         let migrated = Stores(db: try AitvarasDatabase(url: url))

@@ -1050,6 +1050,17 @@ public final class AitvarasDatabase: Sendable {
                 BEGIN SELECT RAISE(ABORT, 'Turn must belong to its chat session'); END;
                 """)
         }
+        m.registerMigration("v36-home-attention") { db in
+            try db.alter(table: "activityRun") { t in
+                t.add(column: "jobKey", .text)
+                t.add(column: "occurrenceCount", .integer).notNull().defaults(to: 1)
+            }
+            try db.create(index: "activityRunJobSuccess", on: "activityRun",
+                          columns: ["jobKey", "state", "startedAt"])
+            try db.alter(table: "heldNotification") { t in
+                t.add(column: "dismissedAt", .datetime)
+            }
+        }
         return m
     }
 }

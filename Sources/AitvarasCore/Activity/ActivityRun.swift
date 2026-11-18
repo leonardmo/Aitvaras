@@ -43,6 +43,10 @@ public struct ActivityRun: Codable, Sendable, Identifiable, Equatable {
     public var outcome: String?
     /// Reviewing a problem never retries work or rewrites its original outcome.
     public var acknowledgedAt: Date?
+    /// Explicit identity of a background job; nil means no grouping or recovery matching.
+    public var jobKey: String?
+    /// Number of occurrences represented by a coalesced background problem.
+    public var occurrenceCount: Int
 
     public init(id: UUID = UUID(), parentID: UUID? = ActivityTaskContext.runID,
                 referenceID: String? = nil, category: ActivityCategory,
@@ -52,7 +56,8 @@ public struct ActivityRun: Codable, Sendable, Identifiable, Equatable {
                 startedAt: Date = .now, updatedAt: Date? = nil, finishedAt: Date? = nil,
                 provider: String? = nil, executionLocation: String? = nil,
                 dataAccess: String? = nil, dataDestination: String? = nil, outcome: String? = nil,
-                acknowledgedAt: Date? = nil) {
+                acknowledgedAt: Date? = nil, jobKey: String? = nil,
+                occurrenceCount: Int = 1) {
         self.id = id
         self.parentID = parentID
         self.referenceID = referenceID
@@ -72,6 +77,8 @@ public struct ActivityRun: Codable, Sendable, Identifiable, Equatable {
         self.dataDestination = dataDestination
         self.outcome = outcome
         self.acknowledgedAt = acknowledgedAt
+        self.jobKey = jobKey
+        self.occurrenceCount = occurrenceCount
     }
 }
 
