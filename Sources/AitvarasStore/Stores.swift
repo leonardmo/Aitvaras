@@ -36,9 +36,11 @@ public enum AitvarasStoreError: Error, LocalizedError, Sendable {
 public struct Stores: Sendable {
     public static let maximumPendingSuggestions = 100
     public let db: AitvarasDatabase
+    let heldNotificationClock: @Sendable () -> Date
 
-    public init(db: AitvarasDatabase) {
+    public init(db: AitvarasDatabase, heldNotificationClock: @escaping @Sendable () -> Date = { .now }) {
         self.db = db
+        self.heldNotificationClock = heldNotificationClock
     }
 
     // MARK: Activity log
@@ -1074,32 +1076,6 @@ public struct Stores: Sendable {
                 sql: "INSERT INTO seenItem(connectorID, itemID, seenAt) VALUES(?, ?, ?)",
                 arguments: ["archiver", fingerprint, Date.now])
             return true
-        }
-    }
-
-    // MARK: Held focus notifications
-
-    /// Queue a focus update with its audit event as one durable operation.
-    public func holdNotification(_ notification: HeldNotification,
-                                 recording event: ActivityEvent) throws {
-        try db.queue.write { dbc in
-            try notification.insert(dbc)
-            try event.insert(dbc)
-        }
-    }
-
-    public func heldNotifications() throws -> [HeldNotification] {
-        try db.queue.read {
-            try HeldNotification.order(Column("createdAt")).fetchAll($0)
-        }
-    }
-
-    /// A briefing is allowed to clear only the exact rows it displayed. New
-    /// updates that arrive while the briefing is composed remain queued.
-    public func clearHeldNotifications(ids: [UUID]) throws {
-        guard !ids.isEmpty else { return }
-        _ = try db.queue.write {
-            try HeldNotification.filter(ids.contains(Column("id"))).deleteAll($0)
         }
     }
 

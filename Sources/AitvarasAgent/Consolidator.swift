@@ -360,7 +360,7 @@ public actor Consolidator {
              .suggestionAccepted, .suggestionRejected, .confirmationDenied:
             true
         case .eventReceived, .classification, .suggestionOffered,
-             .notificationQueued, .notificationSent, .notificationFailed,
+             .notificationQueued, .notificationSent, .notificationFailed, .heldNotificationChanged,
              .delegationRun, .consolidationRun, .captureFinished, .wakeBriefing,
              .shortcutLearned, .shortcutTaken, .automationSuggested,
              .automationApproved, .automationChanged, .automationRun:

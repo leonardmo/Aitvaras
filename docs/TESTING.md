@@ -680,6 +680,15 @@ service-check counters and successful jobs with other keys do not resolve them.
 This projection is the shared input for subsequent Home, bulk-dismissal and
 History attention integration; these package checks do not establish UI behaviour.
 
+`HeldNotificationLifecycleTests` injects a wall clock through `Stores` and checks
+the shared active-update predicate, the exact 24-hour boundary, conditional
+restore within eight seconds, restart cleanup, and exact-ID briefing consumption
+while dismissal and new arrivals race composition. Lifecycle mutations and their
+metadata-only audits commit together; injected audit failures must roll back all
+changes. Audits contain action/count/IDs and are not memory evidence. Startup,
+foreground, wake and the next retention/dismissal deadline refresh held updates;
+the App hooks require host compilation and do not implement the Undo bar.
+
 Aitvaras is an always-on assistant with local models, OS permissions and
 personal state: exactly the kind of app that degenerates into "the developer
 clicks around and hopes". This document defines the layers that replace that,

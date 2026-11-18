@@ -76,8 +76,8 @@ final class NotificationRouter {
         }
     }
 
-    /// Compatibility hook for old break/wake paths. Held updates stay available
-    /// in Home until reviewed; a wake must not requeue, speak or discard them.
+    /// Compatibility hook for old break/wake paths. Held updates stay on Home
+    /// until consumed, dismissed or expired; this hook never replays or speaks them.
     func flushHeld(reason: String) {
         NotificationCenter.default.post(name: .aitvarasActivityChanged, object: nil)
     }

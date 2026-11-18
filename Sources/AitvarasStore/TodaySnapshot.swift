@@ -72,13 +72,16 @@ public extension Stores {
         let questionLimit = max(0, min(questionLimit, 20))
         let heldNotificationLimit = max(0, min(heldNotificationLimit, 20))
 
-        return try db.queue.read { dbc in
+        let now = heldNotificationClock()
+        let (snapshot, expired) = try db.queue.write { dbc in
+            let expired = try Self.expireHeldNotifications(in: dbc, at: now)
             let pendingSuggestions = Suggestion
                 .filter(Column("status") == "pending")
             let openQuestions = CuriosityQuestion
                 .filter(Column("status") == CuriosityQuestion.Status.open.rawValue)
 
-            return TodaySnapshot(
+            let held = Self.activeHeldNotificationRequest(at: now)
+            let snapshot = TodaySnapshot(
                 day: day,
                 goals: try Goal
                     .filter(Column("day") == day)
@@ -94,11 +97,11 @@ public extension Stores {
                     .limit(questionLimit)
                     .fetchAll(dbc),
                 openQuestionCount: try openQuestions.fetchCount(dbc),
-                heldNotifications: try HeldNotification
-                    .order(Column("createdAt"))
+                heldNotifications: try held
+                    .order(Column("createdAt"), Column("id"))
                     .limit(heldNotificationLimit)
                     .fetchAll(dbc),
-                heldNotificationCount: try HeldNotification.fetchCount(dbc),
+                heldNotificationCount: try held.fetchCount(dbc),
                 latestConsolidation: try ActivityEvent
                     .filter(Column("kind") == ActivityEvent.Kind.consolidationRun.rawValue)
                     .order(Column("timestamp").desc)
@@ -112,6 +115,9 @@ public extension Stores {
                     sql: "SELECT COUNT(*) FROM memoryFact WHERE validTo IS NULL"
                 ) ?? 0
             )
+            return (snapshot, expired)
         }
+        Self.notifyHeldNotificationsChanged(if: expired > 0)
+        return snapshot
     }
 }

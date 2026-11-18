@@ -265,6 +265,7 @@ final class AppModel {
             let db = try AitvarasDatabase()
             let stores = Stores(db: db)
             self.stores = stores
+            try stores.sweepHeldNotifications()
             try await AgentMCPRuntimeFile.sweep(stateDirectory: AitvarasPaths.stateDirectory,
                 audit: { _ = try stores.record($0) })
             let reporter = ActivityReporter(stores: stores)
@@ -361,10 +362,11 @@ final class AppModel {
                 routineReviewer: routineReviewer, reporter: reporter)
             self.consolidator = consolidator
             startNightlyConsolidationScheduler()
-            NotificationCenter.default.addObserver(
-                forName: .aitvarasActivityChanged, object: nil, queue: .main
-            ) { _ in
-                Task { @MainActor in AppModel.shared.refreshSidebandData() }
+            for name in [Notification.Name.aitvarasActivityChanged, .aitvarasHeldNotificationsChanged,
+                         NSApplication.didBecomeActiveNotification] {
+                NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { _ in
+                    Task { @MainActor in AppModel.shared.refreshSidebandData() }
+                }
             }
             NotificationCenter.default.addObserver(
                 forName: .aitvarasFocusChanged, object: nil, queue: .main
@@ -1599,14 +1601,17 @@ final class AppModel {
     func refreshSidebandData() {
         guard let stores else { return }
         do {
+            try stores.sweepHeldNotifications()
             let refreshedSuggestions = try stores.pendingSuggestions()
             let refreshedActivity = try stores.recentActivity(limit: 300)
             let refreshedToday = try stores.todaySnapshot()
             let refreshedRoutines = try stores.commandRoutines(includeDismissed: true)
+            let heldMaintenanceAt = try stores.nextHeldNotificationMaintenanceAt()
             suggestions = refreshedSuggestions
             activity = refreshedActivity
             todaySnapshot = refreshedToday
             commandRoutines = refreshedRoutines
+            scheduleHeldNotificationMaintenance(at: heldMaintenanceAt)
         } catch {
             // Preserve the last known UI instead of pretending durable state
             // became empty when the database is temporarily unavailable.
@@ -1618,6 +1623,18 @@ final class AppModel {
         integrations?.focusCoach?.reconcile()
         focusSessionActive = integrations?.focusCoach?.isSessionActive ?? false
         refreshMonitoring()
+    }
+
+    private func scheduleHeldNotificationMaintenance(at deadline: Date?) {
+        automaticTasks["heldNotificationMaintenance"]?.cancel()
+        automaticTasks["heldNotificationMaintenance"] = nil
+        guard let deadline else { return }
+        automaticTasks["heldNotificationMaintenance"] = Task { [weak self] in
+            do { try await Task.sleep(for: .seconds(max(0.05, deadline.timeIntervalSinceNow))) }
+            catch { return }
+            guard !Task.isCancelled else { return }
+            self?.refreshSidebandData()
+        }
     }
 
     /// Mirrors the focus session for the companion overlay badge.

@@ -179,6 +179,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         ) { [weak self] _ in
             MainActor.assumeIsolated {
                 AppModel.shared.noteNightlySchedulingOpportunity()
+                AppModel.shared.refreshSidebandData()
                 self?.wakeBriefingPending = true
                 // A device wake can be a background maintenance wake. Wait
                 // for a screen/session signal before presenting anything.

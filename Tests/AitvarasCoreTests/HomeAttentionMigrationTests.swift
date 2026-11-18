@@ -100,7 +100,7 @@ import AitvarasStore
             try stores.db.queue.close()
         }
 
-        let migrated = Stores(db: try AitvarasDatabase(url: url))
+        let migrated = Stores(db: try AitvarasDatabase(url: url), heldNotificationClock: { timestamp })
         #expect(try migrated.activityRuns().count == runs.count)
         for run in runs {
             #expect(try migrated.activityRun(id: run.id) == run)
@@ -125,10 +125,11 @@ import AitvarasStore
         }
         try migrated.db.queue.close()
 
-        let reopened = Stores(db: try AitvarasDatabase(url: url))
+        let reopened = Stores(db: try AitvarasDatabase(url: url), heldNotificationClock: { timestamp })
         #expect(try reopened.activityRun(id: reviewed.id) == updatedRun)
         #expect(try reopened.activityRun(id: unresolved.id) == unresolved)
-        #expect(try reopened.heldNotifications() == [updatedHeld])
+        #expect(try reopened.heldNotifications().isEmpty)
+        #expect(try reopened.db.queue.read { try HeldNotification.fetchOne($0, key: held.id) } == updatedHeld)
         #expect(try reopened.activityEvents(runID: reviewed.id) == [event])
         #expect(try reopened.legacyActivity() == [legacyEvent])
         #expect(try reopened.value(forKey: "fixture.unrelated-setting") == "preserved")
