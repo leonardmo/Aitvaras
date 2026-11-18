@@ -6,7 +6,7 @@ export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
 
 xcodegen generate
 xcodebuild -project Aitvaras.xcodeproj -scheme Aitvaras -configuration Release \
-    -derivedDataPath .build/DerivedData -skipMacroValidation -skipPackagePluginValidation build | tail -3
+    -derivedDataPath .build/DerivedData -skipMacroValidation -skipPackagePluginValidation ARCHS=arm64 build | tail -3
 
 APP=.build/DerivedData/Build/Products/Release/Aitvaras.app
 if [ -d "$APP" ]; then
