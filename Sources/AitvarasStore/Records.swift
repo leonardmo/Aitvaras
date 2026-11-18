@@ -442,12 +442,16 @@ public struct HeldNotification: Codable, Sendable, Identifiable, Equatable,
     public var title: String
     public var body: String
     public var createdAt: Date
+    /// Temporary dismissal marker retained while the user can undo it.
+    public var dismissedAt: Date?
 
-    public init(id: UUID = UUID(), title: String, body: String, createdAt: Date = .now) {
+    public init(id: UUID = UUID(), title: String, body: String, createdAt: Date = .now,
+                dismissedAt: Date? = nil) {
         self.id = id
         self.title = title
         self.body = body
         self.createdAt = createdAt
+        self.dismissedAt = dismissedAt
     }
 }
 

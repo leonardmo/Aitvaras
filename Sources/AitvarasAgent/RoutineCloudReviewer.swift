@@ -35,11 +35,13 @@ public actor RoutineCloudReviewer {
 
     init(
         stores: Stores,
-        selectionProvider: @escaping @Sendable () -> CloudModelSelection
+        selectionProvider: @escaping @Sendable () -> CloudModelSelection,
+        reporter: ActivityReporter? = nil,
+        service: CloudAgentService? = nil
     ) {
         self.stores = stores
-        self.reporter = nil
-        self.service = CloudAgentService(stores: stores)
+        self.reporter = reporter
+        self.service = service ?? CloudAgentService(stores: stores, reporter: reporter)
         self.selectionOverride = nil
         self.selectionProvider = selectionProvider
     }
@@ -94,7 +96,8 @@ public actor RoutineCloudReviewer {
             selection: selection,
             prompt: prompt,
             access: .noTools,
-            maxTurns: 1)
+            maxTurns: 1,
+            routineReviewIDs: candidates.map(\.id))
         ) { response -> (DelegateConnector.AgentKind, [Review]) in
             let reviews = try Self.parse(
                 response.text, allowedIDs: Set(candidates.map(\.id)))

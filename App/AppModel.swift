@@ -84,9 +84,14 @@ final class AppModel {
     var activityReporter: ActivityReporter?
     var currentActivityRuns: [ActivityRun] = []
     var recentActivityRuns: [ActivityRun] = []
+    var homeAttentionSnapshot: HomeAttentionSnapshot?
+    var historyAttentionRequested = false
     var monitoredServices: [ServiceStatus] = []
     var backgroundPolicy = BackgroundWorkPolicy()
-    var monitoringError: String?
+    let attentionDismissals = AttentionDismissalHolder()
+    var monitoringError: String? {
+        didSet { attentionDismissals.updateMonitoringError(monitoringError) }
+    }
     var monitoringReady = false
     var monitoringObserver: NSObjectProtocol?
     var automaticTasks: [String: Task<Void, Never>] = [:]
@@ -265,6 +270,7 @@ final class AppModel {
             let db = try AitvarasDatabase()
             let stores = Stores(db: db)
             self.stores = stores
+            try stores.sweepHeldNotifications()
             try await AgentMCPRuntimeFile.sweep(stateDirectory: AitvarasPaths.stateDirectory,
                 audit: { _ = try stores.record($0) })
             let reporter = ActivityReporter(stores: stores)
@@ -279,7 +285,8 @@ final class AppModel {
             startupID = reporter.begin(ActivityRun(
                 category: .startup, trigger: .startup, title: "Starting Aitvaras",
                 stage: "Restoring saved conversations", executionLocation: "This Mac",
-                dataAccess: "Local app settings and saved history", dataDestination: "This Mac only"))
+                dataAccess: "Local app settings and saved history", dataDestination: "This Mac only",
+                jobKey: ActivityJobKey.startup))
             installMonitoringObserver()
             refreshMonitoring()
             await ActivityTaskContext.$runID.withValue(startupID) { await prepareCaptureAudioArchives() }
@@ -302,13 +309,19 @@ final class AppModel {
             if CommandLine.arguments.contains("--seed-demo-state") {
                 _ = try? StateFixtures.seedDemoProfile(into: stores)
             }
+            // `--seed-home-attention` (D36, TESTING.md) adds fictional attention
+            // items for Home/History checks. Only in an isolated profile.
+            if CommandLine.arguments.contains("--seed-home-attention"), AitvarasPaths.isIsolated {
+                _ = try? HomeAttentionFixtures.seed(into: stores)
+            }
 
             let mlx = MLXEngine(reportLoad: { event in
                 switch event {
                 case .started(let id, let model):
                     reporter.begin(ActivityRun(id: id, referenceID: model, category: .model,
                         title: "Prepare local model", stage: "Loading weights into memory",
-                        executionLocation: "This Mac", dataAccess: "Installed model files", dataDestination: "This Mac only"))
+                        executionLocation: "This Mac", dataAccess: "Installed model files", dataDestination: "This Mac only",
+                        jobKey: ActivityJobKey.modelPreparation(modelID: model)))
                 case .finished(let id, let succeeded):
                     reporter.finish(id: id, state: succeeded ? .succeeded : .failed,
                         outcome: succeeded ? "Local model is ready" : "Model preparation stopped or failed")
@@ -359,10 +372,11 @@ final class AppModel {
                 routineReviewer: routineReviewer, reporter: reporter)
             self.consolidator = consolidator
             startNightlyConsolidationScheduler()
-            NotificationCenter.default.addObserver(
-                forName: .aitvarasActivityChanged, object: nil, queue: .main
-            ) { _ in
-                Task { @MainActor in AppModel.shared.refreshSidebandData() }
+            for name in [Notification.Name.aitvarasActivityChanged, .aitvarasHeldNotificationsChanged,
+                         NSApplication.didBecomeActiveNotification] {
+                NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { _ in
+                    Task { @MainActor in AppModel.shared.refreshSidebandData() }
+                }
             }
             NotificationCenter.default.addObserver(
                 forName: .aitvarasFocusChanged, object: nil, queue: .main
@@ -378,7 +392,8 @@ final class AppModel {
             self.neuralTTS = neuralTTS
             let cleanupID = reporter.begin(ActivityRun(parentID: startupID, category: .startup,
                 trigger: .startup, title: "Check local voice helper", stage: "Cleaning up an unused helper",
-                executionLocation: "This Mac", dataAccess: "App-owned helper state", dataDestination: "This Mac only"))
+                executionLocation: "This Mac", dataAccess: "App-owned helper state", dataDestination: "This Mac only",
+                jobKey: ActivityJobKey.voiceHelperCleanup))
             automaticTasks["voiceHelperCleanup"] = Task { [weak self] in
                 defer { self?.automaticTasks["voiceHelperCleanup"] = nil }
                 await neuralTTS.cleanupUnownedServer()
@@ -734,7 +749,7 @@ final class AppModel {
                 }
             } catch {
                 await MainActor.run {
-                    AppModel.shared.reportBackgroundError(
+                    AppModel.shared.reportBackgroundError(code: .conversationArchive, subjectID: id,
                         title: "Chat could not be archived", error: error)
                 }
             }
@@ -1044,7 +1059,7 @@ final class AppModel {
                 // App is shutting down.
             } catch {
                 await MainActor.run {
-                    AppModel.shared.reportBackgroundError(
+                    AppModel.shared.reportBackgroundError(code: .voiceArchive, subjectID: id,
                         title: "Voice conversation could not be archived", error: error)
                 }
             }
@@ -1555,7 +1570,7 @@ final class AppModel {
         } catch {
             // Keep the durable sleep boundary intact so the next activation
             // can retry; connector intake itself is replay-safe and deduped.
-            reportBackgroundError(title: "Wake briefing could not be prepared", error: error)
+            reportBackgroundError(code: .wakeBriefing, title: "Wake briefing could not be prepared", error: error)
         }
     }
 
@@ -1594,16 +1609,20 @@ final class AppModel {
     }
 
     func refreshSidebandData() {
+        attentionDismissals.expireIfNeeded()
         guard let stores else { return }
         do {
+            try stores.sweepHeldNotifications()
             let refreshedSuggestions = try stores.pendingSuggestions()
             let refreshedActivity = try stores.recentActivity(limit: 300)
             let refreshedToday = try stores.todaySnapshot()
             let refreshedRoutines = try stores.commandRoutines(includeDismissed: true)
+            let heldMaintenanceAt = try stores.nextHeldNotificationMaintenanceAt()
             suggestions = refreshedSuggestions
             activity = refreshedActivity
             todaySnapshot = refreshedToday
             commandRoutines = refreshedRoutines
+            scheduleHeldNotificationMaintenance(at: heldMaintenanceAt)
         } catch {
             // Preserve the last known UI instead of pretending durable state
             // became empty when the database is temporarily unavailable.
@@ -1615,6 +1634,18 @@ final class AppModel {
         integrations?.focusCoach?.reconcile()
         focusSessionActive = integrations?.focusCoach?.isSessionActive ?? false
         refreshMonitoring()
+    }
+
+    private func scheduleHeldNotificationMaintenance(at deadline: Date?) {
+        automaticTasks["heldNotificationMaintenance"]?.cancel()
+        automaticTasks["heldNotificationMaintenance"] = nil
+        guard let deadline else { return }
+        automaticTasks["heldNotificationMaintenance"] = Task { [weak self] in
+            do { try await Task.sleep(for: .seconds(max(0.05, deadline.timeIntervalSinceNow))) }
+            catch { return }
+            guard !Task.isCancelled else { return }
+            self?.refreshSidebandData()
+        }
     }
 
     /// Mirrors the focus session for the companion overlay badge.
@@ -1697,7 +1728,7 @@ final class AppModel {
                 for result in results {
                     showRoutineResult(result)
                     if !result.success {
-                        reportBackgroundError(
+                        reportBackgroundError(code: .routineExecution, subjectID: result.routineID,
                             title: "Scheduled routine failed",
                             message: result.spokenText)
                     }

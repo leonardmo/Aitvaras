@@ -45,7 +45,8 @@ final class NeuralVoiceInstallManager {
         isInstalling = true
         activityID = reporter?.begin(ActivityRun(category: .model, title: "Install optional voice",
             stage: "Installing pinned voice components", executionLocation: "This Mac",
-            dataAccess: "Public voice packages and weights", dataDestination: "Package/model download hosts; no conversations"))
+            dataAccess: "Public voice packages and weights", dataDestination: "Package/model download hosts; no conversations",
+            jobKey: ActivityJobKey.voiceInstallation))
         isCancelling = false
         status = "Installing pinned voice engines and weights…"
         task = Task { [weak self] in

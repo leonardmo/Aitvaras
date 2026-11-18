@@ -97,7 +97,8 @@ public actor CommandRoutineExecutor {
         let runID = reporter?.begin(ActivityRun(category: .automation,
             title: scheduled ? "Scheduled routine" : "Command shortcut",
             stage: "Running fixed steps", progressCompleted: 0, progressTotal: routine.steps.count,
-            executionLocation: "Local", dataAccess: "Approved routine tools", dataDestination: "Configured connectors"))
+            executionLocation: "Local", dataAccess: "Approved routine tools", dataDestination: "Configured connectors",
+            jobKey: ActivityJobKey.routineExecution(routineID: routine.id)))
         return await ActivityTaskContext.$runID.withValue(runID ?? ActivityTaskContext.runID) {
             let result = await executeSteps(routine, scheduled: scheduled, at: date, runID: runID)
             if let runID { reporter?.finish(id: runID,

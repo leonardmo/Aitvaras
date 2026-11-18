@@ -5,6 +5,27 @@ import AitvarasStore
 @testable import AitvarasAgents
 
 @Suite(.timeLimit(.minutes(2))) struct AgentApprovalTests {
+    @Test func attentionDismissAllAndUndoLeaveAgentApprovalPending() async throws {
+        let stores = try inMemoryStores()
+        let run = ApprovalRun(provider: .claude)
+        let coordinator = AgentActionCoordinator(run: run, mode: .ask, provenance: .init(chatID: UUID())) {
+            _ = try stores.record($0)
+        }
+        try await coordinator.send(.init(text: "test"), willDeliver: {})
+        let request = await run.offer()
+        try await approvalWait { await coordinator.pendingRequests() == [request] }
+        let receipt = try stores.dismissAllAttention()
+        #expect(await coordinator.pendingRequests() == [request])
+        #expect(await run.responses.isEmpty)
+        _ = try stores.undoAttentionDismissal(receipt)
+        #expect(await coordinator.pendingRequests() == [request])
+        #expect(await run.responses.isEmpty)
+        // The existing explicit deny path remains the only decision here.
+        try await coordinator.respond(to: request, with: .deny)
+        #expect(await run.responses == [.deny])
+        try await coordinator.shutdown()
+    }
+
     @Test func managedApprovalAuditBelongsToDurableActivityAndDeniesOnStop() async throws {
         let stores = try inMemoryStores()
         let chat = try agentStoreChat(stores).0.id

@@ -1470,3 +1470,82 @@ In a disposable profile with external integrations disabled:
 The App wrapper and composer key handling still require `make app`, project
 regeneration and the host's isolated-profile native interaction checks. Package
 builds do not compile the SwiftUI App target or prove IME/focus behavior.
+
+## Home attention (D36, issue #18)
+
+Package coverage, all offline with injected clocks:
+
+`ActivityAttentionTests` verifies the package's uncapped
+`Stores.activityAttentionSnapshot()` problem projection against persisted runs:
+exact-key recovery ordering, grouped occurrence counts, unknown outcomes,
+helper ownership, restart and queues beyond 100 failures. Reads preserve the
+original runs, acknowledgements, stages and events. Coded background problems
+remain manual-only while no producer records success for their problem key;
+service-check counters and successful jobs with other keys do not resolve them.
+This projection is the shared input for subsequent Home, bulk-dismissal and
+History attention integration; these package checks do not establish UI behaviour.
+
+`HeldNotificationLifecycleTests` injects a wall clock through `Stores` and checks
+the shared active-update predicate, the exact 24-hour boundary, conditional
+restore within eight seconds, restart cleanup, and exact-ID briefing consumption
+while dismissal and new arrivals race composition. Lifecycle mutations and their
+metadata-only audits commit together; injected audit failures must roll back all
+changes. Audits contain action/count/IDs and are not memory evidence. Startup,
+foreground, wake and the next retention/dismissal deadline refresh held updates;
+the App hooks require host compilation and do not implement the Undo bar.
+
+`AttentionDismissalTests` covers single and bulk dismissal receipts: Dismiss all
+skips approvals, tool suggestions, unsaved captures, every unknown outcome and
+the monitoring warning; Undo is single-use within eight seconds and never
+restores consumed or expired updates, never hides a newer failure and never
+resurrects a failure that a later success cleared. `HomeAttentionCardTests` and
+`AttentionHistoryTests` check row order, the five-row cap, the exact "N more"
+count and that History's attention mode reaches every omitted item.
+`ActivityRunDetailTests` checks the detail summary sentences and which actions
+appear per state. `StoredConversationRetryTests` proves Retry archives only the
+requested stored conversation and refuses, without model work, when it is open,
+project-owned, missing, changed, too short, already archived or in progress.
+
+**Seeded profile.** `--seed-home-attention` (isolated profiles only; it also
+disables external integrations) adds fictional attention items once: a pending
+tool suggestion, a grouped indexing failure ×3, a failed model download, an
+interrupted consolidation, a delivery with an unknown outcome, a failed archive
+of a stored conversation (Retry and Open conversation), two held updates and
+the automatic-work prompt. It also seeds a capture-summary failure that a later
+success already recovered (must not appear) and an expired held update (removed
+on the first read). `HomeAttentionFixtureTests` keeps the fixture, its fixed
+IDs and the self-drive scenario in step.
+
+```sh
+export AITVARAS_STATE_DIR="$(mktemp -d -t aitvaras-attention)"
+.build-xcode/Build/Products/Debug/Aitvaras.app/Contents/MacOS/Aitvaras --seed-home-attention
+```
+
+**Self-drive.** `UITests/self-drive/home-attention.json` declares
+`"seed": ["homeAttention"]`, so the driver seeds its throwaway profile after
+bootstrap. It checks the card (Approve/Reject without ✕ on the suggestion, the
+grouped indexing row with 3 occurrences, "N more"), opens the grouped detail
+sheet (summary, earlier failures, Dismiss, Details) and closes it, dismisses
+one group and undoes it, runs Dismiss all and verifies the suggestion and the
+unknown outcome stay before undoing it, follows "N more" into History's
+attention mode (screenshot only: the driver cannot reach SwiftUI `List` rows,
+so `AttentionHistoryTests` covers reachability), opens the archive failure's
+details (Retry, Open conversation) and opens the conversation, then dismisses
+four problems so the held updates reach Home and dismisses one of them. The
+driver includes an attached sheet in its accessibility tree, press dispatch
+and screenshots (`<name>-sheet.png`). Container identifiers use
+`.accessibilityElement(children: .contain)`; without it SwiftUI lets the
+container's identifier replace its children's after a re-render. Run it in
+both appearances at the minimum and default sizes:
+
+```sh
+for look in light dark; do for size in 800x500 1080x720; do
+  AITVARAS_SELF_DRIVE_APPEARANCE=$look AITVARAS_SELF_DRIVE_SIZE=$size scripts/run-self-drive.sh home-attention 300
+  mv .build-e2e/self-drive/home-attention .build-e2e/self-drive/home-attention-$look-$size
+done; done
+```
+
+**Needs a person:** reviewing the card and detail screenshots in light and dark,
+keyboard focus on the ✕ controls (Tab reaches each one; Space activates it),
+VoiceOver labels ("Dismiss …"), ⌘Z while the Undo bar is visible, and a real
+Retry against a local model.

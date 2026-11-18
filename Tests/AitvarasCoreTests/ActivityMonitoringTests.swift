@@ -20,13 +20,13 @@ import AitvarasStore
 
     @Test func repeatedProblemsDeduplicateAcrossReporterInstancesUntilReviewed() throws {
         let stores = try inMemoryStores()
-        let first = ActivityReporter(stores: stores).problem(title: "Folder check unavailable", outcome: "Retry later")
-        let second = ActivityReporter(stores: stores).problem(title: "Folder check unavailable", outcome: "Still unavailable")
+        let first = ActivityReporter(stores: stores).problem(code: .indexing, title: "Folder check unavailable", outcome: "Retry later")
+        let second = ActivityReporter(stores: stores).problem(code: .indexing, title: "Folder check unavailable", outcome: "Still unavailable")
         #expect(first == second)
         #expect(try stores.activityAttentionRuns().count == 1)
         #expect(try stores.activityRun(id: first)?.outcome == "Still unavailable")
         try stores.acknowledgeActivityRun(id: first)
-        let next = ActivityReporter(stores: stores).problem(title: "Folder check unavailable", outcome: "New incident")
+        let next = ActivityReporter(stores: stores).problem(code: .indexing, title: "Folder check unavailable", outcome: "New incident")
         #expect(next != first)
         #expect(try stores.activityRuns().count == 2)
     }
@@ -238,6 +238,9 @@ import AitvarasStore
                 try db.execute(sql: "DELETE FROM grdb_migrations WHERE identifier = 'v13-activity-monitoring'")
                 try db.execute(sql: "DELETE FROM grdb_migrations WHERE identifier = 'v15-activity-review'")
                 try db.execute(sql: "DELETE FROM grdb_migrations WHERE identifier = 'v14-service-check-summaries'")
+                try db.execute(sql: "ALTER TABLE heldNotification DROP COLUMN dismissedAt")
+                try Table<Row>("grdb_migrations")
+                    .filter(Column("identifier") == "v36-home-attention").deleteAll(db)
             }
         }
         let migrated = Stores(db: try AitvarasDatabase(url: url))

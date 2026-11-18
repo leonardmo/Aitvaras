@@ -105,7 +105,7 @@ public actor Consolidator {
         let runID = reporter?.begin(ActivityRun(category: .memory,
             title: "Memory consolidation", stage: "Gathering saved episodes",
             executionLocation: "Local", dataAccess: "Archived summaries and memory facts",
-            dataDestination: "Local memory"))
+            dataDestination: "Local memory", jobKey: ActivityJobKey.consolidation))
         return await ActivityTaskContext.$runID.withValue(runID ?? ActivityTaskContext.runID) {
             let result = await consolidate(now: now, runID: runID)
             if let runID { reporter?.finish(id: runID,
@@ -360,7 +360,7 @@ public actor Consolidator {
              .suggestionAccepted, .suggestionRejected, .confirmationDenied:
             true
         case .eventReceived, .classification, .suggestionOffered,
-             .notificationQueued, .notificationSent, .notificationFailed,
+             .notificationQueued, .notificationSent, .notificationFailed, .heldNotificationChanged, .attentionChanged,
              .delegationRun, .consolidationRun, .captureFinished, .wakeBriefing,
              .shortcutLearned, .shortcutTaken, .automationSuggested,
              .automationApproved, .automationChanged, .automationRun:

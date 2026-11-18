@@ -115,7 +115,7 @@ final class FocusCoach {
                 startMonitoring()
             }
         } catch {
-            notifications.reportError?("Focus session state could not be restored", error)
+            notifications.reportError?(.focusRestore, "Focus session state could not be restored", error)
         }
     }
 
@@ -127,7 +127,7 @@ final class FocusCoach {
             if state.active { try stores.setValue("0", forKey: Self.sessionKey) }
             cachedSessionActive = false
             stopMonitoring()
-        } catch { notifications.reportError?("Focus state needs attention", error) }
+        } catch { notifications.reportError?(.focusChange, "Focus state needs attention", error) }
     }
 
     func suspendMonitoring() {
@@ -165,7 +165,7 @@ final class FocusCoach {
         } catch {
             // A failed durable read is not the same as a disabled or ended
             // session. Preserve the last monitoring state and surface it.
-            notifications.reportError?("Focus session state could not be refreshed", error)
+            notifications.reportError?(.focusRefresh, "Focus session state could not be refreshed", error)
         }
     }
 
@@ -367,7 +367,7 @@ final class FocusCoach {
                 ? "No goals set today"
                 : "Goals completed: \(done) of \(goals.count)"
         } catch {
-            notifications.reportError?("Goals could not be loaded for the focus summary", error)
+            notifications.reportError?(.focusSummaryGoals, "Goals could not be loaded for the focus summary", error)
             goalLine = "Goal status unavailable"
         }
 
@@ -418,7 +418,7 @@ final class FocusCoach {
         do {
             goals = try stores.goals(day: Goal.today())
         } catch {
-            notifications.reportError?("Goals could not be loaded for focus coaching", error)
+            notifications.reportError?(.focusCoachingGoals, "Goals could not be loaded for focus coaching", error)
             return
         }
         let openGoals = goals.filter { !$0.done }
@@ -493,7 +493,7 @@ final class FocusCoach {
                 .trimmingCharacters(in: .whitespacesAndNewlines), !saved.isEmpty else { return }
             base = saved
         } catch {
-            notifications.reportError?("Focus shortcut could not be loaded", error)
+            notifications.reportError?(.focusShortcutRead, "Focus shortcut could not be loaded", error)
             return
         }
 
@@ -512,7 +512,7 @@ final class FocusCoach {
             } catch is CancellationError {
                 return
             } catch {
-                self?.notifications.reportError?("Focus shortcut could not run", error)
+                self?.notifications.reportError?(.focusShortcutExecution, "Focus shortcut could not run", error)
             }
         }
     }
@@ -521,7 +521,7 @@ final class FocusCoach {
         do {
             _ = try stores.record(event)
         } catch {
-            notifications.reportError?("Focus activity could not be saved", error)
+            notifications.reportError?(.focusActivitySave, "Focus activity could not be saved", error)
         }
     }
 }

@@ -59,7 +59,7 @@ public enum AitvarasPaths {
     public static func shouldDisableExternalIntegrations(
         arguments: [String], environment: [String: String]
     ) -> Bool {
-        arguments.contains("--seed-demo-state")
+        arguments.contains("--seed-demo-state") || arguments.contains("--seed-home-attention")
             || environment[disableExternalIntegrationsEnvVar] == "1"
     }
 
