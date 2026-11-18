@@ -48,6 +48,8 @@ struct ConnectorsView: View {
                            connectorIDs: ["delegate"])
             }
 
+            ForgeConnectionsSection()
+
             Section("Connections") {
                 let active = activeConnections
                 if active.isEmpty {

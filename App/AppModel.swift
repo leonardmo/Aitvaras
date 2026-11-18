@@ -480,7 +480,7 @@ final class AppModel {
         chatModel = ChatModel(manager: manager, stores: stores, backends: available, profileBackends: profileBackends,
             claudeDefaultDirectory: metadataUserDirectory ?? (isolated
                 ? AitvarasPaths.stateDirectory.appendingPathComponent("FakeProviders/claude")
-                : FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".claude")), agentSetup: setup)
+                : FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".claude")), agentSetup: setup, forgeEnvironment: environment)
         chatModel?.didCreateChat = { [weak self] id in self?.openWorkspaceChat(id) }
         chatModel?.activityChanged = { [weak self] in self?.refreshWorkspaces() }
         chatModel?.observeSidebar(workspaceSidebarChats)

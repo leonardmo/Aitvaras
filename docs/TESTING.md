@@ -1470,3 +1470,41 @@ In a disposable profile with external integrations disabled:
 The App wrapper and composer key handling still require `make app`, project
 regeneration and the host's isolated-profile native interaction checks. Package
 builds do not compile the SwiftUI App target or prove IME/focus behavior.
+
+### Forge requests (D36)
+
+Offline `ForgeTests` exercise fake `gh`/`glab` JSON, host selection (including
+enterprise and unsupported hosts), signed-out/missing CLIs, view/create/checks/
+comments, unknown fields, malformed output, fixed failures, timeout, confirmation,
+duplicate creation, changed branch tips, metadata-only audit and the complete
+migration chain with one binding per chat and watch/watermark round-trips.
+
+Host checks, using an isolated profile and generic disposable repositories:
+
+- Open Connections → Git hosts. Check both missing and installed CLIs, public
+  and enterprise/self-hosted auth listings. Opening it never starts sign-in.
+  Check a signed-out host's sign-in action, validated browser launch, successful
+  completion, cancellation and timeout. No token or raw diagnostic enters UI,
+  logs, activity or the database.
+- Push a feature branch. Create a request with the first commit subject as
+  title and a bullet list of all subjects since origin's default branch as
+  body. Edit both fields, select Draft with the segmented control and cancel:
+  no request is created. Create confirms publication. Repeat with a request
+  already on the branch: it binds without another create.
+- Change the committed tip/branch while the sheet is open: creation refuses
+  stale input. Check an unpushed branch, default branch, detached HEAD and a
+  failed worktree. An unsupported host still permits Git push.
+- Reopen the chat and verify the request number, draft/open/closed/merged state,
+  review decision and mergeability. Refresh checks with passing, failing,
+  skipped and pending jobs; hover for failing names. Refresh after push and
+  manually; idle chat must not poll forge APIs. Simulate network/auth failures
+  and verify fixed errors and preserved request identity.
+- Open the website button and merge there. There is no in-app merge action.
+  Confirm only one identity row is bound per chat, watch remains false, and no
+  title, body, comment content or URL is included in activity payloads.
+- With both `origin` and another forge remote configured, verify all reads and
+  creation target origin. Test SSH and HTTPS origin URLs and GitLab subgroups.
+
+The sandbox package build does not compile App. The supervisor must run
+`make app`, host checks and isolated-profile visual/interaction checks. Real
+agent-assisted checks use a cheap model only; forge commands require no model.

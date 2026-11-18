@@ -1050,6 +1050,20 @@ public final class AitvarasDatabase: Sendable {
                 BEGIN SELECT RAISE(ABORT, 'Turn must belong to its chat session'); END;
                 """)
         }
+        m.registerMigration("v36-agent-pull-request") { db in
+            try db.create(table: "agentPullRequest") { t in
+                t.primaryKey("chatID", .text).references("workspaceChat", onDelete: .cascade)
+                t.column("forge", .text).notNull()
+                t.column("host", .text).notNull()
+                t.column("repo", .text).notNull()
+                t.column("number", .integer).notNull().check { $0 > 0 }
+                t.column("url", .text).notNull()
+                t.column("watch", .boolean).notNull().defaults(to: false)
+                t.column("createdAt", .datetime).notNull()
+                t.column("commentWatermark", .text)
+                t.column("checkWatermark", .text)
+            }
+        }
         return m
     }
 }
