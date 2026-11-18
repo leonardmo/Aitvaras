@@ -17,7 +17,7 @@ struct AgentComposerCompletionView: View {
     @FocusState private var searching: Bool
 
     private var filteredCommands: [AgentCommand] {
-        commands.filter { query.isEmpty || $0.name.localizedCaseInsensitiveContains(query) || $0.description.localizedCaseInsensitiveContains(query) }
+        AgentCommandCatalog.search(commands, query: query)
     }
     private var count: Int { trigger.kind == .file ? files.count : filteredCommands.count }
     var body: some View {

@@ -43,6 +43,27 @@ public struct AgentDiffLine: Sendable, Equatable, Identifiable {
     public let newLine: Int?
 }
 
+public struct AgentDiffSelection: Sendable, Equatable {
+    public private(set) var selected: Set<Int> = []
+    public private(set) var anchor: Int?
+    public init() {}
+    public mutating func select(_ id: Int, in lines: [AgentDiffLine], extending: Bool = false, toggling: Bool = false) {
+        guard lines.contains(where: { $0.id == id && $0.kind != .header }) else { return }
+        if extending, let anchor {
+            let range = min(anchor, id)...max(anchor, id)
+            let values = lines.filter { range.contains($0.id) }
+            // A range belongs to one hunk, and stale anchors cannot select data.
+            guard values.contains(where: { $0.id == anchor }), !values.contains(where: { $0.kind == .header }) else { return }
+            selected = Set(values.map(\.id))
+        } else {
+            if toggling {
+                if selected.contains(id) { selected.remove(id) } else { selected.insert(id) }
+            } else { selected = [id] }
+            anchor = id
+        }
+    }
+}
+
 public enum AgentDiffContext {
     public static func lines(_ diff: String) -> [AgentDiffLine] {
         var old: Int?, new: Int?, oldRemaining = 0, newRemaining = 0
@@ -74,6 +95,7 @@ public enum AgentDiffContext {
     public static func message(path: String, diff: String, selected: Set<Int>) -> String? {
         let selected = lines(diff).filter { selected.contains($0.id) && $0.kind != .header }
         guard !selected.isEmpty else { return nil }
+        let removedOnly = selected.allSatisfy { $0.kind == .removed }
         // Separate non-contiguous selections instead of claiming omitted lines
         // were selected. Replacement selections use the new-file range.
         var groups: [[AgentDiffLine]] = []
@@ -82,10 +104,10 @@ public enum AgentDiffContext {
             else { groups.append([line]) }
         }
         let blocks = groups.compactMap { group -> String? in
-            let removedOnly = group.allSatisfy { $0.kind == .removed }
             let numbers = group.compactMap { removedOnly ? $0.oldLine : $0.newLine }
             guard let first = numbers.min(), let last = numbers.max() else { return nil }
-            let snippet = group.map { ($0.kind == .added ? "+" : $0.kind == .removed ? "-" : " ") + $0.text }.joined(separator: "\n")
+            let snippet = group.filter { removedOnly || $0.kind != .removed }
+                .map { (removedOnly ? "-" : "") + $0.text }.joined(separator: "\n")
             let fence = String(repeating: "`", count: max(3, (snippet.components(separatedBy: CharacterSet(charactersIn: "`" ).inverted).map(\.count).max() ?? 0) + 1))
             return "\(path):L\(first)-L\(last)\n\(fence)\n\(snippet)\n\(fence)"
         }

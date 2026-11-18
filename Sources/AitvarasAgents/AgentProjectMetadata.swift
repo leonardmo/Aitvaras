@@ -12,6 +12,7 @@ public struct AgentRuleMetadata: Sendable, Equatable {
     public let paths: [String]
 }
 public struct AgentProjectMetadata: Sendable, Equatable {
+    public var commandSources = AgentCommandSources()
     public var hooks: [AgentHookMetadata] = []
     public var rules: [AgentRuleMetadata] = []
     public var warnings: [String] = []
@@ -65,6 +66,7 @@ public actor AgentProjectMetadataReader {
     }
     public func read() -> AgentProjectMetadata {
         var metadata = AgentProjectMetadata()
+        metadata.commandSources = .read(projectDirectory: projectDirectory, userDirectory: userDirectory)
         var files: [(URL, String)] = []
         if let userDirectory { files.append((userDirectory.appendingPathComponent("settings.json"), "User settings")) }
         var projectInfo = stat()

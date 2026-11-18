@@ -2,6 +2,13 @@ import Foundation
 
 /// Provider choices are scoped to a chat session; changing them never sends.
 public enum ChatSettings {
+    /// Only the selected profile controls the composer's proactive sign-in row.
+    public static func signInProvider(for choice: AgentProviderChoice,
+                                      statuses: [AgentProviderChoice: AgentStatus]) -> AgentProvider? {
+        guard choice.provider != .local, let status = statuses[choice],
+              status.installed, status.authentication == .signedOut else { return nil }
+        return choice.provider
+    }
     public static func claudeModel(_ model: String) -> String { model.isEmpty || model == "default" || model == "Default (recommended)" ? "opus" : model }
     public static func claudeEffort(_ effort: String?) -> String { effort.flatMap { $0.isEmpty ? nil : $0 } ?? "medium" }
     public static func claudeModels(_ models: [AgentModel]) -> [AgentModel] {

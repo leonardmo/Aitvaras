@@ -171,7 +171,7 @@ struct AgentChatView: View {
                                 ProgressView().controlSize(.mini)
                                 Button("Cancel") { chat.cancelSignIn() }
                                     .accessibilityIdentifier("chat.signin.cancel")
-                            } else if let provider = chat.authProvider {
+                            } else if let provider = chat.composerAuthProvider {
                                 Button { chat.signIn(provider) } label: {
                                     Text("Sign in")
                                         .foregroundStyle(colorScheme == .dark ? Color.black : Color.white)
@@ -298,13 +298,24 @@ struct AgentChatView: View {
         }
         .onChange(of: chatID) { showingCompletion = false; completion = nil; placeComposerCaret() }
         .onChange(of: chat.choice) { showingCompletion = false; completion = nil; placeComposerCaret() }
-        .onChange(of: chat.composerInsertionRevision) { placeComposerCaret() }
+        .task(id: chat.composerInsertionRevision) { await focusComposerAfterInsertion() }
         .onChange(of: showingCompletion) {
             if !showingCompletion {
-                composerFocused = true
-                Task { await Task.yield(); if !showingCompletion { placeComposerCaret() } }
+                Task { await focusComposerAfterInsertion() }
             }
         }
+    }
+    @MainActor private func focusComposerAfterInsertion() async {
+        let revision = chat.composerInsertionRevision
+        let draft = chat.draft
+        // Clear the old binding before focus: TextField can select the entire
+        // externally replaced value when its field editor becomes first responder.
+        composerTextSelection = nil
+        composerFocused = true
+        await Task.yield()
+        guard !Task.isCancelled, !showingCompletion,
+              revision == chat.composerInsertionRevision, draft == chat.draft else { return }
+        placeComposerCaret()
     }
     private func placeComposerCaret() {
         let range = AgentComposerCaret.afterInsertion(chat.draft)
@@ -573,7 +584,10 @@ struct AgentChatView: View {
     private var composerMessageColor: Color {
         colorScheme == .dark ? Color(white: 0.92) : Color(white: 0.12)
     }
-    private var composerMessage: String? { chat.error ?? workspaceError ?? outcomeError ?? chat.state?.mcpSetup?.notice }
+    private var composerMessage: String? {
+        if let provider = chat.selectedSignInProvider { return "Sign in to \(provider.rawValue.capitalized)" }
+        return chat.error ?? workspaceError ?? outcomeError ?? chat.state?.mcpSetup?.notice
+    }
     private var outcomeError: String? {
         if case .failed(let failure) = chat.state?.outcome {
             return AgentFailure.sendMessage(for: failure, provider: chat.state?.entries.last?.provider ?? chat.provider)

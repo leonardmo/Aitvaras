@@ -244,6 +244,10 @@ final class ChatModel {
     private var terminating = false
     private(set) var error: String?
     private(set) var authProvider: AgentProvider?
+    var selectedSignInProvider: AgentProvider? {
+        ChatSettings.signInProvider(for: choice, statuses: profileStatuses)
+    }
+    var composerAuthProvider: AgentProvider? { selectedSignInProvider ?? authProvider }
     private(set) var signingIn: AgentProvider?
     private(set) var statuses: [AgentProvider: AgentStatus] = [:]
     private(set) var catalogs: [AgentProviderChoice: [AgentModel]] = [:]
@@ -455,6 +459,7 @@ final class ChatModel {
     }
     var isBusy: Bool { state?.isRunning == true || chatID.map { sending[$0] != nil } == true }
     var canSubmit: Bool {
+        guard selectedSignInProvider == nil else { return false }
         guard let id = chatID else { return !terminating && !creatingChat && newProjectID != nil && signingIn == nil }
         return !terminating && !gitBusy && !stopping.contains(id) && sending[id] == nil && !submittedText.contains(id) && signingIn == nil
             && (!isBusy || statuses[provider]?.capabilities.contains(.followups) == true)

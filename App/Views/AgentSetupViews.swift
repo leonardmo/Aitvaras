@@ -28,6 +28,7 @@ struct AgentSetupSection: View {
 private struct AgentSetupContent: View {
     @Bindable var setup: AgentSetupModel
     @State private var addingServer = false
+    @State private var expandedCommandGroups = Set(AgentCommand.Group.allCases.filter(\.initiallyExpanded))
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -132,15 +133,13 @@ private struct AgentSetupContent: View {
         let skills = (snapshot?.skills ?? []).filter { !names.contains($0) }.map { AgentCommand(name: $0, description: "") }
         let commands = AgentCommandCatalog.withConversationCommands((snapshot?.commands ?? []) + skills)
         ForEach(AgentCommand.Group.allCases) { group in
-            let values = commands.filter { $0.group == group }
+            let values = commands.filter { (snapshot?.metadata.commandSources ?? .init()).group(for: $0) == group }
             if !values.isEmpty {
-                if group == .project || group == .user {
-                    Text(group.rawValue).font(.subheadline).foregroundStyle(.secondary)
-                    commandRows(values)
-                } else {
-                    DisclosureGroup { commandRows(values) } label: {
-                        Text(group.rawValue + " (\(values.count))").font(.subheadline)
-                    }
+                DisclosureGroup(isExpanded: Binding(
+                    get: { expandedCommandGroups.contains(group) },
+                    set: { if $0 { expandedCommandGroups.insert(group) } else { expandedCommandGroups.remove(group) } }
+                )) { commandRows(values) } label: {
+                    Text(group.rawValue + " (\(values.count))").font(.subheadline)
                 }
             }
         }

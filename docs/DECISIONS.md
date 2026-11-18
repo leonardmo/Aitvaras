@@ -462,8 +462,10 @@ its chats fall back to default Claude on their next send. Switching Claude
 profiles is the same acknowledged catch-up as switching providers (D30/D31).
 A fresh app profile starts on
 Local, except when no local model is available and an installed, signed-in provider
-exists. Signed-out providers remain selectable; Send retains the existing single
-sign-in action and safe retry. Setup includes a visible “AI providers” card
+exists. Signed-out providers remain selectable; the composer immediately shows
+the single inline sign-in action and disables Send while the selected profile is
+known to be signed out. Sign-in failures discovered during Send retain safe retry.
+Setup includes a visible “AI providers” card
 (`settings.providers`) opening `AgentProviderSettingsView`. Section 4 of the unified
 chat plan still governs gauges, icons, flat menus and the absence of start buttons
 and checkboxes.
@@ -680,9 +682,14 @@ and a picked command's argument hint appears in the composer. Approved repo
 servers with unreported status say “Approved — starts with the next chat” and
 offer Revoke approval, which removes approval without adding a denial. Setup
 orders servers, permission source, hooks, rules, then compact one-line commands
-with full descriptions in tooltips. Project/User groups are expanded;
-Plugin/Built-in groups are collapsed. Entries without CLI source metadata stay
-in a separate collapsed “Source not reported” group rather than guessing.
+with full descriptions in tooltips. Project is expanded by default; User,
+Plugin, Built-in and Other are collapsed. When CLI source metadata is absent,
+display grouping matches names against project `.claude/skills/*/SKILL.md` and
+`.claude/commands/*.md`, then the user CLI home's `skills/` and `commands/`
+(`CLAUDE_CONFIG_DIR`, otherwise `~/.claude`). This reads names and file metadata,
+never skill or command contents. Namespaced plugin commands and exact known CLI
+built-ins get their respective groups; remaining names stay Other. These hints
+never discover executable commands or override the CLI's reported source.
 
 New/default Claude choices use the CLI's `opus` alias, displayed as “Opus
 (newest)”, with Medium effort. Existing explicit models and effort choices are
@@ -697,7 +704,9 @@ only the next explicit Send resumes its native session.
 Native slash-command envelopes render as the command name and arguments.
 Programmatic composer insertions leave an empty selection at the end; quote
 replies end with a newline. Return accepts the highlighted completion, several
-rows remain visible, and `/btw` is an explicit Aitvaras composer command.
+rows remain visible, and `/btw` is an explicit Aitvaras composer command. Command
+search ranks name prefixes, name substrings, then descriptions, alphabetically
+within each tier.
 Assistant selection views have no intrinsic width and use the proposed
 transcript width on every measurement, including after completion and resize.
 
@@ -721,6 +730,9 @@ support **Reply with quote** from a
 read-only native text selection (whole-message fallback), and **Add to message**
 from selected diff lines. Diff context includes the path, fenced snippet and
 new-file line range, using old-file numbers for removed-only selections.
+Shift-click and dragging extend from an anchor within one hunk/file. Added and
+context lines quote file text without diff markers; removed lines are omitted
+unless the entire selection is removed-only, when their `-` markers are kept.
 
 Native `/btw` is unavailable headless and writes to the session. Side questions
 instead use a separate ephemeral Claude fork with `--resume <sid>

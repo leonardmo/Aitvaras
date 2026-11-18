@@ -93,6 +93,14 @@ done()
         #expect(quote.hasSuffix("\n"))
         #expect(AgentComposerCaret.afterInsertion(quote).location == (quote as NSString).length)
         #expect(AgentComposerCaret.afterInsertion(quote).length == 0)
+        let fileTrigger = try #require(AgentComposerTrigger.detect("@exa"))
+        let mention = try #require(fileTrigger.selecting("@example.swift", in: "@exa"))
+        let diff = AgentConversationText.appending("example.swift:L1-L1\n```\ntext\n```", to: "Draft")
+        for text in [inserted, quote, mention, diff, "Edited 🐉 message"] {
+            let typed = NSMutableString(string: text)
+            typed.replaceCharacters(in: AgentComposerCaret.afterInsertion(text), with: "x")
+            #expect(typed as String == text + "x")
+        }
         let commands = AgentCommandCatalog.withConversationCommands([.init(name: "shout", description: "Repeat"), .init(name: "btw", description: "Native command")])
         #expect(commands.filter { $0.name == "btw" } == [AgentCommandCatalog.sideQuestion])
         #expect(AgentCommandCatalog.sideQuestion.insertion == "/btw")
@@ -109,6 +117,52 @@ done()
         #expect(commands.first { $0.name == "other" }?.group == .unknown)
         let old = try JSONDecoder().decode(AgentCommand.self, from: Data(#"{"name":"shout","description":"Repeat"}"#.utf8))
         #expect(old.group == .unknown)
+    }
+
+    @Test func commandSearchPrioritizesNamesAndSortsEachTier() {
+        let commands: [AgentCommand] = [
+            .init(name: "computer-use", description: "Show a window"),
+            .init(name: "shout", description: "Repeat"),
+            .init(name: "artifact-diagramming", description: "Show a diagram"),
+            .init(name: "z-sho", description: "Example"),
+            .init(name: "Short", description: "Example"),
+            .init(name: "a-sho", description: "Example"),
+            .init(name: "unrelated", description: "Example")
+        ]
+        let expected = ["Short", "shout", "a-sho", "z-sho", "artifact-diagramming", "computer-use"]
+        #expect(AgentCommandCatalog.search(commands, query: "sho").map(\.name) == expected)
+        #expect(AgentCommandCatalog.search(commands.reversed(), query: "SHO").map(\.name) == expected)
+        #expect(AgentCommandCatalog.search(commands, query: "missing").isEmpty)
+        #expect(AgentCommandCatalog.search(commands, query: "").count == commands.count)
+    }
+
+    @Test func commandSourcesUseNamesOnlyAndNeverAddUndiscoveredCommands() async throws {
+        let fixture = try AgentExecutableFixture("exit 0"); defer { fixture.remove() }
+        let project = fixture.directory.appendingPathComponent("project")
+        let user = fixture.directory.appendingPathComponent("cli-home")
+        let manager = FileManager.default
+        for (root, name) in [(project.appendingPathComponent(".claude"), "project-skill"), (user, "user-skill")] {
+            let skill = root.appendingPathComponent("skills/" + name)
+            try manager.createDirectory(at: skill, withIntermediateDirectories: true)
+            // Invalid text proves grouping does not parse the file's contents.
+            try Data([0xff]).write(to: skill.appendingPathComponent("SKILL.md"))
+            try manager.createDirectory(at: root.appendingPathComponent("commands"), withIntermediateDirectories: true)
+            try Data([0xff]).write(to: root.appendingPathComponent("commands/" + name + "-command.md"))
+        }
+        try manager.createDirectory(at: project.appendingPathComponent(".claude/skills/incomplete"), withIntermediateDirectories: true)
+        let metadata = await AgentProjectMetadataReader(projectDirectory: project, userDirectory: user).read()
+        let sources = metadata.commandSources
+        #expect(sources.project == ["project-skill", "project-skill-command"])
+        #expect(sources.user == ["user-skill", "user-skill-command"])
+        for name in sources.project { #expect(sources.group(for: .init(name: name, description: "")) == .project) }
+        for name in sources.user { #expect(sources.group(for: .init(name: name, description: "")) == .user) }
+        #expect(sources.group(for: .init(name: "plugin:check", description: "")) == .plugin)
+        #expect(sources.group(for: .init(name: "help", description: "")) == .builtIn)
+        #expect(sources.group(for: .init(name: "incomplete", description: "")) == .unknown)
+        #expect(sources.group(for: .init(name: "project-skill", description: "", source: "user")) == .user)
+        #expect(AgentCommand.Group.allCases.filter(\.initiallyExpanded) == [.project])
+        #expect(AgentCommand.Group.unknown.rawValue == "Other")
+        #expect(AgentCommandSources.read(projectDirectory: project.appendingPathComponent("missing"), userDirectory: nil) == .init())
     }
 
     @Test func slashCommandMarkupIsNormalizedOnlyForCompleteEnvelopes() throws {

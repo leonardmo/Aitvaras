@@ -172,7 +172,11 @@ terminate on their own and are reaped during cleanup. Coverage includes:
   refresh races, fingerprint-bound approval and atomic secret-reference saves.
 - `AgentReviewRegressionTests`: prompt-free MCP status and secret-field
   projection, healthy-transport refresh, revocation, composer caret ranges,
-  command groups/envelopes, stable transcript reordering and Opus/Medium defaults.
+  command groups/envelopes, name-first search ranking, metadata-only source
+  inference, stable transcript reordering and Opus/Medium defaults.
+- `ChatSettingsTests`: selected-profile sign-in gating, including signed-in,
+  missing-status and uninstalled choices. `AgentConversationTextTests` covers
+  anchored ranges, hunk boundaries and marker-free current-file snippets.
 - `AgentConversationForkTests`, `AgentConversationTextTests`,
   `AgentSideQuestionTests`: exact fork/side-question argv, fork records and
   identities, separate committed-tip worktrees, first-message editing, quote
@@ -286,6 +290,17 @@ the native sessions created by this check.
     `/btw`. Ensure the caret follows the insertion with no selection and the
     popup shows several rows. Quote a selection and type below it. Native
     command markup must display as `/shout <arguments>`, including after refresh.
+    Repeat caret/typing checks with Add to message, file mentions and Edit &
+    resend, both with the composer already focused and after focus moves away.
+    `/sho` must rank `/shout` before description-only matches. Skills and commands
+    must show Project expanded, with User/Plugin/Built-in/Other collapsed;
+    verify project and user directory names classify CLI entries with no source.
+    Select a signed-out Claude profile: the inline Sign in row must appear
+    immediately, Send must be disabled and no chat created. Switching back to a
+    signed-in profile clears that row. Click a diff line, Shift-click another,
+    then drag in both directions: selection extends within one hunk/file. Added
+    and context snippets preserve indentation without diff markers; mixed
+    selections omit removals, while removed-only snippets keep `-` markers.
 15. Resize while an answer streams, after completion and with the side-question
     panel open: assistant text must fill the proposed transcript width. Inspect
     the compact setup groups and tooltips. If an NSTableView reentrancy warning
