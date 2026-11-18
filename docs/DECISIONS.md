@@ -541,7 +541,12 @@ is an open follow-up; it is not available to opencode in this batch.
 Project Chat discovers the setup defined by any project folder. Claude's
 `system/init` reports MCP servers, their source and connection status, skills
 and agents; its command names are merged with the richer `initialize` catalog,
-including argument hints. These snapshots stay outside the transcript and
+including argument hints. Setup probes send the read-only `mcp_status` control
+request after `initialize`, because init is not emitted until the first user
+message. This discovers MCP connection status without sending a prompt; refresh
+reuses a healthy matching chat transport when available. Only name, status and
+source are projected from `mcpServers`; `config` and other raw server metadata
+are discarded and never logged or persisted. These snapshots stay outside the transcript and
 handover context. Hooks and scoped rules have no CLI listing: Aitvaras reads
 user settings, `.claude/settings{,.local}.json` and `.claude/rules/` for display
 only. The CLI remains responsible for applying project instructions, rules,
@@ -555,31 +560,49 @@ app/repo name collision fails visibly. Claude still loads its own user/account
 configuration; Aitvaras never writes that configuration or the repo.
 
 Claude `-p` loads repo MCP servers without an approval dialog. Every launch,
-including catalog probes, therefore re-reads `.mcp.json` at its actual cwd and
-passes `--settings` with `disabledMcpjsonServers` for every unsupported,
+including catalog probes, therefore reads every `.mcp.json` from its actual cwd
+up to the filesystem root, using bounded descriptor-relative reads without
+following file symlinks. Setup labels each server with its relative source file(s).
+A name defined with different raw objects in several files is never approvable
+and shows “defined differently in several .mcp.json files”. Every launch passes
+`--settings` with `disabledMcpjsonServers` for every unsupported,
 denied, new or changed server. Approval is project-scoped and bound to a
 SHA-256 fingerprint of the whole raw server object as canonical JSON with
 sorted keys, including unknown options. Unknown top-level keys are ignored;
 invalid typed fields leave that server listed as unsupported without hiding
-valid siblings. A name alone never approves a server, and denial wins.
+valid siblings. Duplicate object keys at any depth are rejected before Foundation
+parsing, comparing decoded UTF-8 bytes (including escaped keys). Server names
+must be plain ASCII matching the existing name grammar, preventing NFC/NFD key
+merging. A name alone never approves a server, and denial wins.
 
 A missing `.mcp.json` is normal. An unreadable, non-regular, oversized or
-unparseable file, or one without an `mcpServers` object, produces a visible
-unreadable state. Claude then receives `--strict-mcp-config` with only app
-servers, keeping repo servers off. Ordinary launches omit that flag and use
+unparseable file anywhere on that path, or one without an `mcpServers` object,
+produces a visible unreadable state. Claude then receives `--strict-mcp-config`
+with only app servers, keeping repo servers off. Ordinary launches omit that flag and use
 `disabledMcpjsonServers`, never `enabledMcpjsonServers`. There remains a race
 between Aitvaras's fresh read and the CLI's later read: a repo change during
 that window is not an atomic approved snapshot. Fingerprints and reuse
 revisions detect changes on the next launch; they do not eliminate this window.
+As defence in depth, each Claude `system/init` is checked against the approved
+project server set. An unexpected `source: project` server stops the run before
+any tool request is processed, with a fixed visible error and metadata-only audit.
+This name check cannot detect a same-name definition changed inside the read race.
 
 App-added servers are passed with `--mcp-config` only when present. Each run
 owns `<state>/Runtime/mcp/<project>/<run>.json`, created with mode 0600 in
-private directories and removed when its transport/run ends, including startup
-failure and cancellation. Stored definitions contain Keychain references;
-the App injects the profile-scoped Keychain resolver without an Agents → Store
-dependency. Resolved secrets enter only the transient runtime configuration,
-never stored rows, session configuration, logs or audit payloads. Definition
-hashes use reference names, never resolved values. Runtime file creation and
+private directories. Claude removes it as soon as `system/init` arrives, retaining
+only an in-memory redaction cache for later diagnostics; startup failure and
+cancellation also remove it. A startup sweep runs before any backend starts and
+removes crash leftovers using `openat`/`O_NOFOLLOW`, only inside private owned
+directories and only regular files with runtime UUID names. Stored definitions
+contain Keychain references restricted to `agent.mcp.<UUID>`; decoding, saving,
+runtime validation and the App resolver all enforce that namespace. Removing an
+app-added server deletes its MCP-owned Keychain items only when no other stored
+global or project definition references them; other Keychain accounts are never
+resolved or removed. The App injects the profile-scoped Keychain resolver;
+Agents has no Store dependency. Resolved secrets enter only the transient runtime
+configuration, never stored rows, session configuration, logs or audit payloads.
+Definition hashes use reference names, never resolved values. Runtime file creation and
 cleanup pass policy and metadata-only audit. Retained transports are reused
 only with a matching setup revision.
 
@@ -609,15 +632,22 @@ because it also removes project instructions, skills and `.mcp.json`.
 All tool actions retain the autonomy policy and activity provenance. Exact
 built-in `ToolSearch` is a read so deferred MCP discovery can proceed. MCP
 cards display `server · tool` while retaining the wire name. “Always allow in
-this project” stores an audited exact `provider.tool` grant, with no wildcards.
-The D20 forbidden-name guard runs first and cannot be bypassed by a grant;
+this project” stores an audited exact grant, with no wildcards. MCP grants use
+`provider.tool@fingerprint`, require one unambiguous current server definition and stop
+matching when its approval or definition changes. Old unbound MCP grants never
+match. Shell/command-execution tools cannot offer or honour grants. MCP names
+containing send, reply, forward, compose, draft, post or publish (case-insensitive)
+always ask and never offer a grant. The D20 forbidden-name guard runs first and
+cannot be bypassed by a grant;
 forbidden tools never offer this action. A grant answers the native permission
 request, rather than changing the PreToolUse decision.
 
 Local MCP is off by default and opt-in per project. Only stdio servers are
-translated into opencode configuration through the same runtime-file lifecycle.
-Remote transports show “Local: stdio servers only”; repo options that cannot
-be translated also show a fixed unavailable reason. The loopback network and
+translated into opencode configuration. Its 0600 runtime file remains for the
+server's lifetime and is readable by Local tools because the sandbox permits
+reads; Local MCP is explicitly opt-in. It is removed at server shutdown or by
+the next startup sweep after a crash. Remote transports show “Local: stdio
+servers only”; repo options that cannot be translated also show a fixed unavailable reason. The loopback network and
 write-root sandbox in D33 is unchanged, including for MCP descendants. Local
 tools retain the existing audited permission path. Server reuse also checks
 the MCP revision. Exposing Aitvaras knowledge as an MCP server remains open.
@@ -628,7 +658,30 @@ chat. Connections holds the global server list. Server actions use flat menus;
 connection state uses accessible indicators, and Local opt-in is a switch.
 Hook/rule metadata is read-only. Setup refreshes at chat startup and with
 “Check now”. Command catalogs refresh on project changes,
-and a picked command's argument hint appears in the composer.
+and a picked command's argument hint appears in the composer. Approved repo
+servers with unreported status say “Approved — starts with the next chat” and
+offer Revoke approval, which removes approval without adding a denial. Setup
+orders servers, permission source, hooks, rules, then compact one-line commands
+with full descriptions in tooltips. Project/User groups are expanded;
+Plugin/Built-in groups are collapsed. Entries without CLI source metadata stay
+in a separate collapsed “Source not reported” group rather than guessing.
+
+New/default Claude choices use the CLI's `opus` alias, displayed as “Opus
+(newest)”, with Medium effort. Existing explicit models and effort choices are
+preserved; stored “Default (recommended)” choices move to this default. Setup
+probes and side questions use the same fallback.
+
+Claude folds user lines written during a running turn into one native result.
+A normal result completes every input already written, acknowledges each journal,
+and attributes the answer to the latest input; no queued input is left running.
+Stop retains uncertain delivery evidence and disposes a queued Claude transport;
+only the next explicit Send resumes its native session.
+Native slash-command envelopes render as the command name and arguments.
+Programmatic composer insertions leave an empty selection at the end; quote
+replies end with a newline. Return accepts the highlighted completion, several
+rows remain visible, and `/btw` is an explicit Aitvaras composer command.
+Assistant selection views have no intrinsic width and use the proposed
+transcript width on every measurement, including after completion and resize.
 
 Claude launches include hook events. `hook_started` and `hook_response` are
 correlated by `hook_id`; `statusMessage` comes from settings matched by event
@@ -643,8 +696,10 @@ the fork origin and binds a distinct native identity on first Send. **Edit &
 resend** forks before the user message at its preceding assistant message;
 editing the first user message creates a fresh chat. Forks require an idle
 source. A source worktree produces a separately owned worktree from its
-committed branch tip; uncommitted changes are not carried. Worktrees are never
-shared between chats. All providers support **Reply with quote** from a
+committed branch tip. Fork from here and Edit & resend refuse a dirty source
+worktree before creating a chat, with “Commit or discard the changes in this
+chat's worktree first”. Worktrees are never shared between chats. All providers
+support **Reply with quote** from a
 read-only native text selection (whole-message fallback), and **Add to message**
 from selected diff lines. Diff context includes the path, fenced snippet and
 new-file line range, using old-file numbers for removed-only selections.

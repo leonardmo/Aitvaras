@@ -121,7 +121,10 @@ public actor AgentActionCoordinator: AgentRun {
     /// persistence closure must save the rule and its audit in one transaction.
     public func alwaysAllow(to request: AgentRequest, persist: @Sendable () throws -> Void) async throws {
         guard !interrupting, isCurrent(request), pending[request.id] == request,
-              AgentToolPolicy.canAlwaysAllow(request) else { throw AgentFailure.invalidRequest }
+              AgentToolPolicy.canAlwaysAllow(request), case .permission(let tool) = request.kind,
+              let provider = request.scope.session?.provider,
+              (try? AgentToolPolicy.grantKey(provider: provider, tool: tool.name,
+                  fingerprint: AgentToolPolicy.fingerprint(tool: tool.name, servers: mcpSetup?.serverFingerprints ?? [:]))) != nil else { throw AgentFailure.invalidRequest }
         removePending(request.id)
         do {
             try persist()
@@ -202,6 +205,7 @@ public actor AgentActionCoordinator: AgentRun {
                 try await record(scope: event.scope, decision: observation(event.kind))
             case .turnEnded:
                 await denyPending(); inputID = nil
+                followups.subtract(event.scope.completedInputIDs)
             default: break
             }
             guard !closed else { return }
@@ -239,6 +243,8 @@ public actor AgentActionCoordinator: AgentRun {
             // permission request may create a user-facing approval.
             if forbidden(tool) {
                 try await finish(request, response: .deny, decision: "forbidden")
+            } else if AgentToolPolicy.requiresExplicitMCPApproval(tool) {
+                try await finish(request, response: .askHook, decision: "requires explicit MCP approval")
             } else if permissionSource == .aitvaras, requiresAitvarasApproval(tool) {
                 try await finish(request, response: .askHook, decision: "requires Aitvaras approval")
             } else {
@@ -254,10 +260,12 @@ public actor AgentActionCoordinator: AgentRun {
                 // provenance are applied even when the app mode permits edits.
                 try await finish(request, response: .allow(updatedInput: nil), decision: "allowed by local mode")
             } else if let provider = request.scope.session?.provider,
-                      let key = try? AgentToolPolicy.grantKey(provider: provider, tool: tool.name),
+                      AgentToolPolicy.grantEligible(tool),
+                      let key = try? AgentToolPolicy.grantKey(provider: provider, tool: tool.name,
+                          fingerprint: AgentToolPolicy.fingerprint(tool: tool.name, servers: mcpSetup?.serverFingerprints ?? [:])),
                       try projectGrants().contains(key) {
                 try await finish(request, response: .allow(updatedInput: nil), decision: "allowed by project grant")
-            } else if policy.whitelist.contains("provider.\(tool.name)") {
+            } else if AgentToolPolicy.grantEligible(tool), !tool.name.hasPrefix("mcp__"), policy.whitelist.contains("provider.\(tool.name)") {
                 try await finish(request, response: .allow(updatedInput: nil), decision: "allowed by whitelist")
             } else {
                 try await offer(request, risk: risk(tool))

@@ -26,7 +26,7 @@ done()
         let project = try stores.createWorkspaceProject(title: "Example", folders: [.init(path: fixture.directory.path)])
         try Data(#"{"mcpServers":{"echo":{"command":"echo","timeout":12}}}"#.utf8)
             .write(to: fixture.directory.appendingPathComponent(".mcp.json"))
-        try stores.saveGlobalAgentMCPServers(["helper": .init(command: "echo", env: ["ACCESS": .secretReference("mcp.access")])])
+        try stores.saveGlobalAgentMCPServers(["helper": .init(command: "echo", env: ["ACCESS": .secretReference("agent.mcp.00000000-0000-4000-8000-000000000001")])])
         let policy = mcpTestPolicy(stores, root: fixture.directory)
         let backend = ClaudeBackend(executable: fixture.executable, environment: fixture.environment, mcpPolicy: policy)
         let run = try await backend.start(.init(directory: fixture.directory, model: "default", projectID: project.id))
@@ -85,7 +85,7 @@ assert sys.stdin.readline()==''
                                     mcpPolicy: mcpTestPolicy(stores, root: fixture.directory), probeDirectory: fixture.directory)
         if catalog == "commands" {
             #expect(try await backend.commands(directory: fixture.directory).first?.argumentHint == "[file]")
-        } else { #expect(try await backend.models().first?.id == "test-model") }
+        } else { #expect(try await backend.models().map(\.id) == ["opus", "test-model"]) }
         let path = try String(contentsOf: fixture.directory.appendingPathComponent("runtime-path"), encoding: .utf8)
         #expect(!FileManager.default.fileExists(atPath: path))
         try fixture.assertComplete()
@@ -138,7 +138,7 @@ for _ in range(4):
         let manager = try AgentSessionManager(persistence: stores, backend: { _ in backend }, audit: { _ = try stores.record($0) }, mcpPolicy: policy)
         for index in 0..<3 {
             if index == 2 {
-                try stores.saveGlobalAgentMCPServers(["helper": .init(command: "echo", env: ["ACCESS": .secretReference("mcp.access")])])
+                try stores.saveGlobalAgentMCPServers(["helper": .init(command: "echo", env: ["ACCESS": .secretReference("agent.mcp.00000000-0000-4000-8000-000000000001")])])
             }
             let input = AgentInput(text: "Example")
             try await manager.send(chatID: chat.id, provider: .claude, input: input)
@@ -218,7 +218,7 @@ sys.exit(0)
         let stores = try inMemoryStores()
         let file = fixture.directory.appendingPathComponent(".mcp.json")
         try Data(#"{"mcpServers":{"echo":{"command":"echo"}}}"#.utf8).write(to: file)
-        try stores.saveGlobalAgentMCPServers(["helper": .init(command: "echo", env: ["ACCESS": .secretReference("mcp.access")])])
+        try stores.saveGlobalAgentMCPServers(["helper": .init(command: "echo", env: ["ACCESS": .secretReference("agent.mcp.00000000-0000-4000-8000-000000000001")])])
         let policy = AgentMCPLaunchPolicy(stateDirectory: fixture.directory, load: { directory, projectID in
             try stores.agentMCPLaunchContext(directory: directory, projectID: projectID)
         }, audit: { _ = try stores.record($0) }, resolveSecret: { _ in

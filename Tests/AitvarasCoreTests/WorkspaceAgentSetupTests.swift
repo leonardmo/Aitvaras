@@ -13,7 +13,7 @@ import AitvarasAgents
         let defaults = try stores.workspaceAgentSetup(projectID: one.id)
         #expect(defaults == WorkspaceAgentSetup(projectID: one.id))
         #expect(try stores.db.queue.read { try WorkspaceAgentSetup.fetchCount($0) } == 0)
-        let server = AgentMCPServer(command: "echo", args: ["example"], env: ["ACCESS": .secretReference("mcp.echo.access")])
+        let server = AgentMCPServer(command: "echo", args: ["example"], env: ["ACCESS": .secretReference("agent.mcp.00000000-0000-4000-8000-000000000001")])
         var setup = defaults
         setup.approvedProjectServers = ["echo"]
         setup.approvedProjectServerFingerprints = ["echo": try server.fingerprint()]
@@ -133,7 +133,7 @@ import AitvarasAgents
         let stores = try inMemoryStores()
         let project = try stores.createWorkspaceProject(title: "Example")
         let secret = "synthetic-runtime-value"
-        let definitions = ["echo": AgentMCPServer(command: "echo", env: ["ACCESS": .secretReference("mcp.echo.access")])]
+        let definitions = ["echo": AgentMCPServer(command: "echo", env: ["ACCESS": .secretReference("agent.mcp.00000000-0000-4000-8000-000000000001")])]
         var setup = WorkspaceAgentSetup(projectID: project.id)
         setup.extraServersJSON = try AgentMCPConfiguration.encode(definitions)
         try stores.saveWorkspaceAgentSetup(setup)
@@ -149,7 +149,7 @@ import AitvarasAgents
                 + Row.fetchAll(db, sql: "SELECT * FROM activityEvent").map { String(describing: $0) }
         }.joined()
         #expect(!rows.contains(secret))
-        #expect(rows.contains("mcp.echo.access"))
+        #expect(rows.contains("agent.mcp.00000000-0000-4000-8000-000000000001"))
         let configuration = AgentSessionConfiguration(directory: fixture.directory, model: "default")
         #expect(!String(reflecting: configuration).contains(secret))
         let audit = try stores.activity(since: .distantPast)

@@ -109,6 +109,7 @@ public protocol AgentSessionPersistence: Sendable {
     func saveAgentSession(_ session: AgentChatSession) throws
     func agentEntries(chatID: UUID) throws -> [AgentTranscriptEntry]
     @discardableResult func saveAgentEntry(_ entry: AgentTranscriptEntry) throws -> AgentTranscriptEntry
+    func orderAgentEntries(chatID: UUID, ids: [UUID]) throws
     func prepareAgentTurn(_ turn: AgentJournalTurn) throws
     func prepareAgentTurn(_ turn: AgentJournalTurn, context: ChatContextProjection?) throws
     func agentTurn(id: UUID) throws -> AgentJournalTurn?
@@ -123,6 +124,7 @@ public protocol AgentSessionPersistence: Sendable {
 }
 
 extension AgentSessionPersistence {
+    public func orderAgentEntries(chatID: UUID, ids: [UUID]) throws { throw AgentFailure.unsupported }
     public func agentProjectID(chatID: UUID) throws -> UUID? { nil }
     public func agentAlwaysAllowedTools(chatID: UUID) throws -> Set<String> { [] }
     public func allowAgentTool(chatID: UUID, request: AgentRequest) throws { throw AgentFailure.unsupported }

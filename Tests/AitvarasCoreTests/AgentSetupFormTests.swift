@@ -35,8 +35,46 @@ import AitvarasStore
         #expect(!rows.contains("synthetic-header-secret"))
         try await setup.removeServer(projectID: chat.projectID, name: "echo")
         #expect(try stores.workspaceAgentSetup(projectID: chat.projectID).mcpConfiguration().projectServers.isEmpty)
-        // Removal cannot delete a credential another definition may reference.
+        // The removed server no longer retains its credential.
+        #expect(vault.values.count == 1)
+    }
+
+    @Test func removalDeletesOnlyUnsharedMCPCredentialsAcrossAllProjectsAndGlobals() async throws {
+        let fixture = try AgentExecutableFixture("exit 0"); defer { fixture.remove() }
+        let stores = try inMemoryStores(), vault = SetupVault()
+        let chat = try setupProjectChat(stores, directory: fixture.directory), setup = coordinator(stores, vault)
+        var draft = AgentMCPServerDraft(); draft.name = "echo"; draft.command = "echo"
+        draft.fields = [.init(name: "ACCESS", value: "synthetic-shared-secret")]
+        try await setup.saveServer(projectID: chat.projectID, draft: draft)
+        let server = try #require(try stores.workspaceAgentSetup(projectID: chat.projectID).mcpConfiguration().projectServers["echo"])
+        try stores.saveGlobalAgentMCPServers(["shared": server])
+        let other = try stores.createWorkspaceProject(title: "Other", folders: [.init(path: fixture.directory.path)])
+        var otherSetup = WorkspaceAgentSetup(projectID: other.id)
+        otherSetup.extraServersJSON = try AgentMCPConfiguration.encode(["shared": server])
+        try stores.saveWorkspaceAgentSetup(otherSetup)
+        try vault.set("unrelated", "foreign.account")
+        try await setup.removeServer(projectID: chat.projectID, name: "echo")
         #expect(vault.values.count == 2)
+        try await setup.removeServer(projectID: nil, name: "shared")
+        #expect(vault.values.count == 2)
+        try await setup.removeServer(projectID: other.id, name: "shared")
+        #expect(vault.values.count == 1)
+        #expect(vault.values["foreign.account"] == "unrelated")
+    }
+
+    @Test func failedRemovalAuditCannotDeleteCredentialsOrDefinitions() async throws {
+        let fixture = try AgentExecutableFixture("exit 0"); defer { fixture.remove() }
+        let stores = try inMemoryStores(), vault = SetupVault()
+        let chat = try setupProjectChat(stores, directory: fixture.directory), setup = coordinator(stores, vault)
+        var draft = AgentMCPServerDraft(); draft.name = "echo"; draft.command = "echo"
+        draft.fields = [.init(name: "ACCESS", value: "synthetic-retained-secret")]
+        try await setup.saveServer(projectID: chat.projectID, draft: draft)
+        try await stores.db.queue.write {
+            try $0.execute(sql: "CREATE TRIGGER removalAuditFailure BEFORE INSERT ON activityEvent BEGIN SELECT RAISE(ABORT, 'fixture failure'); END")
+        }
+        await #expect(throws: (any Error).self) { try await setup.removeServer(projectID: chat.projectID, name: "echo") }
+        #expect(vault.values.count == 1)
+        #expect(try stores.workspaceAgentSetup(projectID: chat.projectID).mcpConfiguration().projectServers["echo"] != nil)
     }
 
     @Test(arguments: ["keychain", "database", "audit"])

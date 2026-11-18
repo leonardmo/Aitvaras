@@ -5,11 +5,25 @@ public struct AgentCommand: Codable, Sendable, Equatable, Identifiable {
     public let description: String
     public let argumentHint: String?
     public let skillPath: String?
+    public let source: String?
+    public enum Group: String, Sendable, CaseIterable, Identifiable {
+        case project = "Project", user = "User", plugin = "Plugin", builtIn = "Built-in", unknown = "Source not reported"
+        public var id: String { rawValue }
+    }
+    public var group: Group {
+        switch source?.lowercased() {
+        case "project", "repo": .project
+        case "user", "local": .user
+        case "plugin": .plugin
+        case "builtin", "built-in", "built_in": .builtIn
+        default: .unknown
+        }
+    }
     public var id: String { name }
     public var insertion: String { (skillPath == nil ? "/" : "$") + name }
 
-    public init(name: String, description: String, argumentHint: String? = nil, skillPath: String? = nil) {
-        self.name = name; self.description = description; self.argumentHint = argumentHint; self.skillPath = skillPath
+    public init(name: String, description: String, argumentHint: String? = nil, skillPath: String? = nil, source: String? = nil) {
+        self.name = name; self.description = description; self.argumentHint = argumentHint; self.skillPath = skillPath; self.source = source
     }
     public func argumentPlaceholder(in text: String) -> String? {
         guard text.trimmingCharacters(in: .whitespacesAndNewlines) == insertion,
@@ -32,14 +46,19 @@ public struct AgentCommandCatalogContext: Sendable, Hashable {
     }
 }
 
-/// No built-in command guesses: an absent catalog is explicitly unavailable.
+/// Provider commands come only from discovery. Aitvaras-owned conversation
+/// commands are added explicitly by the composer, never guessed from a repo.
 public enum AgentCommandCatalog {
+    public static let sideQuestion = AgentCommand(name: "btw", description: "Ask a side question without adding it to the chat", argumentHint: "<question>", source: "builtin")
+    public static func withConversationCommands(_ values: [AgentCommand]) -> [AgentCommand] {
+        unique(values.filter { $0.name != "btw" } + [sideQuestion])
+    }
     public static func claude(_ initialize: JSONValue) throws -> [AgentCommand] {
         guard let commands = initialize["commands"]?.arrayValue else { throw AgentFailure.unsupported }
         return unique(commands.compactMap {
             guard let name = $0["name"]?.stringValue, validName(name) else { return nil }
             return AgentCommand(name: name, description: $0["description"]?.stringValue ?? "",
-                                argumentHint: $0["argumentHint"]?.stringValue)
+                                argumentHint: $0["argumentHint"]?.stringValue, source: $0["source"]?.stringValue ?? $0["scope"]?.stringValue)
         })
     }
     public static func codex(_ response: JSONValue, directory: URL) throws -> [AgentCommand] {

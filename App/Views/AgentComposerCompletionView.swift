@@ -6,12 +6,14 @@ struct AgentComposerCompletionView: View {
     @Bindable var chat: ChatModel
     let trigger: AgentComposerTrigger
     let dismiss: () -> Void
+    var acceptanceRequest = 0
     @State private var query = ""
     @State private var commands: [AgentCommand] = []
     @State private var files: [AgentFileMention] = []
     @State private var loading = true
     @State private var unavailable = false
     @State private var selected = 0
+    @State private var chosen = false
     @FocusState private var searching: Bool
 
     private var filteredCommands: [AgentCommand] {
@@ -25,6 +27,7 @@ struct AgentComposerCompletionView: View {
                 .accessibilityIdentifier("chat.completion.search")
                 .onKeyPress(.downArrow) { selected = min(max(0, count - 1), selected + 1); return .handled }
                 .onKeyPress(.upArrow) { selected = max(0, selected - 1); return .handled }
+                .onSubmit { choose(selected) }
                 .onKeyPress(.return) { choose(selected); return .handled }
                 .onKeyPress(.escape) { dismiss(); return .handled }
             if loading { ProgressView().controlSize(.small).frame(height: 32) }
@@ -53,14 +56,16 @@ struct AgentComposerCompletionView: View {
                                 .accessibilityIdentifier("chat.completion.item.\(index)")
                             }
                         }
-                    }.frame(maxHeight: 240)
+                    }.frame(height: min(260, max(160, CGFloat(count) * 62)))
                     .onChange(of: selected) { proxy.scrollTo(selected) }
                 }
             }
         }
         .padding(12).frame(width: 340)
         .accessibilityIdentifier("chat.completion")
-        .onAppear { query = trigger.query; searching = true }
+        .onAppear { query = trigger.query }
+        .task { await Task.yield(); searching = true }
+        .onChange(of: acceptanceRequest) { choose(selected) }
         .task(id: chat.commandCatalogContext) {
             if trigger.kind == .command {
                 loading = true; unavailable = false; commands = []; selected = 0
@@ -87,13 +92,14 @@ struct AgentComposerCompletionView: View {
         }
     }
     private func choose(_ index: Int) {
-        guard !loading, !unavailable, index >= 0, index < count else { return }
+        guard !chosen, !loading, !unavailable, index >= 0, index < count else { return }
         let insertion = trigger.kind == .file ? files[index].insertion : filteredCommands[index].insertion
         guard let text = trigger.selecting(insertion, in: chat.draft) else { dismiss(); return }
         var selection = chat.composerSelection
         if trigger.kind == .file {
             if !selection.mentions.contains(files[index]) { selection.mentions.append(files[index]) }
         } else { selection.command = filteredCommands[index] }
+        chosen = true
         chat.composerSelection = selection
         chat.draft = text
         dismiss()

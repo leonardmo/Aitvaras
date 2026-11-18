@@ -48,7 +48,7 @@ struct AgentTranscriptView: View {
                 HStack {
                     Spacer(minLength: 30)
                     VStack(alignment: .trailing, spacing: 4) {
-                        Text(entry.text).textSelection(.enabled)
+                        Text(entry.displayText).textSelection(.enabled)
                         if let attachments = payload?["composer"]?["attachments"]?.arrayValue {
                             ForEach(Array(attachments.enumerated()), id: \.offset) { _, file in
                                 Label(file["name"]?.stringValue ?? "File", systemImage: file["kind"]?.stringValue == "image" ? "photo" : "doc")
@@ -63,7 +63,7 @@ struct AgentTranscriptView: View {
                     .padding(12).background(.quaternary, in: RoundedRectangle(cornerRadius: 14))
                 }
                 .contextMenu {
-                    Button("Copy") { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(entry.text, forType: .string) }
+                    Button("Copy") { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(entry.displayText, forType: .string) }
                     if let edit { Button("Edit & resend", action: edit) }
                 }
             } else {
@@ -78,6 +78,7 @@ struct AgentTranscriptView: View {
                 }
             }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier(entry.presentationIdentifier)
         // Give completion a fresh AX container as well as a new identifier,

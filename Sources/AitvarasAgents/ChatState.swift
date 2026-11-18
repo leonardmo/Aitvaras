@@ -156,6 +156,24 @@ public struct ChatState: Sendable, Equatable {
             }
         }
     }
+    /// A Claude result consumes every input already written to that native turn.
+    /// Keep earlier observations, but move the answer after the latest user input.
+    mutating func completeCoalescedTurn(latest: AgentInput, outcome: AgentTurnOutcome) -> String {
+        let answerIDs = Set(textIDs.values)
+        var answers = entries.filter { $0.kind == "assistant" && answerIDs.contains($0.id) }
+        entries.removeAll { $0.kind == "assistant" && answerIDs.contains($0.id) }
+        for index in answers.indices {
+            var payload = answers[index].payloadJSON.flatMap(JSONValue.parse)?.objectValue ?? [:]
+            payload["inputID"] = .string(latest.id.uuidString)
+            answers[index].payloadJSON = JSONValue.object(payload).jsonString
+        }
+        entries += answers
+        for index in entries.indices { entries[index].position = index }
+        inputID = latest.id
+        end(outcome)
+        return answers.map(\.text).joined(separator: "\n")
+    }
+
     mutating func awaitingQueuedInput() { isRunning = true; outcome = nil }
     public mutating func end(_ value: AgentTurnOutcome) {
         for hook in Array(hooks.values) where hook.phase == .running {

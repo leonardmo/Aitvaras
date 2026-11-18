@@ -33,7 +33,7 @@ done()
         let expected = ["-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose",
             "--include-partial-messages", "--permission-prompt-tool", "stdio", "--permission-mode", "default",
             "--model", "test-model", "--resume", source.session.nativeID!, "--fork-session", "--resume-session-at", source.entries[1].nativeMessageID!,
-            "--settings", "{\"disabledMcpjsonServers\":[]}", "--include-hook-events"]
+            "--effort", "medium", "--settings", "{\"disabledMcpjsonServers\":[]}", "--include-hook-events"]
         try JSONEncoder().encode(expected).write(to: fixture.directory.appendingPathComponent("expected-argv.json"))
         let backend = ClaudeBackend(executable: fixture.executable, environment: fixture.environment)
         let manager = try AgentSessionManager(persistence: stores, backend: { _ in backend }, audit: { _ = try stores.record($0) })
@@ -115,6 +115,15 @@ done()
         try Data("uncommitted\n".utf8).write(to: sourceDirectory.appendingPathComponent("example.txt"))
         let actions = AgentConversationActions(persistence: stores, git: coordinator, worktreeStorage: storage,
             backend: { _ in throw AgentFailure.unsupported }, audit: { _ = try stores.record($0) })
+        let before = try stores.workspaceChats(projectID: source.projectID).count
+        for edited in [nil, "Edited example"] as [String?] {
+            await #expect(throws: AgentConversationError.dirtyWorktree) {
+                try await actions.fork(chatID: source.chatID, messageID: edited == nil ? source.entries[1].id : source.entries[2].id, editedText: edited)
+            }
+        }
+        #expect(try stores.workspaceChats(projectID: source.projectID).count == before)
+        #expect(AgentConversationError.dirtyWorktreeReason == "Commit or discard the changes in this chat's worktree first")
+        try await git.command(["restore", "example.txt"], in: sourceDirectory)
         let child = try await actions.fork(chatID: source.chatID, messageID: source.entries[1].id)
         let fork = try #require(try stores.agentWorktree(chatID: child.chatID))
         #expect(fork.worktreePath != owned.worktreePath)

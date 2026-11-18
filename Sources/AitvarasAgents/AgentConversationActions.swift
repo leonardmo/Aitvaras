@@ -98,7 +98,7 @@ public actor AgentConversationActions {
         }
         if let owned = source.worktree {
             guard source.session.cwd == owned.worktreePath || source.session.cwd.hasPrefix(owned.worktreePath + "/") else { throw AgentGitError.ownershipConflict }
-            _ = try await git.mapping(chatID: chatID)
+            try await git.requireCleanForFork(chatID: chatID)
         }
         let roots = try JSONDecoder().decode([String].self, from: Data(source.session.additionalRootsJSON.utf8)).map(map)
         try Task.checkCancellation()

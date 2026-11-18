@@ -265,6 +265,8 @@ final class AppModel {
             let db = try AitvarasDatabase()
             let stores = Stores(db: db)
             self.stores = stores
+            try await AgentMCPRuntimeFile.sweep(stateDirectory: AitvarasPaths.stateDirectory,
+                audit: { _ = try stores.record($0) })
             let reporter = ActivityReporter(stores: stores)
             activityReporter = reporter
             monitoringFailureHandled = false
@@ -430,7 +432,10 @@ final class AppModel {
         let keychain = self.keychain
         let mcpPolicy = AgentMCPLaunchPolicy(load: { directory, projectID in
             try stores.agentMCPLaunchContext(directory: directory, projectID: projectID)
-        }, audit: { _ = try stores.record($0) }, resolveSecret: { key in try keychain.get(key) })
+        }, audit: { _ = try stores.record($0) }, resolveSecret: { key in
+            try AgentMCPValue.validateSecretReference(key)
+            return try keychain.get(key)
+        })
         let claudeOverrides = isolated && inherited["AITVARAS_FAKE_CLAUDE"] != nil
             ? ["CLAUDE_CONFIG_DIR": AitvarasPaths.stateDirectory.appendingPathComponent("FakeProviders/claude").path] : [:]
         let claude = ClaudeBackend(executable: AgentProviderLaunchPolicy.executable(.claude,

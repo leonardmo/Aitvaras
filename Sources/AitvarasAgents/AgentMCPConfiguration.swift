@@ -13,18 +13,27 @@ public enum AgentMCPValue: Sendable, Equatable, Codable {
     case literal(String)
     case secretReference(String)
 
+    public static func validateSecretReference(_ key: String) throws {
+        let prefix = "agent.mcp."
+        guard key.hasPrefix(prefix), key.utf8.count == prefix.utf8.count + 36,
+              UUID(uuidString: String(key.dropFirst(prefix.count))) != nil else { throw AgentMCPError.invalidConfiguration }
+    }
+    public var secretKey: String? { if case .secretReference(let key) = self { key } else { nil } }
     private enum CodingKeys: String, CodingKey { case value, secretKey }
     public init(from decoder: any Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         guard c.contains(.value) != c.contains(.secretKey) else { throw AgentMCPError.invalidConfiguration }
         if c.contains(.value) { self = .literal(try c.decode(String.self, forKey: .value)) }
-        else { self = .secretReference(try c.decode(String.self, forKey: .secretKey)) }
+        else {
+            let key = try c.decode(String.self, forKey: .secretKey)
+            try Self.validateSecretReference(key); self = .secretReference(key)
+        }
     }
     public func encode(to encoder: any Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
         switch self {
         case .literal(let value): try c.encode(value, forKey: .value)
-        case .secretReference(let key): try c.encode(key, forKey: .secretKey)
+        case .secretReference(let key): try Self.validateSecretReference(key); try c.encode(key, forKey: .secretKey)
         }
     }
 }
@@ -86,7 +95,7 @@ public struct AgentMCPServer: Sendable, Equatable, Codable {
     private static func valid(_ value: AgentMCPValue) -> Bool {
         switch value {
         case .literal(let text): validText(text)
-        case .secretReference(let key): validText(key, empty: false)
+        case .secretReference(let key): (try? AgentMCPValue.validateSecretReference(key)) != nil
         }
     }
 }

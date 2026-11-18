@@ -104,7 +104,7 @@ final class ChatModel {
         if provider == .codex, let selfDriveCodexModel { return selfDriveCodexModel }
         if provider == .local, let selfDriveLocalModel { return selfDriveLocalModel }
         #endif
-        return provider == .local ? "local" : "default"
+        return provider == .local ? "local" : provider == .claude ? "opus" : "default"
     }
     private var settings: [String: AgentChatSession] = [:]
     private var approvalSubscription: Task<Void, Never>?
@@ -186,11 +186,17 @@ final class ChatModel {
     }
     var chatID: UUID? { selection.chatID }
     var provider: AgentProvider { selection.provider }
+    private(set) var composerInsertionRevision = UUID()
+    func editDraft(_ value: String) {
+        if value != selection.draft { invalidatePending() }
+        selection.draft = value
+    }
     var draft: String {
         get { selection.draft }
         set {
             if newValue != selection.draft { invalidatePending() }
             selection.draft = newValue
+            composerInsertionRevision = UUID()
         }
     }
     var composerOwnerID: UUID { chatID ?? newChatID }
@@ -263,6 +269,8 @@ final class ChatModel {
                 if let editedText { draft = editedText }
                 self.error = "The fork's worktree could not be prepared. Its isolation intent has been retained."
                 return true
+            } else if error as? AgentConversationError == .dirtyWorktree {
+                self.error = AgentConversationError.dirtyWorktreeReason; return false
             } else { self.error = "This message could not be forked. Choose a completed Claude assistant message."; return false }
         }
     }
@@ -330,8 +338,10 @@ final class ChatModel {
         let commands: [AgentCommand]
         let setupNotice: String?
         if let claude = backend as? ClaudeBackend {
-            let catalog = try await claude.commandCatalog(directory: directory, projectID: projectID)
-            commands = catalog.commands; setupNotice = catalog.setup?.notice
+            do {
+                let catalog = try await claude.commandCatalog(directory: directory, projectID: projectID)
+                commands = catalog.commands; setupNotice = catalog.setup?.notice
+            } catch AgentFailure.unsupported { commands = []; setupNotice = nil }
         } else {
             commands = try await backend.commands(directory: directory, projectID: projectID); setupNotice = nil
         }
@@ -342,7 +352,7 @@ final class ChatModel {
         }
         try Task.checkCancellation()
         guard context == commandCatalogContext else { throw CancellationError() }
-        return commands
+        return provider == .claude ? AgentCommandCatalog.withConversationCommands(commands) : commands
     }
     func files(query: String) async throws -> [AgentFileMention] {
         guard let directory = projectDirectory, let backend = backends[provider] else { throw AgentFailure.unsupported }
@@ -379,14 +389,14 @@ final class ChatModel {
         return value.name.caseInsensitiveCompare(provider.rawValue) == .orderedSame ? value.id : value.name
     }
     var model: String {
-        get { settings[settingsKey]?.model ?? (provider == .local ? "local" : "default") }
+        get { settings[settingsKey]?.model ?? newSessionModel }
         set {
             guard let value = models.first(where: { $0.id == newValue }), let session = settings[settingsKey], !isBusy else { return }
             saveSettings(ChatSettings.selecting(model: value, in: session))
         }
     }
     var effort: String {
-        get { settings[settingsKey]?.effort ?? "" }
+        get { settings[settingsKey]?.effort ?? (provider == .claude ? "medium" : "") }
         set {
             guard !isBusy, newValue.isEmpty || selectedModel?.efforts.contains(newValue) == true,
                   var session = settings[settingsKey] else { return }
@@ -741,7 +751,9 @@ final class ChatModel {
     private func accepted(_ input: AgentInput, chatID: UUID, provider: AgentProvider) {
         // Clear before provider startup, including auth failure. The durable
         // user entry owns the accepted text; a later draft is independent.
+        let visibleDraft = selection.draft
         selection.clearDraft(chatID: chatID, ifUnchanged: input.text)
+        if selection.draft != visibleDraft { composerInsertionRevision = UUID() }
         clearComposer(chatID: chatID, provider: provider, sent: input)
     }
     private func observe(_ state: ChatState) {
@@ -916,6 +928,18 @@ final class ChatModel {
         defer { respondingRequests.remove(request.identity) }
         do { try await manager.respond(chatID: chatID, to: request, with: response); return true }
         catch { return false }
+    }
+    func canAlwaysAllow(chatID: UUID, request: AgentRequest) -> Bool {
+        guard AgentToolPolicy.canAlwaysAllow(request), case .permission(let tool) = request.kind,
+              let provider = request.scope.session?.provider else { return false }
+        guard tool.name.hasPrefix("mcp__") else { return true }
+        guard provider != .codex, let owner = try? stores.workspaceChat(id: chatID),
+              let session = try? stores.agentSession(chatID: chatID, provider: provider),
+              let context = try? stores.agentMCPLaunchContext(directory: URL(fileURLWithPath: session.cwd), projectID: owner.projectID),
+              let resolution = try? AgentMCPResolver.prepare(directory: URL(fileURLWithPath: session.cwd), setup: context.setup, globalServers: context.globalServers) else { return false }
+        var fingerprints = (try? resolution.effectiveServers.mapValues { try $0.fingerprint() }) ?? [:]
+        for (name, fingerprint) in resolution.repositoryFingerprints where resolution.effectiveServers[name] != nil { fingerprints[name] = fingerprint }
+        return AgentToolPolicy.fingerprint(tool: tool.name, servers: fingerprints) != nil
     }
     func alwaysAllow(chatID: UUID, request: AgentRequest) async -> Bool {
         guard respondingRequests.insert(request.identity).inserted else { return false }

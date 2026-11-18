@@ -8,6 +8,7 @@ public enum AgentFailure: Error, Sendable, Equatable {
     case notInstalled
     case crashed(exitCode: Int32?)
     case unsupported
+    case unapprovedProjectMCP
     case invalidRequest
     case invalidTransition
     case unknown
@@ -23,6 +24,7 @@ public enum AgentFailure: Error, Sendable, Equatable {
             case .notInstalled: return "\(name) is not installed."
             case .crashed: return "\(name) stopped unexpectedly. Try again."
             case .unsupported: return "This provider configuration is unavailable."
+            case .unapprovedProjectMCP: return "An unapproved project MCP server was reported. Check Agent setup and try again."
             case .invalidRequest: return "This message or chat configuration is invalid."
             case .invalidTransition: return "The chat changed. Try sending again."
             case .unknown: break

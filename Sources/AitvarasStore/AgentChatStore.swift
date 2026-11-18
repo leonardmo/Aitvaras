@@ -101,6 +101,34 @@ extension Stores: AgentSessionPersistence {
         try AgentChatStore(db: db).session(chatID: chatID, provider: provider)
     }
     public func saveAgentSession(_ session: AgentChatSession) throws { try AgentChatStore(db: db).saveSession(session) }
+    /// Reorder the live projection after Claude coalesces queued inputs. IDs
+    /// and native identities stay stable; unrelated rows keep their positions.
+    public func orderAgentEntries(chatID: UUID, ids: [UUID]) throws {
+        let selectedIDs = Set(ids)
+        guard selectedIDs.count == ids.count else { throw AgentStoreError.invalidValue }
+        try db.queue.write { dbc in
+            guard try WorkspaceChat.fetchOne(dbc, key: chatID) != nil else { throw AgentStoreError.missingChat }
+            let rows = try AgentTranscriptEntry.filter(Column("chatID") == chatID)
+                .filter(Column("isActive") == true).order(Column("position")).fetchAll(dbc)
+            let selected = rows.filter { selectedIDs.contains($0.id) }
+            guard selected.count == ids.count else { throw AgentStoreError.identityConflict }
+            let byID = Dictionary(uniqueKeysWithValues: selected.map { ($0.id, $0) })
+            let maximum = try AgentTranscriptEntry.filter(Column("chatID") == chatID)
+                .order(Column("position").desc).fetchOne(dbc)?.position ?? 0
+            guard maximum < Int.max - selected.count - 1 else { throw AgentStoreError.invalidValue }
+            // Move out of the UNIQUE(chatID, position) range before swapping.
+            for (offset, row) in selected.enumerated() {
+                var temporary = row
+                temporary.position = maximum + offset + 1
+                try temporary.update(dbc)
+            }
+            for (id, position) in zip(ids, selected.map(\.position)) {
+                var entry = byID[id]!
+                entry.position = position
+                try entry.update(dbc)
+            }
+        }
+    }
     public func agentEntries(chatID: UUID) throws -> [AgentTranscriptEntry] { try AgentChatStore(db: db).entries(chatID: chatID) }
     public func saveAgentEntry(_ entry: AgentTranscriptEntry) throws -> AgentTranscriptEntry { try AgentChatStore(db: db).saveEntry(entry) }
 }

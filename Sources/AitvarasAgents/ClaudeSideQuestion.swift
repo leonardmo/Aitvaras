@@ -9,8 +9,8 @@ enum ClaudeSideQuestion {
         var arguments = ["-p", "--output-format", "stream-json", "--verbose", "--resume", session.nativeID,
             "--fork-session", "--no-session-persistence", "--tools", "", "--settings", "{\"disableAllHooks\":true}",
             "--strict-mcp-config"]
-        if configuration.model != "default" { arguments += ["--model", configuration.model] }
-        if let effort = configuration.effort { arguments += ["--effort", effort] }
+        arguments += ["--model", ChatSettings.claudeModel(configuration.model)]
+        arguments += ["--effort", ChatSettings.claudeEffort(configuration.effort)]
         return arguments
     }
 

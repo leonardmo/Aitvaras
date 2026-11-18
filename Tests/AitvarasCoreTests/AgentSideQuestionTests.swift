@@ -20,14 +20,14 @@ emit({'type':'result','is_error':False})
         let session = source.session
         let expected = ["-p", "--output-format", "stream-json", "--verbose", "--resume", session.nativeID!,
             "--fork-session", "--no-session-persistence", "--tools", "", "--settings", "{\"disableAllHooks\":true}",
-            "--strict-mcp-config", "--model", "test-model"]
+            "--strict-mcp-config", "--model", "test-model", "--effort", "medium"]
         try JSONEncoder().encode(expected).write(to: fixture.directory.appendingPathComponent("expected-argv.json"))
         let native = fixture.directory.appendingPathComponent("native-sessions")
         try FileManager.default.createDirectory(at: native, withIntermediateDirectories: true)
         let originalFile = native.appendingPathComponent("original.jsonl")
         try Data("Synthetic session evidence\n".utf8).write(to: originalFile)
         let beforeBytes = try Data(contentsOf: originalFile)
-        try stores.saveGlobalAgentMCPServers(["echo": .init(command: "example", env: ["ACCESS_TOKEN": .secretReference("mcp.echo")])])
+        try stores.saveGlobalAgentMCPServers(["echo": .init(command: "example", env: ["ACCESS_TOKEN": .secretReference("agent.mcp.00000000-0000-4000-8000-000000000001")])])
         let policy = AgentMCPLaunchPolicy(stateDirectory: fixture.directory.appendingPathComponent("state"), load: { directory, projectID in
             try stores.agentMCPLaunchContext(directory: directory, projectID: projectID)
         }, audit: { _ = try stores.record($0) }, resolveSecret: { _ in Issue.record("Side questions must not resolve MCP secrets"); return nil })

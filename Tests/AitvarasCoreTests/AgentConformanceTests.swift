@@ -334,11 +334,14 @@ done()
     }
 
     @Test(arguments: [AgentProvider.claude, .codex], [AgentMode.ask, .acceptEdits, .plan, .auto])
-    func explicitWhitelistAllowsPermissionsButCannotAllowForbiddenTools(provider: AgentProvider, mode: AgentMode) async throws {
+    func explicitWhitelistCannotBypassCommandOrForbiddenApprovals(provider: AgentProvider, mode: AgentMode) async throws {
         let fixture = try ActionFixture(provider: provider, mode: mode,
             policy: .init(whitelist: ["provider.Bash", "provider.mail.send"]))
         try await fixture.coordinator.send(fixture.input, willDeliver: {})
-        _ = await fixture.run.request(.permission(.init(name: "Bash", input: .object(["command": .string("echo test")]))))
+        let command = await fixture.run.request(.permission(.init(name: "Bash", input: .object(["command": .string("echo test")]))))
+        try await waitForPending(fixture.coordinator)
+        #expect(await fixture.run.responses.isEmpty)
+        try await fixture.coordinator.respond(to: command, with: .allow(updatedInput: nil))
         try await waitForResponses(fixture.run)
         #expect(await fixture.run.responses == [.allow(updatedInput: nil)])
         _ = await fixture.run.request(.permission(.init(name: "mail.send", input: .null)))

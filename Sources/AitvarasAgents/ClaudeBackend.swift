@@ -7,6 +7,8 @@ public actor ClaudeBackend: AgentBackend {
     private let mcpPolicy: AgentMCPLaunchPolicy
     private let probeDirectory: URL
     private var mcpLoginInProgress = false
+    private struct LiveRun { weak var run: ClaudeRun?; let directory: URL; let projectID: UUID? }
+    private var liveRuns: [UUID: LiveRun] = [:]
     public private(set) var mcpSetup: AgentMCPLaunchStatus?
 
     public init(executable: URL? = nil, environment: [String: String] = ProcessInfo.processInfo.environment,
@@ -98,10 +100,18 @@ public actor ClaudeBackend: AgentBackend {
         return (commands, run.mcpSetup)
     }
     public func setup(directory: URL, projectID: UUID?) async throws -> AgentSetupSnapshot {
+        liveRuns = liveRuns.filter { $0.value.run != nil }
+        let revision = try mcpPolicy.snapshot(directory: directory, projectID: projectID).status.revision
+        for existing in liveRuns.values where existing.directory == directory && existing.projectID == projectID {
+            if let run = existing.run, run.mcpSetup?.revision == revision, await run.canRefreshSetup {
+                return try await run.refreshSetup()
+            }
+        }
         let run = try await makeRun(.init(directory: directory, model: "default", projectID: projectID))
-        let snapshot = await run.availableSetup
-        try await run.shutdown()
-        return snapshot
+        do {
+            let snapshot = try await run.refreshSetup()
+            try await run.shutdown(); return snapshot
+        } catch { try? await run.shutdown(); throw error }
     }
     public func signInMCP(name: String, directory: URL, timeout: Duration = .seconds(300),
                           onBrowserURL: @escaping @Sendable (URL) async -> Void) async throws {
@@ -167,8 +177,15 @@ public actor ClaudeBackend: AgentBackend {
                             metadataReader: AgentProjectMetadataReader(projectDirectory: configuration.directory,
                                 userDirectory: environment["CLAUDE_CONFIG_DIR"].map { URL(fileURLWithPath: $0) }
                                     ?? environment["HOME"].map { URL(fileURLWithPath: $0).appendingPathComponent(".claude") },
-                                environment: environment))
-        do { try await run.initialize(); return run }
+                                environment: environment), validateProjectServers: { [mcpPolicy] report in
+                                try await mcpPolicy.validateProjectServers(report, snapshot: snapshot, runID: runID)
+                            })
+        do {
+            try await run.initialize()
+            liveRuns = liveRuns.filter { $0.value.run != nil }
+            liveRuns[runID] = .init(run: run, directory: configuration.directory, projectID: configuration.projectID)
+            return run
+        }
         catch { try? await run.shutdown(); throw error }
     }
     private var historyReader: ClaudeNativeHistory {

@@ -13,8 +13,10 @@ struct SelectableMessageText: NSViewRepresentable {
         let view = MessageTextView()
         view.isEditable = false; view.isSelectable = true; view.isRichText = false
         view.drawsBackground = false; view.textContainerInset = .zero
-        view.textContainer?.lineFragmentPadding = 0; view.textContainer?.widthTracksTextView = true
+        view.textContainer?.lineFragmentPadding = 0; view.textContainer?.widthTracksTextView = false
         view.isVerticallyResizable = true; view.isHorizontallyResizable = false
+        view.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        view.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         view.font = .systemFont(ofSize: NSFont.systemFontSize)
         view.textColor = .labelColor
         return view
@@ -25,13 +27,19 @@ struct SelectableMessageText: NSViewRepresentable {
     }
     func sizeThatFits(_ proposal: ProposedViewSize, nsView: MessageTextView, context: Context) -> CGSize? {
         guard let container = nsView.textContainer, let layout = nsView.layoutManager else { return nil }
-        let width = max(1, proposal.width ?? 600)
+        guard let proposedWidth = proposal.width, proposedWidth.isFinite, proposedWidth > 0 else { return nil }
+        let width = proposedWidth
         container.containerSize = CGSize(width: width, height: .greatestFiniteMagnitude)
         layout.ensureLayout(for: container)
         return CGSize(width: width, height: max(20, ceil(layout.usedRect(for: container).height)))
     }
 
     final class MessageTextView: NSTextView {
+        override var intrinsicContentSize: NSSize { NSSize(width: NSView.noIntrinsicMetric, height: NSView.noIntrinsicMetric) }
+        override func setFrameSize(_ newSize: NSSize) {
+            super.setFrameSize(newSize)
+            if newSize.width > 0 { textContainer?.containerSize = NSSize(width: newSize.width, height: .greatestFiniteMagnitude) }
+        }
         var quote: ((String?) -> Void)?
         var fork: (() -> Void)?
         var forkEnabled = false

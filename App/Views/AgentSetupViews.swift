@@ -67,7 +67,7 @@ private struct AgentSetupContent: View {
             if let state = setup.state, setup.projectID != nil {
                 Divider()
                 policy(state)
-                if setup.provider == .claude { catalog(state.snapshot); metadata(state.snapshot) }
+                if setup.provider == .claude { metadata(state.snapshot); catalog(state.snapshot) }
             }
         }
         .accessibilityIdentifier("agent.setup")
@@ -87,6 +87,7 @@ private struct AgentSetupContent: View {
                 }
             }.frame(maxWidth: .infinity, alignment: .leading)
             Menu {
+                if row.isApproved { Button("Revoke approval") { setup.edit(.revoke(name: row.name)) } }
                 if row.canApprove, let fingerprint = row.fingerprint {
                     Button("Approve") { setup.edit(.approve(name: row.name, fingerprint: fingerprint)) }
                 }
@@ -127,19 +128,37 @@ private struct AgentSetupContent: View {
 
     @ViewBuilder private func catalog(_ snapshot: AgentSetupSnapshot?) -> some View {
         Text("Skills and commands").font(.headline)
-        ForEach(snapshot?.commands ?? []) { command in
-            VStack(alignment: .leading, spacing: 2) {
-                Text(command.insertion).font(.callout.monospaced())
-                if let hint = command.argumentHint { Text(hint).font(.caption.monospaced()).foregroundStyle(.secondary) }
-                if !command.description.isEmpty { Text(command.description).font(.caption).foregroundStyle(.secondary) }
+        let names = Set((snapshot?.commands ?? []).map(\.name))
+        let skills = (snapshot?.skills ?? []).filter { !names.contains($0) }.map { AgentCommand(name: $0, description: "") }
+        let commands = AgentCommandCatalog.withConversationCommands((snapshot?.commands ?? []) + skills)
+        ForEach(AgentCommand.Group.allCases) { group in
+            let values = commands.filter { $0.group == group }
+            if !values.isEmpty {
+                if group == .project || group == .user {
+                    Text(group.rawValue).font(.subheadline).foregroundStyle(.secondary)
+                    commandRows(values)
+                } else {
+                    DisclosureGroup { commandRows(values) } label: {
+                        Text(group.rawValue + " (\(values.count))").font(.subheadline)
+                    }
+                }
             }
         }
-        let commandNames = Set((snapshot?.commands ?? []).map(\.name))
-        ForEach((snapshot?.skills ?? []).filter { !commandNames.contains($0) }, id: \.self) { Text($0).font(.callout) }
         if snapshot?.commandsAvailable != true { Text("The command catalog has not been reported. Check now to refresh.").font(.caption).foregroundStyle(.secondary) }
         if let agents = snapshot?.agents, !agents.isEmpty {
-            Text("Agents").font(.headline)
-            ForEach(agents, id: \.self) { Text($0).font(.callout) }
+            DisclosureGroup("Agents (\(agents.count))") {
+                ForEach(agents, id: \.self) { Text($0).font(.callout).lineLimit(1) }
+            }
+        }
+    }
+    private func commandRows(_ commands: [AgentCommand]) -> some View {
+        ForEach(commands) { command in
+            HStack(spacing: 8) {
+                Text(command.insertion).font(.callout.monospaced()).lineLimit(1)
+                if let hint = command.argumentHint { Text(hint).font(.caption.monospaced()).foregroundStyle(.secondary).lineLimit(1) }
+                Text(command.description).font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.tail)
+                Spacer(minLength: 0)
+            }.help(command.description).frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 
@@ -170,7 +189,7 @@ private struct AgentSetupStatusIndicator: View {
     private var label: String {
         switch status {
         case .connected: "Connected"; case .needsSignIn: "Needs sign-in"; case .off: "Off"
-        case .pendingApproval: "Pending approval"; case .pending: "Pending"; case .failed: "Failed"; case .unknown: "Status not reported"
+        case .approved: "Approved, starts with the next chat"; case .pendingApproval: "Pending approval"; case .pending: "Pending"; case .failed: "Failed"; case .unknown: "Status not reported"
         }
     }
     var body: some View {

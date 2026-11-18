@@ -170,6 +170,9 @@ terminate on their own and are reaped during cleanup. Coverage includes:
 - `AgentMCPLoginTests`, `AgentSetupCoordinatorTests`, `AgentSetupFormTests`:
   managed sign-in success/failure/timeout/cancellation, transient URL handling,
   refresh races, fingerprint-bound approval and atomic secret-reference saves.
+- `AgentReviewRegressionTests`: prompt-free MCP status and secret-field
+  projection, healthy-transport refresh, revocation, composer caret ranges,
+  command groups/envelopes, stable transcript reordering and Opus/Medium defaults.
 - `AgentConversationForkTests`, `AgentConversationTextTests`,
   `AgentSideQuestionTests`: exact fork/side-question argv, fork records and
   identities, separate committed-tip worktrees, first-message editing, quote
@@ -207,12 +210,20 @@ the native sessions created by this check.
 1. Open the fixture project and Agent setup, including through an existing
    chat's project menu. `echo` is off/pending approval; Approve makes it connect
    on refresh/next run. Deny keeps it off. Change even an unknown server option
-   and confirm re-approval is required. Make `.mcp.json` unreadable or malformed:
+   and confirm re-approval is required. Repeat from a subfolder with a parent
+   `.mcp.json`; source labels must identify each relative file. Differently
+   defined duplicate names cannot be approved. Duplicate JSON keys at any level
+   and non-ASCII server names must fail closed. Make any ancestor `.mcp.json`
+   unreadable or malformed:
    the unreadable notice appears and repo servers stay off while app servers
    remain available. Restore the file before continuing.
 2. Invoke the echo tool: its card reads `echo · <tool>`. Allow once, then grant
    “Always allow in this project”; only that exact provider/tool stops prompting.
-   A different project still asks. Forbidden service tools never offer a grant.
+   A different project still asks, and changing the server fingerprint revokes
+   the match. Shell/command tools and MCP names containing send, reply, forward,
+   compose, draft, post or publish never offer a grant. Forbidden service tools
+   still fail D20 first. An unexpected project server in init must stop the run
+   with a visible audited error before any tool is processed.
 3. Trigger the fixture hook and verify “Checking project rules”, the bounded
    block reason and a visible blocked row; successful hooks collapse. Under
    Aitvaras policy, repo hooks and deny rules **still run**. Verify the hook
@@ -226,8 +237,11 @@ the native sessions created by this check.
 5. Add a global echo server: it appears in a second project. “Off in this
    project” removes it only there. Add a project definition and exercise the
    stdio / HTTP / SSE form with synthetic env/header secrets; inspect runtime
-   file mode and removal after shutdown, and confirm stored rows/audits contain
-   references rather than resolved values. Use distinct names for distinct
+   file mode and removal after Claude init (after server shutdown for Local),
+   and confirm stored rows/audits contain MCP UUID references rather than resolved
+   values. Foreign Keychain references must be rejected. Removing an app-added
+   server deletes only its unshared MCP credentials; a new app startup sweeps
+   owned regular runtime files left by a crash without following links. Use distinct names for distinct
    servers, and verify app/repo name collisions are visibly rejected.
 6. Turn Local MCP on and invoke echo through a Local approval card. Turn it off
    and verify it disappears on the next run. Remote servers show “Local: stdio
@@ -242,8 +256,9 @@ the native sessions created by this check.
 8. Fork from a middle Claude assistant message: the new chat knows the prefix
    and not later turns; the source remains unchanged. Edit & resend forks at
    the previous assistant message; editing the first user message starts fresh.
-   With a source worktree, verify a distinct owned checkout at its committed
-   tip and no uncommitted source changes carried over.
+   With a clean source worktree, verify a distinct owned checkout at its
+   committed tip. Dirty source worktrees refuse both actions with “Commit or
+   discard the changes in this chat's worktree first”, without creating a chat.
 9. For every provider, select assistant text and Reply with quote; repeat with
    no selection. Select added, removed-only and disjoint diff lines and Add to
    message; check path, fenced snippets and the correct line numbers.
@@ -259,6 +274,25 @@ the native sessions created by this check.
     app normally, verify runtime files are removed and reap all fixture/test
     processes. Keep private browser/account content out of screenshots and
     committed artifacts. Mark D34 complete only after this gate passes.
+12. Check now must obtain MCP status through `mcp_status` without adding any
+    prompt or message. Verify an approved unknown-status repo row has the
+    approved explanation and Revoke approval; revoking must not create a denial.
+    Confirm raw status `config` (which can contain secrets) never reaches the
+    snapshot, transcript, store or audit. Check refresh during a running chat.
+13. While Claude waits on an approval, send a follow-up, then answer the card.
+    A single native result must finish both journals, attribute the answer to
+    the latest input and clear Stop/sidebar spinners. Repeat with two follow-ups.
+14. Pick `/shout` by click and by Return, type arguments, then do the same for
+    `/btw`. Ensure the caret follows the insertion with no selection and the
+    popup shows several rows. Quote a selection and type below it. Native
+    command markup must display as `/shout <arguments>`, including after refresh.
+15. Resize while an answer streams, after completion and with the side-question
+    panel open: assistant text must fill the proposed transcript width. Inspect
+    the compact setup groups and tooltips. If an NSTableView reentrancy warning
+    remains, capture a host backtrace to identify the actual List delegate.
+16. New/default Claude chats select Opus (newest), Medium; argv uses `opus`,
+    never a pinned model version. Existing explicit model/effort choices survive
+    reopening, and setup/side-question fallback choices match.
 
 ## Legacy Claude subscription adapter checkpoint
 
@@ -956,7 +990,10 @@ afterwards, with the composer mode and saved settings following acknowledgement.
 
 Follow-ups and Stop (M3.5/M3.6): Send and Stop remain adjacent during a turn;
 Return and Command-Return submit follow-ups. Claude writes them to native stdin
-in order and shows Queued on each pending message. Codex uses `turn/steer` with
+in order and shows Queued on each pending message. One Claude result completes
+all inputs already written and attributes the answer to the latest input, with
+its transcript position preserved after reopening. A result racing an unwritten
+follow-up must leave neither a running journal nor a spinner. Codex uses `turn/steer` with
 `expectedTurnId` and a local message ID; output stays with the original active
 turn. Every input has its own delivery barrier and journal row linked to the
 active input. Duplicate IDs, wrong providers and busy plan reviews cannot replace

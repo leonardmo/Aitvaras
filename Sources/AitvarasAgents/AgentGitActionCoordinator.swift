@@ -65,8 +65,17 @@ public actor AgentGitActionCoordinator {
             throw error
         }
     }
+    public func requireCleanForFork(chatID: UUID) async throws {
+        guard let source = try await mapping(chatID: chatID) else { throw AgentGitError.ownershipConflict }
+        let tool = ToolDefinition(name: "forkPreflight", description: "Check fork worktree", parametersJSON: "{}", risk: .read)
+        guard policy.verdict(for: tool, connectorID: "agent.git") == .allow else { throw AgentGitError.confirmationRequired }
+        let status = try await git.command(["status", "--porcelain=v1", "-z", "--untracked-files=all"], in: URL(fileURLWithPath: source.worktreePath))
+        try await record("forkPreflight", chatID: chatID, result: status.isEmpty ? "clean" : "dirty", risk: .read)
+        guard status.isEmpty else { throw AgentConversationError.dirtyWorktree }
+    }
     public func fork(chatID: UUID, sourceChatID: UUID, projectID: UUID, storage: URL) async throws -> AgentWorktree {
         guard let source = try await mapping(chatID: sourceChatID), source.projectID == projectID else { throw AgentGitError.ownershipConflict }
+        try await requireCleanForFork(chatID: sourceChatID)
         let tip = try await git.command(["rev-parse", "HEAD"], in: URL(fileURLWithPath: source.worktreePath))
         func original(_ directory: URL) -> URL {
             let path = directory.standardizedFileURL.path

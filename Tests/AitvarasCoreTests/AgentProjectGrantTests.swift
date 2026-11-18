@@ -27,6 +27,8 @@ done()
         let stores = try inMemoryStores()
         let (chat, _) = try agentStoreChat(stores, cwd: fixture.directory.path)
         var setup = WorkspaceAgentSetup(projectID: chat.projectID); setup.permissionSource = .aitvaras
+        setup.extraServersJSON = try AgentMCPConfiguration.encode(["echo": AgentMCPServer(command: "echo")])
+        let grant = "claude.mcp__echo__echo@" + (try AgentMCPServer(command: "echo").fingerprint())
         try stores.saveWorkspaceAgentSetup(setup)
         let policy = mcpTestPolicy(stores, root: fixture.directory)
         let backend = ClaudeBackend(executable: fixture.executable, environment: fixture.environment,
@@ -38,9 +40,9 @@ done()
         #expect(request.canAlwaysAllowInProject)
         try await manager.alwaysAllow(chatID: chat.id, request: request)
         try await waitGrant { try await manager.state(chatID: chat.id).outcome == .completed }
-        #expect(try stores.agentAlwaysAllowedTools(chatID: chat.id) == ["claude.mcp__echo__echo"])
+        #expect(try stores.agentAlwaysAllowedTools(chatID: chat.id) == [grant])
         let sibling = try stores.createWorkspaceChat(projectID: chat.projectID, title: "Sibling")
-        #expect(try stores.agentAlwaysAllowedTools(chatID: sibling.id) == ["claude.mcp__echo__echo"])
+        #expect(try stores.agentAlwaysAllowedTools(chatID: sibling.id) == [grant])
         let other = try agentStoreChat(stores).0
         #expect(try stores.agentAlwaysAllowedTools(chatID: other.id).isEmpty)
         let activity = try stores.activity(since: .distantPast)
@@ -167,7 +169,7 @@ done()
         let raw = GrantRun(provider: .claude)
         let coordinator = AgentActionCoordinator(run: raw, mode: .ask, provenance: .init(chatID: UUID()), audit: { _ in })
         try await coordinator.send(.init(text: "Example"), willDeliver: {})
-        let request = await raw.offer(.permission(.init(name: "mcp__echo__echo", input: .null)))
+        let request = await raw.offer(.permission(.init(name: "Write", input: .null)))
         try await waitGrant { await coordinator.pendingRequests().count == 1 }
         await #expect(throws: GrantFailure.self) { try await coordinator.alwaysAllow(to: request, persist: { throw GrantFailure() }) }
         #expect(await raw.responses == [.deny])
@@ -181,7 +183,7 @@ done()
             if event.summary == "Provider action: approved and allowed in project" { await gate.wait() }
         })
         try await coordinator.send(.init(text: "Example"), willDeliver: {})
-        let request = await raw.offer(.permission(.init(name: "mcp__echo__echo", input: .null)))
+        let request = await raw.offer(.permission(.init(name: "Write", input: .null)))
         try await waitGrant { await coordinator.pendingRequests().count == 1 }
         let first = Task { try await coordinator.alwaysAllow(to: request, persist: {}) }
         try await waitGrant { await gate.waiting }
@@ -200,7 +202,7 @@ done()
         let input = AgentInput(text: "Example")
         try stores.prepareAgentTurn(.init(input: input, chatID: chat.id, sessionID: session.id))
         let scope = AgentEventScope(runID: UUID(), session: session.sessionID, inputID: input.id)
-        let request = AgentRequest(id: .string("permission"), scope: scope, kind: .permission(.init(name: "mcp__echo__echo", input: .null)))
+        let request = AgentRequest(id: .string("permission"), scope: scope, kind: .permission(.init(name: "Write", input: .null)))
         let forbidden = AgentRequest(id: request.id, scope: scope, kind: .permission(.init(name: "mcp__mail__send", input: .null)))
         #expect(throws: AgentFailure.invalidRequest) { try stores.allowAgentTool(chatID: chat.id, request: forbidden) }
         try stores.db.queue.write { try $0.execute(sql: "CREATE TRIGGER grantAuditFailure BEFORE INSERT ON activityEvent WHEN NEW.connectorID = 'agent.setup' BEGIN SELECT RAISE(ABORT, 'fixture failure'); END") }
@@ -210,7 +212,60 @@ done()
         // Hiding a chat does not revoke the live turn's pending approvals.
         try stores.setWorkspaceChatArchived(id: chat.id, archived: true)
         try stores.allowAgentTool(chatID: chat.id, request: request)
-        #expect(try stores.agentAlwaysAllowedTools(chatID: chat.id) == ["claude.mcp__echo__echo"])
+        #expect(try stores.agentAlwaysAllowedTools(chatID: chat.id) == ["claude.Write"])
+    }
+
+    @Test(arguments: ["Bash", "commandExecution", "bash", "shell", "exec_command", "mcp__echo__send", "mcp__echo__reply", "mcp__echo__forward", "mcp__echo__compose", "mcp__echo__draft", "mcp__echo__post", "mcp__echo__PUBLISH"])
+    func commandAndOutboundMCPGrantsAreNeverOfferedOrHonoured(name: String) async throws {
+        let fingerprint = String(repeating: "a", count: 64)
+        let raw = GrantRun(provider: .claude, fingerprints: ["echo": fingerprint])
+        let coordinator = AgentActionCoordinator(run: raw, mode: .ask, provenance: .init(chatID: UUID()),
+            projectGrants: { ["claude." + name, "claude." + name + "@" + fingerprint] }, audit: { _ in })
+        try await coordinator.send(.init(text: "Example"), willDeliver: {})
+        let request = await raw.offer(.permission(.init(name: name, input: .null)))
+        try await waitGrant { await coordinator.pendingRequests().count == 1 }
+        #expect(!request.canAlwaysAllowInProject)
+        await #expect(throws: AgentFailure.invalidRequest) { try await coordinator.alwaysAllow(to: request, persist: { Issue.record("Ineligible grant persisted") }) }
+        #expect(await raw.responses.isEmpty)
+        try await coordinator.respond(to: request, with: .deny)
+        try await coordinator.shutdown()
+    }
+
+    @Test(arguments: [AgentMode.ask, .acceptEdits, .plan, .auto], [AgentPermissionSource.repo, .aitvaras])
+    func outboundMCPHookAlwaysRequiresExplicitApproval(mode: AgentMode, source: AgentPermissionSource) async throws {
+        let raw = GrantRun(provider: .claude)
+        let coordinator = AgentActionCoordinator(run: raw, mode: mode, provenance: .init(chatID: UUID()), permissionSource: source, audit: { _ in })
+        try await coordinator.send(.init(text: "Example"), willDeliver: {})
+        _ = await raw.offer(.preToolUse(.init(name: "mcp__docs__publish", input: .null)))
+        try await waitGrant { await raw.responses.count == 1 }
+        #expect(await raw.responses == [.askHook])
+        let command = AgentTool(name: "Read", input: .object(["type": .string("commandExecution")]))
+        #expect(AgentToolPolicy.isCommandExecution(command))
+        #expect(!AgentToolPolicy.grantEligible(command))
+        #expect(AgentToolPolicy.risk(command) == .confirmable)
+        try await coordinator.shutdown()
+    }
+
+    @Test(arguments: [false, true])
+    func mcpGrantRequiresCurrentServerFingerprint(changed: Bool) async throws {
+        let old = String(repeating: "a", count: 64), current = String(repeating: changed ? "b" : "a", count: 64)
+        let grant = try AgentToolPolicy.grantKey(provider: .claude, tool: "mcp__echo__echo", fingerprint: old)
+        let grants = AgentToolPolicy.currentGrants([grant, "claude.mcp__echo__echo"], servers: ["echo": current])
+        #expect(grants.isEmpty == changed)
+        #expect(AgentToolPolicy.currentGrants([grant], servers: [:]).isEmpty)
+        #expect(AgentToolPolicy.fingerprint(tool: "mcp__echo__nested__read", servers: ["echo": old, "echo__nested": current]) == nil)
+        let raw = GrantRun(provider: .claude, fingerprints: ["echo": current])
+        let coordinator = AgentActionCoordinator(run: raw, mode: .ask, provenance: .init(chatID: UUID()), projectGrants: { grants }, audit: { _ in })
+        try await coordinator.send(.init(text: "Example"), willDeliver: {})
+        let request = await raw.offer(.permission(.init(name: "mcp__echo__echo", input: .null)))
+        if changed {
+            try await waitGrant { await coordinator.pendingRequests().count == 1 }
+            try await coordinator.respond(to: request, with: .deny)
+        } else {
+            try await waitGrant { await raw.responses.count == 1 }
+            #expect(await raw.responses == [.allow(updatedInput: nil)])
+        }
+        try await coordinator.shutdown()
     }
 
     @Test func mcpPresentationNeverChangesTheWireNameOrInfersRiskFromTheLabel() {
@@ -240,7 +295,9 @@ private actor GrantRun: AgentRun {
     private var input: UUID?
     private var counter = 0
     var responses: [AgentResponse] = []
-    init(provider: AgentProvider) {
+    nonisolated let mcpSetup: AgentMCPLaunchStatus?
+    init(provider: AgentProvider, fingerprints: [String: String] = [:]) {
+        mcpSetup = .init(revision: "fixture", repositoryUnreadable: false, unsupportedRepositoryServers: [], serverFingerprints: fingerprints, unavailableForLocal: [:])
         session = .init(provider: provider, profile: "test", nativeID: "session-example")
         (events, continuation) = AsyncThrowingStream.makeStream()
     }

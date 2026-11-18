@@ -4,6 +4,7 @@ actor ClaudeRun: AgentRun {
     nonisolated let id: UUID
     nonisolated let mcpSetup: AgentMCPLaunchStatus?
     nonisolated let permissionSource: AgentPermissionSource
+    private let validateProjectServers: @Sendable (JSONValue) async throws -> Void
     private let metadataReader: AgentProjectMetadataReader
     private(set) var availableSetup = AgentSetupSnapshot(provider: .claude)
     private var hookPhases: [String: AgentHookEvent.Phase] = [:]
@@ -21,6 +22,7 @@ actor ClaudeRun: AgentRun {
     private var interrupted = false
     private var assistantFailure: AgentFailure?
     private var closed = false
+    private var terminalFailure: AgentFailure?
     private var modeState: AgentModeState
     private var requests: [AgentRequestID: (AgentRequest, JSONValue)] = [:]
     private var seenResults: Set<String> = []
@@ -31,7 +33,9 @@ actor ClaudeRun: AgentRun {
 
     init(executable: URL, environment: [String: String], profile: String, configuration: AgentSessionConfiguration,
          id: UUID = UUID(), runtimeFile: AgentMCPRuntimeFile? = nil, mcpSetup: AgentMCPLaunchStatus? = nil,
-         permissionSource: AgentPermissionSource = .repo, metadataReader: AgentProjectMetadataReader? = nil) {
+         permissionSource: AgentPermissionSource = .repo, metadataReader: AgentProjectMetadataReader? = nil,
+         validateProjectServers: @escaping @Sendable (JSONValue) async throws -> Void) {
+        self.validateProjectServers = validateProjectServers
         self.id = id; self.runtimeFile = runtimeFile; self.mcpSetup = mcpSetup
         self.permissionSource = permissionSource
         self.metadataReader = metadataReader ?? AgentProjectMetadataReader(projectDirectory: configuration.directory)
@@ -41,11 +45,11 @@ actor ClaudeRun: AgentRun {
                          "--include-partial-messages", "--permission-prompt-tool", "stdio", "--permission-mode",
                          configuration.mode.claudePermission]
         for root in configuration.additionalDirectories { arguments += ["--add-dir", root.path] }
-        if configuration.model != "default" { arguments += ["--model", configuration.model] }
+        arguments += ["--model", ChatSettings.claudeModel(configuration.model)]
         if let resume = configuration.resume { arguments += ["--resume", resume.nativeID] }
         if configuration.forkSession { arguments += ["--fork-session"] }
         if let message = configuration.resumeSessionAt { arguments += ["--resume-session-at", message] }
-        if let effort = configuration.effort { arguments += ["--effort", effort] }
+        arguments += ["--effort", ChatSettings.claudeEffort(configuration.effort)]
         if !configuration.instructions.isEmpty { arguments += ["--append-system-prompt", configuration.instructions] }
         if let settings = configuration.settingsJSON { arguments += ["--settings", settings] }
         if let file = configuration.mcpConfigPath { arguments += ["--mcp-config", file.path] }
@@ -61,18 +65,36 @@ actor ClaudeRun: AgentRun {
         try await wire.open(receive: { [weak self] value, requestID in await self?.receive(value, requestID: requestID) },
                             disconnected: { [weak self] error in await self?.disconnected(error) })
         let hook: (String) -> JSONValue = { .array([.object(["matcher": .null, "hookCallbackIds": .array([.string($0)])])]) }
-        let value = try await wire.request("initialize", .object(["hooks": .object([
-            "PreToolUse": hook("pre"), "PostToolUse": hook("post")])]), id: .string("init"))
+        let value: JSONValue
+        do {
+            value = try await wire.request("initialize", .object(["hooks": .object([
+                "PreToolUse": hook("pre"), "PostToolUse": hook("post")])]), id: .string("init"))
+        } catch { throw terminalFailure ?? error }
+        guard !closed else { throw terminalFailure ?? AgentFailure.invalidTransition }
         if let source = value["account"]?["apiKeySource"], source.stringValue != "none" { throw AgentFailure.unsupported }
         availableCommands = try? AgentCommandCatalog.claude(value)
         availableSetup.initialize(value)
         if availableSetup.commandsAvailable { availableCommands = availableSetup.commands }
         emit(.setupReported(availableSetup))
-        availableModels = (value["models"]?.arrayValue ?? []).compactMap {
+        availableModels = ChatSettings.claudeModels((value["models"]?.arrayValue ?? []).compactMap {
             guard let id = $0["value"]?.stringValue else { return nil }
             return AgentModel(id: id, name: $0["displayName"]?.stringValue ?? id,
                               efforts: $0["supportedEffortLevels"]?.arrayValue?.compactMap(\.stringValue) ?? [])
-        }
+        })
+    }
+
+    var canRefreshSetup: Bool { !closed }
+    func refreshSetup() async throws -> AgentSetupSnapshot {
+        guard !closed else { throw AgentFailure.invalidTransition }
+        let response = try await wire.request("mcp_status", timeout: .seconds(5), failOnTimeout: false)
+        guard !closed else { throw terminalFailure ?? AgentFailure.invalidTransition }
+        var snapshot = availableSetup
+        try snapshot.claudeMCPStatus(response)
+        // Status is an inventory response, which may include disabled entries.
+        // The launch gate and system/init validation decide execution authority.
+        availableSetup = snapshot
+        emit(.setupReported(snapshot))
+        return snapshot
     }
 
     private func scope(item: String? = nil) -> AgentEventScope {
@@ -117,12 +139,6 @@ actor ClaudeRun: AgentRun {
         guard result.jsonString.utf8.count <= StreamingProcess.maximumLineBytes else { throw AgentAttachmentError.tooLarge }
         return result
     }
-    private func activateNext() {
-        guard !interrupted, !queue.isEmpty else { return }
-        input = queue.removeFirst(); acknowledged = false; assistantFailure = nil
-        streamedThinking.removeAll(); streamTools.removeAll(); streamTexts.removeAll(); streamingMessageID = nil
-        emit(.inputActivated)
-    }
     private func acknowledge() {
         if input != nil, !acknowledged { acknowledged = true; emit(.delivery(.acknowledged)) }
     }
@@ -139,6 +155,15 @@ actor ClaudeRun: AgentRun {
         switch value["type"]?.stringValue {
         case "system" where value["subtype"]?.stringValue == "init":
             if value["apiKeySource"]?.stringValue != "none" { await disconnected(.unsupported); return }
+            do {
+                // The CLI has consumed the file; retain only the in-memory
+                // redaction cache for subsequent hook diagnostics.
+                try await runtimeFile?.remove(preservingRedactions: true)
+                try await validateProjectServers(value)
+            } catch {
+                await disconnected((error as? AgentFailure) ?? .unapprovedProjectMCP); return
+            }
+            guard !closed else { return }
             availableSetup.claudeInit(value)
             if availableSetup.commandsAvailable { availableCommands = availableSetup.commands }
             emit(.setupReported(availableSetup))
@@ -208,8 +233,10 @@ actor ClaudeRun: AgentRun {
             let outcome: AgentTurnOutcome = (interrupted || aborted)
                 ? .interrupted : assistantFailure.map { .failed($0) }
                     ?? (value["is_error"]?.boolValue == false ? .completed : .failed(.unknown))
-            emit(.turnEnded(outcome)); input = nil; requests.removeAll(); modeState.cancel()
-            activateNext()
+            let completed = [input!] + queue
+            continuation.yield(.init(scope: .init(runID: id, session: session, inputID: input,
+                completedInputIDs: completed.count > 1 ? completed : []), kind: .turnEnded(outcome)))
+            input = nil; queue.removeAll(); requests.removeAll(); modeState.cancel()
         default: emit(.unknown(name: value["type"]?.stringValue ?? "unknown", payload: value))
         }
     }
@@ -261,7 +288,7 @@ actor ClaudeRun: AgentRun {
     }
     func disconnected(_ error: AgentFailure) async {
         guard !closed else { return }
-        closed = true; requests.removeAll()
+        closed = true; terminalFailure = error; requests.removeAll()
         if input != nil { emit(.turnEnded(.failed(error))); input = nil }
         continuation.finish(throwing: error)
         await closeTransport()
@@ -374,9 +401,18 @@ actor ClaudeRun: AgentRun {
             default: emit(.unknown(name: block["type"]?.stringValue ?? "content", payload: block), item: messageID)
             }
         }
-        if let messageID, !texts.isEmpty { emit(.message(id: value["uuid"]?.stringValue ?? messageID, role: message["role"]?.stringValue ?? "assistant", text: messageID == streamingMessageID && !streamTexts.isEmpty
-            ? streamTexts.keys.sorted().compactMap { streamTexts[$0] }.joined(separator: "\n")
-            : texts.joined(separator: "\n")), item: messageID) }
+        if message["role"]?.stringValue == "user" { texts = [ClaudeCommandText.display(texts.joined(separator: "\n"))] }
+        if let messageID, !texts.isEmpty {
+            let native = value["uuid"]?.stringValue ?? messageID
+            let role = message["role"]?.stringValue ?? "assistant"
+            let text = messageID == streamingMessageID && !streamTexts.isEmpty
+                ? streamTexts.keys.sorted().compactMap { streamTexts[$0] }.joined(separator: "\n") : texts.joined(separator: "\n")
+            if role == "user", let queuedID = UUID(uuidString: native), queue.contains(queuedID) {
+                let owner = AgentEventScope(runID: id, session: session, inputID: queuedID, itemID: messageID)
+                continuation.yield(.init(scope: owner, kind: .delivery(.acknowledged)))
+                continuation.yield(.init(scope: owner, kind: .message(id: native, role: role, text: text)))
+            } else { emit(.message(id: native, role: role, text: text), item: messageID) }
+        }
     }
 
     // Preserve string contents, rather than JSON-escaping credentials before

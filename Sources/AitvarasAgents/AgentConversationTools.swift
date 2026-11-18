@@ -13,8 +13,9 @@ public struct AgentForkOrigin: Sendable, Codable, Equatable {
 }
 
 public enum AgentConversationError: Error, Sendable, Equatable {
-    case unavailable, invalidMessage, busy, timedOut, invalidResponse
+    case unavailable, invalidMessage, busy, timedOut, invalidResponse, dirtyWorktree
     case worktreeUnavailable(UUID)
+    public static let dirtyWorktreeReason = "Commit or discard the changes in this chat's worktree first"
 }
 
 public enum AgentConversationText {

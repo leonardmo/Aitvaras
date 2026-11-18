@@ -100,7 +100,7 @@ public struct ClaudeNativeHistory: Sendable {
         }
         let title = own.last(where: { $0["type"]?.stringValue == "custom-title" })?["customTitle"]?.stringValue
             ?? own.first(where: { $0["type"]?.stringValue == "user" && $0["isMeta"]?.boolValue != true })
-                .flatMap { Self.messageText($0["message"]?["content"]) }
+                .flatMap { Self.messageText($0["message"]?["content"]) }.map(ClaudeCommandText.display)
             ?? "Claude chat"
         let displayTitle = String(title.prefix(200)).trimmingCharacters(in: .whitespacesAndNewlines)
         return Session(summary: .init(id: .init(provider: .claude, profile: profile, nativeID: id),
@@ -168,7 +168,7 @@ public struct ClaudeNativeHistory: Sendable {
             if role == "assistant", ["end_turn", "stop_sequence", "max_tokens"].contains(record["message"]?["stop_reason"]?.stringValue ?? "") {
                 completed.formUnion(pending); pending = []
             }
-            events.append(.init(scope: .init(runID: runID, session: session, itemID: id), kind: .message(id: id, role: role, text: text)))
+            events.append(.init(scope: .init(runID: runID, session: session, itemID: id), kind: .message(id: id, role: role, text: role == "user" ? ClaudeCommandText.display(text) : text)))
         }
         let page = try NativeHistoryPagination.page(events, cursor: cursor, key: "claude-read:\(profile):\(session.nativeID)", snapshot: value.snapshot)
         return .init(items: page.items, nextCursor: page.nextCursor, completedItemIDs: completed)

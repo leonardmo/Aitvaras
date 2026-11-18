@@ -21,6 +21,7 @@ public struct AgentMCPLaunchStatus: Sendable, Equatable {
     public let revision: String
     public let repositoryUnreadable: Bool
     public let unsupportedRepositoryServers: [String]
+    public var serverFingerprints: [String: String] = [:]
     public let unavailableForLocal: [String: AgentMCPResolution.LocalUnavailableReason]
     public var notice: String? {
         repositoryUnreadable ? "Project MCP configuration could not be read. Repo servers are disabled." : nil
@@ -74,8 +75,26 @@ public struct AgentMCPLaunchPolicy: Sendable {
         let revision = SHA256.hash(data: Data(value.jsonString.utf8)).map { String(format: "%02x", $0) }.joined()
         return .init(projectID: context.projectID, resolution: resolution,
             status: .init(revision: revision, repositoryUnreadable: resolution.repositoryUnreadable,
-                unsupportedRepositoryServers: resolution.repositoryEntries.filter { $0.value.server == nil }.keys.sorted(),
+                unsupportedRepositoryServers: resolution.repositoryEntries.filter { $0.value.server == nil || $0.value.conflicting }.keys.sorted(),
+                serverFingerprints: try resolution.effectiveServers.mapValues { try $0.fingerprint() }.merging(
+                    resolution.repositoryFingerprints.filter { resolution.effectiveServers[$0.key] != nil }) { _, repo in repo },
                 unavailableForLocal: resolution.unavailableForLocal), permissionSource: context.permissionSource)
+    }
+
+    /// No raw server names/configuration enter the audit. A reported project
+    /// server must belong to the exact approved launch snapshot, even if failed.
+    public func validateProjectServers(_ report: JSONValue, snapshot: AgentMCPLaunchSnapshot, runID: UUID) async throws {
+        let allowed = Set(snapshot.resolution.effectiveServers.keys).subtracting(snapshot.resolution.claudeServers.keys)
+        let unexpected = (report["mcp_servers"]?.arrayValue ?? []).contains { server in
+            guard server["source"]?.stringValue == "project" else { return false }
+            guard let name = server["name"]?.stringValue,
+                  (try? AgentMCPConfiguration.validateName(name)) != nil else { return true }
+            return !allowed.contains(name)
+        }
+        guard unexpected else { return }
+        try await audit(.init(kind: .confirmationDenied, connectorID: "agent.mcp",
+            summary: "Unapproved project MCP server reported; run stopped", runID: runID))
+        throw AgentFailure.unapprovedProjectMCP
     }
 
     public func runtimeFile(snapshot: AgentMCPLaunchSnapshot, runID: UUID,

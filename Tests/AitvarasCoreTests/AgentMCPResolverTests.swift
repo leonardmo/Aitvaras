@@ -18,17 +18,17 @@ import Testing
             .init(command: "echo", args: ["one"], env: ["MODE": .literal("example")]),
             .init(command: "echo", env: ["OTHER": .literal("example")]),
             .init(command: "echo", env: ["MODE": .literal("changed")]),
-            .init(command: "echo", env: ["MODE": .secretReference("example")])
+            .init(command: "echo", env: ["MODE": .secretReference("agent.mcp.00000000-0000-4000-8000-000000000003")])
         ]
         for server in variants { #expect(try server.fingerprint() != fingerprint) }
-        let ref = AgentMCPServer(transport: .http, url: "https://service.example.invalid/mcp", headers: ["Authorization": .secretReference("mcp.access")])
-        let changed = AgentMCPServer(transport: .http, url: ref.url, headers: ["Authorization": .secretReference("mcp.other")])
+        let ref = AgentMCPServer(transport: .http, url: "https://service.example.invalid/mcp", headers: ["Authorization": .secretReference("agent.mcp.00000000-0000-4000-8000-000000000001")])
+        let changed = AgentMCPServer(transport: .http, url: ref.url, headers: ["Authorization": .secretReference("agent.mcp.00000000-0000-4000-8000-000000000002")])
         #expect(try ref.fingerprint() != changed.fingerprint())
         #expect(try ref.fingerprint() == ref.fingerprint())
         for variant in [
             AgentMCPServer(transport: .sse, url: ref.url, headers: ref.headers),
             AgentMCPServer(transport: .http, url: "https://other.example.invalid/mcp", headers: ref.headers),
-            AgentMCPServer(transport: .http, url: ref.url, headers: ["Access": .secretReference("mcp.access")])
+            AgentMCPServer(transport: .http, url: ref.url, headers: ["Access": .secretReference("agent.mcp.00000000-0000-4000-8000-000000000001")])
         ] { #expect(try ref.fingerprint() != variant.fingerprint()) }
         #expect(try AgentMCPServer(command: "echo").fingerprint() == "30f9d2a45f4baf9eb1260213fc5d4a1d603ecbd540b0668dac26a4c901eab18d")
     }
@@ -76,7 +76,7 @@ import Testing
         let fixture = try AgentExecutableFixture("exit 0")
         defer { fixture.remove() }
         let servers: [String: AgentMCPServer] = ["echo": .init(command: "echo"),
-            "http": .init(transport: .http, url: "https://service.example.invalid/mcp", headers: ["Access": .secretReference("mcp.access")]),
+            "http": .init(transport: .http, url: "https://service.example.invalid/mcp", headers: ["Access": .secretReference("agent.mcp.00000000-0000-4000-8000-000000000001")]),
             "events": .init(transport: .sse, url: "https://service.example.invalid/events")]
         let result = try AgentMCPResolver.prepare(directory: fixture.directory,
             setup: .init(projectServers: servers, localMayUseMCP: true))
@@ -86,14 +86,14 @@ import Testing
         #expect(result.effectiveServers.count == 3)
     }
 
-    @Test func inventoryUsesActualCwdAndDoesNotReadAnotherFolder() throws {
+    @Test func inventoryIncludesAncestorsOfActualCwd() throws {
         let fixture = try AgentExecutableFixture("exit 0")
         defer { fixture.remove() }
         let other = fixture.directory.appendingPathComponent("worktree")
         try FileManager.default.createDirectory(at: other, withIntermediateDirectories: true)
         try writeRepo(#"{"mcpServers":{"parent":{"command":"echo"}}}"#, in: fixture.directory)
         try writeRepo(#"{"mcpServers":{"child":{"command":"echo"}}}"#, in: other)
-        #expect(try AgentMCPResolver.prepare(directory: other, setup: .init()).disabledProjectServers == ["child"])
+        #expect(try AgentMCPResolver.prepare(directory: other, setup: .init()).disabledProjectServers == ["child", "parent"])
     }
 
     @Test(arguments: ["garbage", #"{}"#, #"{"mcpServers":[]}"#])
@@ -159,7 +159,7 @@ import Testing
         for server in invalid { #expect(throws: AgentMCPError.invalidConfiguration) { try AgentMCPConfiguration.validate(["echo": server]) } }
         #expect(throws: AgentMCPError.invalidName) { try AgentMCPConfiguration.validate(["bad name": .init(command: "echo")]) }
         #expect(throws: AgentMCPError.invalidConfiguration) { try AgentMCPConfiguration.decodeServers("[]") }
-        let server = AgentMCPServer(command: "echo", env: ["MODE": .literal("example"), "ACCESS": .secretReference("mcp.access")])
+        let server = AgentMCPServer(command: "echo", env: ["MODE": .literal("example"), "ACCESS": .secretReference("agent.mcp.00000000-0000-4000-8000-000000000001")])
         #expect(try AgentMCPConfiguration.decodeServers(AgentMCPConfiguration.encode(["echo": server])) == ["echo": server])
     }
 }

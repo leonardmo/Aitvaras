@@ -2,6 +2,15 @@ import Foundation
 
 /// Provider choices are scoped to a chat session; changing them never sends.
 public enum ChatSettings {
+    public static func claudeModel(_ model: String) -> String { model.isEmpty || model == "default" || model == "Default (recommended)" ? "opus" : model }
+    public static func claudeEffort(_ effort: String?) -> String { effort.flatMap { $0.isEmpty ? nil : $0 } ?? "medium" }
+    public static func claudeModels(_ models: [AgentModel]) -> [AgentModel] {
+        let reported = models.first { $0.id == "opus" } ?? models.first { $0.id == "default" }
+        let efforts = reported?.efforts.isEmpty == false ? reported!.efforts : ["medium"]
+        return [.init(id: "opus", name: "Opus (newest)", efforts: efforts)]
+            + models.filter { $0.id != "default" && $0.id != "opus" }
+    }
+
     public static func newProvider(lastUsed: AgentProvider?, localAvailable: Bool,
                                    statuses: [AgentProvider: AgentStatus]) -> AgentProvider {
         if let lastUsed { return lastUsed }
@@ -23,6 +32,13 @@ public enum ChatSettings {
     /// when discovery is cached. Empty catalogs preserve a signed-out choice.
     public static func restoring(_ session: AgentChatSession, models: [AgentModel],
                                  automaticallySelect: Bool = true) -> AgentChatSession {
+        if session.provider == .claude {
+            var restored = session
+            restored.model = claudeModel(session.model)
+            restored.effort = claudeEffort(session.effort)
+            // A saved explicit Claude model is never silently replaced.
+            return restored
+        }
         if let model = models.first(where: { $0.id == session.model }) {
             return selecting(model: model, in: session)
         }

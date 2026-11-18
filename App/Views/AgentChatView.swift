@@ -31,6 +31,8 @@ struct AgentChatView: View {
     @State private var choosingAttachments = false
     @State private var attachmentTarget: (chatID: UUID, provider: AgentProvider)?
     @State private var completion: AgentComposerTrigger?
+    @State private var completionAcceptance = 0
+    @State private var composerTextSelection: TextSelection?
     @State private var showingCompletion = false
     @FocusState private var composerFocused: Bool
 
@@ -88,7 +90,7 @@ struct AgentChatView: View {
                 .environment(model)
         }
         .sheet(item: $editingMessage) { entry in
-            AgentEditMessageSheet(text: entry.text) { text in
+            AgentEditMessageSheet(text: entry.displayText) { text in
                 let completed = await chat.fork(entry, editedText: text)
                 if completed { editingMessage = nil }
                 return completed
@@ -248,7 +250,8 @@ struct AgentChatView: View {
                     }
                 }.scrollIndicators(.hidden).accessibilityIdentifier("chat.attachments")
             }
-            TextField("Message", text: $chat.draft, axis: .vertical)
+            TextField("Message", text: Binding(get: { chat.draft }, set: { chat.editDraft($0) }),
+                      selection: $composerTextSelection, axis: .vertical)
                 .lineLimit(2...6).textFieldStyle(.plain)
                 .focused($composerFocused)
                 .disabled(!canSend)
@@ -269,11 +272,11 @@ struct AgentChatView: View {
                 }
                 .popover(isPresented: $showingCompletion, arrowEdge: .top) {
                     if let completion {
-                        AgentComposerCompletionView(chat: chat, trigger: completion) { showingCompletion = false }
+                        AgentComposerCompletionView(chat: chat, trigger: completion, dismiss: { showingCompletion = false }, acceptanceRequest: completionAcceptance)
                     }
                 }
                 .onKeyPress(.return, phases: .down) { press in
-                    if showingCompletion { return .handled }
+                    if showingCompletion { completionAcceptance += 1; return .handled }
                     if press.modifiers.contains(.shift) { return .ignored }
                     if chat.canSubmit && canSend && chat.hasInput { Task { await chat.send() } }
                     return .handled
@@ -291,9 +294,19 @@ struct AgentChatView: View {
             guard case .success(let urls) = result, let target = attachmentTarget else { return }
             Task { for url in urls { await chat.attach(url, chatID: target.chatID, provider: target.provider) } }
         }
-        .onChange(of: chatID) { showingCompletion = false; completion = nil }
-        .onChange(of: chat.provider) { showingCompletion = false; completion = nil }
-        .onChange(of: showingCompletion) { if !showingCompletion { composerFocused = true } }
+        .onChange(of: chatID) { showingCompletion = false; completion = nil; placeComposerCaret() }
+        .onChange(of: chat.provider) { showingCompletion = false; completion = nil; placeComposerCaret() }
+        .onChange(of: chat.composerInsertionRevision) { placeComposerCaret() }
+        .onChange(of: showingCompletion) {
+            if !showingCompletion {
+                composerFocused = true
+                Task { await Task.yield(); if !showingCompletion { placeComposerCaret() } }
+            }
+        }
+    }
+    private func placeComposerCaret() {
+        let range = AgentComposerCaret.afterInsertion(chat.draft)
+        composerTextSelection = TextSelection(insertionPoint: String.Index(utf16Offset: range.location, in: chat.draft))
     }
     private func composerBar(compactProvider: Bool, compactProject: Bool, compactDetails: Bool) -> some View {
         HStack(spacing: compactDetails ? 2 : 10) {
@@ -575,7 +588,7 @@ struct AgentChatView: View {
                 await chat.respond(chatID: owner, to: request, with: response)
             }
         default:
-            AgentApprovalCard(request: request, identifier: "chat.request.\(index)", alwaysAllow: { [owner = chatID] in
+            AgentApprovalCard(request: request, identifier: "chat.request.\(index)", grantAvailable: chat.canAlwaysAllow(chatID: chatID, request: request), alwaysAllow: { [owner = chatID] in
                 await chat.alwaysAllow(chatID: owner, request: request)
             }) { [owner = chatID] response in
                 await chat.respond(chatID: owner, to: request, with: response)

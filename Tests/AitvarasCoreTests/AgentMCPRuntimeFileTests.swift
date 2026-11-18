@@ -8,11 +8,11 @@ import AitvarasCore
         let fixture = try AgentExecutableFixture("exit 0")
         defer { fixture.remove() }
         let audit = MCPRuntimeAudit()
-        let secrets = MCPTestSecrets(["mcp.access": "synthetic-access-value"])
+        let secrets = MCPTestSecrets(["agent.mcp.00000000-0000-4000-8000-000000000001": "synthetic-access-value"])
         let project = UUID(), run = UUID()
         let servers: [String: AgentMCPServer] = [
-            "echo": .init(command: "echo", args: ["one", "two"], env: ["MODE": .literal("example"), "ACCESS": .secretReference("mcp.access")]),
-            "remote": .init(transport: .http, url: "https://service.example.invalid/mcp", headers: ["Access": .secretReference("mcp.access")])]
+            "echo": .init(command: "echo", args: ["one", "two"], env: ["MODE": .literal("example"), "ACCESS": .secretReference("agent.mcp.00000000-0000-4000-8000-000000000001")]),
+            "remote": .init(transport: .http, url: "https://service.example.invalid/mcp", headers: ["Access": .secretReference("agent.mcp.00000000-0000-4000-8000-000000000001")])]
         let fingerprint = try servers["echo"]!.fingerprint()
         let file = try await AgentMCPRuntimeFile.create(stateDirectory: fixture.directory, projectID: project, runID: run,
             servers: servers, audit: { try await audit.record($0) }, resolveSecret: { await secrets.get($0) })
@@ -22,7 +22,7 @@ import AitvarasCore
         #expect(json["mcpServers"]?["echo"]?["env"]?["ACCESS"] == .string("synthetic-access-value"))
         #expect(json["mcpServers"]?["remote"]?["headers"]?["Access"] == .string("synthetic-access-value"))
         #expect(json["mcpServers"]?["echo"]?["args"] == .array([.string("one"), .string("two")]))
-        #expect(await secrets.requests == ["mcp.access"])
+        #expect(await secrets.requests == ["agent.mcp.00000000-0000-4000-8000-000000000001"])
         #expect(try servers["echo"]!.fingerprint() == fingerprint)
         #expect(try mode(file.url) == 0o600)
         #expect(try mode(file.url.deletingLastPathComponent()) == 0o700)
@@ -38,7 +38,7 @@ import AitvarasCore
         let fixture = try AgentExecutableFixture("exit 0")
         defer { fixture.remove() }
         let file = try await AgentMCPRuntimeFile.create(stateDirectory: fixture.directory, projectID: UUID(), runID: UUID(),
-            servers: ["echo": .init(command: "echo", args: ["example"], env: ["ACCESS": .secretReference("mcp.access")])], format: .opencode,
+            servers: ["echo": .init(command: "echo", args: ["example"], env: ["ACCESS": .secretReference("agent.mcp.00000000-0000-4000-8000-000000000001")])], format: .opencode,
             audit: { _ in }, resolveSecret: { _ in "synthetic-value" })
         let json = try #require(JSONValue.parse(String(contentsOf: file.url, encoding: .utf8)))
         #expect(json["mcp"]?["echo"]?["type"] == .string("local"))
@@ -77,7 +77,7 @@ import AitvarasCore
         for shouldThrow in [false, true] {
             await #expect(throws: AgentMCPError.secretUnavailable) {
                 try await AgentMCPRuntimeFile.create(stateDirectory: fixture.directory, projectID: UUID(), runID: UUID(),
-                    servers: ["echo": .init(command: "echo", env: ["ACCESS": .secretReference("mcp.access")])],
+                    servers: ["echo": .init(command: "echo", env: ["ACCESS": .secretReference("agent.mcp.00000000-0000-4000-8000-000000000001")])],
                     audit: { _ in }, resolveSecret: { _ in
                         if shouldThrow { throw MCPFixtureFailure() }; return nil
                     })
@@ -93,7 +93,7 @@ import AitvarasCore
             let project = UUID(), run = UUID()
             await #expect(throws: AgentMCPError.auditFailed) {
                 try await AgentMCPRuntimeFile.create(stateDirectory: fixture.directory, projectID: project, runID: run,
-                    servers: ["echo": .init(command: "echo", env: ["ACCESS": .secretReference("mcp.access")])],
+                    servers: ["echo": .init(command: "echo", env: ["ACCESS": .secretReference("agent.mcp.00000000-0000-4000-8000-000000000001")])],
                     audit: { event in if event.summary == "MCP runtime: " + stage { throw MCPFixtureFailure() } },
                     resolveSecret: { _ in "synthetic-value" })
             }
@@ -162,7 +162,7 @@ import AitvarasCore
     @Test func credentialRotationChangesRuntimeOnlyAndExistingFilesAreNotFollowed() async throws {
         let fixture = try AgentExecutableFixture("exit 0")
         defer { fixture.remove() }
-        let server = AgentMCPServer(command: "echo", env: ["ACCESS": .secretReference("mcp.access")])
+        let server = AgentMCPServer(command: "echo", env: ["ACCESS": .secretReference("agent.mcp.00000000-0000-4000-8000-000000000001")])
         let fingerprint = try server.fingerprint()
         let project = UUID(), run = UUID()
         let one = try await AgentMCPRuntimeFile.create(stateDirectory: fixture.directory, projectID: project, runID: run,

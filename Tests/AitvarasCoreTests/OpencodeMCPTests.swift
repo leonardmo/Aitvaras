@@ -10,7 +10,7 @@ import AitvarasStore
         defer { fixture.remove() }
         let stores = try inMemoryStores()
         let project = try stores.createWorkspaceProject(title: "Example", folders: [.init(path: fixture.directory.path)])
-        try stores.saveGlobalAgentMCPServers(["echo": .init(command: "echo", args: ["example"], env: ["ACCESS": .secretReference("mcp.access")]),
+        try stores.saveGlobalAgentMCPServers(["echo": .init(command: "echo", args: ["example"], env: ["ACCESS": .secretReference("agent.mcp.00000000-0000-4000-8000-000000000001")]),
             "remote": .init(transport: .http, url: "https://service.example.invalid/mcp")])
         var setup = WorkspaceAgentSetup(projectID: project.id); setup.localMayUseMCP = true
         try stores.saveWorkspaceAgentSetup(setup)

@@ -59,13 +59,27 @@ public struct AgentSetupSnapshot: Sendable, Equatable {
         if let values = value["skills"]?.arrayValue { skills = Self.names(values) }
         if let values = value["agents"]?.arrayValue { agents = Self.names(values) }
     }
+    /// Deliberately projects just these fields. In particular, config may hold
+    /// resolved credentials and must never cross this parsing boundary.
+    mutating func claudeMCPStatus(_ response: JSONValue) throws {
+        guard let values = response["mcpServers"]?.arrayValue, values.count <= 512 else { throw AgentFailure.invalidRequest }
+        var seen = Set<String>()
+        servers = values.compactMap { value in
+            guard let name = Self.name(value["name"]), seen.insert(name).inserted else { return nil }
+            let source = value["source"]?.stringValue
+            return AgentSetupServer(name: name, status: AgentSetupServer.status(value["status"]?.stringValue),
+                source: ["project", "claudeai", "plugin", "user", "local"].contains(source) ? source : nil)
+        }.sorted { $0.name < $1.name }
+        serversAvailable = true
+    }
+
     private mutating func mergeCommands(_ values: [AgentCommand]) {
         var byName = Dictionary(uniqueKeysWithValues: commands.map { ($0.name, $0) })
         for value in values {
             if let old = byName[value.name] {
                 byName[value.name] = AgentCommand(name: value.name,
                     description: value.description.isEmpty ? old.description : value.description,
-                    argumentHint: value.argumentHint ?? old.argumentHint, skillPath: value.skillPath ?? old.skillPath)
+                    argumentHint: value.argumentHint ?? old.argumentHint, skillPath: value.skillPath ?? old.skillPath, source: value.source ?? old.source)
             } else { byName[value.name] = value }
         }
         commands = Array(byName.values).sorted { $0.name < $1.name }.prefix(1024).map { $0 }

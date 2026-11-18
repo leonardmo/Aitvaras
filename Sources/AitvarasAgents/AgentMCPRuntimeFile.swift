@@ -113,14 +113,14 @@ public actor AgentMCPRuntimeFile {
         }
     }
 
-    public func remove() async throws {
+    public func remove(preservingRedactions: Bool = false) async throws {
+        if !preservingRedactions { redactions.removeAll() }
         guard let location else { return }
         // Erasure cannot be prevented by a failed audit sink. Retain ownership if
         // unlink fails, so the caller can retry instead of losing the cleanup handle.
         do { try Self.erase(location) }
         catch { throw AgentMCPError.runtimeFile }
         self.location = nil
-        redactions.removeAll()
         try await Self.record("removed", projectID: projectID, runID: runID, audit: audit)
     }
 

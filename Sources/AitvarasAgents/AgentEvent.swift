@@ -25,11 +25,13 @@ public struct AgentEventScope: Sendable, Equatable {
     public let inputID: UUID?
     public let turnID: String?
     public let itemID: String?
+    /// Claude may complete several written inputs with one native result.
+    public let completedInputIDs: [UUID]
 
     public init(runID: UUID, session: AgentSessionID? = nil, inputID: UUID? = nil,
-                turnID: String? = nil, itemID: String? = nil) {
+                turnID: String? = nil, itemID: String? = nil, completedInputIDs: [UUID] = []) {
         self.runID = runID; self.session = session; self.inputID = inputID
-        self.turnID = turnID; self.itemID = itemID
+        self.turnID = turnID; self.itemID = itemID; self.completedInputIDs = completedInputIDs
     }
 }
 

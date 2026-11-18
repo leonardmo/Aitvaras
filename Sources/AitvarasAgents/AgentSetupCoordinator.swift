@@ -8,7 +8,7 @@ public struct AgentSetupProject: Sendable {
 }
 
 public enum AgentSetupEdit: Sendable {
-    case approve(name: String, fingerprint: String), deny(name: String)
+    case approve(name: String, fingerprint: String), deny(name: String), revoke(name: String)
     case globalEnabled(name: String, enabled: Bool)
     case permissionSource(AgentPermissionSource), localMayUseMCP(Bool)
     case server(name: String, definition: AgentMCPServer?)
@@ -19,6 +19,7 @@ public protocol AgentSetupPersistence: Sendable {
     func editAgentSetup(projectID: UUID, edit: AgentSetupEdit) throws
     func globalAgentMCPServers() throws -> [String: AgentMCPServer]
     func editGlobalAgentMCPServer(name: String, definition: AgentMCPServer?) throws
+    func removeAgentMCPServer(projectID: UUID?, name: String, deleteUnusedSecret: @Sendable (String) throws -> Void) throws
 }
 
 public struct AgentMCPFieldDraft: Sendable, Identifiable {
@@ -66,7 +67,7 @@ public struct AgentMCPServerDraft: Sendable {
 
 public struct AgentSetupServerRow: Sendable, Equatable, Identifiable {
     public enum Source: String, Sendable { case repository, project, global, user, account, plugin, provider }
-    public enum Indicator: String, Sendable { case connected, needsSignIn, off, pendingApproval, pending, failed, unknown }
+    public enum Indicator: String, Sendable { case connected, needsSignIn, off, pendingApproval, approved, pending, failed, unknown }
     public let name: String
     public let source: Source
     public let indicator: Indicator
@@ -78,10 +79,12 @@ public struct AgentSetupServerRow: Sendable, Equatable, Identifiable {
     public let isOffInProject: Bool
     public let signInUnavailable: String?
     public let detail: String?
+    public var repositorySource: String? = nil
+    public var isApproved = false
     public var id: String { source.rawValue + "." + name }
     public var sourceLabel: String {
         switch source {
-        case .repository: "Repo · .mcp.json"
+        case .repository: "Repo · " + (repositorySource ?? ".mcp.json")
         case .project: "App · this project"
         case .global: "App · all projects"
         case .user: "User settings"
@@ -91,7 +94,7 @@ public struct AgentSetupServerRow: Sendable, Equatable, Identifiable {
         }
     }
     public var canSignIn: Bool {
-        signInUnavailable == nil && [.needsSignIn, .unknown, .failed].contains(indicator)
+        signInUnavailable == nil && [.needsSignIn, .approved, .unknown, .failed].contains(indicator)
     }
 }
 
@@ -180,12 +183,12 @@ public actor AgentSetupCoordinator {
                 indicator: provider == .local && !setup.localMayUseMCP ? .off : nil))
         }
         for (name, entry) in inventory.entries.sorted(by: { $0.key < $1.key }) {
-            let approved = entry.server != nil && !setup.deniedServers.contains(name) && setup.approvedServers[name] == entry.fingerprint
+            let approved = !inventory.unreadable && !entry.conflicting && entry.server != nil && !setup.deniedServers.contains(name) && setup.approvedServers[name] == entry.fingerprint
             let status: AgentSetupServerRow.Indicator? = entry.server == nil ? .failed : setup.deniedServers.contains(name) ? .off : !approved ? .pendingApproval : provider == .local && (!setup.localMayUseMCP || entry.hasAdditionalOptions) ? .off : nil
             state.servers.append(row(name: name, source: .repository, server: entry.server,
                 snapshot: approved ? snapshot?.servers.first { $0.name == name } : nil, provider: provider,
-                indicator: status, fingerprint: entry.fingerprint, supported: entry.server != nil,
-                off: setup.deniedServers.contains(name), detail: entry.unsupportedReason ?? (entry.hasAdditionalOptions && provider == .local ? "Local: additional repo options cannot be translated." : nil)))
+                indicator: status, fingerprint: entry.fingerprint, supported: !inventory.unreadable && !entry.conflicting && entry.server != nil, approved: approved,
+                off: setup.deniedServers.contains(name), detail: entry.unsupportedReason ?? (entry.hasAdditionalOptions && provider == .local ? "Local: additional repo options cannot be translated." : nil), repositorySource: entry.sourceFiles.joined(separator: ", ")))
         }
         let names = Set(state.servers.map(\.name))
         for server in snapshot?.servers ?? [] where !names.contains(server.name) {
@@ -201,11 +204,12 @@ public actor AgentSetupCoordinator {
 
     private func row(name: String, source: AgentSetupServerRow.Source, server: AgentMCPServer?, snapshot: AgentSetupServer?,
                      provider: AgentProvider, indicator: AgentSetupServerRow.Indicator? = nil, fingerprint: String? = nil,
-                     supported: Bool = true, off: Bool = false, detail: String? = nil) -> AgentSetupServerRow {
+                     supported: Bool = true, approved: Bool = false, off: Bool = false, detail: String? = nil, repositorySource: String? = nil) -> AgentSetupServerRow {
         let nativeStatus: AgentSetupServerRow.Indicator = switch snapshot?.status {
         case .connected: .connected; case .needsAuth: .needsSignIn; case .failed: .failed; case .pending: .pending; default: .unknown
         }
-        let status = indicator ?? (off ? .off : nativeStatus)
+        let reported = approved && provider == .claude && nativeStatus == .unknown ? AgentSetupServerRow.Indicator.approved : nativeStatus
+        let status = indicator ?? (off ? .off : reported)
         let signInReason: String?
         if source == .global || source == .project { signInReason = "Sign-in is unavailable for app-added servers in this phase." }
         else if provider == .local { signInReason = "Local: stdio servers only" }
@@ -216,10 +220,11 @@ public actor AgentSetupCoordinator {
         else { signInReason = nil }
         let remoteLocal = provider == .local && server != nil && server?.transport != .stdio
         return .init(name: name, source: source, indicator: remoteLocal ? .off : status,
-            transport: server?.transport, fingerprint: fingerprint, canApprove: source == .repository && supported,
+            transport: server?.transport, fingerprint: fingerprint, canApprove: source == .repository && supported && !approved,
             canDeny: source == .repository, canRemove: source == .global || source == .project,
             isOffInProject: off, signInUnavailable: signInReason,
-            detail: remoteLocal ? "Local: stdio servers only" : detail)
+            detail: remoteLocal ? "Local: stdio servers only" : detail ?? (status == .approved ? "Approved — starts with the next chat" : nil),
+            repositorySource: repositorySource, isApproved: approved)
     }
 
     public func refresh(projectID: UUID, directory: URL? = nil, provider: AgentProvider) async throws -> AgentSetupState {
@@ -281,6 +286,7 @@ public actor AgentSetupCoordinator {
         do {
             for field in draft.fields where field.secret {
                 let reference = references[field.id]!
+                try AgentMCPValue.validateSecretReference(reference)
                 try secrets.set(field.value, reference); written.append(reference)
             }
             if let projectID { try persistence.editAgentSetup(projectID: projectID, edit: .server(name: draft.name, definition: definition)) }
@@ -303,10 +309,7 @@ public actor AgentSetupCoordinator {
     public func removeServer(projectID: UUID?, name: String) throws {
         try Task.checkCancellation()
         guard !saving, !closing else { throw AgentFailure.invalidTransition }
-        if let projectID { try persistence.editAgentSetup(projectID: projectID, edit: .server(name: name, definition: nil)) }
-        else { try persistence.editGlobalAgentMCPServer(name: name, definition: nil) }
-        // Credentials remain in the profile Keychain. References can be shared
-        // by hand-configured definitions; removing a server never deletes them.
+        try persistence.removeAgentMCPServer(projectID: projectID, name: name, deleteUnusedSecret: secrets.delete)
         snapshots = [:]; generations = [:]
     }
 

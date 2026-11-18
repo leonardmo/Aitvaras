@@ -193,6 +193,7 @@ public actor AgentSessionManager {
                     live[chatID]?.followups.removeAll { $0.id == input.id }
                     states[chatID]?.markFollowup(input.id, status: "notSent")
                     try persistEntries(chatID); publish(chatID)
+                    if live[chatID]?.inputID == nil, live[chatID]?.followups.isEmpty == true { armIdle(chatID, token: slot.token) }
                 } else {
                     try await retire(chatID, slot: current, outcome: .failed((error as? AgentFailure) ?? .unknown))
                 }
@@ -318,8 +319,10 @@ public actor AgentSessionManager {
                     await Self.close(raw, timeout: .seconds(2)); throw AgentSessionManagerError.staleRun
                 }
                 coordinator = AgentActionCoordinator(run: raw, mode: session.mode,
-                    provenance: .init(chatID: chatID), projectGrants: { [persistence] in
-                        try persistence.agentAlwaysAllowedTools(chatID: chatID)
+                    provenance: .init(chatID: chatID), projectGrants: { [persistence, mcpPolicy] in
+                        let current = try mcpPolicy.snapshot(directory: launchConfiguration.directory, projectID: launchConfiguration.projectID)
+                        return AgentToolPolicy.currentGrants(try persistence.agentAlwaysAllowedTools(chatID: chatID),
+                            servers: current.status.serverFingerprints)
                     }, audit: { [audit] event in
                         var value = event
                         // Coordinator IDs identify a transport that can serve many
@@ -416,6 +419,29 @@ public actor AgentSessionManager {
                 }
             default: break
             }
+            if case .turnEnded(let reportedOutcome) = event.kind, slot.session.provider == .claude,
+               event.scope.completedInputIDs.count > 1 {
+                let ids = event.scope.completedInputIDs
+                guard ids.first == slot.inputID, Set(ids).count == ids.count,
+                      Set(ids.dropFirst()).isSubset(of: Set(slot.followups.map(\.id))),
+                      let latest = slot.followups.first(where: { $0.id == ids.last }) else { throw AgentFailure.invalidRequest }
+                let outcome = slot.stopping ? AgentTurnOutcome.interrupted : reportedOutcome
+                let answer = states[chatID]?.completeCoalescedTurn(latest: latest, outcome: outcome) ?? ""
+                for id in ids {
+                    if outcome == .completed { try persistence.advanceAgentDelivery(id: id, to: .acknowledged) }
+                    try persistence.saveAgentPartial(id: id, text: id == latest.id ? answer : "")
+                    try persistence.finishAgentTurn(id: id, state: Self.journalState(outcome))
+                    states[chatID]?.markFollowup(id, status: outcome == .interrupted ? "interrupted" : "sent")
+                }
+                live[chatID]?.followups.removeAll { ids.contains($0.id) }
+                live[chatID]?.inputID = nil
+                try persistEntries(chatID)
+                try persistence.orderAgentEntries(chatID: chatID, ids: (states[chatID]?.entries ?? []).filter { !$0.isLegacyProjection }.map(\.id))
+                states[chatID]?.entries = try persistence.agentEntries(chatID: chatID)
+                states[chatID]?.pendingCards = []
+                armIdle(chatID, token: token); publish(chatID)
+                return
+            }
             let previous = states[chatID]?.entries ?? []
             switch event.kind {
             case .inputActivated, .delivery: try persistEntries(chatID)
@@ -441,7 +467,7 @@ public actor AgentSessionManager {
                         }
                     }
                 }
-                if (slot.session.provider == .claude || slot.session.provider == .local), !slot.stopping, let next = slot.followups.first {
+                if slot.session.provider == .local, !slot.stopping, let next = slot.followups.first {
                     live[chatID]?.inputID = next.id
                     states[chatID]?.awaitingQueuedInput()
                 }
@@ -531,7 +557,11 @@ public actor AgentSessionManager {
         }
         interrupt.cancel()
         guard let current = live[chatID], current.token == slot.token else { return }
-        if current.inputID == nil, current.followups.isEmpty, !current.sendingFollowup {
+        if slot.session.provider == .claude, !slot.followups.isEmpty {
+            // A result after interrupt does not prove the native stdin queue
+            // was consumed. Dispose it; the next explicit Send resumes safely.
+            try await retire(chatID, slot: current, outcome: .interrupted)
+        } else if current.inputID == nil, current.followups.isEmpty, !current.sendingFollowup {
             live[chatID]?.stopping = false
             states[chatID]?.end(.interrupted); publish(chatID)
         } else {
@@ -581,9 +611,17 @@ public actor AgentSessionManager {
     }
     public func alwaysAllow(chatID: UUID, request: AgentRequest) async throws {
         guard let slot = live[chatID], let run = slot.coordinator,
-              try persistence.agentProjectID(chatID: chatID) != nil else { throw AgentFailure.invalidRequest }
+              let projectID = try persistence.agentProjectID(chatID: chatID) else { throw AgentFailure.invalidRequest }
+        let session = slot.session
         do {
-            try await run.alwaysAllow(to: request) { [persistence] in try persistence.allowAgentTool(chatID: chatID, request: request) }
+            try await run.alwaysAllow(to: request) { [persistence, mcpPolicy] in
+                if case .permission(let tool) = request.kind, tool.name.hasPrefix("mcp__") {
+                    let current = try mcpPolicy.snapshot(directory: URL(fileURLWithPath: session.cwd), projectID: projectID)
+                    guard let fingerprint = AgentToolPolicy.fingerprint(tool: tool.name, servers: current.status.serverFingerprints),
+                          fingerprint == AgentToolPolicy.fingerprint(tool: tool.name, servers: run.mcpSetup?.serverFingerprints ?? [:]) else { throw AgentFailure.invalidRequest }
+                }
+                try persistence.allowAgentTool(chatID: chatID, request: request)
+            }
         } catch {
             if live[chatID]?.token == slot.token { states[chatID]?.pendingCards = await run.pendingRequests(); publish(chatID) }
             throw error
