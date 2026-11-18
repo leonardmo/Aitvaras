@@ -35,8 +35,8 @@ actor CodexRun: AgentRun {
     private func scope(item: String? = nil) -> AgentEventScope {
         AgentEventScope(runID: id, session: session, inputID: input, turnID: turn, itemID: item)
     }
-    private func emit(_ kind: AgentEvent.Kind, item: String? = nil) {
-        switch continuation.yield(AgentEvent(scope: scope(item: item), kind: kind)) {
+    private func emit(_ kind: AgentEvent.Kind, item: String? = nil, report: AgentFailureReport? = nil) {
+        switch continuation.yield(AgentEvent(scope: scope(item: item), kind: kind, failureReport: report)) {
         case .enqueued: break
         case .dropped, .terminated:
             continuation.finish(throwing: AgentFailure.invalidTransition)
@@ -58,7 +58,10 @@ actor CodexRun: AgentRun {
         do {
             try await startTurn(content: content, mode: mode)
         } catch {
-            if input == value.id { emit(.turnEnded(.failed((error as? AgentFailure) ?? .unknown))); input = nil; requests.removeAll() }
+            if input == value.id {
+                let report = AgentFailureDiagnostics.capture(error)
+                emit(.turnEnded(.failed(report.failure)), report: report); input = nil; requests.removeAll()
+            }
             throw error
         }
     }
@@ -286,7 +289,10 @@ actor CodexRun: AgentRun {
                 // Approval is the user's instruction to continue this journaled
                 // action; only the turn/start response acknowledges the new mode.
                 do { try await startTurn(content: try AgentInput(text: "Implement the approved plan.").codexContent(), mode: .ask) }
-                catch { emit(.turnEnded(.failed((error as? AgentFailure) ?? .unknown))); input = nil; throw error }
+                catch {
+                    let report = AgentFailureDiagnostics.capture(error)
+                    emit(.turnEnded(.failed(report.failure)), report: report); input = nil; throw error
+                }
             }
             return
         }
@@ -332,11 +338,14 @@ actor CodexRun: AgentRun {
     }
     func rateLimits(_ windows: [AgentRateLimitWindow]) { emit(.rateLimits(windows)) }
     func disconnected(_ error: AgentFailure) {
+        disconnected(AgentFailureDiagnostics.capture(error))
+    }
+    func disconnected(_ error: AgentFailureReport) {
         guard !closed else { return }
         closed = true; requests.removeAll()
         // The provider already ended this turn; a failed recovery read cannot
         // retroactively change that authoritative outcome.
-        if input != nil { emit(.turnEnded(completingOutcome ?? .failed(error))); input = nil }
+        if input != nil { emit(.turnEnded(completingOutcome ?? .failed(error.failure)), report: completingOutcome == nil ? error : nil); input = nil }
         completingOutcome = nil
         continuation.finish(throwing: error)
     }

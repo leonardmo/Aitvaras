@@ -10,16 +10,16 @@ actor AgentWire {
     private var pending: [AgentRequestID: CheckedContinuation<JSONValue, Error>] = [:]
     private var timers: [AgentRequestID: Task<Void, Never>] = [:]
     private var reader: Task<Void, Never>?
-    private var failure: AgentFailure?
+    private var failure: AgentFailureReport?
     private var receive: (@Sendable (JSONValue, AgentRequestID?) async -> Void)?
-    private var disconnected: (@Sendable (AgentFailure) async -> Void)?
+    private var disconnected: (@Sendable (AgentFailureReport) async -> Void)?
 
     init(process: StreamingProcess, format: Format) { self.process = process; self.format = format }
 
     deinit { reader?.cancel(); process.terminate() }
 
     func open(receive: @escaping @Sendable (JSONValue, AgentRequestID?) async -> Void,
-              disconnected: @escaping @Sendable (AgentFailure) async -> Void) throws {
+              disconnected: @escaping @Sendable (AgentFailureReport) async -> Void) throws {
         try process.start()
         self.receive = receive; self.disconnected = disconnected
         reader = Task { [weak self, process] in
@@ -36,7 +36,8 @@ actor AgentWire {
                 let code = try await process.waitForExit()
                 await self?.fail(.crashed(exitCode: code))
             } catch {
-                await self?.fail((error as? AgentFailure) ?? .crashed(exitCode: nil))
+                await self?.fail(AgentFailureDiagnostics.capture(error,
+                    mappedTo: (error as? AgentFailure) ?? .crashed(exitCode: nil)))
             }
         }
     }
@@ -44,7 +45,10 @@ actor AgentWire {
     func write(_ value: JSONValue) async throws {
         if let failure { throw failure }
         do { try await process.write(line: value.jsonString) }
-        catch { await fail(.crashed(exitCode: nil)); throw AgentFailure.crashed(exitCode: nil) }
+        catch {
+            let report = AgentFailureDiagnostics.capture(error, mappedTo: .crashed(exitCode: nil))
+            await fail(report); throw report
+        }
     }
 
     func request(_ method: String, _ parameters: JSONValue = .object([:]),
@@ -116,6 +120,9 @@ actor AgentWire {
         await fail(.offline)
     }
     private func fail(_ error: AgentFailure) async {
+        await fail(AgentFailureDiagnostics.capture(error))
+    }
+    private func fail(_ error: AgentFailureReport) async {
         guard failure == nil else { return }
         failure = error
         let waiters = pending; pending.removeAll()
@@ -164,7 +171,10 @@ extension AgentWire {
         let body = error ? "\"error\":{\"code\":-32601,\"message\":\"Unsupported request\"}"
             : "\"result\":\((result ?? .null).jsonString)"
         do { try await process.write(line: "{\"id\":\(id.encoded),\(body)}") }
-        catch { await fail(.crashed(exitCode: nil)); throw AgentFailure.crashed(exitCode: nil) }
+        catch {
+            let report = AgentFailureDiagnostics.capture(error, mappedTo: .crashed(exitCode: nil))
+            await fail(report); throw report
+        }
     }
 }
 

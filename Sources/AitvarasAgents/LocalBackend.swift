@@ -55,17 +55,20 @@ private actor LocalRun: AgentRun {
                 try Task.checkCancellation()
                 finish(.completed, input: input.id)
             } catch is CancellationError { finish(.interrupted, input: input.id) }
-            catch { finish(.failed((error as? AgentFailure) ?? .unknown), input: input.id) }
+            catch {
+                let report = AgentFailureDiagnostics.capture(error)
+                finish(.failed(report.failure), input: input.id, report: report)
+            }
         }
     }
-    private func emit(_ kind: AgentEvent.Kind, input: UUID) {
-        if case .dropped = continuation.yield(.init(scope: .init(runID: id, inputID: input), kind: kind)) {
+    private func emit(_ kind: AgentEvent.Kind, input: UUID, report: AgentFailureReport? = nil) {
+        if case .dropped = continuation.yield(.init(scope: .init(runID: id, inputID: input), kind: kind, failureReport: report)) {
             closed = true; worker?.cancel(); continuation.finish(throwing: AgentFailure.invalidTransition)
         }
     }
-    private func finish(_ outcome: AgentTurnOutcome, input: UUID) {
+    private func finish(_ outcome: AgentTurnOutcome, input: UUID, report: AgentFailureReport? = nil) {
         guard inputID == input else { return }
-        emit(.turnEnded(outcome), input: input); inputID = nil; worker = nil
+        emit(.turnEnded(outcome), input: input, report: report); inputID = nil; worker = nil
     }
     func respond(to request: AgentRequest, with response: AgentResponse) throws { throw AgentFailure.invalidRequest }
     func setMode(_ mode: AgentMode) {} // No tool permissions in this adapter.

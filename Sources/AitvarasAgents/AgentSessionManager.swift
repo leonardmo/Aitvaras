@@ -123,7 +123,17 @@ public actor AgentSessionManager {
         value.end(.failed(failure)); states[chatID] = value; publish(chatID)
     }
 
+    /// Also covers errors caught by the App before a provider can start.
+    @discardableResult
+    public func reportSendFailure(chatID: UUID, inputID: UUID, error: any Error) async throws -> AgentFailure {
+        let report = AgentFailureDiagnostics.capture(error)
+        _ = await report.recording(chatID: chatID, inputID: inputID, audit: audit)
+        try reportSendFailure(chatID: chatID, failure: report.failure)
+        return report.failure
+    }
+
     public static func historyUnavailable(_ error: any Error) -> Bool {
+        if let report = error as? AgentFailureReport { return historyUnavailable(report.failure) }
         if let failure = error as? AgentFailure {
             switch failure {
             case .unsupported, .notInstalled, .offline, .authRequired, .crashed: return true
@@ -206,7 +216,15 @@ public actor AgentSessionManager {
                     try persistEntries(chatID); publish(chatID)
                     if live[chatID]?.inputID == nil, live[chatID]?.followups.isEmpty == true { armIdle(chatID, token: slot.token) }
                 } else {
-                    try await retire(chatID, slot: current, outcome: .failed((error as? AgentFailure) ?? .unknown))
+                    let report = AgentFailureDiagnostics.capture(error)
+                    // Retire owns transport/state cleanup before the audit can yield.
+                    do { try await retire(chatID, slot: current, outcome: .failed(report.failure)) }
+                    catch {
+                        _ = await AgentFailureDiagnostics.capture(error).recording(chatID: chatID, inputID: input.id, audit: audit)
+                        _ = await report.recording(chatID: chatID, inputID: input.id, audit: audit)
+                        throw error
+                    }
+                    _ = await report.recording(chatID: chatID, inputID: input.id, audit: audit)
                 }
             }
             throw error
@@ -350,7 +368,7 @@ public actor AgentSessionManager {
                             await self?.receive(event, chatID: chatID, token: token)
                         }
                         await self?.exited(chatID, token: token, failure: .crashed(exitCode: nil))
-                    } catch { await self?.exited(chatID, token: token, failure: (error as? AgentFailure) ?? .unknown) }
+                    } catch { await self?.exited(chatID, token: token, report: AgentFailureDiagnostics.capture(error)) }
                 }
             }
             guard live[chatID]?.token == token, live[chatID]?.inputID == input.id else {
@@ -513,31 +531,47 @@ public actor AgentSessionManager {
                 states[chatID]?.pendingCards = pending
             }
             publish(chatID)
-        } catch { await exited(chatID, token: token, failure: .unknown) }
+            if case .turnEnded(.failed(let failure)) = event.kind {
+                let report = event.failureReport ?? AgentFailureDiagnostics.capture(failure)
+                _ = await report.recording(chatID: chatID, inputID: event.scope.inputID, audit: audit)
+            }
+        } catch { await exited(chatID, token: token, report: AgentFailureDiagnostics.capture(error, mappedTo: .unknown)) }
     }
     private static func journalState(_ outcome: AgentTurnOutcome) -> AgentJournalState {
         switch outcome { case .completed: .completed; case .interrupted: .interrupted; case .failed: .failed }
     }
     private func failedSend(_ chat: UUID, token: UUID, inputID: UUID, error: Error) async {
         guard live[chat]?.token == token, live[chat]?.inputID == inputID else { return }
-        await exited(chat, token: token, failure: (error as? AgentFailure) ?? .unknown)
+        await exited(chat, token: token, report: AgentFailureDiagnostics.capture(error))
     }
     private func exited(_ chat: UUID, token: UUID, failure: AgentFailure) async {
+        await exited(chat, token: token, report: AgentFailureDiagnostics.capture(failure))
+    }
+    private func exited(_ chat: UUID, token: UUID, report: AgentFailureReport) async {
         guard let slot = live[chat], slot.token == token else { return }
+        var reports = [report]
         live.removeValue(forKey: chat); slot.reader?.cancel(); slot.idle?.cancel()
         for followup in slot.followups {
-            if (try? persistence.agentTurn(id: followup.id)?.state) == .running {
-                try? persistence.finishAgentTurn(id: followup.id, state: .interrupted)
-            }
+            do {
+                if try persistence.agentTurn(id: followup.id)?.state == .running {
+                    try persistence.finishAgentTurn(id: followup.id, state: .interrupted)
+                }
+            } catch { reports.append(AgentFailureDiagnostics.capture(error)) }
             states[chat]?.markFollowup(followup.id, status: "interrupted")
         }
         if let input = slot.inputID {
             do { try persistence.finishAgentTurn(id: input, state: .interrupted) }
-            catch { states[chat]?.end(.failed(.unknown)) }
-            states[chat]?.end(slot.stopping ? .interrupted : .failed(failure))
+            catch { reports.append(AgentFailureDiagnostics.capture(error)) }
+            states[chat]?.end(slot.stopping ? .interrupted : .failed(report.failure))
         }
-        try? persistEntries(chat)
+        do { try persistEntries(chat) }
+        catch { reports.append(AgentFailureDiagnostics.capture(error)) }
         states[chat]?.pendingCards = []; publish(chat)
+        if slot.inputID != nil || !slot.followups.isEmpty {
+            for report in reports {
+                _ = await report.recording(chatID: chat, inputID: slot.inputID ?? slot.followups.first?.id, audit: audit)
+            }
+        }
         if let run = slot.coordinator { await Self.close(run, timeout: .seconds(2)) }
     }
     private func armIdle(_ chat: UUID, token: UUID) {
@@ -596,17 +630,18 @@ public actor AgentSessionManager {
         guard live[chat]?.token == slot.token else { return }
         slot.startup?.cancel()
         live.removeValue(forKey: chat); slot.reader?.cancel(); slot.idle?.cancel()
-        var storageFailed = false
+        var failures: [(UUID?, AgentFailureReport)] = []
         for id in [slot.inputID].compactMap({ $0 }) + slot.followups.map(\.id) {
             do {
                 if try persistence.agentTurn(id: id)?.state == .running {
                     try persistence.finishAgentTurn(id: id, state: .interrupted)
                 }
-            } catch { storageFailed = true }
+            } catch { failures.append((id, AgentFailureDiagnostics.capture(error))) }
             states[chat]?.markFollowup(id, status: "interrupted")
         }
         states[chat]?.end(outcome)
-        do { try persistEntries(chat) } catch { storageFailed = true }
+        do { try persistEntries(chat) }
+        catch { failures.append((slot.inputID, AgentFailureDiagnostics.capture(error))) }
         publish(chat)
         if let run = slot.coordinator {
             let abort = Task { await run.abort() }
@@ -618,7 +653,8 @@ public actor AgentSessionManager {
             for await _ in stream { break }
             cleanup.cancel(); timer.cancel()
         }
-        if storageFailed { throw AgentSessionManagerError.persistence }
+        for (inputID, report) in failures { _ = await report.recording(chatID: chat, inputID: inputID, audit: audit) }
+        if !failures.isEmpty { throw AgentSessionManagerError.persistence }
     }
     public func respond(chatID: UUID, to request: AgentRequest, with response: AgentResponse) async throws {
         guard let slot = live[chatID], let run = slot.coordinator else { throw AgentSessionManagerError.staleRun }
@@ -660,7 +696,7 @@ public actor AgentSessionManager {
         closing = true
         historyTokens.removeAll()
         let slots = live; live.removeAll()
-        var storageFailed = false
+        var failures: [(UUID, UUID?, AgentFailureReport)] = []
         for (chat, slot) in slots {
             slot.reader?.cancel(); slot.idle?.cancel()
             slot.startup?.cancel()
@@ -669,16 +705,17 @@ public actor AgentSessionManager {
                     if try persistence.agentTurn(id: followup.id)?.state == .running {
                         try persistence.finishAgentTurn(id: followup.id, state: .interrupted)
                     }
-                } catch { storageFailed = true }
+                } catch { failures.append((chat, followup.id, AgentFailureDiagnostics.capture(error))) }
                 states[chat]?.markFollowup(followup.id, status: "interrupted")
             }
             if let input = slot.inputID {
                 do { try persistence.finishAgentTurn(id: input, state: .interrupted) }
-                catch { storageFailed = true }
+                catch { failures.append((chat, input, AgentFailureDiagnostics.capture(error))) }
                 states[chat]?.end(.interrupted)
             }
             states[chat]?.pendingCards = []
-            do { try persistEntries(chat) } catch { storageFailed = true }
+            do { try persistEntries(chat) }
+            catch { failures.append((chat, slot.inputID, AgentFailureDiagnostics.capture(error))) }
             publish(chat)
         }
         // All closes share one deadline, including a misbehaving injected run.
@@ -697,7 +734,8 @@ public actor AgentSessionManager {
         let timer = Task { try? await Task.sleep(for: timeout); continuation.yield(()); continuation.finish() }
         for await _ in stream { break }
         cleanup.cancel(); timer.cancel(); closing = false
-        if storageFailed { throw AgentSessionManagerError.persistence }
+        for (chat, inputID, report) in failures { _ = await report.recording(chatID: chat, inputID: inputID, audit: audit) }
+        if !failures.isEmpty { throw AgentSessionManagerError.persistence }
     }
     private static func close(_ run: any AgentRun, timeout: Duration) async {
         let (stream, continuation) = AsyncStream<Void>.makeStream()

@@ -968,8 +968,8 @@ final class ChatModel {
                     }
                     return
                 }
-                let failure = (error as? AgentFailure) ?? .unknown
-                try? await manager.reportSendFailure(chatID: id, failure: failure)
+                let failure = (try? await manager.reportSendFailure(chatID: id, inputID: input.id, error: error))
+                    ?? AgentFailureDiagnostics.failure(for: error)
                 if chatID == id { failed(inputID: input.id, failure: failure) }
                 if chatID == id { self.error = AgentFailure.sendMessage(for: error, provider: provider) }
             }
@@ -1113,7 +1113,11 @@ final class ChatModel {
                 if (error as? ProviderSignInError) == .staleIntent {
                     self.error = nil; self.authProvider = nil
                 } else if let retriedInput {
-                    self.failed(inputID: retriedInput, failure: (error as? AgentFailure) ?? .unknown)
+                    guard let currentChat = self.chatID else { return }
+                    let failure = (try? await self.manager.reportSendFailure(chatID: currentChat, inputID: retriedInput, error: error))
+                        ?? AgentFailureDiagnostics.failure(for: error)
+                    guard self.chatID == currentChat, self.choice == selected else { return }
+                    self.failed(inputID: retriedInput, failure: failure)
                 } else {
                     self.error = error is CancellationError ? nil : "Sign-in did not complete. The message remains in this chat."
                     self.authProvider = self.choice == selected ? provider : nil

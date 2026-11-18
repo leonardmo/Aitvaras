@@ -330,7 +330,7 @@ public actor CodexBackend: AgentBackend {
         }
         await run.receive(method, parameters: parameters, requestID: id)
     }
-    private func disconnected(_ error: AgentFailure, generation: UUID) async {
+    private func disconnected(_ error: AgentFailureReport, generation: UUID) async {
         guard generation == self.generation else { return }
         let current = runs; runs.removeAll(); wire = nil; transport = nil
         availableSetup = .init(provider: .codex); mcpUpdates = [:]; mcpEpoch = 0

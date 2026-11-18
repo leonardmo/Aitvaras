@@ -167,9 +167,17 @@ import AitvarasStore
         await #expect(throws: AgentFailure.invalidRequest) { try await coordinator.respond(to: request, with: .allow(updatedInput: nil)) }
         if reason == "provider-cancel" { #expect(await run.responses.isEmpty) }
         else if reason != "reply-rejected" { try await approvalWait { await run.responses == [.deny] } }
-        try await approvalWait { try stores.recentActivity(limit: 10).count == 2 }
+        let expectedCount = reason == "reply-rejected" ? 3 : 2
+        try await approvalWait { try stores.recentActivity(limit: 10).count == expectedCount }
         let audit = try stores.recentActivity(limit: 10)
-        #expect(audit.count == 2)
+        #expect(audit.count == expectedCount)
+        #expect(audit.filter { $0.kind != .agentFailure }.count == 2)
+        if reason == "reply-rejected" {
+            let failure = try #require(audit.first { $0.kind == .agentFailure })
+            let detail = failure.detailJSON.flatMap(JSONValue.parse)
+            #expect(detail?["errorType"] == .string("AgentFailure"))
+            #expect(detail?["errorCase"] == .string("offline"))
+        }
         #expect(audit.contains { $0.kind == (reason == "reply-rejected" ? .toolExecuted : .confirmationDenied) })
         if reason == "restart" {
             let fresh = AgentActionCoordinator(run: ApprovalRun(provider: .claude), mode: .ask,

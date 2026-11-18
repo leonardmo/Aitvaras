@@ -15,6 +15,7 @@ public enum AgentFailure: Error, Sendable, Equatable {
 
     /// Fixed, safe composer copy; never display raw provider or filesystem errors.
     public static func sendMessage(for error: any Error, provider: AgentProvider) -> String {
+        if let report = error as? AgentFailureReport { return sendMessage(for: report.failure, provider: provider) }
         let name = provider.rawValue.capitalized
         if let failure = error as? Self {
             switch failure {

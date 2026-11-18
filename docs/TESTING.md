@@ -137,6 +137,33 @@ Measure memory against the model budget, test coexistence with voice/capture,
 and review light/dark and minimum-window states. Exposing Aitvaras knowledge
 through a policy-gated MCP server remains an open follow-up.
 
+## Claude tool-result identity repair and failure diagnostics
+
+`AgentTranscriptIdentityMigrationTests` upgrades an on-disk synthetic database
+through v36 and reopens it twice. It checks proven corrupt active/retired Claude
+user IDs, valid identities, canonical/imported history, fork markers, other
+providers, malformed/conflicting metadata and corroborated journal links. Only
+proven corrupt native IDs may change; content, journals, sessions, positions,
+retirement flags and history observations stay intact. A native refresh after
+repair must reuse the original input row without duplicates. Later opens do
+not rerun the migration. Ordinary upgrades have no automatic database backup:
+back up the database manually before installing an upgrade.
+
+`AgentFailureDiagnosticsTests` injects failures at local reply, stream,
+approval, pre-delivery and real store-identity boundaries. Synthetic path,
+prompt and credential canaries must never enter serialized Activity events.
+Reports retain type/case categories through the coordinator and manager;
+process-error tests cover Claude and Codex wire teardown. A broken Activity
+sink must not recursively audit itself or replace the original failure.
+Approval/conformance tests retain their authorization-event assertions and
+also require the new diagnostic event where a turn fails.
+
+Host verification must build the App, check the send/sign-in catch paths and
+inspect unified-log privacy with synthetic diagnostics. Package tests verify
+Activity contents, not the system's private-log retention configuration. Test
+the repair against a backed-up private database copy without publishing it.
+These checks add no stopped transcript rows or recovery actions.
+
 ## Project agent setup (D34)
 
 `Fixtures/agents/claude/setup-hooks.jsonl` is a **hand-written** protocol fixture

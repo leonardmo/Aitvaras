@@ -22,7 +22,7 @@ actor ClaudeRun: AgentRun {
     private var interrupted = false
     private var assistantFailure: AgentFailure?
     private var closed = false
-    private var terminalFailure: AgentFailure?
+    private var terminalFailure: (any Error)?
     private var modeState: AgentModeState
     private var requests: [AgentRequestID: (AgentRequest, JSONValue)] = [:]
     private var seenResults: Set<String> = []
@@ -104,8 +104,8 @@ actor ClaudeRun: AgentRun {
     private func scope(item: String? = nil) -> AgentEventScope {
         AgentEventScope(runID: id, session: session, inputID: input, itemID: item)
     }
-    private func emit(_ kind: AgentEvent.Kind, item: String? = nil) {
-        switch continuation.yield(AgentEvent(scope: scope(item: item), kind: kind)) {
+    private func emit(_ kind: AgentEvent.Kind, item: String? = nil, report: AgentFailureReport? = nil) {
+        switch continuation.yield(AgentEvent(scope: scope(item: item), kind: kind, failureReport: report)) {
         case .enqueued: break
         case .dropped, .terminated:
             continuation.finish(throwing: AgentFailure.invalidTransition)
@@ -309,9 +309,12 @@ actor ClaudeRun: AgentRun {
         _ = try await wire.request("interrupt", timeout: .seconds(1))
     }
     func disconnected(_ error: AgentFailure) async {
+        await disconnected(AgentFailureDiagnostics.capture(error))
+    }
+    func disconnected(_ error: AgentFailureReport) async {
         guard !closed else { return }
         closed = true; terminalFailure = error; requests.removeAll()
-        if input != nil { emit(.turnEnded(.failed(error))); input = nil }
+        if input != nil { emit(.turnEnded(.failed(error.failure)), report: error); input = nil }
         continuation.finish(throwing: error)
         await closeTransport()
     }

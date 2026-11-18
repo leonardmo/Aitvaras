@@ -394,6 +394,27 @@ failures do not replace the inline send/sign-in error. A second complete observa
 it does not reserve the native session against another client. Changed native
 content evicts an idle run so the next Send resumes the updated native session.
 
+Claude user frames consisting entirely of tool results finish their tools but
+are not user messages: their UUIDs never bind the input row. Input bindings
+also refuse a second, different native identity. The one-time v36 repair clears
+only Claude user-row native UUIDs that differ from a proven owning journal
+input UUID. The journal must match chat/session; links through `journalInputID`
+require corroborating `nativeHistory.itemID`. Conflicting or malformed metadata,
+inherited fork rows and unowned imports remain untouched. Native-history
+evidence, journals, content and display IDs are preserved. Ordinary GRDB
+migrations have no automatic database backup; installation requires a manual
+database backup before upgrading. No app-level backup is added for this repair.
+
+Turn-ending error catches retain a typed safe category across backend and
+coordinator boundaries. Activity records only the error type and case plus
+chat/input provenance, never descriptions, associated values, paths, prompts
+or credentials. Full caught errors go to unified log with explicit `.private`
+interpolation. Unknown error types use a validated metatype name and an
+`unknown` case, without inspecting the value. Failure diagnostics are excluded
+from memory evidence. If the Activity write itself fails, the full error is
+privately logged without recursively auditing the audit failure; durable
+diagnostics cannot be guaranteed while storage is unavailable.
+
 Catch-up scans normalized entries and the chat's legacy local, owned and linked
 timeline without the UI page limit. Completed messages from other sessions are
 eligible, including earlier sessions of the same provider. Acknowledged handovers

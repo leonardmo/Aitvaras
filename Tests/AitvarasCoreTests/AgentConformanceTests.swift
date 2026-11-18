@@ -127,7 +127,14 @@ done()
         #expect(await fixture.coordinator.pendingRequests().isEmpty)
         #expect(await fixture.run.responses == [.deny])
         let audit = await fixture.audit.events
-        #expect(audit.count == 2)
+        #expect(audit.count == (reason == "exit" ? 3 : 2))
+        #expect(audit.filter { $0.kind != .agentFailure }.count == 2)
+        if reason == "exit" {
+            let failure = try #require(audit.first { $0.kind == .agentFailure })
+            let detail = failure.detailJSON.flatMap(JSONValue.parse)
+            #expect(detail?["errorType"] == .string("AgentFailure"))
+            #expect(detail?["errorCase"] == .string("crashed"))
+        }
         #expect(audit.contains { $0.kind == .confirmationDenied })
         try await fixture.coordinator.shutdown()
     }
