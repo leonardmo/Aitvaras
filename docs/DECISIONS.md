@@ -409,6 +409,11 @@ migrations have no automatic database backup; installation requires a manual
 database backup before upgrading. No app-level backup is added for this repair.
 Hook events fold into their tool payloads under the matching rules in D34.
 
+Claude local command echoes display as slash commands. Tagged stdout and stderr
+attach to the originating user entry in live streams and native history. The
+CLI caveat stays hidden. Local command output from a queued Send does not start
+an autonomous turn or take ownership of a running model turn (D38).
+
 Turn-ending error catches retain a typed safe category across backend and
 coordinator boundaries through `AgentEvent.failureReport`. Public backend/run
 throws and stream errors unwrap diagnostic carriers to `AgentFailure`.

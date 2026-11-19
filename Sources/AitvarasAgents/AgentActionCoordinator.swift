@@ -296,7 +296,11 @@ public actor AgentActionCoordinator: AgentRun {
             guard let input = event.scope.inputID, followups.remove(input) != nil, !interrupting else { return }
             inputID = input
         }
-        if let input = event.scope.inputID, input != inputID {
+        if case .claudeCommandResult = event.kind, let input = event.scope.inputID {
+            // The command may arrive after the model has already ended.
+            // The manager verifies ownership against the durable user input.
+            followups.remove(input)
+        } else if let input = event.scope.inputID, input != inputID {
             guard followups.contains(input) else { return }
             switch event.kind {
             case .delivery, .message(_, "user", _): break

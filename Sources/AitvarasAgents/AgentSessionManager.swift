@@ -552,6 +552,38 @@ public actor AgentSessionManager {
             event = .init(scope: incoming.scope, kind: .message(id: session.canonicalMessageID(id, turnID: incoming.scope.turnID), role: role, text: text))
         }
         guard let slot = live[chatID], slot.token == token, slot.coordinator?.id == event.scope.runID else { return }
+        if case .claudeCommandResult(let nativeID, let command, let output) = event.kind {
+            guard let input = event.scope.inputID, UUID(uuidString: nativeID) == input,
+                  slot.session.provider == .claude, !slot.stopping,
+                  let index = states[chatID]?.entries.firstIndex(where: {
+                      $0.id == input && $0.kind == "user" && $0.sessionID == slot.session.id
+                          && ($0.nativeMessageID == nil || $0.nativeMessageID == nativeID)
+                  }), var entry = states[chatID]?.entries[index] else { return }
+            do {
+                guard let turn = try persistence.agentTurn(id: input), turn.sessionID == slot.session.id,
+                      turn.delivery != .prepared else { return }
+                var payload = entry.payloadJSON.flatMap(JSONValue.parse)?.objectValue ?? [:]
+                payload["claudeCommandOutput"] = .string(output)
+                if payload["followup"] != nil { payload["followup"] = .string("sent") }
+                entry.payloadJSON = JSONValue.object(payload).jsonString
+                entry.nativeMessageID = nativeID; entry.text = command
+                if turn.state == .running, turn.delivery != .acknowledged {
+                    try persistence.advanceAgentDelivery(id: input, to: .acknowledged)
+                    if slot.inputID == input { states[chatID]?.noteDelivery(.acknowledged) }
+                }
+                states[chatID]?.entries[index] = try persistence.saveAgentEntry(entry)
+                if slot.inputID != input, turn.state == .running {
+                    try finishTurn(chatID: chatID, id: input, state: .completed)
+                    live[chatID]?.followups.removeAll { $0.id == input }
+                    if live[chatID]?.isRunning == false { armIdle(chatID, token: token) }
+                    continuationChanged()
+                }
+                publish(chatID)
+            } catch {
+                await exited(chatID, token: token, report: AgentFailureDiagnostics.capture(error, mappedTo: .unknown), failedInput: input)
+            }
+            return
+        }
         // Lifecycle events can precede Send. Turn events must match local input.
         if case .autonomousTurnStarted(let id, let reason) = event.kind {
             guard slot.inputID == nil, !slot.stopping, event.scope.inputID == id else { return }
@@ -1127,18 +1159,26 @@ extension AgentSessionManager {
             let page = try await reader.readHistory(session: nativeID, cursor: cursor)
             for event in page.items {
                 guard event.scope.session == nativeID else { throw AgentNativeHistoryError.identityConflict }
-                if case .message(let id, let role, let text) = event.kind {
-                    let canonicalID = nativeID.canonicalMessageID(id, turnID: event.scope.turnID)
-                    guard !id.isEmpty, seen.insert(canonicalID).inserted, ["user", "assistant"].contains(role) else { throw AgentNativeHistoryError.identityConflict }
-                    bytes += text.utf8.count
-                    let payload = JSONValue.object(["nativeHistory": .object([
-                        "turnID": event.scope.turnID.map(JSONValue.string) ?? .null,
-                        "itemID": .string(id),
-                        "completed": .bool(page.completedItemIDs.contains(canonicalID))
-                    ])]).jsonString
-                    entries.append(.init(chatID: session.chatID, provider: session.provider, kind: role, text: text,
-                                         payloadJSON: payload, sessionID: session.id, nativeMessageID: canonicalID, position: entries.count))
+                let id: String, role: String, text: String, output: String?
+                switch event.kind {
+                case .message(let item, let messageRole, let message):
+                    (id, role, text, output) = (item, messageRole, message, nil)
+                case .claudeCommandResult(let item, let command, let result) where nativeID.provider == .claude:
+                    (id, role, text, output) = (item, "user", command, result)
+                default: continue
                 }
+                let canonicalID = nativeID.canonicalMessageID(id, turnID: event.scope.turnID)
+                guard !id.isEmpty, seen.insert(canonicalID).inserted, ["user", "assistant"].contains(role) else { throw AgentNativeHistoryError.identityConflict }
+                bytes += text.utf8.count + (output?.utf8.count ?? 0)
+                var payload: [String: JSONValue] = ["nativeHistory": .object([
+                    "turnID": event.scope.turnID.map(JSONValue.string) ?? .null,
+                    "itemID": .string(id),
+                    "completed": .bool(page.completedItemIDs.contains(canonicalID))
+                ])]
+                payload["claudeCommandOutput"] = output.map(JSONValue.string)
+                entries.append(.init(chatID: session.chatID, provider: session.provider, kind: role, text: text,
+                                     payloadJSON: JSONValue.object(payload).jsonString, sessionID: session.id,
+                                     nativeMessageID: canonicalID, position: entries.count))
             }
             guard entries.count <= 100_000, bytes <= 32 * 1024 * 1024 else { throw AgentNativeHistoryError.tooLarge }
             cursor = page.nextCursor

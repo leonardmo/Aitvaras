@@ -18,6 +18,11 @@ actor ClaudeRun: AgentRun {
     private let forkSource: AgentSessionID?
     private var input: UUID?
     private var queue: [UUID] = []
+    // A queued command can be echoed after the model's result has drained the queue.
+    private var recentCommands: [UUID] = []
+    private var localCommand: (id: UUID, nativeID: String, text: String, caveat: Bool, output: String?)?
+    private var pendingCommandCaveat = false
+    private var modelWorked = false
     private var writing = false
     private var acknowledged = false
     private var interrupted = false
@@ -125,6 +130,8 @@ actor ClaudeRun: AgentRun {
         input = value.id; acknowledged = false; interrupted = false; assistantFailure = nil; usageFailure = nil; streamedThinking.removeAll(); streamTools.removeAll(); streamTexts.removeAll(); streamingMessageID = nil
         do { try await willDeliver() } catch { input = nil; throw error }
         guard !closed, input == value.id, !interrupted else { throw AgentFailure.invalidTransition }
+        modelWorked = false
+        rememberCommand(value)
         emit(.delivery(.deliveryUnknown))
         try await wire.write(frame)
     }
@@ -137,9 +144,65 @@ actor ClaudeRun: AgentRun {
         try await willDeliver()
         guard !closed, !interrupted, input != nil else { throw AgentFailure.invalidTransition }
         queue.append(value.id)
+        rememberCommand(value)
         continuation.yield(.init(scope: .init(runID: id, session: session, inputID: value.id), kind: .delivery(.deliveryUnknown)))
         try await wire.write(frame)
     }
+    private func rememberCommand(_ input: AgentInput) {
+        guard input.text.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("/") else { return }
+        recentCommands.append(input.id)
+        if recentCommands.count > 64 { recentCommands.removeFirst() }
+    }
+
+    /// Consume local records before any of them can trigger autonomous work or
+    /// acknowledge the unrelated model turn that happens to be active.
+    private func receiveCommand(_ record: JSONValue, type: String) -> Bool {
+        if ClaudeCommandText.isCaveat(record) { pendingCommandCaveat = true; return true }
+        if type == "user", let nativeID = record["uuid"]?.stringValue, let id = UUID(uuidString: nativeID),
+           recentCommands.contains(id), let text = ClaudeCommandText.messageText(record["message"]?["content"]),
+           let command = ClaudeCommandText.command(in: text) {
+            localCommand = (id, nativeID, command, pendingCommandCaveat, nil)
+            pendingCommandCaveat = false
+            if id == input { acknowledge() }
+            if id == input || queue.contains(id) {
+                let owner = AgentEventScope(runID: self.id, session: session, inputID: id, itemID: nativeID)
+                if id != input { continuation.yield(.init(scope: owner, kind: .delivery(.acknowledged))) }
+                continuation.yield(.init(scope: owner, kind: .message(id: nativeID, role: "user", text: command)))
+            }
+            return true
+        }
+        if type == "user", let nativeID = record["uuid"]?.stringValue, let id = UUID(uuidString: nativeID),
+           id == input || queue.contains(id) {
+            // A person's literal stdout tag is ordinary input.
+            pendingCommandCaveat = false; localCommand = nil
+            return false
+        }
+        let synthetic = type == "assistant" && localCommand?.caveat == true && localCommand?.output == nil
+            && record["error"] == nil && record["message"]?["model"]?.stringValue == "<synthetic>"
+        if type == "result", record["num_turns"]?.int == 0, record["is_error"]?.boolValue == false,
+           let command = localCommand, command.id != input, let output = command.output,
+           let result = record["result"]?.stringValue, !result.isEmpty,
+           output == result || output.hasPrefix(result + "\n") { return true }
+        let output = ClaudeCommandText.output(in: record)
+            ?? (synthetic ? ClaudeCommandText.messageText(record["message"]?["content"]) : nil)
+        guard let output else { return false }
+        guard var command = localCommand else {
+            // System output may be replayed without its command.
+            return type == "system" || type == "user"
+        }
+        if type != "result" || command.output == nil {
+            let combined = command.output.map { $0 + "\n" + output } ?? output
+            command.output = combined
+            localCommand = command
+            let owner = AgentEventScope(runID: id, session: session, inputID: command.id, itemID: command.nativeID)
+            continuation.yield(.init(scope: owner, kind: .claudeCommandResult(
+                id: command.nativeID, command: command.text, output: combined)))
+            if command.id == input { acknowledged = true }
+            else { queue.removeAll { $0 == command.id } }
+        }
+        return type != "result" || command.id != input
+    }
+
     private func userFrame(_ value: AgentInput) throws -> JSONValue {
         var frame: [String: JSONValue] = ["type": .string("user"), "message": .object([
             "role": .string("user"), "content": try value.claudeContent()])]
@@ -164,9 +227,11 @@ actor ClaudeRun: AgentRun {
         }
         let type = value["type"]?.stringValue ?? ""
         if value["isReplay"]?.boolValue == true { return }
-        if ["assistant", "user"].contains(type) {
+        if ["assistant", "user"].contains(type) || (type == "system" && ClaudeCommandText.output(in: value) != nil) {
             if let uuid = value["uuid"]?.stringValue, !seenMessages.insert(uuid).inserted { return }
         }
+        if type == "result", let nativeID = value["uuid"]?.stringValue, !seenResults.insert(nativeID).inserted { return }
+        if receiveCommand(value, type: type) { return }
         if type == "user", injectedReason(value) == .backgroundTask {
             let content = value["message"]?["content"] ?? .null
             let text = content.stringValue ?? hookOutputStrings(content).joined(separator: "\n")
@@ -180,6 +245,7 @@ actor ClaudeRun: AgentRun {
             || (type == "user" && injectedReason(value) != nil)
         if input == nil, startsTurn {
             let reason = injectedReason(value) ?? lastAutonomousReason
+            modelWorked = false
             input = UUID(); autonomous = true; acknowledged = false; interrupted = false; assistantFailure = nil; usageFailure = nil
             streamedThinking.removeAll(); streamTools.removeAll(); streamTexts.removeAll(); streamingMessageID = nil
             emit(.autonomousTurnStarted(input!, reason))
@@ -256,9 +322,11 @@ actor ClaudeRun: AgentRun {
         case "control_cancel_request":
             if let requestID { requests.removeValue(forKey: requestID); modeState.cancel(); emit(.requestResolved(requestID)) }
         case "stream_event":
+            modelWorked = true
             acknowledge()
             parseStream(value["event"] ?? .null)
         case "assistant", "user":
+            if type == "assistant" { modelWorked = true }
             acknowledge()
             if let error = value["error"]?.stringValue {
                 if error == "authentication_failed" { assistantFailure = .authRequired }
@@ -275,13 +343,14 @@ actor ClaudeRun: AgentRun {
             emit(.usageLimit(evidence))
             if input != nil, evidence.status == .rejected { usageFailure = .quota(resetsAt: evidence.resetsAt) }
         case "result":
-            if let nativeID = value["uuid"]?.stringValue, !seenResults.insert(nativeID).inserted { return }
             guard input != nil else { return }
-            let usage = value["usage"] ?? .null
-            emit(.usage(AgentUsage(scope: .turn, inputTokens: usage["input_tokens"]?.int,
-                outputTokens: usage["output_tokens"]?.int, cachedInputTokens: usage["cache_read_input_tokens"]?.int,
-                cacheWriteInputTokens: usage["cache_creation_input_tokens"]?.int,
-                thinkingTokens: usage["output_tokens_details"]?["thinking_tokens"]?.int, costUSD: value["total_cost_usd"]?.doubleValue)))
+            if modelWorked || localCommand?.id != input || localCommand?.output == nil {
+                let usage = value["usage"] ?? .null
+                emit(.usage(AgentUsage(scope: .turn, inputTokens: usage["input_tokens"]?.int,
+                    outputTokens: usage["output_tokens"]?.int, cachedInputTokens: usage["cache_read_input_tokens"]?.int,
+                    cacheWriteInputTokens: usage["cache_creation_input_tokens"]?.int,
+                    thinkingTokens: usage["output_tokens_details"]?["thinking_tokens"]?.int, costUSD: value["total_cost_usd"]?.doubleValue)))
+            }
             // Interrupt results can also contain an assistant execution error.
             // That error must not turn a user Stop into an unknown failure.
             let aborted = value["terminal_reason"]?.stringValue == "aborted_streaming"

@@ -101,7 +101,9 @@ extension Stores: AgentHistoryPersistence {
                 }
                 // Preserve selected attachment chips and follow-up status.
                 if case .object(var payload)? = old.payloadJSON.flatMap(JSONValue.parse) {
-                    payload["nativeHistory"] = value.payloadJSON.flatMap(JSONValue.parse)?["nativeHistory"]
+                    let incoming = value.payloadJSON.flatMap(JSONValue.parse)
+                    payload["nativeHistory"] = incoming?["nativeHistory"]
+                    if session.provider == .claude { payload["claudeCommandOutput"] = incoming?["claudeCommandOutput"] }
                     value.payloadJSON = JSONValue.object(payload).jsonString
                 }
                 if old.kind == "continued", value.text == AgentStoppedTurn.continuationText {
@@ -147,10 +149,14 @@ extension Stores: AgentHistoryPersistence {
             try dbc.execute(sql: "UPDATE agentTranscriptEntry SET isActive = 0 WHERE id = ?", arguments: [entry.id])
         }
         // Serialize only stable wire evidence, not randomly assigned row UUIDs.
-        let snapshot = JSONValue.array(entries.map { entry in .object([
-            "id": .string(entry.nativeMessageID!), "role": .string(entry.kind), "text": .string(entry.text),
-            "history": entry.payloadJSON.flatMap(JSONValue.parse)?["nativeHistory"] ?? .null
-        ]) }).jsonString
+        let snapshot = JSONValue.array(entries.map { entry in
+            var fields: [String: JSONValue] = [
+                "id": .string(entry.nativeMessageID!), "role": .string(entry.kind), "text": .string(entry.text),
+                "history": entry.payloadJSON.flatMap(JSONValue.parse)?["nativeHistory"] ?? .null
+            ]
+            fields["claudeCommandOutput"] = entry.claudeCommandOutput.map(JSONValue.string)
+            return .object(fields)
+        }).jsonString
         let previous = try String.fetchOne(dbc, sql: "SELECT snapshotJSON FROM agentHistoryObservation WHERE sessionID = ? ORDER BY id DESC LIMIT 1", arguments: [session.id])
         if previous != snapshot {
             try dbc.execute(sql: "INSERT INTO agentHistoryObservation(sessionID, identityJSON, snapshotJSON) VALUES (?, ?, ?)", arguments: [session.id, identity, snapshot])

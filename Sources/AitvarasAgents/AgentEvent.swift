@@ -142,6 +142,8 @@ public struct AgentEvent: Sendable, Equatable {
         case toolInputDelta(String)
         /// Complete canonical message, distinct from partial streaming deltas.
         case message(id: String, role: String, text: String)
+        /// Local CLI output belongs to the canonical user command.
+        case claudeCommandResult(id: String, command: String, output: String)
         case toolStarted(AgentTool)
         case toolOutput(JSONValue)
         case toolFinished(output: JSONValue, isError: Bool)

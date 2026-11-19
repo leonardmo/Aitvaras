@@ -301,6 +301,26 @@ import Testing
         }
     }
 
+    @Test(arguments: [false, true])
+    func indentedCodeLaysOutEachLineInItsOwnFragment(dark: Bool) throws {
+        let view = ChatMessageTextView(frame: .zero, textContainer: nil)
+        view.appearance = try #require(NSAppearance(named: dark ? .darkAqua : .aqua))
+        view.update("    first line\n    second line\n    third line")
+        for width: CGFloat in [60, 350] {
+            let size = view.measuredSize(width: width)
+            let layout = try #require(view.layoutManager)
+            let text = try #require(view.textStorage?.string) as NSString
+            let lines = ["first line", "second line", "third line"]
+            let rectangles = lines.map {
+                let glyph = layout.glyphIndexForCharacter(at: text.range(of: $0).location)
+                return layout.lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil)
+            }
+            #expect(rectangles[0].maxY <= rectangles[1].minY)
+            #expect(rectangles[1].maxY <= rectangles[2].minY)
+            #expect(rectangles[2].maxY <= size.height)
+        }
+    }
+
     @Test func nativeMeasurementUsesProposedTranscriptWidth() {
         let view = ChatMessageTextView(frame: .zero, textContainer: nil)
         view.update(String(repeating: "Long prose with **formatting**. ", count: 25) + "\n\n```\n" + String(repeating: "code", count: 100) + "\n```")

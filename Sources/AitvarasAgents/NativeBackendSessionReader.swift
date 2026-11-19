@@ -39,6 +39,9 @@ public actor NativeBackendSessionReader: NativeSessionReader {
         let page = try await backend.readHistory(session: identity, cursor: cursor)
         let summary = summaries[id]
         let messages: [NativeTextMessage] = page.items.compactMap { event in
+            if case .claudeCommandResult(let id, let command, _) = event.kind {
+                return .init(externalID: id, role: .user, text: command)
+            }
             guard case .message(let id, let role, let text) = event.kind,
                   let role = NativeTextMessage.Role(rawValue: role) else { return nil }
             return .init(externalID: id, role: role, text: text)
