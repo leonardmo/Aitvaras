@@ -2,7 +2,7 @@ import Foundation
 import os
 import AitvarasCore
 
-/// The stream carries only this safe report after an error is caught. Full
+/// Failure events carry this safe report after an error is caught. Full
 /// errors stay at the catch site and are interpolated privately in unified log.
 public struct AgentFailureReport: Error, Sendable, Equatable {
     public let failure: AgentFailure

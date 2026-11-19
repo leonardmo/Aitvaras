@@ -11,6 +11,9 @@ actor AgentWire {
     private var timers: [AgentRequestID: Task<Void, Never>] = [:]
     private var reader: Task<Void, Never>?
     private var failure: AgentFailureReport?
+    // Request waiters may resume before the disconnect callback reaches their
+    // run. Keep its category available for the run's failure event, not a throw.
+    var failureReport: AgentFailureReport? { failure }
     private var receive: (@Sendable (JSONValue, AgentRequestID?) async -> Void)?
     private var disconnected: (@Sendable (AgentFailureReport) async -> Void)?
 
@@ -43,11 +46,11 @@ actor AgentWire {
     }
 
     func write(_ value: JSONValue) async throws {
-        if let failure { throw failure }
+        if let failure { throw failure.failure }
         do { try await process.write(line: value.jsonString) }
         catch {
             let report = AgentFailureDiagnostics.capture(error, mappedTo: .crashed(exitCode: nil))
-            await fail(report); throw report
+            await fail(report); throw report.failure
         }
     }
 
@@ -55,7 +58,7 @@ actor AgentWire {
                  id explicitID: AgentRequestID? = nil, timeout: Duration = .seconds(30),
                  failOnTimeout: Bool = true) async throws -> JSONValue {
         try Task.checkCancellation()
-        if let failure { throw failure }
+        if let failure { throw failure.failure }
         guard pending.count < 64 else { throw AgentFailure.invalidTransition }
         nextID += 1
         let id = explicitID ?? (format == .claude ? .string("client-\(nextID)") : .integer(nextID))
@@ -127,7 +130,7 @@ actor AgentWire {
         failure = error
         let waiters = pending; pending.removeAll()
         timers.values.forEach { $0.cancel() }; timers.removeAll()
-        waiters.values.forEach { $0.resume(throwing: error) }
+        waiters.values.forEach { $0.resume(throwing: error.failure) }
         process.terminate()
         await disconnected?(error)
     }
@@ -167,13 +170,13 @@ extension AgentRequestID {
 
 extension AgentWire {
     func writeResponse(id: AgentRequestID, result: JSONValue?, error: Bool = false) async throws {
-        if let failure { throw failure }
+        if let failure { throw failure.failure }
         let body = error ? "\"error\":{\"code\":-32601,\"message\":\"Unsupported request\"}"
             : "\"result\":\((result ?? .null).jsonString)"
         do { try await process.write(line: "{\"id\":\(id.encoded),\(body)}") }
         catch {
             let report = AgentFailureDiagnostics.capture(error, mappedTo: .crashed(exitCode: nil))
-            await fail(report); throw report
+            await fail(report); throw report.failure
         }
     }
 }

@@ -28,6 +28,59 @@ public struct AgentTurnStore: Sendable {
         }
         Self.notifyMonitoring()
     }
+
+    public func prepareRecovery(_ turn: AgentJournalTurn, context: ChatContextProjection?, entry: AgentTranscriptEntry,
+                                stoppedEntryID: UUID, action: AgentRecoveryAction, session: AgentChatSession) throws {
+        try db.queue.write { dbc in
+            guard var stopped = try AgentTranscriptEntry.fetchOne(dbc, key: stoppedEntryID),
+                  var stop = stopped.stoppedTurn, stop.actions.contains(action),
+                  [.continueTurn, .retry].contains(action), stopped.chatID == turn.chatID,
+                  stopped.sessionID == session.id, stop.choice == session.choice,
+                  let original = try AgentJournalTurn.fetchOne(dbc, key: stop.inputID),
+                  original.state != .running, original.resendCount == stop.attempt,
+                  original.sessionID == session.id, original.chatID == turn.chatID,
+                  try AgentJournalTurn.filter(Column("chatID") == turn.chatID)
+                    .order(Column("startedAt").desc, Column("id")).fetchOne(dbc)?.id == original.id,
+                  try AgentChatSession.fetchOne(dbc, key: session.id) == session,
+                  turn.id != original.id, turn.sessionID == session.id, turn.parentInputID == nil,
+                  turn.delivery == .prepared, turn.state == .running, turn.resendCount == 0, turn.partialOutput.isEmpty,
+                  entry.id == turn.id, entry.sessionID == session.id, entry.chatID == turn.chatID,
+                  entry.provider == session.provider, entry.nativeMessageID == nil else { throw AgentFailure.invalidTransition }
+            if session.providerProfile != "default" {
+                guard let id = UUID(uuidString: session.providerProfile),
+                      try AgentProviderProfile.fetchOne(dbc, key: id)?.isDeleted == false else { throw AgentFailure.invalidTransition }
+            }
+            if action == .continueTurn {
+                guard session.usesThreadContext, stop.canContinue, let native = stop.nativeSession, session.sessionID == native,
+                      entry.kind == "continued", entry.text == AgentStoppedTurn.continuationText,
+                      turn.prompt == AgentStoppedTurn.continuationText, context == nil else { throw AgentFailure.invalidTransition }
+            } else {
+                guard stop.delivery != .acknowledged, session.sessionID == stop.nativeSession,
+                      ["user", "continued"].contains(entry.kind), turn.prompt == original.prompt else { throw AgentFailure.invalidTransition }
+                if entry.kind == "continued" {
+                    guard entry.text == AgentStoppedTurn.continuationText, turn.prompt == entry.text,
+                          try AgentTranscriptEntry.fetchOne(dbc, key: original.id)?.kind == "continued" else { throw AgentFailure.invalidTransition }
+                }
+            }
+            // Claim and journal the new attempt before any provider write. A
+            // repeated click, including after restart, cannot claim this row.
+            stop.recoveryInputID = turn.id
+            stopped.payloadJSON = try stop.payload()
+            try stopped.update(dbc, columns: ["payloadJSON"])
+            try turn.insert(dbc)
+            try Self.monitor(turn, in: dbc)
+            if let context { try AgentHandoverRecord(context: context, turnID: turn.id).insert(dbc) }
+            var input = entry
+            input.position = (try AgentTranscriptEntry.filter(Column("chatID") == turn.chatID)
+                .order(Column("position").desc).fetchOne(dbc)?.position ?? -1) + 1
+            try input.insert(dbc)
+            try ActivityEvent(kind: .toolExecuted, connectorID: "agent", summary: "Chat recovery requested",
+                detailJSON: JSONValue.object(["chatID": .string(turn.chatID.uuidString), "action": .string(action.rawValue),
+                    "originalInputID": .string(original.id.uuidString)]).jsonString, runID: turn.id).insert(dbc)
+            try Self.touchChat(turn.chatID, at: turn.startedAt, in: dbc)
+        }
+        Self.notifyMonitoring()
+    }
     private func change(_ id: UUID, monitoring: Bool = false, _ body: (inout AgentJournalTurn) throws -> Void) throws {
         try db.queue.write { dbc in
             guard var turn = try AgentJournalTurn.fetchOne(dbc, key: id) else { throw AgentStoreError.missingTurn }
@@ -49,18 +102,48 @@ public struct AgentTurnStore: Sendable {
             turn.partialOutput = text
         }
     }
-    public func finish(id: UUID, state: AgentJournalState) throws {
+    @discardableResult
+    public func finish(id: UUID, state: AgentJournalState, stop: AgentStopReason? = nil) throws -> AgentTranscriptEntry? {
         guard state != .running else { throw AgentFailure.invalidTransition }
-        try db.queue.write { dbc in
+        let row = try db.queue.write { dbc -> AgentTranscriptEntry? in
             guard var turn = try AgentJournalTurn.fetchOne(dbc, key: id) else { throw AgentStoreError.missingTurn }
+            if turn.state != .running, let stop, stop.kind == .internalError {
+                return try Self.stoppedEntry(turn, reason: stop, in: dbc)
+            }
             guard turn.state == .running || turn.state == state else { throw AgentFailure.invalidTransition }
             let endedAt = turn.endedAt ?? .now
             turn.state = state; turn.endedAt = endedAt
             try turn.update(dbc)
             try Self.touchChat(turn.chatID, at: endedAt, in: dbc)
             try Self.monitor(turn, in: dbc)
+            guard state != .completed else { return nil }
+            return try Self.stoppedEntry(turn, reason: stop ?? (state == .failed ? .failure(.unknown) : .interrupted), in: dbc)
         }
         Self.notifyMonitoring()
+        return row
+    }
+
+    private static func stoppedEntry(_ turn: AgentJournalTurn, reason: AgentStopReason, in dbc: Database) throws -> AgentTranscriptEntry {
+        let rows = try AgentTranscriptEntry.filter(Column("chatID") == turn.chatID)
+            .filter(Column("kind") == "stopped").order(Column("position")).fetchAll(dbc)
+        if var existing = rows.last(where: { $0.stoppedTurn?.inputID == turn.id && $0.stoppedTurn?.attempt == turn.resendCount }) {
+            if reason.kind == .internalError, existing.stoppedTurn?.reason.kind != .internalError,
+               let session = try AgentChatSession.fetchOne(dbc, key: turn.sessionID) {
+                var replacement = AgentStoppedTurn(turn: turn, session: session, reason: reason)
+                replacement.recoveryInputID = existing.stoppedTurn?.recoveryInputID
+                existing.payloadJSON = try replacement.payload()
+                try existing.update(dbc, columns: ["payloadJSON"])
+            }
+            return existing
+        }
+        guard let session = try AgentChatSession.fetchOne(dbc, key: turn.sessionID) else { throw AgentStoreError.missingSession }
+        let stop = AgentStoppedTurn(turn: turn, session: session, reason: reason)
+        let position = (try AgentTranscriptEntry.filter(Column("chatID") == turn.chatID)
+            .order(Column("position").desc).fetchOne(dbc)?.position ?? -1) + 1
+        let entry = AgentTranscriptEntry(chatID: turn.chatID, provider: session.provider, kind: "stopped",
+            payloadJSON: try stop.payload(), sessionID: session.id, position: position)
+        try entry.insert(dbc)
+        return entry
     }
     /// The journal and its Activity identity commit together before delivery.
     /// Metadata only: no prompt, output, path or native account/session identity.
@@ -114,7 +197,19 @@ public struct AgentTurnStore: Sendable {
                 .fetchCount(dbc) == 0, turn.delivery.canAutomaticallyResend, turn.resendCount == 0, turn.state != .running else {
                 throw AgentFailure.invalidTransition
             }
+            let stoppedRows = try AgentTranscriptEntry.filter(Column("chatID") == turn.chatID)
+                .filter(Column("kind") == "stopped").fetchAll(dbc)
+            guard !stoppedRows.contains(where: { row in
+                guard let stop = row.stoppedTurn, stop.inputID == turn.id, stop.attempt == turn.resendCount else { return false }
+                return stop.reason.kind == .internalError || stop.recoveryInputID != nil
+            }) else { throw AgentFailure.invalidTransition }
             turn.resendCount = 1; turn.state = .running; turn.endedAt = nil
+            for var row in stoppedRows {
+                if var stop = row.stoppedTurn, stop.inputID == turn.id, stop.recoveryInputID == nil {
+                    stop.recoveryInputID = turn.id; row.payloadJSON = try stop.payload()
+                    try row.update(dbc, columns: ["payloadJSON"])
+                }
+            }
             try turn.update(dbc)
             try Self.monitor(turn, in: dbc, retry: true)
             return turn
@@ -128,6 +223,7 @@ public struct AgentTurnStore: Sendable {
                 turn.state = .interrupted; turn.endedAt = .now
                 try turn.update(dbc)
                 try Self.monitor(turn, in: dbc)
+                _ = try Self.stoppedEntry(turn, reason: .connectionClosed, in: dbc)
             }
         }
         Self.notifyMonitoring()
@@ -143,7 +239,15 @@ extension Stores {
     public func agentTurn(id: UUID) throws -> AgentJournalTurn? { try AgentTurnStore(db: db).turn(id: id) }
     public func advanceAgentDelivery(id: UUID, to state: AgentDeliveryState) throws { try AgentTurnStore(db: db).advanceDelivery(id: id, to: state) }
     public func saveAgentPartial(id: UUID, text: String) throws { try AgentTurnStore(db: db).savePartial(id: id, text: text) }
-    public func finishAgentTurn(id: UUID, state: AgentJournalState) throws { try AgentTurnStore(db: db).finish(id: id, state: state) }
+    public func finishAgentTurn(id: UUID, state: AgentJournalState) throws { _ = try AgentTurnStore(db: db).finish(id: id, state: state) }
+    public func finishAgentTurn(id: UUID, state: AgentJournalState, stop: AgentStopReason?) throws -> AgentTranscriptEntry? {
+        try AgentTurnStore(db: db).finish(id: id, state: state, stop: stop)
+    }
+    public func prepareAgentRecovery(_ turn: AgentJournalTurn, context: ChatContextProjection?, entry: AgentTranscriptEntry,
+                                     stoppedEntryID: UUID, action: AgentRecoveryAction, session: AgentChatSession) throws {
+        try AgentTurnStore(db: db).prepareRecovery(turn, context: context, entry: entry,
+            stoppedEntryID: stoppedEntryID, action: action, session: session)
+    }
     public func claimAgentResend(id: UUID) throws -> AgentJournalTurn { try AgentTurnStore(db: db).claimResend(id: id) }
     public func recoverAgentTurns() throws { try AgentTurnStore(db: db).recover() }
 }

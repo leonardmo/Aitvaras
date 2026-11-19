@@ -406,7 +406,9 @@ migrations have no automatic database backup; installation requires a manual
 database backup before upgrading. No app-level backup is added for this repair.
 
 Turn-ending error catches retain a typed safe category across backend and
-coordinator boundaries. Activity records only the error type and case plus
+coordinator boundaries through `AgentEvent.failureReport`. Public backend/run
+throws and stream errors unwrap diagnostic carriers to `AgentFailure`.
+Activity records only the error type and case plus
 chat/input provenance, never descriptions, associated values, paths, prompts
 or credentials. Full caught errors go to unified log with explicit `.private`
 interpolation. Unknown error types use a validated metatype name and an
@@ -414,6 +416,34 @@ interpolation. Unknown error types use a validated metatype name and an
 from memory evidence. If the Activity write itself fails, the full error is
 privately logged without recursively auditing the audit failure; durable
 diagnostics cannot be guaranteed while storage is unavailable.
+
+An abnormal turn end now commits a compact `stopped` transcript entry with
+the journal outcome. It retains delivery evidence, provider/profile and native
+session identity, the safe error category and any reported quota reset time.
+Reopening and native history refresh preserve it. Startup recovery creates a
+Connection lost row for unfinished journals without sending anything. Explicit
+Stop creates a Stopped row. Internal failures show “Aitvaras error · category”
+with only Copy details, which copies the category. Connection failures show
+“Connection lost”; quota failures show “Usage limit reached”, with a local
+24-hour reset time when known. These offer Continue for acknowledged input and
+Retry otherwise. Authentication keeps the existing Sign in flow.
+
+Recovery is manual. The manager's recovery API validates the original durable
+session and rejects absent or changed native identities for Continue. Continue
+checks Claude's authoritative system/init identity; foreign session IDs on
+ordinary tool, subagent, hook or compaction frames do not terminate a turn. Continue
+sends exactly “Continue where you stopped.” through the normal policy boundary,
+without a catch-up envelope, and persists a small `continued` marker instead of
+a user bubble. Native refresh preserves that marker only for the exact recorded
+instruction; an edited native message renders as user text. Retry restores the
+original wire prompt and selected composer bytes, including when delivery is
+unknown. Each click claims the stopped row and prepares one new journaled attempt
+atomically before writing to the provider. Old delivery evidence is retained;
+repeated/stale claims cannot send again. There is no reset timer or automatic
+continuation; issue #27 may use this explicit recovery API in a later change.
+Composer failures remain only for provably undelivered input. Stopped diagnostics
+stay outside provider context, and Continued markers delimit their own journal
+when selecting completed assistant context.
 
 Catch-up scans normalized entries and the chat's legacy local, owned and linked
 timeline without the UI page limit. Completed messages from other sessions are

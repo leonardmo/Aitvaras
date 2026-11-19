@@ -243,7 +243,7 @@ import AitvarasStore
         try await manager.shutdown()
     }
 
-    @Test func journalBarrierFailurePreventsWriteAndDuplicateInputDoesNotDisturbLiveTurn() async throws {
+    @Test func journalBarrierFailureCannotRetryAndDuplicateInputDoesNotDisturbLiveTurn() async throws {
         let stores = try inMemoryStores()
         let chat = try agentStoreChat(stores).0.id
         let backend = ManagerTestBackend()
@@ -257,9 +257,15 @@ import AitvarasStore
         #expect(await backend.totalWrites() == 0)
         #expect(try stores.agentTurn(id: input.id)?.delivery == .prepared)
         try await stores.db.queue.write { try $0.execute(sql: "DROP TRIGGER testBarrierFailure") }
-        try await manager.resendPrepared(turnID: input.id)
-        await #expect(throws: AgentSessionManagerError.chatBusy) { try await manager.send(chatID: chat, provider: .claude, input: input) }
-        #expect(try stores.agentTurn(id: input.id)?.state == .running)
+        await #expect(throws: AgentFailure.invalidTransition) { try await manager.resendPrepared(turnID: input.id) }
+        #expect(try stores.agentEntries(chatID: chat).last?.stoppedTurn?.actions == [.copyDetails])
+        #expect(await backend.totalWrites() == 0)
+        // Fixing storage permits a new explicit Send, while the failed input
+        // remains diagnostic-only and can never be silently replayed.
+        let next = AgentInput(text: "New input")
+        try await manager.send(chatID: chat, provider: .claude, input: next)
+        await #expect(throws: AgentSessionManagerError.chatBusy) { try await manager.send(chatID: chat, provider: .claude, input: next) }
+        #expect(try stores.agentTurn(id: next.id)?.state == .running)
         try await manager.shutdown()
     }
 
@@ -277,7 +283,10 @@ import AitvarasStore
         #expect(try stores.agentTurn(id: input.id)?.delivery == .deliveryUnknown)
         #expect(try await manager.state(chatID: chat.id).entries.first?.text == "kept")
         #expect(await backend.runs.isEmpty)
-        #expect(try await manager.state(chatID: chat.id).outcome == .interrupted)
+        let recovered = try await manager.state(chatID: chat.id)
+        #expect(recovered.outcome == .failed(.offline))
+        #expect(recovered.currentStoppedTurn?.reason.kind == .connection)
+        #expect(recovered.currentStoppedTurn?.actions == [.retry])
         try await manager.shutdown()
     }
 

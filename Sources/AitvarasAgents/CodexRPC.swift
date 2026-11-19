@@ -14,6 +14,7 @@ actor CodexRun: AgentRun {
     private var userInputs: [AgentInput] = []
     private var steering = false
     private var acknowledged = false
+    private var limitWindows: [AgentRateLimitWindow] = []
     private var closed = false
     private var requests: [AgentRequestID: AgentRequest] = [:]
     private var seenRequests: Set<AgentRequestID> = []
@@ -59,7 +60,7 @@ actor CodexRun: AgentRun {
             try await startTurn(content: content, mode: mode)
         } catch {
             if input == value.id {
-                let report = AgentFailureDiagnostics.capture(error)
+                let report = await wire.failureReport ?? AgentFailureDiagnostics.capture(error)
                 emit(.turnEnded(.failed(report.failure)), report: report); input = nil; requests.removeAll()
             }
             throw error
@@ -183,7 +184,16 @@ actor CodexRun: AgentRun {
             acknowledge()
             for item in p["turn"]?["items"]?.arrayValue ?? [] { complete(item) }
             let status = p["turn"]?["status"]?.stringValue
-            let outcome: AgentTurnOutcome = status == "completed" ? .completed : status == "interrupted" ? .interrupted : .failed(.unknown)
+            let info = p["turn"]?["error"]?["codexErrorInfo"]?.stringValue
+            let failure: AgentFailure
+            if info == "usageLimitExceeded" {
+                let reset = p["turn"]?["error"]?["resetsAt"]?.date
+                    ?? limitWindows.filter { ($0.utilization ?? 0) >= 1 }.compactMap(\.resetsAt).max()
+                failure = .quota(resetsAt: reset)
+            } else if info == "httpConnectionFailed" { failure = .offline }
+            else if info == "unauthorized" { failure = .authRequired }
+            else { failure = .unknown }
+            let outcome: AgentTurnOutcome = status == "completed" ? .completed : status == "interrupted" ? .interrupted : .failed(failure)
             if let turn { completedTurns.insert(turn) }
             let unfinished = Set(items.filter { Self.toolTypes.contains($0.value["type"]?.stringValue ?? "") }.keys)
             if let turn, !unfinished.isEmpty {
@@ -290,7 +300,7 @@ actor CodexRun: AgentRun {
                 // action; only the turn/start response acknowledges the new mode.
                 do { try await startTurn(content: try AgentInput(text: "Implement the approved plan.").codexContent(), mode: .ask) }
                 catch {
-                    let report = AgentFailureDiagnostics.capture(error)
+                    let report = await wire.failureReport ?? AgentFailureDiagnostics.capture(error)
                     emit(.turnEnded(.failed(report.failure)), report: report); input = nil; throw error
                 }
             }
@@ -336,7 +346,7 @@ actor CodexRun: AgentRun {
     func resolved(_ requestID: AgentRequestID) {
         if requests.removeValue(forKey: requestID) != nil { emit(.requestResolved(requestID)) }
     }
-    func rateLimits(_ windows: [AgentRateLimitWindow]) { emit(.rateLimits(windows)) }
+    func rateLimits(_ windows: [AgentRateLimitWindow]) { limitWindows = windows; emit(.rateLimits(windows)) }
     func disconnected(_ error: AgentFailure) {
         disconnected(AgentFailureDiagnostics.capture(error))
     }
@@ -347,7 +357,7 @@ actor CodexRun: AgentRun {
         // retroactively change that authoritative outcome.
         if input != nil { emit(.turnEnded(completingOutcome ?? .failed(error.failure)), report: completingOutcome == nil ? error : nil); input = nil }
         completingOutcome = nil
-        continuation.finish(throwing: error)
+        continuation.finish(throwing: error.failure)
     }
     func abort() async {
         // One app-server hosts several threads. An unacknowledged interrupt

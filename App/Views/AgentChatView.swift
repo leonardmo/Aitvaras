@@ -169,7 +169,7 @@ struct AgentChatView: View {
                         .accessibilityIdentifier("chat.sideQuestion.panel")
                 }
                 composer
-                if composerMessage != nil || !canSend || chat.state?.outcome == .interrupted {
+                if composerMessage != nil || !canSend {
                     HStack(spacing: 8) {
                         if let error = composerMessage {
                             Text(error).font(.caption).lineLimit(2)
@@ -197,12 +197,6 @@ struct AgentChatView: View {
                             Spacer(minLength: 0)
                             Button("Restore") { model.setWorkspaceChatArchived(chatID, archived: false) }
                                 .accessibilityIdentifier("chat.restore")
-                        } else if chat.state?.outcome == .interrupted {
-                            Image(systemName: "pause.circle")
-                                .help("Interrupted · Send to continue")
-                                .accessibilityLabel("Interrupted. Send to continue.")
-                                .accessibilityIdentifier("chat.interrupted")
-                            Spacer(minLength: 0)
                         }
                     }
                     .foregroundStyle(composerMessageColor)
@@ -235,7 +229,10 @@ struct AgentChatView: View {
         else { edit = nil }
         return AgentTranscriptView(entry: entry, quote: { chat.replyWithQuote(entry, selection: $0); composerFocused = true },
             fork: fork, forkEnabled: !chat.isBusy && !chat.gitBusy && !chat.conversationBusy && entry.sessionID != nil && entry.nativeMessageID.flatMap(UUID.init(uuidString:)) != nil,
-            edit: edit)
+            edit: edit, recovery: { action in chat.recover(entry, action: action) },
+            recoveryEnabled: !chat.isBusy && !chat.conversationBusy && chat.signingIn == nil && canSend
+                && entry.stoppedTurn?.inputID == chat.displayEntries.last(where: { ["user", "continued"].contains($0.kind) })?.id,
+            recoveryError: chat.recoveryErrors[entry.id])
     }
 
     private var composer: some View {
@@ -608,11 +605,13 @@ struct AgentChatView: View {
         colorScheme == .dark ? Color(white: 0.92) : Color(white: 0.12)
     }
     private var composerMessage: String? {
-        if let provider = chat.selectedSignInProvider { return "Sign in to \(provider.rawValue.capitalized)" }
+        let stop = chat.state?.currentStoppedTurn
+        let deliveredStop = stop?.choice == chat.choice && stop?.delivery != .prepared
+        if let provider = chat.selectedSignInProvider, !deliveredStop { return "Sign in to \(provider.rawValue.capitalized)" }
         return chat.error ?? workspaceError ?? outcomeError ?? chat.state?.mcpSetup?.notice
     }
     private var outcomeError: String? {
-        if case .failed(let failure) = chat.state?.outcome {
+        if chat.state?.showsComposerFailure == true, case .failed(let failure) = chat.state?.outcome {
             return AgentFailure.sendMessage(for: failure, provider: chat.state?.entries.last?.provider ?? chat.provider)
         }
         return nil

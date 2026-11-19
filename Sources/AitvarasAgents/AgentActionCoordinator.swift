@@ -29,6 +29,7 @@ public actor AgentActionCoordinator: AgentRun {
     private let projectGrants: @Sendable () throws -> Set<String>
     private var mode: AgentMode
     private var inputID: UUID?
+    private var terminalReport: AgentFailureReport?
     private var followups: Set<UUID> = []
     private var closed = false
     private var interrupting = false
@@ -65,7 +66,7 @@ public actor AgentActionCoordinator: AgentRun {
                 } catch { await self?.failed(error) }
             }
         }
-        inputID = input.id; followups.removeAll(); interrupting = false
+        inputID = input.id; terminalReport = nil; followups.removeAll(); interrupting = false
         do { try await run.send(input, willDeliver: willDeliver) }
         catch { if inputID == input.id { inputID = nil }; throw error }
     }
@@ -215,6 +216,7 @@ public actor AgentActionCoordinator: AgentRun {
                 if case .failed(let failure) = outcome {
                     let report = event.failureReport ?? AgentFailureDiagnostics.capture(failure)
                     let recorded = await report.recording(chatID: provenance.chatID, inputID: event.scope.inputID, audit: audit)
+                    terminalReport = recorded
                     forwarded = .init(scope: event.scope, kind: event.kind, failureReport: recorded)
                 }
             default: break
@@ -335,12 +337,15 @@ public actor AgentActionCoordinator: AgentRun {
         let owner = inputID
         closed = true; inputID = nil
         await denyPending()
-        let recorded = await report?.recording(chatID: provenance.chatID, inputID: owner, audit: audit)
-        if let recorded, recorded.category == recorded.failure.safeErrorCategory {
-            // Keep the existing typed-error contract when the failure already
-            // describes its complete safe category (for example invalidRequest).
-            continuation.finish(throwing: recorded.failure)
-        } else { continuation.finish(throwing: recorded) }
+        // A provider failure event already owns its category and audit. Its
+        // public stream error carries only AgentFailure and must not re-audit.
+        let diagnostic = owner == nil ? terminalReport ?? report : report
+        let recorded = await diagnostic?.recording(chatID: provenance.chatID, inputID: owner, audit: audit)
+        if let recorded, let owner {
+            continuation.yield(.init(scope: .init(runID: id, inputID: owner),
+                kind: .turnEnded(.failed(recorded.failure)), failureReport: recorded))
+        }
+        continuation.finish(throwing: recorded?.failure)
         try? await run.shutdown()
     }
 

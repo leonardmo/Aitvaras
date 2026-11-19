@@ -29,6 +29,7 @@ public struct ChatState: Sendable, Equatable {
     public private(set) var isRunning = false
     public private(set) var turnOrigin: AgentTurnOrigin = .user
     public private(set) var inputID: UUID?
+    public private(set) var delivery: AgentDeliveryState?
     public private(set) var acknowledgedMode: AgentMode?
     private var outputID: UUID?
     private var thinkingIDs: [String: UUID] = [:]
@@ -42,10 +43,26 @@ public struct ChatState: Sendable, Equatable {
     public init(chatID: UUID, entries: [AgentTranscriptEntry] = []) {
         self.chatID = chatID; self.entries = entries
     }
+    mutating func noteDelivery(_ value: AgentDeliveryState) { delivery = value }
+    mutating func restore(turn: AgentJournalTurn) {
+        inputID = turn.id; delivery = turn.delivery
+        if let stop = entries.reversed().compactMap(\.stoppedTurn).first(where: { $0.inputID == turn.id && $0.attempt == turn.resendCount }) {
+            end(stop.reason.outcome)
+        }
+        else {
+            switch turn.state {
+            case .completed: end(.completed)
+            case .interrupted: end(.interrupted)
+            case .failed: end(.failed(.unknown))
+            case .running: break
+            }
+        }
+    }
     public mutating func begin(_ input: AgentInput, session: AgentChatSession, outputID: UUID,
                                context: ChatContextProjection? = nil) {
         resetTurn(id: input.id, provider: session.provider, sessionID: session.id, outputID: outputID)
         turnOrigin = .user; acknowledgedMode = session.mode
+        delivery = .prepared
         if !entries.contains(where: { $0.id == input.id }) {
             if let context {
                 entries.append(.init(chatID: chatID, provider: session.provider, kind: "handover",
@@ -104,6 +121,7 @@ public struct ChatState: Sendable, Equatable {
         default:
             guard isRunning, event.scope.inputID == inputID, inputID != nil else { return }
             switch event.kind {
+            case .delivery(let value): delivery = value
             case .textDelta(let text):
                 closeEarlierTools()
                 let key = event.scope.itemID ?? "text"

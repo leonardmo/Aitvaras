@@ -162,6 +162,9 @@ public protocol AgentSessionPersistence: Sendable {
     func advanceAgentDelivery(id: UUID, to state: AgentDeliveryState) throws
     func saveAgentPartial(id: UUID, text: String) throws
     func finishAgentTurn(id: UUID, state: AgentJournalState) throws
+    @discardableResult func finishAgentTurn(id: UUID, state: AgentJournalState, stop: AgentStopReason?) throws -> AgentTranscriptEntry?
+    func prepareAgentRecovery(_ turn: AgentJournalTurn, context: ChatContextProjection?, entry: AgentTranscriptEntry,
+                              stoppedEntryID: UUID, action: AgentRecoveryAction, session: AgentChatSession) throws
     func claimAgentResend(id: UUID) throws -> AgentJournalTurn
     func recoverAgentTurns() throws
     func agentContext(session: AgentChatSession) throws -> ChatContextProjection?
@@ -169,6 +172,13 @@ public protocol AgentSessionPersistence: Sendable {
 }
 
 extension AgentSessionPersistence {
+    public func finishAgentTurn(id: UUID, state: AgentJournalState, stop: AgentStopReason?) throws -> AgentTranscriptEntry? {
+        try finishAgentTurn(id: id, state: state); return nil
+    }
+    public func prepareAgentRecovery(_ turn: AgentJournalTurn, context: ChatContextProjection?, entry: AgentTranscriptEntry,
+                                     stoppedEntryID: UUID, action: AgentRecoveryAction, session: AgentChatSession) throws {
+        throw AgentFailure.unsupported
+    }
     public func agentSessions(chatID: UUID) throws -> [AgentChatSession] {
         try [AgentProvider.claude, .codex, .local].compactMap { try agentSession(chatID: chatID, provider: $0) }
     }

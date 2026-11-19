@@ -7,6 +7,55 @@ import AitvarasStore
 
 @Suite(.timeLimit(.minutes(2)))
 struct AgentFailureDiagnosticsTests {
+    @Test(arguments: [AgentProvider.claude, .codex])
+    func publicStartDoesNotThrowADiagnosticCarrier(provider: AgentProvider) async throws {
+        let fixture = try BackendExecutableFixture(script: #"""
+read()
+print('x'*1100000,flush=True)
+done()
+"""#)
+        defer { fixture.remove() }
+        let backend: any AgentBackend = provider == .claude
+            ? ClaudeBackend(executable: fixture.executable, environment: fixture.environment)
+            : CodexBackend(executable: fixture.executable, environment: fixture.environment)
+        do {
+            let run = try await backend.start(.init(directory: fixture.directory, model: "test"))
+            try await run.shutdown()
+            Issue.record("Expected startup to fail")
+        } catch { #expect(error is AgentFailure); #expect(!(error is AgentFailureReport)) }
+    }
+
+    @Test(arguments: [AgentProvider.claude, .codex])
+    func publicRunErrorsAreFailuresWhileEventsRetainCategories(provider: AgentProvider) async throws {
+        let script = provider == .claude ? #"""
+claude_init()
+read()
+print('x'*1100000,flush=True)
+done()
+"""# : #"""
+codex_init()
+start_thread()
+read()
+print('x'*1100000,flush=True)
+done()
+"""#
+        let fixture = try BackendExecutableFixture(script: script)
+        defer { fixture.remove() }
+        let backend: any AgentBackend = provider == .claude
+            ? ClaudeBackend(executable: fixture.executable, environment: fixture.environment)
+            : CodexBackend(executable: fixture.executable, environment: fixture.environment)
+        let run = try await backend.start(.init(directory: fixture.directory, model: "test"))
+        do { try await run.send(.init(text: "Example"), willDeliver: {}) }
+        catch { #expect(error is AgentFailure); #expect(!(error is AgentFailureReport)) }
+        var reports: [AgentFailureReport] = []
+        do {
+            for try await event in run.events { if let report = event.failureReport { reports.append(report) } }
+            Issue.record("A failed transport must terminate its stream with AgentFailure")
+        } catch { #expect(error is AgentFailure); #expect(!(error is AgentFailureReport)) }
+        #expect(reports.map(\.category.name) == ["AgentProcessError.outputLimit"])
+        try await run.shutdown()
+    }
+
     @Test func categoriesRetainOnlyTypesAndCases() throws {
         let samples: [(any Error, String)] = [
             (AgentStoreError.identityConflict, "AgentStoreError.identityConflict"),
@@ -88,7 +137,7 @@ done()
         let (stores, chat, manager) = try followupManager(fixture, provider: provider)
         let input = AgentInput(text: DiagnosticCanaryError.prompt)
         do { try await manager.send(chatID: chat, provider: provider, input: input) }
-        catch { #expect(AgentFailureDiagnostics.capture(error).category.name == "AgentProcessError.outputLimit") }
+        catch { #expect(error is AgentFailure); #expect(!(error is AgentFailureReport)) }
         try await waitAgentCondition {
             try stores.recentActivity(limit: 20).contains { category($0) == "AgentProcessError.outputLimit" }
         }
@@ -135,14 +184,18 @@ done()
         await #expect(throws: DiagnosticCanaryError.self) {
             try await coordinator.alwaysAllow(to: request) { throw DiagnosticCanaryError.example }
         }
+        var reports: [AgentFailureReport] = []
         do {
-            for try await _ in coordinator.events {}
+            for try await event in coordinator.events {
+                if let report = event.failureReport { reports.append(report) }
+            }
             Issue.record("Expected the categorized stream failure")
         } catch {
-            let report = try #require(error as? AgentFailureReport)
-            #expect(report.isAudited)
-            #expect(report.category.name == "DiagnosticCanaryError.failed")
+            #expect(error as? AgentFailure == .unknown)
+            #expect(!(error is AgentFailureReport))
         }
+        #expect(reports.map(\.category.name) == ["DiagnosticCanaryError.failed"])
+        #expect(reports.allSatisfy { $0.isAudited })
         let events = try stores.recentActivity(limit: 20)
         #expect(events.filter { $0.kind == .agentFailure }.count == 1)
         try expectNoCanaries(events)

@@ -19,6 +19,7 @@ public actor AgentSessionManager {
         var followups: [AgentInput] = []
         var sendingFollowup = false
         var stopping = false
+        var expectedNative: AgentSessionID?
         var lastUsed = ContinuousClock.now
 
         var isRunning: Bool { inputID != nil || !followups.isEmpty || sendingFollowup || stopping }
@@ -34,6 +35,15 @@ public actor AgentSessionManager {
     private var states: [UUID: ChatState] = [:]
     private var subscribers: [UUID: [UUID: AsyncStream<ChatState>.Continuation]] = [:]
     private var closing = false
+    private var recovering = Set<UUID>()
+    private struct RecoveryDelivery {
+        let stoppedEntryID: UUID
+        let action: AgentRecoveryAction
+        let session: AgentChatSession
+        let wireText: String
+        let context: ChatContextProjection?
+        let continued: Bool
+    }
     private var refreshing = Set<UUID>()
     private var historyWaiters: [UUID: [CheckedContinuation<Void, any Error>]] = [:]
     private var historyTokens: [UUID: UUID] = [:]
@@ -74,12 +84,7 @@ public actor AgentSessionManager {
             }
         }
         if let turn = try persistence.latestAgentTurn(chatID: chatID) {
-            switch turn.state {
-            case .interrupted: value.end(.interrupted)
-            case .completed: value.end(.completed)
-            case .failed: value.end(.failed(.unknown))
-            case .running: break
-            }
+            value.restore(turn: turn)
         }
         states[chatID] = value; return value
     }
@@ -210,7 +215,8 @@ public actor AgentSessionManager {
                 if try persistence.agentTurn(id: input.id)?.delivery == .prepared {
                     // A busy provider or failed barrier has not taken this
                     // input. Keep the active turn and its approval cards alive.
-                    try persistence.finishAgentTurn(id: input.id, state: .failed)
+                    try finishTurn(chatID: chatID, id: input.id, state: .failed,
+                        stop: .failure(AgentFailureDiagnostics.failure(for: error), category: AgentFailureDiagnostics.capture(error).category))
                     live[chatID]?.followups.removeAll { $0.id == input.id }
                     states[chatID]?.markFollowup(input.id, status: "notSent")
                     try persistEntries(chatID); publish(chatID)
@@ -218,7 +224,7 @@ public actor AgentSessionManager {
                 } else {
                     let report = AgentFailureDiagnostics.capture(error)
                     // Retire owns transport/state cleanup before the audit can yield.
-                    do { try await retire(chatID, slot: current, outcome: .failed(report.failure)) }
+                    do { try await retire(chatID, slot: current, outcome: .failed(report.failure), stop: .failure(report.failure, category: report.category)) }
                     catch {
                         _ = await AgentFailureDiagnostics.capture(error).recording(chatID: chatID, inputID: input.id, audit: audit)
                         _ = await report.recording(chatID: chatID, inputID: input.id, audit: audit)
@@ -252,12 +258,45 @@ public actor AgentSessionManager {
         throw AgentSessionManagerError.missingSession
     }
 
+    /// Explicit recovery seam. It never schedules a timer or sends on startup.
+    /// The caller supplies the persisted row, not a draft or the selected model.
+    public func recover(chatID: UUID, stoppedEntryID: UUID, action: AgentRecoveryAction) async throws {
+        guard !closing, recovering.insert(chatID).inserted else { throw AgentSessionManagerError.chatBusy }
+        defer { recovering.remove(chatID) }
+        try persistence.requireAgentChatAvailable(chatID: chatID)
+        guard live[chatID]?.isRunning != true, !refreshing.contains(chatID),
+              let row = try persistence.agentEntries(chatID: chatID).first(where: { $0.id == stoppedEntryID }),
+              let stop = row.stoppedTurn, stop.actions.contains(action), [.continueTurn, .retry].contains(action),
+              let turn = try persistence.agentTurn(id: stop.inputID), turn.state != .running,
+              turn.resendCount == stop.attempt, try persistence.latestAgentTurn(chatID: chatID)?.id == turn.id,
+              let session = try persistence.agentSessions(chatID: chatID).first(where: { $0.id == row.sessionID }),
+              session.id == turn.sessionID, session.choice == stop.choice,
+              session.sessionID == stop.nativeSession else { throw AgentFailure.invalidTransition }
+        let original = try persistence.agentEntries(chatID: chatID).first { $0.id == turn.id }
+        let input: AgentInput
+        let wire: String
+        let context: ChatContextProjection?
+        if action == .continueTurn {
+            guard session.usesThreadContext, stop.canContinue else { throw AgentFailure.invalidTransition }
+            input = AgentInput(text: AgentStoppedTurn.continuationText)
+            wire = input.text; context = nil
+        } else {
+            guard let original else { throw AgentFailure.invalidTransition }
+            input = try .restoring(id: UUID(), text: original.text, payload: original.payloadJSON)
+            wire = turn.prompt; context = try persistence.agentHandover(turnID: turn.id)
+        }
+        let recovery = RecoveryDelivery(stoppedEntryID: stoppedEntryID, action: action, session: session,
+            wireText: wire, context: context, continued: action == .continueTurn || original?.kind == "continued")
+        try await deliver(chatID: chatID, provider: session.provider, input: input, retry: false, recovery: recovery)
+    }
+
     private func deliver(chatID: UUID, provider: AgentProvider, input: AgentInput, retry: Bool,
+                         recovery: RecoveryDelivery? = nil,
                          onAccepted: @Sendable () async -> Void = {}) async throws {
         guard !closing else { throw AgentSessionManagerError.shuttingDown }
         try persistence.requireAgentChatAvailable(chatID: chatID)
         guard !refreshing.contains(chatID) else { throw AgentSessionManagerError.chatBusy }
-        if !retry, live[chatID]?.inputID == nil {
+        if !retry, recovery == nil, live[chatID]?.inputID == nil {
             do { try await refreshNativeHistory(chatID: chatID) }
             catch where Self.historyUnavailable(error) {
                 // The durable transcript remains the context source when the
@@ -269,18 +308,19 @@ public actor AgentSessionManager {
               live[chatID]?.sendingFollowup != true, live[chatID]?.stopping != true else {
             throw AgentSessionManagerError.chatBusy
         }
-        guard var session = try persistence.agentSession(chatID: chatID, provider: provider) else {
+        guard var session = try recovery?.session ?? persistence.agentSession(chatID: chatID, provider: provider) else {
             throw AgentSessionManagerError.missingSession
         }
         if provider == .local, (try? backend(provider)) is LocalBackend, session.usesThreadContext {
+            guard recovery == nil else { throw AgentFailure.invalidTransition }
             // A missing opencode installation must not make text-only inference
             // skip its own prior replies or pretend it resumed a native thread.
             session.sessionID = nil
             try persistence.saveAgentSession(session)
         }
         _ = try state(chatID: chatID)
-        let context = try retry ? persistence.agentHandover(turnID: input.id) : persistence.agentContext(session: session)
-        let wireText = try retry ? persistence.agentTurn(id: input.id)?.prompt : nil
+        let context = try recovery.map(\.context) ?? (retry ? persistence.agentHandover(turnID: input.id) : persistence.agentContext(session: session))
+        let wireText = try recovery?.wireText ?? (retry ? persistence.agentTurn(id: input.id)?.prompt : nil)
         let wireInput = AgentInput(id: input.id, text: wireText ?? context?.wire(message: input.text) ?? input.text,
                                   attachments: input.attachments, mentions: input.mentions, command: input.command)
         if live.values.filter(\.isRunning).count >= Self.maximumRunningChats {
@@ -294,6 +334,7 @@ public actor AgentSessionManager {
         let old = live[chatID]
         var configuration = session.configuration
         configuration.knownMessageIDs = Set((states[chatID]?.entries ?? []).filter { $0.sessionID == session.id }.compactMap(\.nativeMessageID))
+        configuration.verifiesResumeIdentity = recovery?.action == .continueTurn
         configuration.projectID = try persistence.agentProjectID(chatID: chatID)
         let revision = try (provider == .claude || provider == .local)
             ? mcpPolicy.snapshot(directory: configuration.directory, projectID: configuration.projectID).status.revision : nil
@@ -305,8 +346,19 @@ public actor AgentSessionManager {
         // receipts, just like the subscription providers. AgentLoop stays fresh.
         let reusable = canReuse ? old?.coordinator : nil
         live[chatID] = Live(token: token, session: session, coordinator: reusable, inputID: input.id)
+        live[chatID]?.expectedNative = recovery?.session.sessionID
         do {
-            if retry { _ = try persistence.claimAgentResend(id: input.id) }
+            if let recovery {
+                let entry = AgentTranscriptEntry(id: input.id, chatID: chatID, provider: provider,
+                    kind: recovery.continued ? "continued" : "user", text: input.text,
+                    payloadJSON: input.composerPayload(), sessionID: session.id)
+                try persistence.prepareAgentRecovery(.init(input: wireInput, chatID: chatID, sessionID: session.id),
+                    context: context, entry: entry, stoppedEntryID: recovery.stoppedEntryID, action: recovery.action, session: session)
+                states[chatID]?.entries = try persistence.agentEntries(chatID: chatID)
+            } else if retry {
+                _ = try persistence.claimAgentResend(id: input.id)
+                states[chatID]?.entries = try persistence.agentEntries(chatID: chatID)
+            }
             else { try persistence.prepareAgentTurn(.init(input: wireInput, chatID: chatID, sessionID: session.id), context: context) }
         } catch { live[chatID] = old; if let old { armIdle(chatID, token: old.token) }; throw error }
         var evictionCleanup: Task<Void, Never>?
@@ -429,6 +481,7 @@ public actor AgentSessionManager {
                 live[chatID]?.session = session
             case .sessionStarted(let native):
                 guard native.provider == slot.session.provider else { throw AgentFailure.invalidRequest }
+                if let expected = slot.expectedNative, native != expected { throw AgentFailure.invalidTransition }
                 var session = slot.session
                 if let origin = session.forkOrigin, origin.pending {
                     guard native.provider == .claude, let identity = UUID(uuidString: native.nativeID),
@@ -456,7 +509,7 @@ public actor AgentSessionManager {
                 if delivery == .acknowledged, slot.session.provider == .codex {
                     states[chatID]?.markFollowup(input, status: "steered")
                     if live[chatID]?.inputID == nil, let outcome = states[chatID]?.outcome {
-                        try persistence.finishAgentTurn(id: input, state: Self.journalState(outcome))
+                        try finishTurn(chatID: chatID, id: input, state: Self.journalState(outcome), stop: Self.stopReason(outcome))
                     }
                 }
             default: break
@@ -472,7 +525,8 @@ public actor AgentSessionManager {
                 for id in ids {
                     if outcome == .completed { try persistence.advanceAgentDelivery(id: id, to: .acknowledged) }
                     try persistence.saveAgentPartial(id: id, text: id == latest.id ? answer : "")
-                    try persistence.finishAgentTurn(id: id, state: Self.journalState(outcome))
+                    try finishTurn(chatID: chatID, id: id, state: Self.journalState(outcome),
+                        stop: Self.stopReason(outcome, report: event.failureReport))
                     states[chatID]?.markFollowup(id, status: outcome == .interrupted ? "interrupted" : "sent")
                 }
                 live[chatID]?.followups.removeAll { ids.contains($0.id) }
@@ -501,14 +555,15 @@ public actor AgentSessionManager {
             if case .turnEnded(let outcome) = event.kind, let input = slot.inputID, event.scope.inputID == input {
                 let outcome = slot.stopping ? AgentTurnOutcome.interrupted : outcome
                 if slot.stopping { states[chatID]?.end(.interrupted) }
-                try persistence.finishAgentTurn(id: input, state: Self.journalState(outcome))
+                try finishTurn(chatID: chatID, id: input, state: Self.journalState(outcome),
+                    stop: Self.stopReason(outcome, report: event.failureReport))
                 live[chatID]?.inputID = nil
                 if slot.session.provider == .codex {
                     for followup in slot.followups {
                         // A steer response can follow a fast turn/completed.
                         // Finish only after its RPC acknowledgement is handled.
                         if try persistence.agentTurn(id: followup.id)?.delivery == .acknowledged {
-                            try persistence.finishAgentTurn(id: followup.id, state: Self.journalState(outcome))
+                            try finishTurn(chatID: chatID, id: followup.id, state: Self.journalState(outcome), stop: Self.stopReason(outcome, report: event.failureReport))
                         }
                     }
                 }
@@ -535,7 +590,41 @@ public actor AgentSessionManager {
                 let report = event.failureReport ?? AgentFailureDiagnostics.capture(failure)
                 _ = await report.recording(chatID: chatID, inputID: event.scope.inputID, audit: audit)
             }
-        } catch { await exited(chatID, token: token, report: AgentFailureDiagnostics.capture(error, mappedTo: .unknown)) }
+        } catch { await exited(chatID, token: token, report: AgentFailureDiagnostics.capture(error, mappedTo: .unknown), failedInput: event.scope.inputID) }
+    }
+    private static func stopReason(_ outcome: AgentTurnOutcome, report: AgentFailureReport? = nil) -> AgentStopReason? {
+        switch outcome {
+        case .completed: nil
+        case .interrupted: .interrupted
+        case .failed(let failure): .failure(failure, category: report?.category)
+        }
+    }
+    private func finishTurn(chatID: UUID, id: UUID, state: AgentJournalState, stop: AgentStopReason? = nil) throws {
+        if states[chatID]?.inputID == id, let turn = try? persistence.agentTurn(id: id) {
+            states[chatID]?.noteDelivery(turn.delivery)
+        }
+        do {
+            if let entry = try persistence.finishAgentTurn(id: id, state: state, stop: stop) { putStopped(entry, chatID: chatID) }
+        } catch {
+            // Keep a visible internal failure even when the diagnostic itself
+            // cannot be saved. No recovery can be claimed from this fallback.
+            let report = AgentFailureDiagnostics.capture(error)
+            if let turn = try? persistence.agentTurn(id: id),
+               let session = try? persistence.agentSessions(chatID: chatID).first(where: { $0.id == turn.sessionID }) {
+                let value = AgentStoppedTurn(turn: turn, session: session, reason: .failure(.unknown, category: report.category))
+                let entry = AgentTranscriptEntry(chatID: chatID, provider: session.provider, kind: "stopped",
+                    payloadJSON: try? value.payload(), sessionID: session.id)
+                putStopped(entry, chatID: chatID)
+            }
+            throw error
+        }
+    }
+    private func putStopped(_ entry: AgentTranscriptEntry, chatID: UUID) {
+        let value = entry.stoppedTurn
+        if let index = states[chatID]?.entries.firstIndex(where: {
+            $0.id == entry.id || (value != nil && $0.stoppedTurn?.inputID == value?.inputID && $0.stoppedTurn?.attempt == value?.attempt)
+        }) { states[chatID]?.entries[index] = entry }
+        else { states[chatID]?.entries.append(entry) }
     }
     private static func journalState(_ outcome: AgentTurnOutcome) -> AgentJournalState {
         switch outcome { case .completed: .completed; case .interrupted: .interrupted; case .failed: .failed }
@@ -547,29 +636,31 @@ public actor AgentSessionManager {
     private func exited(_ chat: UUID, token: UUID, failure: AgentFailure) async {
         await exited(chat, token: token, report: AgentFailureDiagnostics.capture(failure))
     }
-    private func exited(_ chat: UUID, token: UUID, report: AgentFailureReport) async {
+    private func exited(_ chat: UUID, token: UUID, report: AgentFailureReport, failedInput: UUID? = nil) async {
         guard let slot = live[chat], slot.token == token else { return }
         var reports = [report]
         live.removeValue(forKey: chat); slot.reader?.cancel(); slot.idle?.cancel()
         for followup in slot.followups {
             do {
                 if try persistence.agentTurn(id: followup.id)?.state == .running {
-                    try persistence.finishAgentTurn(id: followup.id, state: .interrupted)
+                    try finishTurn(chatID: chat, id: followup.id, state: .interrupted,
+                        stop: slot.stopping ? .interrupted : .failure(report.failure, category: report.category))
                 }
             } catch { reports.append(AgentFailureDiagnostics.capture(error)) }
             states[chat]?.markFollowup(followup.id, status: "interrupted")
         }
-        if let input = slot.inputID {
-            do { try persistence.finishAgentTurn(id: input, state: .interrupted) }
+        if let input = slot.inputID ?? failedInput {
+            do { try finishTurn(chatID: chat, id: input, state: .interrupted,
+                stop: slot.stopping ? .interrupted : .failure(report.failure, category: report.category)) }
             catch { reports.append(AgentFailureDiagnostics.capture(error)) }
             states[chat]?.end(slot.stopping ? .interrupted : .failed(report.failure))
         }
         do { try persistEntries(chat) }
         catch { reports.append(AgentFailureDiagnostics.capture(error)) }
         states[chat]?.pendingCards = []; publish(chat)
-        if slot.inputID != nil || !slot.followups.isEmpty {
+        if slot.inputID != nil || failedInput != nil || !slot.followups.isEmpty {
             for report in reports {
-                _ = await report.recording(chatID: chat, inputID: slot.inputID ?? slot.followups.first?.id, audit: audit)
+                _ = await report.recording(chatID: chat, inputID: slot.inputID ?? failedInput ?? slot.followups.first?.id, audit: audit)
             }
         }
         if let run = slot.coordinator { await Self.close(run, timeout: .seconds(2)) }
@@ -626,7 +717,7 @@ public actor AgentSessionManager {
             try await retire(chatID, slot: current, outcome: .interrupted)
         }
     }
-    private func retire(_ chat: UUID, slot: Live, outcome: AgentTurnOutcome) async throws {
+    private func retire(_ chat: UUID, slot: Live, outcome: AgentTurnOutcome, stop: AgentStopReason? = nil) async throws {
         guard live[chat]?.token == slot.token else { return }
         slot.startup?.cancel()
         live.removeValue(forKey: chat); slot.reader?.cancel(); slot.idle?.cancel()
@@ -634,7 +725,7 @@ public actor AgentSessionManager {
         for id in [slot.inputID].compactMap({ $0 }) + slot.followups.map(\.id) {
             do {
                 if try persistence.agentTurn(id: id)?.state == .running {
-                    try persistence.finishAgentTurn(id: id, state: .interrupted)
+                    try finishTurn(chatID: chat, id: id, state: .interrupted, stop: stop ?? Self.stopReason(outcome))
                 }
             } catch { failures.append((id, AgentFailureDiagnostics.capture(error))) }
             states[chat]?.markFollowup(id, status: "interrupted")
@@ -703,13 +794,13 @@ public actor AgentSessionManager {
             for followup in slot.followups {
                 do {
                     if try persistence.agentTurn(id: followup.id)?.state == .running {
-                        try persistence.finishAgentTurn(id: followup.id, state: .interrupted)
+                        try finishTurn(chatID: chat, id: followup.id, state: .interrupted)
                     }
                 } catch { failures.append((chat, followup.id, AgentFailureDiagnostics.capture(error))) }
                 states[chat]?.markFollowup(followup.id, status: "interrupted")
             }
             if let input = slot.inputID {
-                do { try persistence.finishAgentTurn(id: input, state: .interrupted) }
+                do { try finishTurn(chatID: chat, id: input, state: .interrupted) }
                 catch { failures.append((chat, input, AgentFailureDiagnostics.capture(error))) }
                 states[chat]?.end(.interrupted)
             }

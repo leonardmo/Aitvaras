@@ -162,7 +162,36 @@ Host verification must build the App, check the send/sign-in catch paths and
 inspect unified-log privacy with synthetic diagnostics. Package tests verify
 Activity contents, not the system's private-log retention configuration. Test
 the repair against a backed-up private database copy without publishing it.
-These checks add no stopped transcript rows or recovery actions.
+`AgentStoppedTurnTests` covers the failure/delivery label and action matrix,
+transactional terminal-row rollback, duplicate finalization, reopening and
+startup recovery with no provider launch. Hand-written executable fixtures
+verify the exact Continue instruction and original resume identity, duplicate
+click rejection, native refresh retaining a Continued marker, quota reset
+metadata and manual recovery, and explicit Retry restoring the original wire
+envelope and attachment bytes for prepared/unknown delivery. Refusal tests
+cover absent/changed native identities, internal errors, bogus/stale rows and
+Retry of acknowledged input. Failed recovery preparation must roll back its
+claim before any provider write. A blocked stopped-row write must retain an
+in-memory internal diagnostic without offering recovery or claiming durability.
+Backend diagnostics tests assert that thrown and stream errors remain
+`AgentFailure` while failure events retain the original safe category. A normal
+Claude turn accepts foreign-session subagent/compaction frames; an explicit
+Continue rejects a different authoritative system/init identity. The managed
+Local scope test permits only its expected failure audit, verifies that it is
+excluded from Consolidator evidence and contains no project text, and retains
+its checks against global learning.
+
+Host gate: build the App and use a synthetic project in an isolated profile.
+With Haiku, interrupt a response, simulate a closed CLI and exercise Continue,
+Retry and Sign in. Reopen the chat and refresh native history. Check that the
+fixed Continue instruction remains a small marker and reaches the same native
+session; retry must preserve the saved input rather than the current draft.
+Check quota rows with/without known reset time, internal-error Copy details
+(safe category only), double clicks and changed provider/profile selection.
+Review actual light/dark windows at 800×500: each compact row has an icon,
+short label and actions, with no nested popovers. Composer failure text must
+disappear for acknowledged/uncertain delivery. No quota reset may trigger a
+send automatically. Package fixtures do not establish live CLI/UI acceptance.
 
 ## Project agent setup (D34)
 

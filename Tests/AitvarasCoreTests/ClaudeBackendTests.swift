@@ -5,6 +5,26 @@ import AitvarasStore
 
 @Suite(.timeLimit(.minutes(2)))
 struct ClaudeBackendTests {
+    @Test func foreignSessionFramesDoNotEndANormalTurn() async throws {
+        let fixture = try BackendExecutableFixture(script: #"""
+claude_init()
+read()
+emit({'type':'system','subtype':'init','apiKeySource':'none','session_id':'parent-session'})
+emit({'type':'assistant','session_id':'subagent-session','message':{'role':'assistant','content':[{'type':'text','text':'Subagent reply'}]}})
+emit({'type':'system','subtype':'compact_boundary','session_id':'compaction-session'})
+emit({'type':'result','session_id':'parent-session','is_error':False})
+done()
+"""#)
+        defer { fixture.remove() }
+        let backend = ClaudeBackend(executable: fixture.executable, environment: fixture.environment)
+        let run = try await backend.start(.init(directory: fixture.directory, model: "test"))
+        try await run.send(.init(text: "Example"), willDeliver: {})
+        let events = try await collectTurn(run)
+        #expect(events.last?.kind == .turnEnded(.completed))
+        #expect(events.contains { $0.kind == .sessionStarted(.init(provider: .claude, profile: "default", nativeID: "parent-session")) })
+        try fixture.assertComplete(); try await run.shutdown()
+    }
+
     @Test(arguments: [2, 3])
     func toolResultUUIDsDoNotConflictWithPersistedUserIdentity(tools: Int) async throws {
         let fixture = try BackendExecutableFixture(script: AgentMultiToolTurnTests.script(tools: tools, hooks: false))

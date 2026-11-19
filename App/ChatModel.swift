@@ -971,7 +971,9 @@ final class ChatModel {
                 let failure = (try? await manager.reportSendFailure(chatID: id, inputID: input.id, error: error))
                     ?? AgentFailureDiagnostics.failure(for: error)
                 if chatID == id { failed(inputID: input.id, failure: failure) }
-                if chatID == id { self.error = AgentFailure.sendMessage(for: error, provider: provider) }
+                if chatID == id {
+                    self.error = showsComposerFailure(inputID: input.id) ? AgentFailure.sendMessage(for: error, provider: provider) : nil
+                }
             }
         }
     }
@@ -1012,7 +1014,7 @@ final class ChatModel {
         guard !handledFailures.contains(inputID), let attempt = attempts.removeValue(forKey: inputID) else { return }
         handledFailures.insert(inputID)
         authProvider = failure == .authRequired ? attempt.provider : nil
-        error = AgentFailure.sendMessage(for: failure, provider: attempt.provider)
+        error = showsComposerFailure(inputID: inputID) ? AgentFailure.sendMessage(for: failure, provider: attempt.provider) : nil
         guard failure == .authRequired, let id = chatID, attempt.provider == provider else { return }
         do {
             guard let turn = try stores.agentTurn(id: inputID), turn.chatID == id, turn.delivery == .prepared, turn.resendCount == 0,
@@ -1021,7 +1023,59 @@ final class ChatModel {
                                           hasAttachments: !attempt.input.attachments.isEmpty)
             try stores.savePendingSend(pending)
             armPendingExpiry(pending)
-        } catch { self.error = "Sign in to \(provider.rawValue.capitalized)" }
+        } catch {
+            self.error = showsComposerFailure(inputID: inputID) ? "Sign in to \(provider.rawValue.capitalized)" : nil
+        }
+    }
+
+    private func showsComposerFailure(inputID: UUID) -> Bool {
+        do {
+            let delivery = try stores.agentTurn(id: inputID)?.delivery
+            return delivery == nil || delivery == .prepared
+        } catch { return false } // Unreadable delivery evidence cannot prove an undelivered input.
+    }
+
+    var recoveryErrors: [UUID: String] = [:]
+    private var recoveryTasks = Set<UUID>()
+    func recover(_ entry: AgentTranscriptEntry, action: AgentRecoveryAction) {
+        guard let stop = entry.stoppedTurn, chatID == entry.chatID, stop.actions.contains(action),
+              !isBusy, !conversationBusy, signingIn == nil, recoveryTasks.insert(entry.id).inserted else { return }
+        recoveryErrors[entry.id] = nil
+        error = nil; authProvider = nil
+        if action == .signIn {
+            defer { recoveryTasks.remove(entry.id) }
+            setChoice(stop.choice)
+            guard choice == stop.choice else {
+                recoveryErrors[entry.id] = "The original provider profile is unavailable."
+                return
+            }
+            do {
+                guard let fresh = try stores.agentEntries(chatID: entry.chatID).first(where: { $0.id == entry.id })?.stoppedTurn,
+                      fresh.actions.contains(.signIn), try stores.latestAgentTurn(chatID: entry.chatID)?.id == stop.inputID,
+                      try stores.agentTurn(id: stop.inputID)?.resendCount == stop.attempt else { throw AgentFailure.invalidTransition }
+                if let turn = try stores.agentTurn(id: stop.inputID), turn.delivery == .prepared, turn.resendCount == 0,
+                   let original = try stores.agentEntries(chatID: entry.chatID).first(where: { $0.id == turn.id }) {
+                    let input = try AgentInput.restoring(id: turn.id, text: original.text, payload: original.payloadJSON)
+                    attempts[turn.id] = (input, stop.choice.provider, profileStatuses[stop.choice]?.accountID)
+                    handledFailures.remove(turn.id)
+                    failed(inputID: turn.id, failure: .authRequired)
+                }
+                signIn(stop.choice)
+            } catch { recoveryErrors[entry.id] = AgentFailure.sendMessage(for: error, provider: entry.provider) }
+            return
+        }
+        Task { [weak self] in
+            guard let self else { return }
+            defer { self.recoveryTasks.remove(entry.id) }
+            do {
+                try await self.manager.recover(chatID: entry.chatID, stoppedEntryID: entry.id, action: action)
+            } catch {
+                AgentFailureDiagnostics.logPrivate(error)
+                if self.chatID == entry.chatID {
+                    self.recoveryErrors[entry.id] = AgentFailure.sendMessage(for: error, provider: entry.provider)
+                }
+            }
+        }
     }
     private func armPendingExpiry(_ pending: PendingSend) {
         pendingExpiry?.cancel()
