@@ -27,6 +27,7 @@ public struct ChatState: Sendable, Equatable {
     public private(set) var rateLimits: [AgentRateLimitWindow] = []
     public private(set) var outcome: AgentTurnOutcome?
     public private(set) var isRunning = false
+    public private(set) var turnOrigin: AgentTurnOrigin = .user
     public private(set) var inputID: UUID?
     public private(set) var acknowledgedMode: AgentMode?
     private var outputID: UUID?
@@ -43,11 +44,8 @@ public struct ChatState: Sendable, Equatable {
     }
     public mutating func begin(_ input: AgentInput, session: AgentChatSession, outputID: UUID,
                                context: ChatContextProjection? = nil) {
-        inputID = input.id; self.outputID = outputID; provider = session.provider; sessionID = session.id
-        acknowledgedMode = session.mode
-        streamingText = ""; thinking = ""; thinkingIDs = [:]; textIDs = [:]; toolEntryIDs = [:]
-        tools = []; pendingCards = []; usage = nil; rateLimits = []; outcome = nil; isRunning = true
-        hookEntryIDs = [:]; hooks = [:]
+        resetTurn(id: input.id, provider: session.provider, sessionID: session.id, outputID: outputID)
+        turnOrigin = .user; acknowledgedMode = session.mode
         if !entries.contains(where: { $0.id == input.id }) {
             if let context {
                 entries.append(.init(chatID: chatID, provider: session.provider, kind: "handover",
@@ -57,6 +55,24 @@ public struct ChatState: Sendable, Equatable {
                                  kind: "user", text: input.text, payloadJSON: input.composerPayload(),
                                  sessionID: session.id, position: entries.count))
         }
+    }
+
+    public mutating func beginAutonomous(id: UUID, reason: AgentAutonomousReason,
+                                         provider: AgentProvider, sessionID: UUID) {
+        resetTurn(id: id, provider: provider, sessionID: sessionID, outputID: nil)
+        turnOrigin = .autonomous(reason)
+        entries.append(.init(id: id, chatID: chatID, provider: provider, kind: "wakeup", text: reason.markerText,
+            payloadJSON: JSONValue.object(["reason": .string(reason.rawValue)]).jsonString,
+            sessionID: sessionID, position: entries.count))
+    }
+    private mutating func resetTurn(id: UUID, provider: AgentProvider, sessionID: UUID, outputID: UUID?) {
+        inputID = id; self.outputID = outputID; self.provider = provider; self.sessionID = sessionID
+        streamingText = ""; thinking = ""; thinkingIDs = [:]; textIDs = [:]; toolEntryIDs = [:]
+        tools = []; pendingCards = []; usage = nil; rateLimits = []; outcome = nil; isRunning = true
+        hookEntryIDs = [:]; hooks = [:]
+    }
+    var partialOutput: String {
+        entries.filter { textIDs.values.contains($0.id) }.map(\.text).joined(separator: "\n")
     }
 
     public mutating func appendFollowup(_ input: AgentInput, session: AgentChatSession) {

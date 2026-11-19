@@ -275,6 +275,7 @@ public actor AgentSessionManager {
         // Reserve this chat and capacity before any await, including startup.
         let old = live[chatID]
         var configuration = session.configuration
+        configuration.knownMessageIDs = Set((states[chatID]?.entries ?? []).filter { $0.sessionID == session.id }.compactMap(\.nativeMessageID))
         configuration.projectID = try persistence.agentProjectID(chatID: chatID)
         let revision = try (provider == .claude || provider == .local)
             ? mcpPolicy.snapshot(directory: configuration.directory, projectID: configuration.projectID).status.revision : nil
@@ -376,6 +377,17 @@ public actor AgentSessionManager {
         }
         guard let slot = live[chatID], slot.token == token, slot.coordinator?.id == event.scope.runID else { return }
         // Lifecycle events can precede Send. Turn events must match local input.
+        if case .autonomousTurnStarted(let id, let reason) = event.kind {
+            guard slot.inputID == nil, !slot.stopping, event.scope.inputID == id else { return }
+            do {
+                try persistence.prepareAgentTurn(.init(autonomousID: id, reason: reason, chatID: chatID, sessionID: slot.session.id))
+                live[chatID]?.idle?.cancel(); live[chatID]?.inputID = id; live[chatID]?.lastUsed = .now
+                states[chatID]?.beginAutonomous(id: id, reason: reason, provider: slot.session.provider, sessionID: slot.session.id)
+                try persistEntries(chatID)
+                publish(chatID)
+            } catch { await exited(chatID, token: token, failure: .unknown) }
+            return
+        }
         if let input = event.scope.inputID, input != slot.inputID {
             guard slot.followups.contains(where: { $0.id == input }) else { return }
             switch event.kind {
@@ -460,9 +472,12 @@ public actor AgentSessionManager {
             }
             states[chatID]?.reduce(event, newEntryID: UUID())
             if states[chatID]?.entries != previous { try persistEntries(chatID, previous: previous) }
-            if case .textDelta = event.kind, let input = slot.inputID {
-                let turn = try persistence.agentTurn(id: input)
-                try persistence.saveAgentPartial(id: input, text: (turn?.partialOutput ?? "") + textDelta(event))
+            switch event.kind {
+            case .textDelta, .message(_, "assistant", _):
+                if let input = slot.inputID {
+                    try persistence.saveAgentPartial(id: input, text: states[chatID]?.partialOutput ?? "")
+                }
+            default: break
             }
             if case .turnEnded(let outcome) = event.kind, let input = slot.inputID, event.scope.inputID == input {
                 let outcome = slot.stopping ? AgentTurnOutcome.interrupted : outcome
@@ -498,9 +513,6 @@ public actor AgentSessionManager {
             }
             publish(chatID)
         } catch { await exited(chatID, token: token, failure: .unknown) }
-    }
-    private func textDelta(_ event: AgentEvent) -> String {
-        if case .textDelta(let text) = event.kind { return text }; return ""
     }
     private static func journalState(_ outcome: AgentTurnOutcome) -> AgentJournalState {
         switch outcome { case .completed: .completed; case .interrupted: .interrupted; case .failed: .failed }

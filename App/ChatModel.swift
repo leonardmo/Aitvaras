@@ -131,6 +131,7 @@ final class ChatModel {
     private var localModelTitle = "Checking model…"
 
     func markChatOpened(_ id: UUID) {
+        guard NSApplication.shared.isActive else { return }
         try? stores.markChatSeen(id)
         unseenChats.remove(id)
     }
@@ -159,9 +160,21 @@ final class ChatModel {
                             await self.agentSetup?.report(snapshot, projectID: projectID, directory: URL(fileURLWithPath: session.cwd), revision: value.mcpSetup?.revision, profile: session.providerProfile)
                             self.agentSetupRevision = UUID()
                         }
-                        if self.visibleChats.values.contains(id) { try? self.stores.markChatSeen(id) }
+                        let visible = self.visibleChats.values.contains(id) && NSApplication.shared.isActive
+                        if visible { try? self.stores.markChatSeen(id) }
                         if (try? self.stores.chatHasUnseenCompletion(id)) == true { self.unseenChats.insert(id) }
-                        else { self.unseenChats.remove(id) }
+                        else if visible { self.unseenChats.remove(id) }
+                        if !visible, case .autonomous = value.turnOrigin,
+                           previous?.inputID != value.inputID || value.pendingCards.contains(where: { card in
+                               previous?.pendingCards.contains(where: { $0.id == card.id }) != true
+                           }) || (previous?.isRunning == true && !value.isRunning) {
+                            self.unseenChats.insert(id)
+                            // Focus holds apply to autonomous chat attention just as
+                            // they do to other non-urgent updates.
+                            if (try? self.stores.value(forKey: FocusCoach.sessionKey)) != "1" {
+                                NotificationRouter.requestedWorkNeedsAttention()
+                            }
+                        }
                         if let previous, previous.isRunning != value.isRunning || previous.outcome != value.outcome {
                             self.activityChanged?()
                         }

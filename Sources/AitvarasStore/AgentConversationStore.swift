@@ -77,7 +77,7 @@ extension Stores: AgentConversationPersistence {
                 var wireDigest = prior?["forkWireDigest"] ?? .null
                 if original.kind == "user", let turn = try AgentJournalTurn.fetchOne(db, key: original.id),
                    turn.sessionID == original.sessionID, turn.delivery == .acknowledged {
-                    wireDigest = .string(Self.conversationWireDigest(turn.prompt))
+                    wireDigest = turn.prompt.map { .string(Self.conversationWireDigest($0)) } ?? .null
                 }
                 entry.payloadJSON = JSONValue.object([
                     "composer": original.payloadJSON.flatMap(JSONValue.parse)?["composer"] ?? .null,

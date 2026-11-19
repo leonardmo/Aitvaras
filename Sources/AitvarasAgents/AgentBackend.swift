@@ -60,6 +60,7 @@ public struct AgentSessionConfiguration: Sendable {
     public var mcpConfigPath: URL?
     public var includeHookEvents: Bool
     public var strictMCPConfig: Bool
+    public var knownMessageIDs: Set<String> = []
     public var forkSession = false
     public var resumeSessionAt: String?
 

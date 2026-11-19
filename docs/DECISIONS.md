@@ -881,3 +881,27 @@ The toolbar opens the request on the forge website. Merging stays there.
 Connections lists installed CLIs and their signed-in hosts with sign-in fallback.
 Offline fixtures establish parsing and policy behavior; live CLI/browser and
 isolated app acceptance remain required before marking this decision complete.
+## D38 — Chats show turns the CLI starts itself 🚧 (2026-11-18)
+
+A retained official CLI may start a turn without a new Send, for example when
+its wake-up fires or a background task completes. Chat gives that work a local
+turn identity and persists its origin as user or autonomous, with the reason
+wakeup, backgroundTask, monitor, scheduled or unknown. Existing turns remain
+user turns. Autonomous turns have no user prompt and cannot be resent. Their
+compact transcript marker replaces the injected CLI reminder; normal streaming,
+usage, audited approvals, follow-up Send, Stop and crash recovery still apply.
+Activity shows “Chat woke up” or “Background task finished”. A running autonomous
+turn keeps its transport out of idle eviction; completion re-arms idle expiry.
+
+Claude uses injected reminder markers when present, then the last scheduling,
+monitor or background-shell tool observed in that process, otherwise unknown.
+Reasons are descriptive provenance, never authorization. Native message UUIDs
+and replay flags suppress replayed messages on resume. Codex opens a turn only
+on an unsolicited turn/started for the bound thread and deduplicates completed
+turn IDs. Autonomous requests retain the same policy and audit path as Send.
+
+An unseen autonomous turn and its approvals mark that chat unread. Background
+attention uses the existing generic requested-work notification and respects
+Focus holds; no prompt or output enters a system notification. This batch only
+observes work in a live retained transport. It adds no durable scheduler,
+automatic restart, replay or catch-up after idle eviction or app shutdown.

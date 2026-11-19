@@ -176,6 +176,11 @@ public actor AgentActionCoordinator: AgentRun {
         guard !closed, event.scope.runID == id else { return }
         // Late callbacks from an earlier input on this same connection must not
         // clear or authorize the current turn.
+        if case .autonomousTurnStarted(let input, _) = event.kind {
+            guard inputID == nil, event.scope.inputID == input else { return }
+            // An acknowledged Stop ends one turn; a retained CLI may wake again.
+            inputID = input; interrupting = false
+        }
         if case .inputActivated = event.kind {
             guard let input = event.scope.inputID, followups.remove(input) != nil, !interrupting else { return }
             inputID = input
