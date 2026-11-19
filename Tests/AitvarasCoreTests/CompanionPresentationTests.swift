@@ -3,13 +3,13 @@ import Testing
 @testable import AitvarasCore
 
 @Suite(.timeLimit(.minutes(2))) struct CompanionPresentationTests {
-    @Test func existingProfilesKeepAvatarAndUnknownValuesRecover() throws {
+    @Test func defaultsToMinimalAndUnknownValuesRecover() throws {
         let name = "app.aitvaras.test.companion.\(UUID().uuidString)"
         let preferences = try #require(UserDefaults(suiteName: name))
         defer { preferences.removePersistentDomain(forName: name) }
-        #expect(CompanionPresentation.load(from: preferences) == .avatar)
+        #expect(CompanionPresentation.load(from: preferences) == .minimal)
         preferences.set("unknown", forKey: CompanionPresentation.preferenceKey)
-        #expect(CompanionPresentation.load(from: preferences) == .avatar)
+        #expect(CompanionPresentation.load(from: preferences) == .minimal)
     }
 
     @Test func minimalModePersistsWithoutChangingCharacterOrVoice() throws {

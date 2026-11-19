@@ -11,7 +11,7 @@ public enum CompanionPresentation: String, CaseIterable, Sendable {
     public var usesAvatar: Bool { self == .avatar }
 
     public static func load(from preferences: UserDefaults = AitvarasPreferences.current) -> Self {
-        preferences.string(forKey: preferenceKey).flatMap(Self.init(rawValue:)) ?? .avatar
+        preferences.string(forKey: preferenceKey).flatMap(Self.init(rawValue:)) ?? .minimal
     }
 
     public func save(to preferences: UserDefaults = AitvarasPreferences.current) {

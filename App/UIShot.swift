@@ -412,7 +412,11 @@ enum UIShot {
     @MainActor
     private static func renderCompanion(path: String) async -> Never {
         // A bootstrap-free check: no inference, voice engines or account access.
-        AppModel.shared.companionPresentation = .minimal
+        // Run on a fresh profile: it must start in the minimal overlay (default).
+        guard AppModel.shared.companionPresentation == .minimal else {
+            print("[uishot] FAIL: fresh profile did not default to the minimal overlay")
+            exit(1)
+        }
         let controller = CompanionPanelController(model: AppModel.shared)
         controller.show()
         try? await Task.sleep(for: .seconds(0.8))
