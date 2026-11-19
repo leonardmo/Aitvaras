@@ -55,6 +55,18 @@ struct AgentTranscriptView: View {
                         VStack(alignment: .leading, spacing: 10) {
                             if entry.kind == "tool" {
                                 toolDetails
+                                ForEach(entry.toolHooks) { hook in
+                                    VStack(alignment: .leading, spacing: 3) {
+                                        HStack(spacing: 6) {
+                                            foldedHookIcon(hook)
+                                            Text(hook.name).lineLimit(2)
+                                            Text(hook.eventLabel).foregroundStyle(.secondary)
+                                        }
+                                        if let reason = hook.reason, !reason.isEmpty {
+                                            Text(reason).foregroundStyle(.secondary).textSelection(.enabled)
+                                        }
+                                    }.font(.caption)
+                                }
                             } else {
                                 Text(AgentTranscriptContent.bounded(entry.text))
                                     .font(.caption.monospaced()).textSelection(.enabled)
@@ -68,13 +80,17 @@ struct AgentTranscriptView: View {
                             Image(systemName: entry.toolPresentationIcon)
                         }
                         Text(title).lineLimit(1).truncationMode(.middle)
-
+                        if entry.kind == "tool" {
+                            ForEach(entry.toolHooks) { hook in foldedHookIcon(hook) }
+                        }
                     }.font(.caption).foregroundStyle(.secondary)
                 }
                 if entry.kind == "tool" {
-                    ForEach(Array((payload?["hooks"]?.arrayValue ?? []).enumerated()), id: \.offset) { _, hook in
-                        hookRow(hook)
-                    }.padding(.leading, 12)
+                    if let reason = entry.blockedHookReason {
+                        Text(reason).font(.caption).foregroundStyle(.red).lineLimit(1).truncationMode(.tail)
+                            .help(reason).padding(.leading, 12)
+                            .accessibilityIdentifier("chat.tool.\(entry.id).blockedReason")
+                    }
                 }
             } else if entry.kind == "user" {
                 HStack {
@@ -113,6 +129,13 @@ struct AgentTranscriptView: View {
         // Give completion a fresh AX container as well as a new identifier,
         // keeping the row identity stable throughout streaming.
         .id(entry.presentationIdentifier)
+    }
+    private func foldedHookIcon(_ hook: AgentToolHookPresentation) -> some View {
+        Image(systemName: hook.icon)
+            .foregroundStyle(hook.status == .blocked ? Color.red : hook.status == .failed ? Color.orange : Color.secondary)
+            .help(hook.accessibilityLabel)
+            .accessibilityLabel(hook.accessibilityLabel)
+            .accessibilityIdentifier("chat.tool.\(entry.id).hook.\(hook.id)")
     }
     @ViewBuilder private func hookRow(_ hook: JSONValue) -> some View {
         let phase = hook["phase"]?.stringValue ?? "interrupted"

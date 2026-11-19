@@ -394,9 +394,11 @@ failures do not replace the inline send/sign-in error. A second complete observa
 it does not reserve the native session against another client. Changed native
 content evicts an idle run so the next Send resumes the updated native session.
 
-Claude user frames consisting entirely of tool results finish their tools but
+Issue #23: successive tool-result UUIDs were rebinding the input row and causing
+a persistence identity conflict that killed the turn. Claude user frames
+consisting entirely of tool results finish their tools but
 are not user messages: their UUIDs never bind the input row. Input bindings
-also refuse a second, different native identity. The one-time v36 repair clears
+also refuse a second, different native identity. The one-time v39 repair clears
 only Claude user-row native UUIDs that differ from a proven owning journal
 input UUID. The journal must match chat/session; links through `journalInputID`
 require corroborating `nativeHistory.itemID`. Conflicting or malformed metadata,
@@ -404,6 +406,7 @@ inherited fork rows and unowned imports remain untouched. Native-history
 evidence, journals, content and display IDs are preserved. Ordinary GRDB
 migrations have no automatic database backup; installation requires a manual
 database backup before upgrading. No app-level backup is added for this repair.
+Hook events fold into their tool payloads under the matching rules in D34.
 
 Turn-ending error catches retain a typed safe category across backend and
 coordinator boundaries through `AgentEvent.failureReport`. Public backend/run
@@ -778,12 +781,20 @@ within each tier.
 Assistant selection views have no intrinsic width and use the proposed
 transcript width on every measurement, including after completion and resize.
 
-Claude launches include hook events. `hook_started` and `hook_response` are
-correlated by `hook_id`; `statusMessage` comes from settings matched by event
-and matcher. A PreToolUse exit code 2 is blocked, with bounded, redacted stderr
-as its reason. Successful rows collapse; blocked/error rows remain visible.
-Only an explicit tool-use identity attaches a hook row to a tool; otherwise
-it remains a separate row. Unknown informational system events are ignored.
+Claude launches include hook events. PreToolUse/PostToolUse hooks without a
+tool-use ID match the most recent unfinished tool of the named kind in this
+turn; PostToolUse also falls back to the most recently finished match. The
+first observation pins `hook_id` to that tool, so overlapping same-name tools
+cannot steal responses. Tool payloads persist a `hooks` array in observation
+order with id, name, event, status and an optional short reason. Exit 2 or a
+block/deny decision is blocked; other nonzero exits/errors are failed. Reasons
+use redacted stderr or structured decision reasons, one line capped at 240
+UTF-8 bytes, never full output. Unknown responses and unmatched starts keep
+standalone rows; unknown informational system events are ignored.
+
+Matched hooks appear as status icons beside the tool label. Block reasons
+remain visible on the collapsed row; all hook details use the tool's existing
+disclosure, without another popover. Unmatched rows keep their existing UI.
 
 Claude **Fork from here** creates a chat in the same project with
 `--resume <sid> --fork-session --resume-session-at <assistant uuid>`. It records

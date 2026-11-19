@@ -361,19 +361,27 @@ actor ClaudeRun: AgentRun {
             guard hookPhases[id] == nil else { return }; phase = .running
         } else {
             guard hookPhases[id] == nil || hookPhases[id] == .running else { return }
-            guard let exit = value["exit_code"]?.int, let outcome = value["outcome"]?.stringValue,
-                  ["success", "error"].contains(outcome) else { return }
-            phase = event == "PreToolUse" && exit == 2 ? .blocked : (exit != 0 || outcome == "error" ? .error : .success)
+            let exit = value["exit_code"]?.int, outcome = value["outcome"]?.stringValue
+            let output = value["stdout"]?.stringValue.flatMap(JSONValue.parse)
+            let decision = value["decision"]?.stringValue ?? value["hookSpecificOutput"]?["permissionDecision"]?.stringValue
+                ?? output?["decision"]?.stringValue ?? output?["hookSpecificOutput"]?["permissionDecision"]?.stringValue
+            guard exit != nil || ["success", "error"].contains(outcome ?? "") || ["block", "deny"].contains(decision ?? "") else { return }
+            phase = exit == 2 || ["block", "deny"].contains(decision ?? "") ? .blocked
+                : ((exit ?? 0) != 0 || outcome == "error" ? .error : .success)
         }
         hookPhases[id] = phase
         let tool = rawName.split(separator: ":", maxSplits: 1).dropFirst().first.map(String.init) ?? ""
         let status = availableSetup.metadata.statusMessage(event: event, tool: tool)
         var reason: String?
         if phase == .blocked || phase == .error {
-            let text = [value["stderr"]?.stringValue, value["output"]?.stringValue, value["stdout"]?.stringValue]
-                .compactMap { $0 }.first { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty } ?? "Hook failed."
+            let output = value["stdout"]?.stringValue.flatMap(JSONValue.parse)
+            let text = [value["stderr"]?.stringValue, value["reason"]?.stringValue,
+                value["hookSpecificOutput"]?["permissionDecisionReason"]?.stringValue,
+                output?["reason"]?.stringValue, output?["hookSpecificOutput"]?["permissionDecisionReason"]?.stringValue]
+                .compactMap { $0 }.first { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+                ?? (phase == .blocked ? "Hook blocked." : "Hook failed.")
             let runtimeRedacted = await runtimeFile?.redacted(text) ?? text
-            reason = await metadataReader.redact(runtimeRedacted)
+            reason = AgentTranscriptContent.shortHookReason(await metadataReader.redact(runtimeRedacted))
         }
         let name = await metadataReader.redact(rawName, limit: 512)
         let safeEvent = await metadataReader.redact(event, limit: 128)

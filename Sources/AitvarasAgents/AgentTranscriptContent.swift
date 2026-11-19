@@ -5,6 +5,19 @@ public enum AgentTranscriptContent {
     public static let maximumBytes = 32_768
     public static let truncation = "\n… [truncated]"
 
+    public static func shortHookReason(_ text: String) -> String {
+        let line = text.components(separatedBy: .newlines).map { $0.trimmingCharacters(in: .whitespaces) }
+            .first { !$0.isEmpty } ?? ""
+        let clean = String(line.unicodeScalars.filter { !CharacterSet.controlCharacters.contains($0) })
+        guard clean.utf8.count > 240 else { return clean }
+        var result = "", bytes = 0
+        for character in clean {
+            guard bytes + character.utf8.count <= 237 else { break }
+            result.append(character); bytes += character.utf8.count
+        }
+        return result + "…"
+    }
+
     public static func bounded(_ text: String, limit: Int = maximumBytes) -> String {
         guard text.utf8.count > limit else { return text }
         let budget = max(0, limit - truncation.utf8.count)
@@ -196,7 +209,46 @@ extension AgentActionPresentation {
     }
 }
 
+public struct AgentToolHookPresentation: Identifiable, Sendable, Equatable {
+    public enum Status: String, Sendable { case running, passed, blocked, failed }
+    public let id: String
+    public let name: String
+    public let event: String
+    public let status: Status
+    public let reason: String?
+    public var icon: String {
+        switch status {
+        case .running: "circle.dotted"
+        case .passed: "checkmark.circle"
+        case .blocked: "stop.circle.fill"
+        case .failed: "exclamationmark.triangle.fill"
+        }
+    }
+    public var statusLabel: String { status.rawValue.capitalized }
+    public var eventLabel: String { event == "PreToolUse" ? "Pre" : event == "PostToolUse" ? "Post" : event }
+    public var accessibilityLabel: String { name + " · " + statusLabel }
+
+    init?(_ value: JSONValue) {
+        guard let id = value["id"]?.stringValue ?? value["hookID"]?.stringValue,
+              let name = value["name"]?.stringValue, let event = value["event"]?.stringValue else { return nil }
+        // Keep the earlier explicit-tool payloads readable after upgrading.
+        let legacy = value["phase"]?.stringValue
+        let raw = value["status"]?.stringValue ?? (legacy == "success" ? "passed" : ["error", "interrupted"].contains(legacy ?? "") ? "failed" : legacy)
+        guard let raw, let status = Status(rawValue: raw) else { return nil }
+        self.id = id; self.name = name; self.event = event; self.status = status
+        reason = value["reason"]?.stringValue.map(AgentTranscriptContent.shortHookReason)
+    }
+}
+
 extension AgentTranscriptEntry {
+    public var toolHooks: [AgentToolHookPresentation] {
+        guard kind == "tool" else { return [] }
+        return (payloadJSON.flatMap(JSONValue.parse)?["hooks"]?.arrayValue ?? []).compactMap(AgentToolHookPresentation.init)
+    }
+    public var blockedHookReason: String? {
+        toolHooks.first { $0.status == .blocked && $0.reason?.isEmpty == false }?.reason
+    }
+
     public var toolPresentationIcon: String {
         let payload = payloadJSON.flatMap(JSONValue.parse)
         if payload?["isDenied"]?.boolValue == true { return "hand.raised" }

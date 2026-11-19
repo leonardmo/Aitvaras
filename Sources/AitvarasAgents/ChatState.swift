@@ -37,6 +37,9 @@ public struct ChatState: Sendable, Equatable {
     private var toolEntryIDs: [String: UUID] = [:]
     private var hookEntryIDs: [String: UUID] = [:]
     private var hooks: [String: AgentHookEvent] = [:]
+    private var hookOrder: [String] = []
+    private var hookTools: [String: String] = [:]
+    private var finishedToolOrder: [String] = []
     private var provider: AgentProvider?
     private var sessionID: UUID?
 
@@ -86,7 +89,7 @@ public struct ChatState: Sendable, Equatable {
         inputID = id; self.outputID = outputID; self.provider = provider; self.sessionID = sessionID
         streamingText = ""; thinking = ""; thinkingIDs = [:]; textIDs = [:]; toolEntryIDs = [:]
         tools = []; pendingCards = []; usage = nil; rateLimits = []; outcome = nil; isRunning = true
-        hookEntryIDs = [:]; hooks = [:]
+        hookEntryIDs = [:]; hooks = [:]; hookOrder = []; hookTools = [:]; finishedToolOrder = []
     }
     var partialOutput: String {
         entries.filter { textIDs.values.contains($0.id) }.map(\.text).joined(separator: "\n")
@@ -179,6 +182,8 @@ public struct ChatState: Sendable, Equatable {
                 putTool(index, newEntryID: newEntryID)
             case .toolFinished(let output, let error):
                 let index = toolIndex(event.scope.itemID ?? "tool")
+                let finishedID = tools[index].id
+                finishedToolOrder.removeAll { $0 == finishedID }
                 if output != .null { tools[index].output = AgentTranscriptContent.bounded(output) }
                 tools[index].isFinished = true
                 tools[index].completionUnconfirmed = false
@@ -253,6 +258,7 @@ public struct ChatState: Sendable, Equatable {
     }
     private mutating func putTool(_ index: Int, newEntryID: UUID) {
         let tool = tools[index]
+        if tool.isFinished, !finishedToolOrder.contains(tool.id) { finishedToolOrder.append(tool.id) }
         let id = toolEntryIDs[tool.id] ?? newEntryID
         toolEntryIDs[tool.id] = id
         put(id: id, kind: "tool", text: tool.tool?.name ?? "")
@@ -263,11 +269,18 @@ public struct ChatState: Sendable, Equatable {
                 "completionUnconfirmed": .bool(tool.completionUnconfirmed),
                 "turnCompletedNormally": .bool(tool.turnCompletedNormally), "isDenied": .bool(tool.isDenied)
             ]).jsonString
-            let related = hooks.values.filter { $0.toolUseID == tool.id }.sorted { $0.id < $1.id }
+            let related = hookOrder.compactMap { hookTools[$0] == tool.id ? hooks[$0] : nil }
             if !related.isEmpty, var payload = entries[entry].payloadJSON.flatMap(JSONValue.parse)?.objectValue {
-                payload["hooks"] = .array(related.map(Self.hookPayload)); entries[entry].payloadJSON = JSONValue.object(payload).jsonString
+                payload["hooks"] = .array(related.map { hook in
+                    .object(["id": .string(hook.id), "name": .string(hook.name), "event": .string(hook.event),
+                        "status": .string(Self.hookStatus(hook.phase)),
+                        "reason": hook.reason.map { .string(AgentTranscriptContent.shortHookReason($0)) } ?? .null])
+                }); entries[entry].payloadJSON = JSONValue.object(payload).jsonString
             }
         }
+    }
+    private static func hookStatus(_ phase: AgentHookEvent.Phase) -> String {
+        switch phase { case .running: "running"; case .success: "passed"; case .blocked: "blocked"; case .error, .interrupted: "failed" }
     }
     private static func hookPayload(_ hook: AgentHookEvent) -> JSONValue {
         .object(["hookID": .string(hook.id), "name": .string(hook.name), "event": .string(hook.event),
@@ -277,9 +290,23 @@ public struct ChatState: Sendable, Equatable {
     private mutating func putHook(_ hook: AgentHookEvent, newEntryID: UUID) {
         if let prior = hooks[hook.id], prior.phase != .running { return }
         guard hooks.count < 2048 || hooks[hook.id] != nil else { return }
+        if hooks[hook.id] == nil {
+            hookOrder.append(hook.id)
+            if let explicit = hook.toolUseID { hookTools[hook.id] = explicit }
+            else if hook.phase == .running, ["PreToolUse", "PostToolUse"].contains(hook.event),
+                    hook.name.hasPrefix(hook.event + ":") {
+                let name = String(hook.name.dropFirst(hook.event.count + 1))
+                let finished = hook.event == "PostToolUse" ? finishedToolOrder.reversed().compactMap { id in
+                    tools.first { $0.id == id && $0.tool?.name == name && $0.isFinished }
+                }.first : nil
+                let match = tools.last { $0.tool?.name == name && !$0.isFinished } ?? finished
+                hookTools[hook.id] = match?.id
+            }
+        }
         hooks[hook.id] = hook
-        // Correlation is explicit only. Same-name parallel tools never share hook rows.
-        if let tool = hook.toolUseID {
+        // Bind once at first observation. A later same-name tool cannot steal
+        // this hook's response; unmatched starts remain standalone too.
+        if let tool = hookTools[hook.id] {
             let index = toolIndex(tool)
             if hook.phase == .blocked {
                 tools[index].isDenied = true; tools[index].isFinished = true; tools[index].isError = true

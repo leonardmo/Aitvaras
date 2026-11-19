@@ -195,6 +195,19 @@ send automatically. Package fixtures do not establish live CLI/UI acceptance.
 
 ## Project agent setup (D34)
 
+Issue #23 hook gate: on the host, build the App and use a fresh isolated state
+profile with external integrations disabled, Haiku and a throwaway repository.
+Configure two PreToolUse Bash hooks there: one passes; one exits 2 with a short
+stderr reason only for a specific harmless command, such as `echo blocked-example`.
+Request at least three tool calls, including that command. Verify one icon per
+hook on its tool row, no matched standalone hook rows, and the block reason
+visible without expanding. Expand a tool to inspect each hook's name, Pre/Post,
+status icon and reason; check tooltips and accessibility labels. Reopen the chat
+and confirm the hooks and reason persist. Review real light/dark windows at
+800×500, with no nested popovers. Package tests cover matching, hook-ID pinning,
+PostToolUse fallback, block/failure parsing, unknown responses and reopening;
+they do not establish live CLI or window acceptance.
+
 `Fixtures/agents/claude/setup-hooks.jsonl` is a **hand-written** protocol fixture
 using the P0 field shapes, with generic `echo`/`docs` servers, a `shout` skill,
 a `reviewer` agent and synthetic hook IDs. It merges `initialize` command hints
