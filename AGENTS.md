@@ -172,6 +172,21 @@ GitHub's own skip markers (`skip ci` or `ci skip` in square brackets, a
 can never merge. GitHub reacts to the text alone, so don't even quote them
 in a commit message.
 
+### Switching PR package tests off
+
+The maintainer can switch the package tests off for PRs while they are
+slowing work down:
+
+```sh
+gh variable set PR_PACKAGE_TESTS --body off   # off for PRs
+gh variable delete PR_PACKAGE_TESTS           # back on
+```
+
+While it is off, "Package tests" passes on PRs without running, and the
+local `make check` is the only package-test run before merge, so never skip
+it. Pushes to `main` still run them; if one fails there, fix it before
+anything else. Agents never change this variable themselves.
+
 ### Collision hotspots
 
 Parallel branches tend to collide in a few places. Rules for each:
