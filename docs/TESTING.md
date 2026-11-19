@@ -208,6 +208,24 @@ and confirm the hooks and reason persist. Review real light/dark windows at
 PostToolUse fallback, block/failure parsing, unknown responses and reopening;
 they do not establish live CLI or window acceptance.
 
+The self-drive scenario `hook-tools` automates the live part of this gate.
+`scripts/run-self-drive.sh` copies the generic fixture in
+`UITests/self-drive/fixtures/hook-project` into its throwaway project when
+`AITVARAS_SELF_DRIVE_TEMPLATE` points there, and defaults Claude to Haiku through
+the debug-only `AITVARAS_SELF_DRIVE_CLAUDE_MODEL`. The scenario requires the
+inline provider segments, so run it at 1080×720 (at 800×500 they collapse into a
+native menu the driver cannot open):
+
+```sh
+AITVARAS_SELF_DRIVE_TEMPLATE=$PWD/UITests/self-drive/fixtures/hook-project \
+  AITVARAS_SELF_DRIVE_APPEARANCE=light AITVARAS_SELF_DRIVE_SIZE=1080x720 \
+  scripts/run-self-drive.sh hook-tools
+```
+
+It checks Haiku is selected, three Bash calls complete with no error row, and
+the block reason appears on its row; review `hooks-tool-rows.png` and
+`hooks-tree.txt` for one icon per hook in light and dark.
+
 `Fixtures/agents/claude/setup-hooks.jsonl` is a **hand-written** protocol fixture
 using the P0 field shapes, with generic `echo`/`docs` servers, a `shout` skill,
 a `reviewer` agent and synthetic hook IDs. It merges `initialize` command hints

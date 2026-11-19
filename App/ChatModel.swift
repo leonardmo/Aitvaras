@@ -206,11 +206,15 @@ final class ChatModel {
     var selfDriveLocalModel: String? {
         didSet { settings = settings.filter { $0.value.provider != .local }; try? loadSettings() }
     }
+    var selfDriveClaudeModel: String? {
+        didSet { settings = settings.filter { $0.value.provider != .claude }; try? loadSettings() }
+    }
     #endif
     private var newSessionModel: String {
         #if DEBUG
         if provider == .codex, let selfDriveCodexModel { return selfDriveCodexModel }
         if provider == .local, let selfDriveLocalModel { return selfDriveLocalModel }
+        if provider == .claude, let selfDriveClaudeModel { return selfDriveClaudeModel }
         #endif
         return provider == .local ? "local" : provider == .claude ? (claudeProfiles.first { $0.nativeProfile == claudeProfile }?.defaultModel ?? "opus") : "default"
     }
@@ -630,6 +634,7 @@ final class ChatModel {
         // A cost-limited run must fail rather than fall back to another model.
         if provider == .codex, selfDriveCodexModel == session.model { automaticallySelect = false }
         if provider == .local, selfDriveLocalModel == session.model { automaticallySelect = false }
+        if provider == .claude, selfDriveClaudeModel == session.model { automaticallySelect = false }
         #endif
         let restored = ChatSettings.restoring(session, models: models, automaticallySelect: automaticallySelect)
         if restored != session { saveSettings(restored) }
@@ -869,6 +874,12 @@ final class ChatModel {
             await loadModels()
             guard models.contains(where: { $0.id == selfDriveLocalModel }) else {
                 error = "The self-drive Local model is unavailable."; return
+            }
+        }
+        if provider == .claude, let selfDriveClaudeModel {
+            await loadModels()
+            guard models.contains(where: { $0.id == selfDriveClaudeModel }) else {
+                error = "The self-drive Claude model is unavailable."; return
             }
         }
         #endif

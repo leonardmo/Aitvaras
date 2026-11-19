@@ -478,6 +478,8 @@ struct AgentChatView: View {
                 Menu { providerMenuEntries } label: { Text("More").font(.caption) }
                     .menuIndicator(.hidden).fixedSize()
             }.padding(2).background(.quaternary, in: RoundedRectangle(cornerRadius: 6)).frame(width: 190)
+                // Keep each segment's own identifier; the container one would replace them.
+                .accessibilityElement(children: .contain)
                 .accessibilityIdentifier("chat.provider").accessibilityValue(chat.title(chat.choice))
                 .disabled(chat.isBusy || chat.creatingChat)
         }
