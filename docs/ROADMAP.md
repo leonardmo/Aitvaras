@@ -14,11 +14,32 @@ claimed complete by this roadmap.
 5. Add an installable mobile-friendly dashboard, preserving the study dashboard.
 6. Pilot private focus/mail assistance; consider native Android only afterward.
 
-That plan supersedes the older priorities below and in `MASTERPLAN.md`,
+That plan supersedes the historical priorities below and in `MASTERPLAN.md`,
 `FUTURE.md` and `MOBILE-COMPANION.md`. The following is a historical
 implementation record, not evidence of runtime reliability or a current delivery order.
 In particular, existing text-only capture and ephemeral CLI delegation do not
 yet meet the new capture/session-continuity requirements.
+
+## Agent MCP gateway (D42)
+
+### G1 — Gateway core 🚧
+
+Prove Unix-socket peer identity and launch ancestry, then build the shared
+gateway for in-app threads and the bundled stdio relay. Add a supervising
+launcher with Claude and Codex adapters, scoped Aitvaras tools, and one
+profile Keychain OAuth session per upstream server/account. Linear is the
+first upstream. Complete the approval and audit path, Connections with
+revoke, and Settings command installation.
+
+Acceptance: `CLAUDE_CONFIG_DIR=… aitvaras claude` and `aitvaras codex` in
+the same project both use Linear and scoped memory after one sign-in.
+Plain CLI launches get no gateway. See the [G1 checks](TESTING.md#agent-mcp-gateway-d42).
+
+### G2 — Gateway breadth 💡
+
+Add opencode, bearer/header upstreams, user-registered OAuth clients such
+as Slack, and per-tool risk controls. Desktop apps and Cursor stay out of
+scope.
 
 ## Historical roadmap and implementation record
 

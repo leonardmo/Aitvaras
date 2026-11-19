@@ -1847,3 +1847,43 @@ check the IOPS callback on AC/battery changes, real assertion presence/release
 and quit/cancelled termination. Use synthetic quota stops and fake providers in
 the isolated profile for those checks. Do not schedule wake alarms or use
 admin commands. Unit tests cannot establish these OS behaviors.
+
+## Agent MCP gateway (D42)
+
+For the identity and registry foundation in a supervised sandbox:
+
+```sh
+scripts/codex-swift.sh build --build-tests
+scripts/codex-swift.sh test --skip-build --filter 'GatewayProcessIdentity|GatewayLaunchRegistryTests'
+make privacy
+```
+
+The ancestry spike checks a spawned supervisor, child and Unix-socket peer
+against the kernel PID and start time. Also check unrelated peers, exited
+ancestors, simulated PID reuse, inspection failure, immutable launch context,
+and exit/revoke while a connection is active. All spawned fixtures must
+terminate on their own, with a bounded deadline and no spinning. Reap every
+child. If a sandbox denies an operation, record the operation and error and
+rerun that real-kernel check on the host.
+
+For the remaining G1 work, use a local fake upstream for MCP discovery,
+dynamic registration, S256 PKCE, token exchange, refresh and protected calls.
+Test against injected HTTP transport and a fake credential store in the
+sandbox. Use a bounded loopback server on the host to verify the callback.
+Cover bad state/verifier, refresh failure and rotation, cancellation, shared
+account sessions, project selection and opt-out, and re-auth. Test catalog
+changes, scope denial, approval timeout/revoke, and redaction without using
+live credentials.
+
+On the host, run `make check` and `make app`. In an isolated state profile,
+verify the bundled helpers, real `open -g` startup and socket isolation,
+TTY/signals, Settings installation, Connections and revoke, and approval
+and re-auth presentation. Keep external integrations disabled for offline
+checks. Enable only the integrations needed for the explicitly live checks.
+Compare adapter flags with the installed CLIs' help. Use disposable projects
+and accounts as appropriate. Verify real Linear browser sign-in once, then
+use Linear and scoped memory from both `aitvaras claude --model haiku` (also
+with `CLAUDE_CONFIG_DIR`) and `aitvaras codex` with the smallest available
+Codex model. Verify plain launches lack the gateway and two projects cannot
+borrow each other's access. The package tests do not establish these host
+and browser behaviors.

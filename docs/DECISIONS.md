@@ -706,10 +706,11 @@ Definition hashes use reference names, never resolved values. Runtime file creat
 cleanup pass policy and metadata-only audit. Retained transports are reused
 only with a matching setup revision.
 
-MCP OAuth credentials remain in the provider CLI's own credential store,
-like its account login. Aitvaras never reads or stores those tokens; this is
-not an exception to the Keychain rule for secrets Aitvaras holds. Claude
-sign-in runs a managed `claude mcp login -- <name>` in the project directory,
+For native MCP, OAuth credentials remain in the provider CLI's credential store,
+like its account login. Aitvaras never reads or stores those tokens.
+[D42](#d42--one-mcp-gateway-for-agent-clis--2026-11-19) supersedes this
+only for gateway-managed upstreams. Claude sign-in runs a managed
+`claude mcp login -- <name>` in the project directory,
 with cancellation and a five-minute limit. Its validated browser URL is
 transient. That command cannot receive the run's injected settings/config,
 so sign-in is offered for eligible repo and user/account servers; runtime-only
@@ -1102,3 +1103,76 @@ app termination. Wake alarms remain outside this feature (issue #28).
 The app starts the scheduler after journal recovery. Only verified usage-limit
 stops can arm it. Offline fake-provider and clock tests spend no usage. Any
 later live check uses Haiku or the smallest available Codex model.
+
+## D42 — One MCP gateway for agent CLIs 🚧 (2026-11-19)
+
+Aitvaras serves one MCP server, `aitvaras`, to the agent sessions she
+launches. It exposes scoped Aitvaras tools and proxies remote MCP data sources
+such as Linear. The gateway does not call cloud LLM APIs.
+
+- **Transport.** The app bundle ships `Contents/MacOS/aitvaras-mcp`, a stdio
+  relay to a Unix socket under the state directory resolved by `AitvarasPaths`.
+  There is no HTTP listener or port for the gateway. If the socket is missing,
+  the relay starts the bundled app in the background with `open -g` for the
+  requested profile and waits up to ten seconds. Failure produces a clear MCP
+  startup error. The relay never connects to upstreams. D31 in-app sessions keep
+  their provider control pipes and use the same `MCPGateway` core. The older
+  project-file broker keeps its restricted list/read contract.
+- **Launch ownership.** In-app launches are registered by their app owner.
+  Outside Chat, the bundled `aitvaras` launcher registers over the Unix socket
+  using the peer's kernel PID and process start time. It supervises the CLI as
+  a child, retaining the terminal and forwarding signals. It does not `exec`.
+  MCP peer admission requires a live registered ancestor with the same start
+  time. Agent-spawned descendants share that launch's policy and cannot
+  register a separate launch under it. There is no
+  bearer secret or launch expiry. Exit or revoke invalidates access and
+  pending approvals. Codex app-server processes cannot share authorization
+  across different launch scopes.
+- **Per-launch injection.** Claude gets `--mcp-config` with a private temporary
+  runtime file. Codex gets `-c mcp_servers.aitvaras.…`. CLI config, auth and
+  settings files are never written. Ordinary environment variables and
+  profile selections pass through, including `CLAUDE_CONFIG_DIR`, while
+  API-key and alternate provider endpoint overrides remain forbidden.
+  Unsupported CLIs get a clear error. Plain CLI launches, D14 restricted
+  non-chat jobs and ephemeral side questions get no gateway.
+- **Scope.** An outside launch is bound to the most specific Aitvaras project
+  containing its starting directory. In-app sessions use the owning chat's
+  project. Changes to cwd or MCP roots do not move the launch. A launch outside
+  a project gets only global upstreams. Explicit project grants control both
+  discovery and execution of memory, knowledge, calendar, reminders, read-only
+  mail, goals and activity tools. Grants never imply global recall, unrestricted
+  record access or automatic transcript handover. D30/D31's handover rules,
+  memory quarantine, D20 and Calendar/Reminders ownership restrictions still apply.
+- **Upstreams.** Reuse D34's app-global and app-project definitions and extend
+  them with server/account identity. Each upstream is global with a project
+  opt-out, or assigned per project. A project account choice overrides the
+  global default. Aitvaras owns one upstream session per server/account, uses
+  dynamic client registration and PKCE in G1, and stores credentials only in
+  the profile Keychain. Refresh is central. Failed refresh leaves tools listed
+  with a clear sign-in error and raises an in-app re-auth card and notification.
+  Sign-in takes place in the app. This supersedes CLI-owned MCP OAuth only
+  for gateway-managed upstreams. D34 repo and user/account MCP login and
+  provider subscription login remain native. Existing native tokens are
+  never imported. Names are prefixed, such as `linear_list_issues` and
+  `memory_search`. Each connection sees its own catalog and receives MCP
+  `notifications/tools/list_changed` when that catalog changes.
+- **Policy.** Every call goes through the autonomy policy. Hard prohibitions
+  and existing outbound approval requirements take precedence. Otherwise use
+  an explicit per-tool override, then annotations for a trusted upstream
+  (`readOnlyHint` gives `read`, and non-destructive and idempotent gives
+  `reversibleWrite`), then `confirmable`. Exact grants may relax eligible
+  decisions and bind to the current upstream/account and definition. Outside
+  approvals appear on the companion and suggestion bar and go through
+  NotificationRouter. Unanswered requests are denied after five minutes.
+  D31 inline approvals keep their existing lifecycle.
+- **Audit and control.** Activity records launch, client, project, upstream,
+  tool, risk decision, approval outcome, duration, success or error, and
+  shortened, redacted arguments. Full arguments and results stay out of
+  gateway activity records. Connections lists live launches and can revoke
+  them. Settings installs the launcher with a symlink in a user bin directory
+  without administrator access.
+- **Milestones.** G1 ships Claude, Codex and Linear. G2 adds opencode via
+  `OPENCODE_CONFIG_CONTENT`, bearer/header upstreams, user-registered OAuth
+  clients such as Slack, and the per-tool risk UI. Desktop apps and Cursor
+  are outside both milestones. See [ROADMAP](ROADMAP.md) and
+  [MASTERPLAN](MASTERPLAN.md#part-v-one-toolbelt-for-every-agent-cli).

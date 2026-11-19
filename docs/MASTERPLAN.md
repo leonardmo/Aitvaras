@@ -4,7 +4,7 @@
 > [`WORK-HUB-PLAN.md`](WORK-HUB-PLAN.md), indexed by [`ROADMAP.md`](ROADMAP.md).
 > It supersedes this document's build order, local-assistant-first emphasis,
 > fixed provider roles, server deferral and original text-only capture scope.
-> Preserve the ideas below as background, not current implementation authority.
+> Parts I–IV are background. Part V records the later D42 gateway plan.
 
 > Capture exception: the old no-audio-on-disk rule below is superseded only by
 > explicitly selected local source retention. The default still discards audio;
@@ -836,3 +836,34 @@ holds the Screen Recording grant.
   it's one click and it's the difference between a tool and a liability.
 - **O14**: capture scope default: meeting window only (recommended) vs
   full display; per-meeting picker either way.
+
+# Part V: One toolbelt for every agent CLI
+
+This addition follows the current [Work Hub plan](WORK-HUB-PLAN.md).
+[D42](DECISIONS.md#d42--one-mcp-gateway-for-agent-clis--2026-11-19) is the
+implementation decision. Agent CLIs keep separate MCP settings and credentials.
+Aitvaras can offer a consistent set of tools with one app sign-in per upstream
+account and one policy and activity history across launched sessions.
+
+## 26. Gateway design
+
+One `aitvaras` MCP catalog serves scoped app tools and proxied upstreams.
+In-app sessions keep their existing control pipes. In a terminal, each
+launched CLI gets a stdio relay to the app's profile Unix socket. Kernel
+process ancestry ties the relay to a live launch and its fixed project.
+Each upstream account has one app-owned session and refresh flow. The
+autonomy policy can use annotations only from trusted upstreams. Activity
+records decisions and outcomes with bounded, redacted arguments.
+
+## 27. Gateway milestones
+
+- **G1** proves ancestry, then ships the shared core, relay, launcher and
+  Claude/Codex adapters, scoped app tools, Keychain-backed DCR and PKCE for
+  Linear, approval and re-auth cards, Connections revoke and CLI installation.
+- **G2** adds opencode, bearer/header upstreams, user-registered OAuth clients
+  such as Slack, and per-tool risk controls.
+
+## 28. Open decisions IV
+
+- **O15**: revisit whether desktop apps can get the gateway through their
+  extension mechanisms after G2. Desktop apps and Cursor are outside G1/G2.
