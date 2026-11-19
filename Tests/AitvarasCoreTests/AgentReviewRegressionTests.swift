@@ -178,9 +178,22 @@ done()
         #expect(ClaudeCommandText.display(markup) == "/shout quiet little words")
         #expect(AgentTranscriptEntry(chatID: UUID(), provider: .claude, kind: "user", text: markup).displayText == "/shout quiet little words")
         #expect(AgentTranscriptEntry(chatID: UUID(), provider: .claude, kind: "assistant", text: markup).displayText == markup)
-        #expect(ClaudeCommandText.display("<command-name>/shout</command-name><command-args>&lt;words&gt; &amp; more</command-args>") == "/shout <words> & more")
+        let fields = ["<command-name>/usage</command-name>", "<command-message>usage</command-message>",
+                      "<command-args>&lt;words&gt; &amp; &quot;more&quot; &apos;here&apos;</command-args>"]
+        for order in [[0, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [2, 1, 0]] {
+            let envelope = " \t" + order.map { fields[$0] }.joined(separator: "\n            ") + "\r\n"
+            #expect(ClaudeCommandText.display(envelope) == "/usage <words> & \"more\" 'here'")
+        }
+        for command in ["usage", "context", "cost", "status", "compact"] {
+            let envelope = "<command-name>/\(command)</command-name><command-message>\(command)</command-message><command-args></command-args>"
+            #expect(ClaudeCommandText.display(envelope) == "/" + command)
+        }
         #expect(ClaudeCommandText.display("Example " + markup) == "Example " + markup)
-        #expect(ClaudeCommandText.display("<command-name>/shout</command-name>") == "/shout")
+        for ordinary in [fields[0], fields[0] + fields[2], markup + fields[2],
+                         "Please explain <command-name>/usage</command-name>.",
+                         fields[0] + "<example />" + fields[1] + fields[2]] {
+            #expect(ClaudeCommandText.display(ordinary) == ordinary)
+        }
         let fixture = try AgentExecutableFixture("exit 0"); defer { fixture.remove() }
         let project = fixture.directory.appendingPathComponent("projects/example")
         try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)

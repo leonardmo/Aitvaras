@@ -91,7 +91,7 @@ import AppKit
         }
         guard let layout = layoutManager, let container = textContainer else { return NSSize(width: width, height: 20) }
         layout.ensureLayout(for: container)
-        return NSSize(width: width, height: max(20, ceil(layout.usedRect(for: container).height)))
+        return NSSize(width: width, height: max(20, ceil(layout.usedRect(for: container).maxY)))
     }
 
     public override func setFrameSize(_ newSize: NSSize) {
@@ -131,7 +131,13 @@ import AppKit
                 let offset = offsets[block.range.location] ?? 0
                 style.headIndent = 8 - offset; style.firstLineHeadIndent = 8 - offset
                 style.tailIndent = codeWidth(block) - offset
-                style.lineBreakMode = .byClipping
+                // Keep TextKit's regular line fragments for multiline code.
+                // The container is widened for the code; the view clips the viewport.
+                style.lineBreakMode = .byCharWrapping
+                if let font = storage.attribute(.font, at: range.location, effectiveRange: nil) as? NSFont,
+                   let layout = layoutManager {
+                    style.minimumLineHeight = ceil(layout.defaultLineHeight(for: font))
+                }
                 // Header and footer must not move with the code contents.
                 if NSIntersectionRange(block.contentRange, range).length == 0 {
                     style.headIndent = 8; style.firstLineHeadIndent = 8; style.tailIndent = viewportWidth

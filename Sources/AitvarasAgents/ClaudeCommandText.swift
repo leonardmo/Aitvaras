@@ -3,17 +3,67 @@ import Foundation
 /// Native slash-command envelopes are a projection of the user's input. Only
 /// recognize the complete envelope; ordinary XML-looking user text stays intact.
 public enum ClaudeCommandText {
-    public static func display(_ text: String) -> String {
-        guard text.utf8.count <= 1_048_576,
-              let pattern = try? NSRegularExpression(pattern: #"^\s*(?:<command-message>[^<]*</command-message>\s*)?<command-name>(/[^<>\s]+)</command-name>\s*(?:<command-args>([\s\S]*?)</command-args>)?\s*$"#),
-              let match = pattern.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
-              let nameRange = Range(match.range(at: 1), in: text) else { return text }
-        let name = String(text[nameRange])
-        guard let argsRange = Range(match.range(at: 2), in: text), !text[argsRange].isEmpty else { return name }
-        let args = String(text[argsRange]).replacingOccurrences(of: "&lt;", with: "<")
+    private static let field = try! NSRegularExpression(
+        pattern: #"\G\s*<(command-name|command-message|command-args)>([^<>]*)</\1>"#)
+
+    public static func display(_ text: String) -> String { command(in: text) ?? text }
+
+    static func command(in text: String) -> String? {
+        guard text.utf8.count <= 1_048_576 else { return nil }
+        var fields: [String: String] = [:]
+        var end = text.startIndex
+        for match in field.matches(in: text, range: NSRange(text.startIndex..., in: text)) {
+            guard let range = Range(match.range, in: text), range.lowerBound == end,
+                  let key = Range(match.range(at: 1), in: text),
+                  let value = Range(match.range(at: 2), in: text),
+                  fields.updateValue(String(text[value]), forKey: String(text[key])) == nil else { return nil }
+            end = range.upperBound
+        }
+        guard fields.count == 3, text[end...].allSatisfy(\.isWhitespace),
+              let name = fields["command-name"]?.trimmingCharacters(in: .whitespacesAndNewlines),
+              name.hasPrefix("/"), name.count > 1, !name.contains(where: \.isWhitespace),
+              let args = fields["command-args"] else { return nil }
+        guard !args.isEmpty else { return name }
+        return name + " " + args.replacingOccurrences(of: "&lt;", with: "<")
             .replacingOccurrences(of: "&gt;", with: ">").replacingOccurrences(of: "&quot;", with: "\"")
             .replacingOccurrences(of: "&apos;", with: "'").replacingOccurrences(of: "&amp;", with: "&")
-        return name + " " + args
+    }
+
+    static func messageText(_ content: JSONValue?) -> String? {
+        if let text = content?.stringValue { return text }
+        let parts = content?.arrayValue?.compactMap { $0["type"]?.stringValue == "text" ? $0["text"]?.stringValue : nil } ?? []
+        return parts.isEmpty ? nil : parts.joined(separator: "\n")
+    }
+
+    static func isCaveat(_ record: JSONValue) -> Bool {
+        record["type"]?.stringValue == "user" && record["isMeta"]?.boolValue == true
+            && messageText(record["message"]?["content"])?
+                .trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("<local-command-caveat>") == true
+    }
+
+    static func output(in record: JSONValue) -> String? {
+        let content: String?
+        switch record["type"]?.stringValue {
+        case "system":
+            content = messageText(record["content"]) ?? messageText(record["message"]?["content"])
+                ?? record["message"]?.stringValue ?? messageText(record["output"])
+        case "assistant", "user": content = messageText(record["message"]?["content"])
+        case "result": content = record["result"]?.stringValue
+        default: return nil
+        }
+        guard var remaining = content?[...].drop(while: \.isWhitespace) else { return nil }
+        var parts: [Substring] = []
+        while !remaining.isEmpty {
+            let tag: String
+            if remaining.hasPrefix("<local-command-stdout>") { tag = "local-command-stdout" }
+            else if remaining.hasPrefix("<local-command-stderr>") { tag = "local-command-stderr" }
+            else { return nil }
+            remaining = remaining.dropFirst(tag.count + 2)
+            guard let close = remaining.range(of: "</\(tag)>") else { return nil }
+            parts.append(remaining[..<close.lowerBound])
+            remaining = remaining[close.upperBound...].drop(while: \.isWhitespace)
+        }
+        return parts.isEmpty ? nil : parts.joined(separator: "\n")
     }
 }
 
@@ -38,5 +88,10 @@ public enum AgentComposerCaret {
 }
 
 extension AgentTranscriptEntry {
+    public var claudeCommandOutput: String? {
+        guard provider == .claude, kind == "user" else { return nil }
+        return payloadJSON.flatMap(JSONValue.parse)?["claudeCommandOutput"]?.stringValue
+    }
+
     public var displayText: String { provider == .claude && kind == "user" ? ClaudeCommandText.display(text) : text }
 }

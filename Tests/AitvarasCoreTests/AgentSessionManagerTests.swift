@@ -116,6 +116,107 @@ import AitvarasStore
         try await manager.shutdown()
     }
 
+    @Test(arguments: ["idle", "mid-turn", "interleaved", "after-model-result", "synthetic-after-model-result"])
+    func claudeLocalCommandsAttachToTheirInputAcrossLiveAndNativeHistory(timing: String) async throws {
+        let script = "timing = '\(timing)'\n" + #"""
+claude_init()
+session = str(uuid.uuid4())
+parent = None
+history = []
+def frame(kind, item_id=None, *, stream=True, **values):
+    global parent
+    event = {'type':kind, 'uuid':item_id or str(uuid.uuid4()), 'session_id':session, **values}
+    history.append({**event, 'sessionId':session, 'cwd':root, 'parentUuid':parent})
+    parent = event['uuid']
+    if stream: emit(event)
+
+emit({'type':'system','subtype':'init','apiKeySource':'none','session_id':session})
+if timing != 'idle':
+    model = read()
+    frame('user', model['uuid'], message=model['message'])
+    emit({'type':'stream_event','event':{'type':'content_block_delta','delta':{'text':'Working'}}})
+def model_result():
+    frame('assistant', message={'role':'assistant','stop_reason':'end_turn','content':'Model reply'})
+    emit({'type':'result','is_error':False,'num_turns':1})
+def command_result(request, number):
+    assert request['message']['content'] == '/usage'
+    frame('user', isMeta=True, message={'role':'user','content':'<local-command-caveat>Local only</local-command-caveat>'})
+    frame('user', request['uuid'], message={'role':'user','content':
+        '<command-name>/usage</command-name>\n            <command-message>usage</command-message>\n            <command-args></command-args>'})
+    if timing == 'interleaved' and number == 1: model_result()
+    text = '<local-command-stdout>Example usage\n  Session: '+str(number)+'</local-command-stdout>'
+    if (timing == 'interleaved' or timing.endswith('after-model-result')) and number == 1:
+        # Persist the system form while streaming the assistant carrier.
+        frame('system', stream=False, subtype='local_command', content=text)
+        message = {'role':'assistant','content':text}
+        if timing.startswith('synthetic'):
+            message.update(model='<synthetic>', content='Example usage\n  Session: '+str(number))
+        emit({'type':'assistant','uuid':history[-1]['uuid'],'session_id':session,'message':message})
+    else:
+        frame('system', subtype='local_command', content=text)
+    frame('system', subtype='local_command', content='<local-command-stderr>Example note</local-command-stderr>')
+    summary = 'Example usage\n  Session: '+str(number) if timing == 'mid-turn' else text
+    emit({'type':'result','is_error':False,'num_turns':0,'result':summary})
+
+command = read()
+if timing.endswith('after-model-result'):
+    model_result()
+    emit({'type':'system','subtype':'task_notification','task_id':'example','status':'completed'})
+command_result(command, 1)
+if timing == 'mid-turn': model_result()
+command_result(read(), 2)
+os.makedirs('projects/example', exist_ok=True)
+with open('projects/example/'+session+'.jsonl','w') as file:
+    for event in history: file.write(json.dumps(event)+'\n')
+done()
+"""#
+        let fixture = try BackendExecutableFixture(script: script)
+        defer { fixture.remove() }
+        let stores = try inMemoryStores()
+        let (chat, session) = try agentStoreChat(stores, cwd: fixture.directory.path)
+        let backend = ClaudeBackend(executable: fixture.executable, environment: fixture.environment,
+                                    overrides: ["CLAUDE_CONFIG_DIR": fixture.directory.path])
+        let manager = try AgentSessionManager(persistence: stores, backend: { _ in backend }, audit: { _ in })
+        let model = AgentInput(text: "Example prompt")
+        if timing != "idle" {
+            try await manager.send(chatID: chat.id, provider: .claude, input: model)
+            try await waitManager { try await manager.state(chatID: chat.id).streamingText == "Working" }
+        }
+        var commands: [AgentInput] = []
+        for number in 1...2 {
+            let command = AgentInput(text: "/usage")
+            commands.append(command)
+            try await manager.send(chatID: chat.id, provider: .claude, input: command)
+            try await waitManager {
+                let entries = try stores.agentEntries(chatID: chat.id)
+                return try stores.agentTurn(id: command.id)?.state == .completed
+                    && entries.first(where: { $0.id == command.id })?.claudeCommandOutput == "Example usage\n  Session: \(number)\nExample note"
+            }
+            try await waitManager { try await !manager.state(chatID: chat.id).isRunning }
+        }
+        let live = try stores.agentEntries(chatID: chat.id)
+        #expect(live.filter { $0.kind == "wakeup" }.isEmpty)
+        #expect(live.filter { $0.kind == "assistant" }.map(\.text) == (timing == "idle" ? [] : ["Model reply"]))
+        let bubbles = live.filter { $0.displayText == "/usage" }
+        #expect(bubbles.map(\.id) == commands.map(\.id))
+        #expect(bubbles.map(\.claudeCommandOutput) == ["Example usage\n  Session: 1\nExample note", "Example usage\n  Session: 2\nExample note"])
+        #expect(try stores.latestAgentTurn(chatID: chat.id)?.id == commands.last?.id)
+        if timing != "idle" { #expect(try stores.agentTurn(id: model.id)?.state == .completed) }
+
+        try fixture.assertComplete()
+        let native = try #require(try stores.agentSession(chatID: chat.id, provider: session.provider)?.sessionID)
+        let page = try await backend.readHistory(session: native, cursor: nil)
+        #expect(commands.allSatisfy { page.completedItemIDs.contains($0.id.uuidString) })
+        try await manager.refreshNativeHistory(chatID: chat.id)
+        let restored = try stores.agentEntries(chatID: chat.id)
+        #expect(restored.count == live.count)
+        #expect(restored.filter { $0.kind == "assistant" }.map(\.text) == live.filter { $0.kind == "assistant" }.map(\.text))
+        let reloaded = restored.filter { $0.displayText == "/usage" }
+        #expect(reloaded.map(\.id) == bubbles.map(\.id))
+        #expect(reloaded.map(\.claudeCommandOutput) == bubbles.map(\.claudeCommandOutput))
+        try await manager.shutdown()
+    }
+
     @Test func activityStopUsesDurableInputAndIgnoresStaleClicks() async throws {
         let fixture = try BackendExecutableFixture(script: managerClaudeScript)
         defer { fixture.remove() }

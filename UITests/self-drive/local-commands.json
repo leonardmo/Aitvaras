@@ -1,0 +1,121 @@
+{
+ "steps": [
+  {
+   "action": "press",
+   "identifier": "bubble.left.and.text.bubble.right"
+  },
+  {
+   "action": "press",
+   "identifier": "chat.new.$project"
+  },
+  {
+   "action": "waitFor",
+   "identifier": "chat.composer.input",
+   "timeout": 10
+  },
+  {
+   "action": "waitFor",
+   "identifier": "chat.provider.claude",
+   "enabled": true,
+   "timeout": 180,
+   "delay": 1
+  },
+  {
+   "action": "press",
+   "identifier": "chat.provider.claude"
+  },
+  {
+   "action": "waitFor",
+   "text": "Haiku",
+   "within": "chat.model",
+   "timeout": 30
+  },
+  {
+   "action": "waitFor",
+   "identifier": "chat.composer.send",
+   "enabled": true,
+   "timeout": 180
+  },
+  {
+   "action": "type",
+   "text": "/usage"
+  },
+  {
+   "action": "waitFor",
+   "identifier": "chat.composer.send",
+   "enabled": true,
+   "timeout": 30
+  },
+  {
+   "action": "press",
+   "identifier": "chat.composer.send"
+  },
+  {
+   "action": "waitFor",
+   "text": "/usage",
+   "within": "chat.composer.input",
+   "absent": true,
+   "timeout": 15
+  },
+  {
+   "action": "waitFor",
+   "identifier": "chat.composer.send",
+   "enabled": true,
+   "timeout": 120,
+   "delay": 3
+  },
+  {
+   "action": "waitFor",
+   "text": "subscription",
+   "timeout": 60
+  },
+  {
+   "action": "type",
+   "text": "/usage"
+  },
+  {
+   "action": "waitFor",
+   "identifier": "chat.composer.send",
+   "enabled": true,
+   "timeout": 30
+  },
+  {
+   "action": "press",
+   "identifier": "chat.composer.send"
+  },
+  {
+   "action": "waitFor",
+   "text": "/usage",
+   "within": "chat.composer.input",
+   "absent": true,
+   "timeout": 15
+  },
+  {
+   "action": "waitFor",
+   "identifier": "chat.composer.send",
+   "enabled": true,
+   "timeout": 120,
+   "delay": 3
+  },
+  {
+   "action": "waitFor",
+   "text": "command-name",
+   "absent": true,
+   "timeout": 5
+  },
+  {
+   "action": "waitFor",
+   "text": "Background task finished",
+   "absent": true,
+   "timeout": 5
+  },
+  {
+   "action": "screenshot",
+   "name": "usage-commands"
+  },
+  {
+   "action": "dumpTree",
+   "name": "usage-tree"
+  }
+ ]
+}

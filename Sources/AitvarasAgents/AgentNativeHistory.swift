@@ -100,7 +100,7 @@ public struct ClaudeNativeHistory: Sendable {
         }
         let title = own.last(where: { $0["type"]?.stringValue == "custom-title" })?["customTitle"]?.stringValue
             ?? own.first(where: { $0["type"]?.stringValue == "user" && $0["isMeta"]?.boolValue != true })
-                .flatMap { Self.messageText($0["message"]?["content"]) }.map(ClaudeCommandText.display)
+                .flatMap { ClaudeCommandText.messageText($0["message"]?["content"]) }.map(ClaudeCommandText.display)
             ?? "Claude chat"
         let displayTitle = String(title.prefix(200)).trimmingCharacters(in: .whitespacesAndNewlines)
         return Session(summary: .init(id: .init(provider: .claude, profile: profile, nativeID: id),
@@ -113,11 +113,6 @@ public struct ClaudeNativeHistory: Sendable {
     static func isInjectedPrompt(_ record: JSONValue) -> Bool {
         guard record["type"]?.stringValue == "user" else { return false }
         return record["promptSource"]?.stringValue == "system" || record["origin"]?["kind"]?.stringValue != nil
-    }
-    private static func messageText(_ content: JSONValue?) -> String? {
-        if let text = content?.stringValue { return text }
-        let parts = content?.arrayValue?.compactMap { $0["type"]?.stringValue == "text" ? $0["text"]?.stringValue : nil } ?? []
-        return parts.isEmpty ? nil : parts.joined(separator: "\n")
     }
     public func list(folder: URL?, cursor: String?, archived: Bool = false) throws -> AgentPage<AgentSessionSummary> {
         guard !archived else { throw AgentFailure.unsupported }
@@ -143,7 +138,8 @@ public struct ClaudeNativeHistory: Sendable {
             throw matches.isEmpty ? AgentNativeHistoryError.notFound : AgentNativeHistoryError.identityConflict
         }
         return Set(try read(file).records.compactMap { record in
-            guard ["user", "assistant"].contains(record["type"]?.stringValue ?? "") else { return nil }
+            guard ["user", "assistant"].contains(record["type"]?.stringValue ?? "")
+                    || ClaudeCommandText.output(in: record) != nil else { return nil }
             return record["uuid"]?.stringValue
         })
     }
@@ -159,7 +155,7 @@ public struct ClaudeNativeHistory: Sendable {
         // JSONL retains abandoned branches. Follow the last conversational leaf
         // through parentUuid, including tool-only records, before projecting text.
         let conversation = value.records.filter { ["user", "assistant"].contains($0["type"]?.stringValue ?? "") }
-        var records = conversation
+        var records = value.records
         if conversation.contains(where: { $0["parentUuid"] != nil }) {
             var byID: [String: JSONValue] = [:]
             for record in value.records {
@@ -177,12 +173,55 @@ public struct ClaudeNativeHistory: Sendable {
             records.reverse()
         }
         var events: [AgentEvent] = [], seen = Set<String>(), pending: [String] = [], completed = Set<String>()
+        var commands: [String: Int] = [:], commandOwners: [String: String] = [:]
+        var latestCommand: String?
+        // System stdout may attach to a command without being a conversational
+        // ancestor. Preserve the parent-chain order and add those side records.
+        if records.count != value.records.count {
+            let branch = Set(records.compactMap { $0["uuid"]?.stringValue })
+            var attachments: [String: [JSONValue]] = [:], anchors: [String: String] = [:]
+            var previousMessage: String?
+            for record in value.records {
+                let id = record["uuid"]?.stringValue
+                if ["user", "assistant"].contains(record["type"]?.stringValue ?? "") {
+                    previousMessage = id
+                }
+                guard record["type"]?.stringValue == "system", ClaudeCommandText.output(in: record) != nil,
+                      id.map(branch.contains) != true,
+                      let parent = record["parentUuid"]?.stringValue ?? previousMessage,
+                      let anchor = branch.contains(parent) ? parent : anchors[parent] else { continue }
+                attachments[anchor, default: []].append(record)
+                if let id { anchors[id] = anchor }
+            }
+            records = records.flatMap { [$0] + ($0["uuid"]?.stringValue.flatMap { attachments[$0] } ?? []) }
+        }
         for record in records {
+            if let output = ClaudeCommandText.output(in: record) {
+                let parent = record["parentUuid"]?.stringValue
+                let owner = parent.flatMap { commands[$0] != nil ? $0 : commandOwners[$0] } ?? latestCommand
+                if let owner, let index = commands[owner] {
+                    let event = events[index]
+                    let command: String, combined: String
+                    switch event.kind {
+                    case .message(_, _, let text): (command, combined) = (text, output)
+                    case .claudeCommandResult(_, let text, let previous): (command, combined) = (text, previous + "\n" + output)
+                    default: continue
+                    }
+                    events[index] = .init(scope: event.scope, kind: .claudeCommandResult(id: owner, command: command, output: combined))
+                    if let id = record["uuid"]?.stringValue { commandOwners[id] = owner }
+                    completed.insert(owner)
+                    continue
+                }
+            }
             guard let role = record["type"]?.stringValue, ["user", "assistant"].contains(role),
                   record["isMeta"]?.boolValue != true, !Self.isInjectedPrompt(record),
-                  let text = Self.messageText(record["message"]?["content"]), !text.isEmpty else { continue }
+                  let text = ClaudeCommandText.messageText(record["message"]?["content"]), !text.isEmpty else { continue }
             guard let id = record["uuid"]?.stringValue, !id.isEmpty, seen.insert(id).inserted else {
                 throw AgentNativeHistoryError.malformedHistory
+            }
+            if role == "user" {
+                latestCommand = ClaudeCommandText.command(in: text).map { _ in id }
+                if latestCommand != nil { commands[id] = events.count }
             }
             pending.append(id)
             if role == "assistant", ["end_turn", "stop_sequence", "max_tokens"].contains(record["message"]?["stop_reason"]?.stringValue ?? "") {

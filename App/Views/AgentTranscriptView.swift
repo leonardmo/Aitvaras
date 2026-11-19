@@ -139,6 +139,19 @@ struct AgentTranscriptView: View {
                     }
                     .padding(12).background(.quaternary, in: RoundedRectangle(cornerRadius: 14))
                 }
+                if let output = entry.claudeCommandOutput, !output.isEmpty {
+                    ScrollView(.horizontal) {
+                        Text(verbatim: output)
+                            .font(.caption.monospaced())
+                            .textSelection(.enabled)
+                            .fixedSize(horizontal: true, vertical: true)
+                            .padding(10)
+                    }
+                    .background(.quaternary, in: RoundedRectangle(cornerRadius: 8))
+                    .padding(.leading, 30)
+                    .padding(.top, 4)
+                    .accessibilityIdentifier("chat.commandResult.\(entry.id)")
+                }
             } else {
                 if entry.kind == "assistant", let quote {
                     ChatMarkdown(text: entry.text, quote: quote, fork: fork, forkEnabled: forkEnabled)
