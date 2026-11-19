@@ -60,6 +60,19 @@ public struct AgentStoppedTurn: Codable, Sendable, Equatable {
     /// CLI-started turns have no user prompt, so Retry cannot apply.
     public var autonomous: Bool?
 
+    /// Evidence used by the usage-reset scheduler. Failure and reset stay in reason.
+    public struct QuotaContext: Codable, Sendable, Equatable {
+        public let windowID: String?
+        public let accountKey: String?
+        public let inputRevision: Int
+        public let stoppedAt: Date
+        public init(windowID: String?, accountKey: String?, inputRevision: Int, stoppedAt: Date) {
+            self.windowID = windowID; self.accountKey = accountKey
+            self.inputRevision = inputRevision; self.stoppedAt = stoppedAt
+        }
+    }
+    public var quotaContext: QuotaContext?
+
     public init(turn: AgentJournalTurn, session: AgentChatSession, reason: AgentStopReason) {
         inputID = turn.id; attempt = turn.resendCount; provider = session.provider; providerProfile = session.providerProfile
         nativeSession = session.sessionID; delivery = turn.delivery; self.reason = reason

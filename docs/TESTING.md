@@ -1754,3 +1754,96 @@ signed in. Use Haiku for live autonomous turns.
 - Sign out while watching. Verify the request shows one forge error,
   retries back off, and the watcher resumes after sign-in.
 - Verify push goes through the existing approval flow in a chat using Ask.
+
+### Usage-reset continuation (D41, issue #27)
+
+Launch the stopped-row demo with an isolated profile:
+
+```sh
+AITVARAS_STATE_DIR="$(mktemp -d)" AITVARAS_DISABLE_EXTERNAL_INTEGRATIONS=1 \
+  .build-xcode/Build/Products/Debug/Aitvaras.app/Contents/MacOS/Aitvaras --seed-demo-state
+```
+
+Open **Usage limit example** and **Connection lost example** under **Agent
+recovery examples**. The first chat has a Claude reset about two hours ahead.
+The second has a connection-lost row. Demo mode disables both subscription
+provider backends. The fixture seeds transcript rows without scheduling a send.
+
+The quota Stopped row enables automatic continuation by default.
+`AgentAutoContinueRowTests` covers quota-only controls, reset/checking labels,
+defaults, cancellation during registration, re-arming the same stop, manual
+Continue, and the single automatic marker without a user bubble.
+Offline acceptance covers rejected versus allowed provider events, the exact
+hit-window reset, account/profile isolation, malformed/missing evidence, durable
+pending transitions and audit rollback, restart recovery, and fake-clock reset,
+polling and fallback deadlines. Fallback intervals yield elapsed minutes 5, 15,
+35, 65 and then every thirty minutes, bounded to twelve hours. Known-reset
+recovery expires at twenty-four hours. These tests use synthetic identities and
+fake provider executables; they never launch installed providers or spend usage.
+
+`CodexBackendTests` covers typed RPC/turn quota failures, hit-window selection,
+idle account updates and non-disconnecting polling timeouts.
+`AgentAutoContinueStoreTests` covers the additive migration, scoped reset cache,
+choices, claims, delivery evidence, input cancellation and atomic activity audit.
+`AgentUsageResetResolverTests` and `AgentAutoContinueScheduleTests` use a manual
+clock for source precedence, scope isolation, retry intervals and cutoff boundaries.
+`AgentAutoContinuePolicyTests`, `AgentAutoContinueDeliveryTests` and
+`AgentAutoContinueSchedulerTests` cover bounded consent without tool grants,
+audit/revocation failures, same-session delivery, atomic delivery barriers,
+identity-based transcript suppression, new-message cancellation, verified quota
+registration, polling, capacity deferral and crash/quit recovery. Timed waits use
+a manually advanced clock; provider activity uses fakes or offline executables.
+The auto-continue and receipt migrations are appended after the main migrations.
+Quota failures and reset times reuse the Stopped row. Its optional scheduling
+metadata captures the window, derived account key and chat input revision. Claude receipts use the submitted
+UUID and do not depend on tool-result user frames. Codex automatic inputs send
+a client message UUID; unbound native identity fails closed rather than becoming
+a person-authored bubble. Unknown delivery is never replayed automatically.
+`AgentAutoContinueKeepAwakeTests` covers AC-only assertion ownership, unknown
+power, both choices, multiple chats, delivery/retry transitions, expiry,
+shutdown, stale notifications and assertion/audit failures using a fake driver.
+`AgentAutoContinueLifecycleTests` covers launch, repeated wake, timer-only expiry,
+quit, cancelled termination, retired startup/poll generations and assertion failures
+without suppressing continuation. The package build compiles the real IOKit
+bindings, but these tests never acquire a real power assertion.
+
+The app installs the lifecycle owner after journal recovery, forwards
+NSWorkspace didWake, stops scheduling and power observation before chat shutdown,
+and reopens the chat owner if termination is cancelled. Launch and wake
+evaluate eligible quota stops using their saved options.
+The keep-awake choice prevents idle system sleep on positively known AC power.
+The display may sleep; normal closed-lid sleep without an external display is
+not overridden. Starting delivery releases the assertion; a definite quota rejection
+can reacquire it while waiting for the next attempt. Quit releases assertions
+without removing the durable pending intent. No wake alarms are scheduled.
+
+Later integration acceptance must additionally cover cancellation racing send,
+poll and wake; one dispatch across duplicate triggers; uncertain-delivery
+recovery without replay; exact same-session continuation; and suppression of the
+automatic user input through native reconciliation. Host-only checks require an
+isolated profile with external integrations disabled: launch/wake, quit and
+cancelled termination, AC/battery transitions, assertion release, and normal
+closed-lid sleep without an external display. The idle-sleep assertion does not
+wake the Mac. App compilation and real power behavior are not established by
+package tests. Check the row controls in light and dark appearance at the minimum window
+width. Confirm the checkbox defaults on, Keep Mac awake defaults off, the reset
+or checking state is visible, and unchecking and rechecking persists the choice.
+Check keyboard access to both controls and manual Continue, and verify that
+non-quota rows omit the controls. Any live provider
+check uses Haiku or the smallest available Codex model.
+
+
+For this foundation, run `scripts/codex-swift.sh build --build-tests`, then
+`scripts/codex-swift.sh test --skip-build --filter 'AgentAutoContinue|AgentUsageResetResolverTests|AgentSessionManagerTests'`
+in the supervised sandbox, plus `make privacy` and `make rules`. The known
+sandbox-only `ClaudeBackendTests.twoTurnsAllBlocksNativeIDsAndJournalBarrier`
+exact-argument failure remains a host check; do not alter its assertion or CLI
+launch policy. The wrapper's existing sandbox exclusions remain host checks too.
+
+The supervisor must regenerate the Xcode project and run `make app` and the host
+`make check`; SwiftPM does not compile the App adapters. In an isolated profile,
+check the IOPS callback on AC/battery changes, real assertion presence/release
+(e.g. read-only `pmset -g assertions`), forced sleep/wake, normal closed-lid sleep,
+and quit/cancelled termination. Use synthetic quota stops and fake providers in
+the isolated profile for those checks. Do not schedule wake alarms or use
+admin commands. Unit tests cannot establish these OS behaviors.

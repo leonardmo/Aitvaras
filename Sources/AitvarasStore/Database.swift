@@ -1189,6 +1189,101 @@ public final class AitvarasDatabase: Sendable {
                 BEGIN SELECT RAISE(ABORT, 'Chat already has an active input'); END;
                 """)
         }
+        m.registerMigration("v42-agent-auto-continue") { db in
+            try db.create(table: "agentAutoContinue") { t in
+                t.primaryKey("id", .text)
+                t.column("chatID", .text).notNull().references("workspaceChat", onDelete: .restrict)
+                t.column("failedInputID", .text).notNull().unique().references("agentTurn", onDelete: .restrict)
+                t.column("sessionID", .text).notNull().references("agentChatSession", onDelete: .restrict)
+                t.column("native", .text).notNull()
+                t.column("scope", .text).notNull()
+                t.column("createdAt", .datetime).notNull()
+                t.column("inputRevision", .integer).notNull().check { $0 >= 0 }
+                t.column("enabled", .boolean).notNull()
+                t.column("keepAwake", .boolean).notNull()
+                t.column("state", .text).notNull().check { ["pending", "claimed", "fired", "cancelled", "expired"].contains($0) }
+                t.column("version", .integer).notNull().check { $0 >= 0 }
+                t.column("windowID", .text)
+                t.column("resetsAt", .datetime)
+                t.column("resetSource", .text).notNull().check { ["request", "cached", "poll", "fallback"].contains($0) }
+                t.column("nextCheckAt", .datetime).notNull()
+                t.column("nextPollAt", .datetime)
+                t.column("fallbackStartedAt", .datetime).notNull()
+                t.column("retryCount", .integer).notNull().check { $0 >= 0 }
+                t.column("continuationInputID", .text).unique()
+                t.column("delivery", .text).notNull().check { ["prepared", "deliveryUnknown", "acknowledged"].contains($0) }
+                t.column("lastActivityID", .text).references("activityEvent", onDelete: .restrict)
+                t.column("updatedAt", .datetime).notNull()
+            }
+            try db.execute(sql: """
+                CREATE UNIQUE INDEX agentAutoContinueActiveChat ON agentAutoContinue(chatID)
+                WHERE state IN ('pending', 'claimed');
+                """)
+            try db.create(table: "agentChatInputRevision") { t in
+                t.primaryKey("chatID", .text).references("workspaceChat", onDelete: .restrict)
+                t.column("revision", .integer).notNull().check { $0 >= 0 }
+            }
+            try db.create(table: "agentUsageResetObservation") { t in
+                t.primaryKey("id", .text)
+                t.column("provider", .text).notNull().check { ["claude", "codex"].contains($0) }
+                t.column("providerProfile", .text).notNull()
+                t.column("accountKey", .text).notNull()
+                t.column("windowID", .text).notNull()
+                t.column("resetsAt", .datetime).notNull()
+                t.column("observedAt", .datetime).notNull()
+                t.uniqueKey(["provider", "providerProfile", "accountKey", "windowID"])
+            }
+        }
+        m.registerMigration("v43-agent-automatic-input-receipts") { db in
+            try db.create(table: "agentAutomaticInput") { t in
+                t.primaryKey("id", .text).references("agentTurn", onDelete: .restrict)
+                t.column("intentID", .text).notNull().references("agentAutoContinue", onDelete: .restrict)
+                t.column("sessionID", .text).notNull().references("agentChatSession", onDelete: .restrict)
+                t.column("native", .text).notNull()
+                t.column("nativeMessageID", .text)
+                t.column("nativeTurnID", .text)
+                t.uniqueKey(["sessionID", "nativeMessageID"])
+            }
+        }
+        m.registerMigration("v44-agent-account-keys") { db in
+            let intents = try Row.fetchAll(db, sql: """
+                SELECT id, scope FROM agentAutoContinue WHERE json_type(scope, '$.accountID') IS NOT NULL
+                """)
+            for row in intents {
+                let scope: String = row["scope"]
+                let id: UUID = row["id"]
+                guard case .object(var fields)? = JSONValue.parse(scope) else { continue }
+                let raw = fields.removeValue(forKey: "accountID")?.stringValue
+                if let provider = fields["provider"]?.stringValue.flatMap(AgentProvider.init(rawValue:)),
+                   let profile = fields["providerProfile"]?.stringValue,
+                   let key = AgentUsageLimitScope.deriveAccountKey(provider: provider, profile: profile, accountID: raw) {
+                    fields["accountKey"] = .string(key)
+                }
+                try db.execute(sql: "UPDATE agentAutoContinue SET scope = ? WHERE id = ?",
+                               arguments: [JSONValue.object(fields).jsonString, id])
+            }
+            let stops = try Row.fetchAll(db, sql: """
+                SELECT id, payloadJSON FROM agentTranscriptEntry WHERE kind = 'stopped' AND
+                    json_type(CASE WHEN json_valid(payloadJSON) THEN payloadJSON END, '$.quotaContext.accountID') IS NOT NULL
+                """)
+            for row in stops {
+                let payload: String = row["payloadJSON"]
+                let id: UUID = row["id"]
+                guard case .object(var fields)? = JSONValue.parse(payload),
+                      case .object(var context)? = fields["quotaContext"] else { continue }
+                let raw = context.removeValue(forKey: "accountID")?.stringValue
+                if let provider = fields["provider"]?.stringValue.flatMap(AgentProvider.init(rawValue:)),
+                   let profile = fields["providerProfile"]?.stringValue,
+                   let key = AgentUsageLimitScope.deriveAccountKey(provider: provider, profile: profile, accountID: raw) {
+                    context["accountKey"] = .string(key)
+                }
+                fields["quotaContext"] = .object(context)
+                try db.execute(sql: "UPDATE agentTranscriptEntry SET payloadJSON = ? WHERE id = ?",
+                               arguments: [JSONValue.object(fields).jsonString, id])
+            }
+            // Rate limit observations are disposable. New observations require a known key.
+            try db.execute(sql: "DELETE FROM agentUsageResetObservation")
+        }
         return m
     }
 

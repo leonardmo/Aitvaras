@@ -13,6 +13,9 @@ public actor CodexBackend: AgentBackend {
     private var generation = UUID()
     private var connecting: Task<AgentWire, Error>?
     private var runs: [String: CodexRun] = [:]
+    private var observedLimits: [AgentRateLimitWindow] = []
+    private var limitSubscribers: [UUID: AsyncStream<[AgentRateLimitWindow]>.Continuation] = [:]
+    private var observedAccountID: String?
     private var loginResults: [String: Bool] = [:]
     private var loginInProgress = false
     private var mcpLogin: (name: String, generation: UUID)?
@@ -67,8 +70,10 @@ public actor CodexBackend: AgentBackend {
         let account = try await rpc("account/read", .object(["refreshToken": .bool(false)]))["account"]
         let authentication: AgentStatus.Authentication = account == nil || account == .null ? .signedOut
             : account?["type"]?.stringValue == "chatgpt" ? .subscription : .unsupported
-        return AgentStatus(installed: true, authentication: authentication, capabilities: subscriptionCapabilities,
-                           accountID: account?["chatgptAccountId"]?.stringValue ?? account?["id"]?.stringValue)
+        let accountID = account?["chatgptAccountId"]?.stringValue ?? account?["id"]?.stringValue
+        if authentication != .subscription || accountID != observedAccountID { publishRateLimits([]) }
+        observedAccountID = accountID
+        return AgentStatus(installed: true, authentication: authentication, capabilities: subscriptionCapabilities, accountID: accountID)
     }
     public func signIn(onBrowserURL: @escaping @Sendable (URL) async -> Void) async throws {
         guard !loginInProgress else { throw AgentFailure.invalidTransition }
@@ -84,6 +89,7 @@ public actor CodexBackend: AgentBackend {
                 try Task.checkCancellation()
                 if let success = loginResults[id] {
                     guard success else { throw AgentFailure.authRequired }
+                    publishRateLimits([]); observedAccountID = nil
                     return
                 }
                 guard wire != nil else { throw AgentFailure.crashed(exitCode: nil) }
@@ -191,8 +197,30 @@ public actor CodexBackend: AgentBackend {
         }
     }
     public func rateLimits() async throws -> [AgentRateLimitWindow] {
-        let result = try await rpc("account/rateLimits/read")
-        return codexRateLimits(result)
+        try await rateLimits(timeout: .seconds(5))
+    }
+    func rateLimits(timeout: Duration) async throws -> [AgentRateLimitWindow] {
+        let connection = try await connection()
+        let result: JSONValue
+        do { result = try await connection.request("account/rateLimits/read", timeout: timeout, failOnTimeout: false) }
+        catch let rejection as AgentUsageLimitRejection { throw AgentFailure.quota(resetsAt: rejection.evidence.resetsAt) }
+        guard wire === connection else { throw AgentFailure.invalidTransition }
+        let windows = codexRateLimits(result)
+        publishRateLimits(windows)
+        return windows
+    }
+    public func rateLimitUpdates() async -> AsyncStream<[AgentRateLimitWindow]> {
+        let key = UUID()
+        let (stream, continuation) = AsyncStream<[AgentRateLimitWindow]>.makeStream(bufferingPolicy: .bufferingNewest(1))
+        limitSubscribers[key] = continuation
+        continuation.yield(observedLimits)
+        continuation.onTermination = { [weak self] _ in Task { await self?.detachRateLimits(key) } }
+        return stream
+    }
+    private func detachRateLimits(_ key: UUID) { limitSubscribers.removeValue(forKey: key) }
+    private func publishRateLimits(_ windows: [AgentRateLimitWindow]) {
+        observedLimits = windows
+        for continuation in limitSubscribers.values { continuation.yield(windows) }
     }
     public func commands(directory: URL) async throws -> [AgentCommand] {
         return try AgentCommandCatalog.codex(await rpc("skills/list", .object([
@@ -242,7 +270,8 @@ public actor CodexBackend: AgentBackend {
     }
     public func start(_ configuration: AgentSessionConfiguration) async throws -> any AgentRun {
         guard !configuration.forkSession, configuration.resumeSessionAt == nil else { throw AgentFailure.unsupported }
-        let authentication = try await status().authentication
+        let status = try await status()
+        let authentication = status.authentication
         guard authentication == .subscription else {
             throw authentication == .signedOut ? AgentFailure.authRequired : AgentFailure.unsupported
         }
@@ -258,12 +287,15 @@ public actor CodexBackend: AgentBackend {
             parameters["threadId"] = .string(resume.nativeID); method = "thread/resume"
         } else { method = "thread/start" }
         let connection = try await connection()
-        let result = try await connection.request(method, .object(parameters))
+        let result: JSONValue
+        do { result = try await connection.request(method, .object(parameters)) }
+        catch let rejection as AgentUsageLimitRejection { throw AgentFailure.quota(resetsAt: rejection.evidence.resetsAt) }
         guard wire === connection else { throw AgentFailure.invalidTransition }
         guard let nativeID = result["thread"]?["id"]?.stringValue, runs[nativeID] == nil else { throw AgentFailure.invalidRequest }
         if let provider = result["thread"]?["modelProvider"]?.stringValue, provider != "openai" { throw AgentFailure.unsupported }
         let session = AgentSessionID(provider: .codex, profile: profile, nativeID: nativeID)
-        let run = CodexRun(backend: self, wire: connection, session: session, configuration: configuration)
+        let run = CodexRun(backend: self, wire: connection, session: session, configuration: configuration, accountID: status.accountID,
+            initialLimitWindows: observedLimits)
         runs[nativeID] = run
         await run.started()
         if availableSetup.serversAvailable { await run.setup(availableSetup) }
@@ -277,7 +309,8 @@ public actor CodexBackend: AgentBackend {
     }
 
     func rpc(_ method: String, _ parameters: JSONValue = .object([:])) async throws -> JSONValue {
-        try await connection().request(method, parameters)
+        do { return try await connection().request(method, parameters) }
+        catch let rejection as AgentUsageLimitRejection { throw AgentFailure.quota(resetsAt: rejection.evidence.resetsAt) }
     }
     func reply(_ id: AgentRequestID, result: JSONValue?, error: Bool = false) async throws {
         guard let wire = transport else { throw AgentFailure.invalidTransition }
@@ -305,7 +338,9 @@ public actor CodexBackend: AgentBackend {
             return
         }
         if method == "account/rateLimits/updated", id == nil {
-            for run in runs.values { await run.rateLimits(codexRateLimits(parameters)) }
+            let windows = codexRateLimits(parameters)
+            publishRateLimits(windows)
+            for run in Array(runs.values) { await run.rateLimits(windows) }
             return
         }
         if method == "mcpServer/startupStatus/updated", id == nil {
@@ -333,12 +368,14 @@ public actor CodexBackend: AgentBackend {
     private func disconnected(_ error: AgentFailureReport, generation: UUID) async {
         guard generation == self.generation else { return }
         let current = runs; runs.removeAll(); wire = nil; transport = nil
+        publishRateLimits([]); observedAccountID = nil
         availableSetup = .init(provider: .codex); mcpUpdates = [:]; mcpEpoch = 0
         for run in current.values { await run.disconnected(error) }
     }
     /// Application-level disposal; shutting down one run leaves other threads alive.
     public func shutdown() async throws {
         generation = UUID()
+        publishRateLimits([]); observedAccountID = nil
         availableSetup = .init(provider: .codex); mcpUpdates = [:]; mcpEpoch = 0
         let active = runs; runs.removeAll()
         let current = transport; wire = nil; transport = nil
@@ -362,7 +399,7 @@ func codexRateLimits(_ value: JSONValue) -> [AgentRateLimitWindow] {
             guard let window = snapshot[name], window != .null else { return nil }
             return AgentRateLimitWindow(id: key + "." + name,
                 utilization: window["usedPercent"]?.doubleValue.map { min(1, max(0, $0 / 100)) },
-                duration: window["windowDurationMins"]?.doubleValue.map { $0 * 60 }, resetsAt: window["resetsAt"]?.date)
+                duration: window["windowDurationMins"]?.doubleValue.map { $0 * 60 }, resetsAt: window["resetsAt"]?.usageResetDate)
         }
     }
 }

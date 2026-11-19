@@ -165,12 +165,19 @@ public protocol AgentSessionPersistence: Sendable {
     func orderAgentEntries(chatID: UUID, ids: [UUID]) throws
     func prepareAgentTurn(_ turn: AgentJournalTurn) throws
     func prepareAgentTurn(_ turn: AgentJournalTurn, context: ChatContextProjection?) throws
+    func quotaStops() throws -> [AgentQuotaStop]
+    func prepareAutomaticTurn(_ turn: AgentJournalTurn, authorization: AgentAutoContinue) throws
+    func beginAutomaticDelivery(id: UUID, authorization: AgentAutoContinue, now: Date) throws
+    func automaticInput(id: UUID) throws -> AgentAutomaticInput?
+    func bindAutomaticInput(id: UUID, messageID: String?, turnID: String?) throws
     func agentTurn(id: UUID) throws -> AgentJournalTurn?
     func latestAgentTurn(chatID: UUID) throws -> AgentJournalTurn?
     func advanceAgentDelivery(id: UUID, to state: AgentDeliveryState) throws
     func saveAgentPartial(id: UUID, text: String) throws
     func finishAgentTurn(id: UUID, state: AgentJournalState) throws
     @discardableResult func finishAgentTurn(id: UUID, state: AgentJournalState, stop: AgentStopReason?) throws -> AgentTranscriptEntry?
+    func finishAgentTurn(id: UUID, state: AgentJournalState, stop: AgentStopReason?,
+                         quotaContext: AgentStoppedTurn.QuotaContext?) throws -> AgentTranscriptEntry?
     func prepareAgentRecovery(_ turn: AgentJournalTurn, context: ChatContextProjection?, entry: AgentTranscriptEntry,
                               stoppedEntryID: UUID, action: AgentRecoveryAction, session: AgentChatSession) throws
     func claimAgentResend(id: UUID) throws -> AgentJournalTurn
@@ -180,6 +187,10 @@ public protocol AgentSessionPersistence: Sendable {
 }
 
 extension AgentSessionPersistence {
+    public func finishAgentTurn(id: UUID, state: AgentJournalState, stop: AgentStopReason?,
+                                quotaContext: AgentStoppedTurn.QuotaContext?) throws -> AgentTranscriptEntry? {
+        try finishAgentTurn(id: id, state: state, stop: stop)
+    }
     public func finishAgentTurn(id: UUID, state: AgentJournalState, stop: AgentStopReason?) throws -> AgentTranscriptEntry? {
         try finishAgentTurn(id: id, state: state); return nil
     }
@@ -187,6 +198,12 @@ extension AgentSessionPersistence {
                                      stoppedEntryID: UUID, action: AgentRecoveryAction, session: AgentChatSession) throws {
         throw AgentFailure.unsupported
     }
+    public func quotaStops() throws -> [AgentQuotaStop] { [] }
+    public func prepareAutomaticTurn(_ turn: AgentJournalTurn, authorization: AgentAutoContinue) throws { throw AgentFailure.unsupported }
+    public func beginAutomaticDelivery(id: UUID, authorization: AgentAutoContinue, now: Date) throws { throw AgentFailure.unsupported }
+    public func automaticInput(id: UUID) throws -> AgentAutomaticInput? { nil }
+    public func bindAutomaticInput(id: UUID, messageID: String?, turnID: String?) throws { throw AgentFailure.unsupported }
+
     public func agentSessions(chatID: UUID) throws -> [AgentChatSession] {
         try [AgentProvider.claude, .codex, .local].compactMap { try agentSession(chatID: chatID, provider: $0) }
     }
@@ -225,4 +242,27 @@ extension AgentTranscriptEntry {
                     "revision": message["revision"] ?? .null, "externalID": message["externalID"] ?? .null]).jsonString)
         }
     }
+}
+
+/// Dormant storage seam; scheduling/dispatch is wired only after row controls exist.
+public protocol AgentAutoContinuePersistence: Sendable {
+    func validate(_ authorization: AgentAutoContinue) throws
+    func hasValidSession(_ value: AgentAutoContinue) throws -> Bool
+    func pending() throws -> [AgentAutoContinue]
+    func continuation(id: UUID) throws -> AgentAutoContinue?
+    func continuation(failedInputID: UUID) throws -> AgentAutoContinue?
+    func inputRevision(chatID: UUID) throws -> Int
+    @discardableResult func schedule(_ value: AgentAutoContinue, causedBy: UUID?) throws -> AgentAutoContinue
+    @discardableResult func setOptions(id: UUID, enabled: Bool, keepAwake: Bool, now: Date) throws -> AgentAutoContinue
+    @discardableResult func reschedule(id: UUID, version: Int, windowID: String?, resetsAt: Date?, source: AgentUsageResetSource,
+                                      nextCheckAt: Date, nextPollAt: Date?, now: Date) throws -> AgentAutoContinue
+    @discardableResult func claim(id: UUID, version: Int, inputID: UUID, now: Date) throws -> AgentAutoContinue
+    @discardableResult func advanceDelivery(id: UUID, inputID: UUID, to: AgentDeliveryState, now: Date) throws -> AgentAutoContinue
+    @discardableResult func retryAfterQuota(id: UUID, inputID: UUID, nextCheckAt: Date, now: Date) throws -> AgentAutoContinue
+    @discardableResult func finish(id: UUID, state: AgentAutoContinue.State, now: Date) throws -> AgentAutoContinue
+    func releasePrepared(id: UUID, inputID: UUID?, now: Date) throws
+    func retryAutomatic(id: UUID, inputID: UUID, reset: AgentUsageResetResolution?, nextCheckAt: Date, nextPollAt: Date?, now: Date) throws
+    func noteNewInput(chatID: UUID, now: Date) throws
+    func observe(_ observation: AgentUsageResetObservation) throws
+    func observations(scope: AgentUsageLimitScope) throws -> [AgentUsageResetObservation]
 }

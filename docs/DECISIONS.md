@@ -435,7 +435,7 @@ Provider-reported result/assistant errors use the fixed `providerError` case
 and the Connection lost actions. Internal catches retain `unknown` or their
 safe store/history category; provider error text never becomes composer copy.
 
-Recovery is manual. The manager's recovery API validates the original durable
+Manual recovery remains available for Stopped rows. The manager's recovery API validates the original durable
 session and rejects absent or changed native identities for Continue. Continue
 checks Claude's authoritative system/init identity; foreign session IDs on
 ordinary tool, subagent, hook or compaction frames do not terminate a turn. Continue
@@ -446,8 +446,8 @@ instruction; an edited native message renders as user text. Retry restores the
 original wire prompt and selected composer bytes, including when delivery is
 unknown. Each click claims the stopped row and prepares one new journaled attempt
 atomically before writing to the provider. Old delivery evidence is retained;
-repeated/stale claims cannot send again. There is no reset timer or automatic
-continuation; issue #27 may use this explicit recovery API in a later change.
+repeated/stale claims cannot send again. Usage-limit rows also support the
+separately audited automatic continuation in D41.
 Composer failures remain only for provably undelivered input. Stopped diagnostics
 stay outside provider context, and Continued markers delimit their own journal
 when selecting completed assistant context.
@@ -1049,3 +1049,51 @@ switch and raise attention. A merged
 or closed request stops watching and records the outcome. Watch transitions
 and the turn's Activity mirror contain metadata only. A new opt-in starts
 a fresh watch and baselines the discussion again.
+
+## D41 — Continue once after a provider usage reset ✅ (2026-11-18)
+
+An eligible usage-limit Stopped row offers “Auto-continue when the limit resets”,
+checked by default. Unchecking cancels the pending continuation. Checking it
+again re-arms the same eligible stop. The row shows the reset time or that
+Aitvaras is checking for it. “Keep Mac awake until it continues” defaults off
+and appears directly below the first choice. Manual Continue remains available
+through the existing recovery action. A usage-limit row with an unknown
+provider account explains why automatic continuation is unavailable.
+The saved row choice authorizes one bounded continuation through the existing
+policy/action coordinator; it never grants approval to subsequent tools.
+
+The continuation sends exactly “Continue where you stopped.” to the failed
+turn's native session and provider profile. Aitvaras shows “Continued automatically
+after the usage reset”, never a user bubble. Native-history reconciliation must
+recognize only the exact recorded automatic input, not matching user-authored text.
+Any valid new-message submission in that chat cancels the pending intent, even
+if subsequent provider startup fails. A later usage stop gets fresh defaults.
+
+Reset evidence comes first from the failing request's hit window, then the last
+relevant observation for that provider account/profile. Both sides of an
+account match must be known. Persist only a lowercase hex SHA-256 key over
+the provider, profile and provider account ID, framed as a JSON array. Raw
+account IDs are transient and never appear in the database, activity or logs.
+Codex also polls its
+CLI's account/rateLimits/read every ten minutes while waiting, without a model
+prompt. With no usable reset, retry intervals are five, ten, twenty, then thirty
+minutes repeatedly: elapsed minutes 5, 15, 35, 65, and so on. This fallback ends
+after twelve hours; definite quota rejections may advance the same intent.
+Unknown delivery is never automatically replayed. A successful continuation
+consumes the intent; a later usage stop creates a new one.
+
+Pending work and both choices survive quit/sleep. Launch and NSWorkspace didWake
+re-evaluate it, requiring the choice still on, no intervening chat input, and a
+known reset less than twenty-four hours old. Missing/deleted profiles or changed
+native-session identity never redirect execution. Scheduled, cancelled, fired
+and expired transitions are durably audited with provenance and metadata only.
+
+An optional idle-system-sleep IOPMAssertion is held only while eligible work is
+pending and AC power is positively known, and is released on battery/unknown
+power, firing, cancellation, expiry, loss of profile eligibility or shutdown. It does not override normal
+closed-lid sleep without an external display, wake a sleeping Mac, or survive
+app termination. Wake alarms remain outside this feature (issue #28).
+
+The app starts the scheduler after journal recovery. Only verified usage-limit
+stops can arm it. Offline fake-provider and clock tests spend no usage. Any
+later live check uses Haiku or the smallest available Codex model.

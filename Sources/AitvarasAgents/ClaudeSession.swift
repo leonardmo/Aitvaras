@@ -2,6 +2,7 @@ import Foundation
 
 actor ClaudeRun: AgentRun {
     nonisolated let id: UUID
+    nonisolated let accountID: String?
     nonisolated let mcpSetup: AgentMCPLaunchStatus?
     nonisolated let permissionSource: AgentPermissionSource
     private let validateProjectServers: @Sendable (JSONValue) async throws -> Void
@@ -21,7 +22,7 @@ actor ClaudeRun: AgentRun {
     private var acknowledged = false
     private var interrupted = false
     private var assistantFailure: AgentFailure?
-    private var rateLimitReset: Date?
+    private var usageFailure: AgentFailure?
     private var closed = false
     private var terminalFailure: AgentFailure?
     private let verifiesResumeIdentity: Bool
@@ -37,9 +38,10 @@ actor ClaudeRun: AgentRun {
     private(set) var availableCommands: [AgentCommand]?
 
     init(executable: URL, environment: [String: String], profile: String, configuration: AgentSessionConfiguration,
-         id: UUID = UUID(), runtimeFile: AgentMCPRuntimeFile? = nil, mcpSetup: AgentMCPLaunchStatus? = nil,
+         id: UUID = UUID(), accountID: String? = nil, runtimeFile: AgentMCPRuntimeFile? = nil, mcpSetup: AgentMCPLaunchStatus? = nil,
          permissionSource: AgentPermissionSource = .repo, metadataReader: AgentProjectMetadataReader? = nil,
          validateProjectServers: @escaping @Sendable (JSONValue) async throws -> Void) {
+        self.accountID = accountID
         self.validateProjectServers = validateProjectServers
         self.id = id; self.runtimeFile = runtimeFile; self.mcpSetup = mcpSetup
         self.permissionSource = permissionSource
@@ -120,7 +122,7 @@ actor ClaudeRun: AgentRun {
         guard !closed, input == nil, !writing else { throw AgentFailure.invalidTransition }
         let frame = try userFrame(value)
         autonomous = false
-        input = value.id; acknowledged = false; interrupted = false; assistantFailure = nil; rateLimitReset = nil; streamedThinking.removeAll(); streamTools.removeAll(); streamTexts.removeAll(); streamingMessageID = nil
+        input = value.id; acknowledged = false; interrupted = false; assistantFailure = nil; usageFailure = nil; streamedThinking.removeAll(); streamTools.removeAll(); streamTexts.removeAll(); streamingMessageID = nil
         do { try await willDeliver() } catch { input = nil; throw error }
         guard !closed, input == value.id, !interrupted else { throw AgentFailure.invalidTransition }
         emit(.delivery(.deliveryUnknown))
@@ -178,7 +180,7 @@ actor ClaudeRun: AgentRun {
             || (type == "user" && injectedReason(value) != nil)
         if input == nil, startsTurn {
             let reason = injectedReason(value) ?? lastAutonomousReason
-            input = UUID(); autonomous = true; acknowledged = false; interrupted = false; assistantFailure = nil
+            input = UUID(); autonomous = true; acknowledged = false; interrupted = false; assistantFailure = nil; usageFailure = nil
             streamedThinking.removeAll(); streamTools.removeAll(); streamTexts.removeAll(); streamingMessageID = nil
             emit(.autonomousTurnStarted(input!, reason))
             emit(.delivery(.deliveryUnknown))
@@ -260,18 +262,18 @@ actor ClaudeRun: AgentRun {
             acknowledge()
             if let error = value["error"]?.stringValue {
                 if error == "authentication_failed" { assistantFailure = .authRequired }
-                else if ["rate_limit", "rate_limit_error", "usage_limit"].contains(error) { assistantFailure = .quota(resetsAt: rateLimitReset) }
-                else { assistantFailure = .providerError }
+                else if ["rate_limit", "rate_limit_error", "usage_limit", "usage_limit_reached"].contains(error) {
+                    usageFailure = usageFailure ?? .quota(resetsAt: nil)
+                } else { assistantFailure = .providerError }
             }
             // Injected reminders are provenance for the marker, never a user bubble.
             if !(autonomous && type == "user" && injectedReason(value) != nil) { await parseMessage(value) }
         case "rate_limit_event":
             let info = value["rate_limit_info"] ?? .null
-            if info["status"]?.stringValue == "rejected" {
-                rateLimitReset = info["resetsAt"]?.date
-                assistantFailure = .quota(resetsAt: rateLimitReset)
-            }
+            let evidence = AgentUsageLimit.claude(info)
             emit(.rateLimits(claudeRateLimits(info)))
+            emit(.usageLimit(evidence))
+            if input != nil, evidence.status == .rejected { usageFailure = .quota(resetsAt: evidence.resetsAt) }
         case "result":
             if let nativeID = value["uuid"]?.stringValue, !seenResults.insert(nativeID).inserted { return }
             guard input != nil else { return }
@@ -284,7 +286,7 @@ actor ClaudeRun: AgentRun {
             // That error must not turn a user Stop into an unknown failure.
             let aborted = value["terminal_reason"]?.stringValue == "aborted_streaming"
             let outcome: AgentTurnOutcome = (interrupted || aborted)
-                ? .interrupted : assistantFailure.map { .failed($0) }
+                ? .interrupted : (assistantFailure == .authRequired ? assistantFailure : usageFailure ?? assistantFailure).map { .failed($0) }
                     ?? (value["is_error"]?.boolValue == false ? .completed : .failed(.providerError))
             let completed = [input!] + queue
             continuation.yield(.init(scope: .init(runID: id, session: session, inputID: input,
@@ -531,6 +533,6 @@ func claudeRateLimits(_ value: JSONValue) -> [AgentRateLimitWindow] {
     (value["unifiedWindows"]?.objectValue ?? [:]).sorted { $0.key < $1.key }.map { key, window in
         AgentRateLimitWindow(id: key, utilization: window["utilization"]?.doubleValue.map { min(1, max(0, $0)) },
             duration: key == "five_hour" ? 5 * 3600 : key == "seven_day" ? 7 * 86400 : nil,
-            resetsAt: window["resetsAt"]?.date)
+            resetsAt: window["resetsAt"]?.usageResetDate)
     }
 }

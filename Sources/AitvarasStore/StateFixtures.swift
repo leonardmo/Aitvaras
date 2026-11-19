@@ -1,5 +1,6 @@
 import Foundation
 import AitvarasCore
+import AitvarasAgents
 
 /// Seedable demo state for testing (TESTING.md): a fictional persona —
 /// "Alex", a physics student with a small homelab — so UI runs,
@@ -98,6 +99,34 @@ public enum StateFixtures {
             evidenceCount: 7,
             explanation: "Suggested—not active—after 7 weekday runs around the same time.",
             dedupeKey: "fixture:focus-schedule"))
+        try seedStoppedChats(into: stores)
         return true
+    }
+
+    private static func seedStoppedChats(into stores: Stores) throws {
+        let project = try stores.createWorkspaceProject(title: "Agent recovery examples")
+        let now = Date.now
+        let quota = AgentStopReason.failure(.quota(resetsAt: now.addingTimeInterval(2 * 3600)))
+        for (title, reason) in [("Usage limit example", quota), ("Connection lost example", .connectionClosed)] {
+            let chat = try stores.createWorkspaceChat(projectID: project.id, title: title)
+            let native = AgentSessionID(provider: .claude, profile: "default", nativeID: UUID().uuidString)
+            var session = AgentChatSession(chatID: chat.id, provider: .claude, cwd: "/tmp", model: "haiku")
+            session.sessionID = native
+            try stores.saveAgentSession(session)
+            try stores.setValues(["agent.provider.\(chat.id.uuidString)": session.provider.rawValue])
+            let input = AgentInput(text: "Summarize the example notes.")
+            let turn = AgentJournalTurn(input: input, chatID: chat.id, sessionID: session.id)
+            try stores.prepareAgentTurn(turn)
+            _ = try stores.saveAgentEntry(AgentTranscriptEntry(id: input.id, chatID: chat.id, provider: .claude,
+                kind: "user", text: input.text, sessionID: session.id, nativeMessageID: input.id.uuidString))
+            try stores.advanceAgentDelivery(id: turn.id, to: .deliveryUnknown)
+            let context: AgentStoppedTurn.QuotaContext?
+            if reason.kind == .quota {
+                try stores.advanceAgentDelivery(id: turn.id, to: .acknowledged)
+                let scope = AgentUsageLimitScope(provider: .claude, accountID: "example-fixture-account")
+                context = .init(windowID: "five_hour", accountKey: scope.accountKey, inputRevision: 0, stoppedAt: now)
+            } else { context = nil }
+            _ = try stores.finishAgentTurn(id: turn.id, state: .failed, stop: reason, quotaContext: context)
+        }
     }
 }

@@ -89,10 +89,11 @@ public struct AgentInput: Sendable, Equatable {
     public let attachments: [AgentAttachment]
     public let mentions: [AgentFileMention]
     public let command: AgentCommand?
+    public let automaticIntentID: UUID?
     public init(id: UUID = UUID(), text: String, attachments: [AgentAttachment] = [],
-                mentions: [AgentFileMention] = [], command: AgentCommand? = nil) {
+                mentions: [AgentFileMention] = [], command: AgentCommand? = nil, automaticIntentID: UUID? = nil) {
         self.id = id; self.text = text; self.attachments = attachments
-        self.mentions = mentions; self.command = command
+        self.mentions = mentions; self.command = command; self.automaticIntentID = automaticIntentID
     }
 }
 
@@ -125,6 +126,8 @@ public protocol AgentBackend: Actor {
     func status() async throws -> AgentStatus
     /// Browser URLs are transient, never transcript or Activity content.
     func signIn(onBrowserURL: @escaping @Sendable (URL) async -> Void) async throws
+    func rateLimits() async throws -> [AgentRateLimitWindow]
+    func rateLimitUpdates() async throws -> AsyncStream<[AgentRateLimitWindow]>
     func models() async throws -> [AgentModel]
     func commands(directory: URL) async throws -> [AgentCommand]
     func commands(directory: URL, projectID: UUID?) async throws -> [AgentCommand]
@@ -142,6 +145,8 @@ public protocol AgentBackend: Actor {
 }
 
 extension AgentBackend {
+    public func rateLimits() async throws -> [AgentRateLimitWindow] { throw AgentFailure.unsupported }
+    public func rateLimitUpdates() async throws -> AsyncStream<[AgentRateLimitWindow]> { throw AgentFailure.unsupported }
     public func nativeSessions(folder: URL?, cursor: String?, archived: Bool) async throws -> AgentPage<AgentSessionSummary> {
         guard let folder, !archived else { throw AgentFailure.unsupported }
         return try await listSessions(folder: folder, cursor: cursor)
@@ -158,6 +163,7 @@ extension AgentBackend {
 public protocol AgentRun: Actor {
     /// One live connection generation. Reconnection must allocate a new ID.
     nonisolated var id: UUID { get }
+    nonisolated var accountID: String? { get }
     nonisolated var mcpSetup: AgentMCPLaunchStatus? { get }
     nonisolated var permissionSource: AgentPermissionSource { get }
     /// Subscribe before send. Losing events must fail the run, never drop silently.
@@ -179,6 +185,7 @@ public protocol AgentRun: Actor {
 }
 
 extension AgentRun {
+    public nonisolated var accountID: String? { nil }
     public nonisolated var mcpSetup: AgentMCPLaunchStatus? { nil }
     public nonisolated var permissionSource: AgentPermissionSource { .repo }
     public func followup(_ input: AgentInput, willDeliver: @escaping @Sendable () async throws -> Void) async throws {

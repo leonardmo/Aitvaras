@@ -189,6 +189,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             MainActor.assumeIsolated {
                 AppModel.shared.noteNightlySchedulingOpportunity()
                 AppModel.shared.refreshSidebandData()
+                AppModel.shared.noteAutoContinueWake()
                 self?.wakeBriefingPending = true
                 // A device wake can be a background maintenance wake. Wait
                 // for a screen/session signal before presenting anything.
@@ -268,7 +269,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 sender.reply(toApplicationShouldTerminate: true)
             } catch {
                 terminationPending = false
-                AppModel.shared.chatModel?.resumeAfterCancelledTermination()
+                await AppModel.shared.resumeAgentChatsAfterCancelledTermination()
                 AppModel.shared.nativeWorkspace.operations.resumeAfterCancelledTermination()
                 CaptureWindows.shared.showSaveError(error)
                 sender.reply(toApplicationShouldTerminate: false)
@@ -287,6 +288,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // The open chat would otherwise vanish unlearned; the flush is
         // best-effort — termination won't wait for a slow model.
         // Conversations are already durable; quitting never starts new inference.
+        AppModel.shared.stopAutoContinuePowerObservation()
         AppModel.shared.stopNewsScheduler()
         AppModel.shared.stopNightlyConsolidationScheduler()
         AppModel.shared.modelDownloads.cancelActive()

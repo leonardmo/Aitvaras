@@ -70,6 +70,8 @@ final class AppModel {
     private(set) var hub: ConnectorHub?
     private(set) var agentLoop: AgentLoop?
     private(set) var agentSessionManager: AgentSessionManager?
+    private(set) var agentAutoContinueLifecycle: AgentAutoContinueLifecycle?
+    private(set) var agentAutoContinuePowerObserver: AgentAutoContinuePowerObserver?
     private(set) var agentSetupCoordinator: AgentSetupCoordinator?
     private(set) var chatModel: ChatModel?
     private(set) var localAgentReplyActive = false
@@ -308,7 +310,7 @@ final class AppModel {
             // profile with the fictional demo persona. Combine with
             // AITVARAS_STATE_DIR for a throwaway profile; a database that
             // already has facts is never touched.
-            if CommandLine.arguments.contains("--seed-demo-state") {
+            if CommandLine.arguments.contains("--seed-demo-state"), AitvarasPaths.isIsolated {
                 _ = try? StateFixtures.seedDemoProfile(into: stores)
             }
             // `--seed-home-attention` (D36, TESTING.md) adds fictional attention
@@ -465,7 +467,11 @@ final class AppModel {
             return try await self.localAgentReply(agentLoop: agentLoop, configuration: configuration, input: input)
         }
         let backends: [AgentProvider: any AgentBackend] = [.claude: claude, .codex: codex, .local: local]
-        let available = backends.filter { AgentProviderLaunchPolicy.allows($0.key, environment: inherited, isolated: isolated) }
+        let demo = CommandLine.arguments.contains("--seed-demo-state")
+        let available = backends.filter {
+            if demo { return $0.key == .local }
+            return AgentProviderLaunchPolicy.allows($0.key, environment: inherited, isolated: isolated)
+        }
         let profileBackends = AgentProfileBackends { choice in
             guard let fallback = available[choice.provider] else { throw AgentFailure.offline }
             guard choice.provider == .claude, choice.profile != "default" else { return fallback }
@@ -486,10 +492,16 @@ final class AppModel {
             },
             audit: { _ = try stores.record($0) })
         agentSetupCoordinator = setup
+        let continuationStore = AgentAutoContinueStore(db: stores.db)
         let manager = try AgentSessionManager(persistence: stores, backend: { provider in
             guard let backend = available[provider] else { throw AgentFailure.offline }
             return backend
-        }, profileBackend: { try profileBackends.backend($0) }, audit: { _ = try stores.record($0) }, mcpPolicy: mcpPolicy)
+        }, profileBackend: { try profileBackends.backend($0) }, audit: { _ = try stores.record($0) }, mcpPolicy: mcpPolicy, autoContinuePersistence: continuationStore)
+        let scheduler = AgentAutoContinueScheduler(manager: manager, turns: stores, persistence: continuationStore,
+            backend: { try profileBackends.backend($0) }, audit: { _ = try stores.record($0) })
+        let keepAwake = AgentAutoContinueKeepAwake(persistence: continuationStore, audit: { _ = try stores.record($0) })
+        agentAutoContinueLifecycle = AgentAutoContinueLifecycle(manager: manager, scheduler: scheduler, keepAwake: keepAwake)
+        agentAutoContinuePowerObserver = AgentAutoContinuePowerObserver()
         nativeWorkspace.readerFactory = { provider in
             NativeBackendSessionReader(provider: provider, backend: available[provider == .claude ? .claude : .codex])
         }
@@ -498,13 +510,15 @@ final class AppModel {
         chatModel = ChatModel(manager: manager, stores: stores, backends: available, profileBackends: profileBackends,
             claudeDefaultDirectory: metadataUserDirectory ?? (isolated
                 ? AitvarasPaths.stateDirectory.appendingPathComponent("FakeProviders/claude")
-                : FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".claude")), agentSetup: setup, forgeEnvironment: environment)
+                : FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".claude")), agentSetup: setup, forgeEnvironment: environment, autoContinue: agentAutoContinueLifecycle)
         chatModel?.didCreateChat = { [weak self] id in self?.openWorkspaceChat(id) }
         chatModel?.activityChanged = { [weak self] in self?.refreshWorkspaces() }
         chatModel?.observeSidebar(workspaceSidebarChats)
         if let selectedWorkspaceChatID { chatModel?.select(selectedWorkspaceChatID) }
         else { chatModel?.prepareNew(projectID: try? stores.newChatProjectID()) }
         startPullRequestWatchScheduler()
+        startAutoContinuePowerObservation()
+        try? await agentAutoContinueLifecycle?.launch(power: SystemPowerState.autoContinuePower())
     }
 
     private func localAgentReply(agentLoop: AgentLoop, configuration: AgentSessionConfiguration,
@@ -537,7 +551,14 @@ final class AppModel {
     }
 
     func shutdownAgentChats() async throws {
-        try await chatModel?.shutdown()
+        agentAutoContinuePowerObserver?.stop()
+        var failure: (any Error)?
+        do { try await agentAutoContinueLifecycle?.prepareForTermination() }
+        catch { failure = error }
+        // Chat cleanup still runs if assertion release/auditing fails.
+        do { try await chatModel?.shutdown() }
+        catch { failure = failure ?? error }
+        if let failure { throw failure }
     }
 
     func send(_ text: String) -> Bool {

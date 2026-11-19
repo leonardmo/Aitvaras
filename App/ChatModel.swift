@@ -64,8 +64,12 @@ final class ChatModel {
         return backends[choice.provider]
     }
     func reloadProfiles() {
-        do { claudeProfiles = try stores.claudeProfiles() }
-        catch { self.error = "Claude profiles could not be loaded." }
+        do {
+            let profiles = try stores.claudeProfiles()
+            guard claudeProfiles != profiles else { return }
+            claudeProfiles = profiles
+            if let autoContinue { Task { try? await autoContinue.profilesChanged() } }
+        } catch { self.error = "Claude profiles could not be loaded." }
     }
     private func syncSelectedStatus() {
         statuses[.claude] = profileStatuses[.init(provider: .claude, profile: claudeProfile)]
@@ -223,6 +227,10 @@ final class ChatModel {
         return provider == .local ? "local" : provider == .claude ? (claudeProfiles.first { $0.nativeProfile == claudeProfile }?.defaultModel ?? "opus") : "default"
     }
     private var settings: [String: AgentChatSession] = [:]
+    private let autoContinue: AgentAutoContinueLifecycle?
+    private var autoContinueSubscription: Task<Void, Never>?
+    private var autoContinueRevision = 0
+    private var updatingAutoContinue = Set<UUID>()
     private var approvalSubscription: Task<Void, Never>?
     private var respondingRequests: Set<String> = []
     private var observedModes: [UUID: (input: UUID?, mode: AgentMode)] = [:]
@@ -288,11 +296,12 @@ final class ChatModel {
     private(set) var providerLimits: [AgentProvider: [AgentRateLimitWindow]] = [:]
     private var modelLoads: [AgentProviderChoice: (token: UUID, task: Task<[AgentModel], Error>)] = [:]
 
-    init(manager: AgentSessionManager, stores: Stores, backends: [AgentProvider: any AgentBackend], profileBackends: AgentProfileBackends? = nil, claudeDefaultDirectory: URL? = nil, agentSetup: AgentSetupCoordinator? = nil, forgeEnvironment: [String: String] = ProcessInfo.processInfo.environment) {
+    init(manager: AgentSessionManager, stores: Stores, backends: [AgentProvider: any AgentBackend], profileBackends: AgentProfileBackends? = nil, claudeDefaultDirectory: URL? = nil, agentSetup: AgentSetupCoordinator? = nil, forgeEnvironment: [String: String] = ProcessInfo.processInfo.environment, autoContinue: AgentAutoContinueLifecycle? = nil) {
         self.claudeDefaultDirectory = claudeDefaultDirectory ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".claude")
         self.profileBackends = profileBackends
         self.manager = manager; self.stores = stores; self.backends = backends
         self.agentSetup = agentSetup
+        self.autoContinue = autoContinue
         signInCoordinator = ProviderSignIn(persistence: stores)
         gitActions = AgentGitActionCoordinator(persistence: stores, audit: { _ = try stores.record($0) })
         let registry = ForgeRegistry(environment: forgeEnvironment)
@@ -307,6 +316,14 @@ final class ChatModel {
                 guard let backend = backends[provider] else { throw AgentFailure.notInstalled }; return backend
             }, profileBackend: scopedFactory, audit: { _ = try stores.record($0) })
         reloadProfiles()
+        if let autoContinue {
+            autoContinueSubscription = Task { [weak self] in
+                for await _ in await autoContinue.updates() {
+                    guard !Task.isCancelled, let self else { return }
+                    self.autoContinueRevision &+= 1
+                }
+            }
+        }
         approvalSubscription = Task { [weak self, manager] in
             for await suggestions in await manager.approvalUpdates() {
                 guard !Task.isCancelled, let self else { return }
@@ -1114,6 +1131,31 @@ final class ChatModel {
 
     var recoveryErrors: [UUID: String] = [:]
     private var recoveryTasks = Set<UUID>()
+    func autoContinueRow(_ entry: AgentTranscriptEntry) -> AgentAutoContinueRow? {
+        guard autoContinue != nil, let stop = entry.stoppedTurn, stop.reason.kind == .quota else { return nil }
+        _ = autoContinueRevision
+        let store = AgentAutoContinueStore(db: stores.db)
+        let intent = try? store.continuation(failedInputID: stop.inputID)
+        return AgentAutoContinueRow(stop: stop, intent: intent,
+            isCurrent: state?.canRecover(entry) == true && stop.quotaContext != nil)
+    }
+
+    func setAutoContinue(_ entry: AgentTranscriptEntry, option: AgentAutoContinueRowOption) {
+        guard let autoContinue, let stop = entry.stoppedTurn, chatID == entry.chatID,
+              updatingAutoContinue.insert(entry.id).inserted else { return }
+        recoveryErrors[entry.id] = nil
+        Task {
+            defer {
+                updatingAutoContinue.remove(entry.id)
+                autoContinueRevision &+= 1
+            }
+            do { try await autoContinue.setRowOption(failedInputID: stop.inputID, option) }
+            catch { recoveryErrors[entry.id] = "The automatic continuation choice could not be updated." }
+        }
+    }
+
+    func isUpdatingAutoContinue(_ entry: AgentTranscriptEntry) -> Bool { updatingAutoContinue.contains(entry.id) }
+
     func recover(_ entry: AgentTranscriptEntry, action: AgentRecoveryAction) {
         guard let stop = entry.stoppedTurn, chatID == entry.chatID, stop.actions.contains(action),
               !isBusy, !conversationBusy, signingIn == nil, recoveryTasks.insert(entry.id).inserted else { return }

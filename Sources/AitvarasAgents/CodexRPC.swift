@@ -2,6 +2,7 @@ import Foundation
 
 actor CodexRun: AgentRun {
     nonisolated let id = UUID()
+    nonisolated let accountID: String?
     nonisolated let events: AsyncThrowingStream<AgentEvent, Error>
     private let continuation: AsyncThrowingStream<AgentEvent, Error>.Continuation
     private let backend: CodexBackend
@@ -10,11 +11,13 @@ actor CodexRun: AgentRun {
     private let configuration: AgentSessionConfiguration
     private var mode: AgentMode
     private var input: UUID?
+    private var automaticInput: UUID?
     private var turn: String?
     private var userInputs: [AgentInput] = []
     private var steering = false
     private var acknowledged = false
     private var limitWindows: [AgentRateLimitWindow] = []
+    private var turnFailure: AgentFailure?
     private var closed = false
     private var requests: [AgentRequestID: AgentRequest] = [:]
     private var seenRequests: Set<AgentRequestID> = []
@@ -27,7 +30,9 @@ actor CodexRun: AgentRun {
     private var executingApprovedPlan = false
     private static let toolTypes: Set<String> = ["commandExecution", "fileChange", "mcpToolCall", "dynamicToolCall", "webSearch"]
 
-    init(backend: CodexBackend, wire: AgentWire, session: AgentSessionID, configuration: AgentSessionConfiguration) {
+    init(backend: CodexBackend, wire: AgentWire, session: AgentSessionID, configuration: AgentSessionConfiguration, accountID: String? = nil,
+         initialLimitWindows: [AgentRateLimitWindow] = []) {
+        self.accountID = accountID; limitWindows = initialLimitWindows
         self.backend = backend; self.wire = wire; self.session = session; self.configuration = configuration; mode = configuration.mode
         (events, continuation) = AsyncThrowingStream.makeStream(bufferingPolicy: .bufferingOldest(4096))
     }
@@ -51,19 +56,30 @@ actor CodexRun: AgentRun {
     func send(_ value: AgentInput, willDeliver: @escaping @Sendable () async throws -> Void) async throws {
         guard !closed, input == nil else { throw AgentFailure.invalidTransition }
         let content = try contentForDelivery(value)
+        automaticInput = value.automaticIntentID == nil ? nil : value.id
         input = value.id; userInputs = [value]; turn = nil; acknowledged = false; completedItems.removeAll(); items.removeAll()
-        proposedPlan = nil; planRequestID = nil; executingApprovedPlan = false
+        proposedPlan = nil; planRequestID = nil; executingApprovedPlan = false; turnFailure = nil
         do { try await willDeliver() } catch { input = nil; throw error }
         guard !closed, input == value.id else { throw AgentFailure.invalidTransition }
         emit(.delivery(.deliveryUnknown))
         do {
             try await startTurn(content: content, mode: mode)
         } catch {
+            var thrown = error
             if input == value.id {
-                let report = await wire.failureReport ?? AgentFailureDiagnostics.capture(error)
+                let report: AgentFailureReport
+                if let rejection = error as? AgentUsageLimitRejection {
+                    let evidence = rejection.evidence.resolving(windows: limitWindows)
+                    emit(.usageLimit(evidence))
+                    let failure = AgentFailure.quota(resetsAt: evidence.resetsAt)
+                    report = AgentFailureDiagnostics.capture(failure)
+                    thrown = failure
+                } else {
+                    report = await wire.failureReport ?? AgentFailureDiagnostics.capture(error)
+                }
                 emit(.turnEnded(.failed(report.failure)), report: report); input = nil; requests.removeAll()
             }
-            throw error
+            throw thrown
         }
     }
     func followup(_ value: AgentInput, willDeliver: @escaping @Sendable () async throws -> Void) async throws {
@@ -101,7 +117,7 @@ actor CodexRun: AgentRun {
             parameters["sandboxPolicy"] = .object(["type": .string("workspaceWrite"),
                 "writableRoots": .array(configuration.additionalDirectories.map { .string($0.path) })])
         }
-        if (content.arrayValue?.count ?? 0) > 1, let input {
+        if (automaticInput == input && !executingApprovedPlan) || (content.arrayValue?.count ?? 0) > 1, let input {
             parameters["clientUserMessageId"] = .string(input.uuidString)
         }
         if let effort = configuration.effort { parameters["effort"] = .string(effort) }
@@ -150,7 +166,7 @@ actor CodexRun: AgentRun {
            !completedTurns.contains(nativeTurn) {
             input = UUID(); turn = nativeTurn; acknowledged = false; userInputs = []
             completedItems.removeAll(); items.removeAll(); proposedPlan = nil; planRequestID = nil
-            executingApprovedPlan = false
+            executingApprovedPlan = false; turnFailure = nil; automaticInput = nil
             emit(.autonomousTurnStarted(input!, .unknown))
             emit(.delivery(.deliveryUnknown))
         }
@@ -179,20 +195,17 @@ actor CodexRun: AgentRun {
                 outputTokens: last["outputTokens"]?.int, cachedInputTokens: last["cachedInputTokens"]?.int,
                 cacheWriteInputTokens: last["cacheWriteInputTokens"]?.int, thinkingTokens: last["reasoningOutputTokens"]?.int,
                 contextTokens: usage["total"]?["totalTokens"]?.int, contextLimit: usage["modelContextWindow"]?.int)))
+        case "error":
+            if p["willRetry"]?.boolValue != true {
+                turnFailure = turnError(p["error"] ?? .null)
+            }
         case "turn/completed":
             guard let owner = input else { return }
             acknowledge()
             for item in p["turn"]?["items"]?.arrayValue ?? [] { complete(item) }
             let status = p["turn"]?["status"]?.stringValue
-            let info = p["turn"]?["error"]?["codexErrorInfo"]?.stringValue
-            let failure: AgentFailure
-            if info == "usageLimitExceeded" {
-                let reset = p["turn"]?["error"]?["resetsAt"]?.date
-                    ?? limitWindows.filter { ($0.utilization ?? 0) >= 1 }.compactMap(\.resetsAt).max()
-                failure = .quota(resetsAt: reset)
-            } else if info == "httpConnectionFailed" { failure = .offline }
-            else if info == "unauthorized" { failure = .authRequired }
-            else { failure = .providerError }
+            let error = p["turn"]?["error"]
+            let failure = error.flatMap { $0 == .null ? nil : turnError($0) } ?? turnFailure ?? .providerError
             let outcome: AgentTurnOutcome = status == "completed" ? .completed : status == "interrupted" ? .interrupted : .failed(failure)
             if let turn { completedTurns.insert(turn) }
             let unfinished = Set(items.filter { Self.toolTypes.contains($0.value["type"]?.stringValue ?? "") }.keys)
@@ -345,6 +358,17 @@ actor CodexRun: AgentRun {
     }
     func resolved(_ requestID: AgentRequestID) {
         if requests.removeValue(forKey: requestID) != nil { emit(.requestResolved(requestID)) }
+    }
+    private func turnError(_ error: JSONValue) -> AgentFailure {
+        if let evidence = AgentUsageLimit.codex(error, windows: limitWindows) {
+            emit(.usageLimit(evidence))
+            return .quota(resetsAt: evidence.resetsAt)
+        }
+        switch error["codexErrorInfo"]?.stringValue {
+        case "httpConnectionFailed": return .offline
+        case "unauthorized": return .authRequired
+        default: return .providerError
+        }
     }
     func rateLimits(_ windows: [AgentRateLimitWindow]) { limitWindows = windows; emit(.rateLimits(windows)) }
     func disconnected(_ error: AgentFailure) {
