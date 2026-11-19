@@ -62,7 +62,7 @@ let package = Package(
         ]),
         .target(
             name: "AitvarasAgent",
-            dependencies: ["AitvarasCore", "AitvarasStore", "AitvarasEngines", "AitvarasRAG", "AitvarasConnectors"]
+            dependencies: ["AitvarasCore", "AitvarasStore", "AitvarasEngines", "AitvarasRAG", "AitvarasConnectors", "AitvarasAgents"]
         ),
         .testTarget(
             name: "AitvarasCoreTests",

@@ -271,12 +271,14 @@ private struct WorkspaceGatewayToolScopesView: View {
     let projectID: UUID
     @State private var saved: GatewayToolScopeSettings?
     @State private var scopes: Set<GatewayToolScope> = []
+    @State private var knowledgeSources: [KnowledgeSourceConfiguration] = []
+    @State private var linkedSourceIDs: Set<String> = []
     @State private var message: String?
 
     var body: some View {
         GroupBox("Aitvaras tools") {
             VStack(alignment: .leading, spacing: 10) {
-                Text("Allow agents launched for this project to request these tools. Tool results can be shared with the selected provider. Each tool uses only project data and follows Aitvaras’s approval rules.")
+                Text("Allow agents launched for this project to use your Aitvaras profile tools. The provider can receive tool results. Knowledge uses the sources you link below, and gateway activity stays within this project.")
                     .font(.callout)
                 ForEach(GatewayToolScope.allCases) { scope in
                     Toggle(scope == .mail ? "Mail (read only)" : scope.rawValue.capitalized,
@@ -286,11 +288,23 @@ private struct WorkspaceGatewayToolScopesView: View {
                     .disabled(saved == nil)
                     .accessibilityIdentifier("workspace.gateway.scope.\(scope.rawValue)")
                 }
+                if scopes.contains(.knowledge) {
+                    Text("Linked Knowledge sources").font(.headline)
+                    if knowledgeSources.isEmpty {
+                        Text("Add a source in Knowledge first.").font(.callout).foregroundStyle(.secondary)
+                    }
+                    ForEach(knowledgeSources) { source in
+                        Toggle(source.name, isOn: Binding(get: { linkedSourceIDs.contains(source.id) }, set: { enabled in
+                            if enabled { linkedSourceIDs.insert(source.id) } else { linkedSourceIDs.remove(source.id) }
+                        }))
+                        .help(source.path)
+                    }
+                }
                 HStack {
                     Button("Reload", action: reload)
                     Spacer()
                     Button("Save tool access", action: save)
-                        .disabled(saved?.scopes == scopes || saved == nil)
+                        .disabled(saved == nil || (saved?.scopes == scopes && saved?.knowledgeSourceIDs == linkedSourceIDs))
                         .accessibilityIdentifier("workspace.gateway.save")
                 }
                 if let message { Text(message).font(.callout) }
@@ -305,12 +319,17 @@ private struct WorkspaceGatewayToolScopesView: View {
         do {
             guard let stores = model.stores else { throw WorkspacePolicyError.invalidPolicy }
             let settings = try stores.gatewayToolScopeSettings(projectID: projectID)
+            let sources = try stores.configuredKnowledgeSources()
             saved = settings
             scopes = settings.scopes
+            knowledgeSources = sources
+            linkedSourceIDs = settings.knowledgeSourceIDs.intersection(sources.map(\.id))
             message = nil
         } catch {
             saved = nil
             scopes = []
+            knowledgeSources = []
+            linkedSourceIDs = []
             message = "Tool access could not be loaded. Try Reload."
         }
     }
@@ -318,7 +337,8 @@ private struct WorkspaceGatewayToolScopesView: View {
     private func save() {
         guard let stores = model.stores, let saved else { return }
         do {
-            self.saved = try stores.saveGatewayToolScopes(projectID: projectID, scopes: scopes, expectedRevision: saved.revision)
+            self.saved = try stores.saveGatewayToolScopes(projectID: projectID, scopes: scopes, expectedRevision: saved.revision,
+                                                          knowledgeSourceIDs: linkedSourceIDs)
             message = "Tool access saved."
         } catch {
             message = "Tool access could not be saved. Reload and try again."

@@ -1885,6 +1885,34 @@ authorized project. On the host, build the App and verify that Project Settings
 → Gateway Tools starts with all categories off and that Save, Reload and
 revocation work in an isolated profile.
 
+For the transport-independent gateway, run the sandbox build and filter with
+`MCPGatewayTests|GatewayCallCoordinatorTests|GatewayOwnToolsTests|ConnectorHubTests`.
+Replay initialization, pagination and stale cursors, duplicate names and
+request IDs, malformed and oversized frames, and cancel/close. Check that
+approval is one-shot, outside requests expire, and inline requests remain
+pending until the chat lifecycle resolves them. A stale launch or tool
+definition must stop a previously approved call. Check that a failed
+pre-dispatch audit stops the action and that uncertain writes produce a
+do-not-retry error. Inspect both legacy suggestions and every gateway event
+for absence of complete arguments, results, and connector error text.
+
+Gateway memory and today's goals use profile rows. Check that Memory search
+and About omit quarantined and invalidated facts. A gateway memory write
+appears in the profile, with launch, client and project in Activity. Sensitive
+drafted facts stay quarantined until approved. Knowledge is absent until a
+project links an existing Knowledge source. Index a new document into a linked
+source and verify it is searchable without a record link. Removing the source
+removes the link and its contents. Mail offers only the profile connector's
+read/search tools. Calendar and Reminders read the profile and can change
+only items tagged as created by Aitvaras. Gateway activity remains local
+to the launch's project.
+
+On the host, build the App and check that the Gateway Tools tab explains
+profile access and saves Knowledge source links. With disposable EventKit
+and Mail data, verify that ownership tags survive a fetch, tagged items can
+be changed, untagged items can be read but cannot be changed, and reading a
+message leaves it unread.
+
 For the remaining G1 work, use a local fake upstream for MCP discovery,
 dynamic registration, S256 PKCE, token exchange, refresh and protected calls.
 Test against injected HTTP transport and a fake credential store in the

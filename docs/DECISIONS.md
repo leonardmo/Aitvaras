@@ -1139,10 +1139,15 @@ such as Linear. The gateway does not call cloud LLM APIs.
   containing its starting directory. In-app sessions use the owning chat's
   project. Changes to cwd or MCP roots do not move the launch. A launch outside
   a project gets only global upstreams. Explicit project grants control both
-  discovery and execution of memory, knowledge, calendar, reminders, read-only
-  mail, goals and activity tools. Grants never imply global recall, unrestricted
-  record access or automatic transcript handover. D30/D31's handover rules,
-  memory quarantine, D20 and Calendar/Reminders ownership restrictions still apply.
+  discovery and execution. Memory, today's goals, read-only Mail, Calendar
+  and Reminders use the same profile resources as Aitvaras. Memory reads omit
+  quarantined and invalidated facts. Gateway memory writes follow the profile's
+  quarantine and supersession rules and carry launch, client and project in
+  Activity. Calendar and Reminders reads use the normal connector, and writes
+  to existing items require Aitvaras's ownership marker. Knowledge searches
+  only the existing sources explicitly linked to the project. Without a
+  source link there is no Knowledge tool. Activity shows only that project's
+  gateway events. D20 and D30/D31's handover rules still apply.
 - **Upstreams.** Reuse D34's app-global and app-project definitions and extend
   them with server/account identity. Each upstream is global with a project
   opt-out, or assigned per project. A project account choice overrides the

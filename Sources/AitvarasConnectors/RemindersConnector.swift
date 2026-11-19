@@ -5,7 +5,7 @@ import AitvarasCore
 /// Apple Reminders via EventKit (D7) — the user's task system after the
 /// migration away from Microsoft To Do. Creating and completing reminders
 /// are reversible writes under D13.
-public actor RemindersConnector: Connector {
+public actor RemindersConnector: GatewayProfileConnector {
     public nonisolated let id = "reminders"
     public nonisolated let displayName = "Reminders"
 
@@ -32,7 +32,7 @@ public actor RemindersConnector: Connector {
         ),
         ToolDefinition(
             name: "complete_reminder",
-            description: "Mark a reminder as completed (reminderID from list_reminders/create_reminder).",
+            description: "Complete a reminder that Aitvaras created (reminderID from list_reminders/create_reminder).",
             parametersJSON: """
             {"type":"object","properties":{"reminderID":{"type":"string"}},"required":["reminderID"]}
             """,
@@ -58,7 +58,20 @@ public actor RemindersConnector: Connector {
     public func execute(toolName: String, argumentsJSON: String) async throws -> String {
         let args = try ToolArgs(json: argumentsJSON)
         try await ensureFullAccess()
+        return try await executeAuthorized(toolName, args: args)
+    }
 
+    public func executeGatewayTool(toolName: String, argumentsJSON: String, projectID: UUID,
+                                   authorize: @Sendable () throws -> Void) async throws -> String {
+        let args = try ToolArgs(json: argumentsJSON)
+        try authorize()
+        try await ensureFullAccess()
+        try Task.checkCancellation()
+        try authorize()
+        return try await executeAuthorized(toolName, args: args)
+    }
+
+    private func executeAuthorized(_ toolName: String, args: ToolArgs) async throws -> String {
         switch toolName {
         case "list_reminders":
             return try await listReminders(args)
@@ -114,6 +127,7 @@ public actor RemindersConnector: Connector {
         let reminder = EKReminder(eventStore: store)
         reminder.title = try args.requiredString("title")
         reminder.notes = args.string("notes")
+        reminder.url = AitvarasEventTag.makeURL(item: .reminder)
 
         if let dueISO = args.string("dueISO") {
             let due = try ISO.requireDate(dueISO, argument: "dueISO")
@@ -154,6 +168,9 @@ public actor RemindersConnector: Connector {
         let id = try args.requiredString("reminderID")
         guard let reminder = store.calendarItem(withIdentifier: id) as? EKReminder else {
             throw ConnectorError("No reminder with id '\(id)'.")
+        }
+        guard AitvarasEventTag.owns(reminder.url, item: .reminder) else {
+            throw ConnectorError("Aitvaras only completes reminders she created.")
         }
         guard !reminder.isCompleted else {
             return "Reminder '\(reminder.title ?? id)' was already completed."

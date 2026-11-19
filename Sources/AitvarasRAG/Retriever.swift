@@ -9,7 +9,7 @@ import AitvarasStore
 /// drops that arm.
 public struct HybridRetriever: ContextRetriever {
     private let stores: Stores
-    private let embedder: any EmbeddingEngine
+    private let embedder: (any EmbeddingEngine)?
     private let sourcesByID: [String: IndexSource]
     private let enforceSourceScope: Bool
 
@@ -18,7 +18,7 @@ public struct HybridRetriever: ContextRetriever {
 
     /// Compatibility callers can omit scope enforcement. The application
     /// enables it so removed, unavailable, or escaped sources stay excluded.
-    public init(stores: Stores, embedder: any EmbeddingEngine, sources: [IndexSource] = [],
+    public init(stores: Stores, embedder: (any EmbeddingEngine)?, sources: [IndexSource] = [],
                 enforceSourceScope: Bool = false) {
         self.stores = stores
         self.embedder = embedder
@@ -70,6 +70,7 @@ public struct HybridRetriever: ContextRetriever {
     }
 
     private func vectorArm(_ query: String, eligibleDocumentIDs: Set<UUID>?) async throws -> [UUID] {
+        guard let embedder else { return [] }
         let chunks = try eligibleDocumentIDs.map { try stores.chunksWithEmbeddings(eligibleDocumentIDs: $0) }
             ?? stores.chunksWithEmbeddings()
         guard !chunks.isEmpty else { return [] }

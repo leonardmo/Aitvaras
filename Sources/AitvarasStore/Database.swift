@@ -1309,6 +1309,17 @@ public final class AitvarasDatabase: Sendable {
                 t.column("scopesJSON", .text).notNull()
             }
         }
+        m.registerMigration("v47-gateway-project-links") { db in
+            try db.create(table: "gatewayProjectKnowledgeSource") { t in
+                t.column("projectID", .blob).notNull().references("workspaceProject", onDelete: .cascade)
+                t.column("sourceID", .text).notNull().indexed()
+                t.primaryKey(["projectID", "sourceID"])
+            }
+            try db.create(table: "gatewayActivityProject") { t in
+                t.primaryKey("eventID", .blob).references("activityEvent", onDelete: .cascade)
+                t.column("projectID", .blob).notNull().indexed().references("workspaceProject", onDelete: .cascade)
+            }
+        }
         return m
     }
 

@@ -1,6 +1,7 @@
 import Foundation
 import AitvarasCore
 import AitvarasStore
+import AitvarasAgents
 
 /// Registry of all active connectors. Routes tool calls, merges event
 /// streams, and — critically — is the single place the autonomy policy
@@ -128,6 +129,7 @@ public actor ConnectorHub {
     public func executeCommandRoutineStep(
         _ step: CommandRoutineStep, causedBy: UUID
     ) async throws -> String {
+        guard !GatewayAuditContext.active else { throw MCPGatewayCallError.denied }
         try Task.checkCancellation()
         guard step.argumentsJSON.utf8.count <= Self.maximumToolArgumentsBytes else {
             throw CommandRoutineError.invalidWorkflow
@@ -169,6 +171,7 @@ public actor ConnectorHub {
     /// Execute a namespaced tool call under policy, recording activity
     /// with provenance.
     public func execute(call: ToolCall, causedBy: UUID?, sourceID: String?) async throws -> ExecutionResult {
+        guard !GatewayAuditContext.active else { throw MCPGatewayCallError.denied }
         try Task.checkCancellation()
         guard call.argumentsJSON.utf8.count <= Self.maximumToolArgumentsBytes else {
             throw Self.error(
@@ -275,6 +278,7 @@ public actor ConnectorHub {
 
     /// Execute a previously-confirmed suggestion (user tapped accept).
     public func executeSuggestion(_ suggestion: Suggestion) async throws -> String {
+        guard !GatewayAuditContext.active else { throw MCPGatewayCallError.denied }
         try Task.checkCancellation()
         reporter?.begin(ActivityRun(id: suggestion.id, referenceID: suggestion.id.uuidString,
             category: .connection, title: "Confirmed tool", stage: "Preparing approved action",
@@ -368,6 +372,7 @@ public actor ConnectorHub {
     }
 
     public func rejectSuggestion(_ suggestion: Suggestion) throws {
+        guard !GatewayAuditContext.active else { throw MCPGatewayCallError.denied }
         let rejected = try stores.transitionSuggestion(
             suggestion.id, from: "pending", to: "rejected",
             recording: ActivityEvent(
@@ -377,6 +382,34 @@ public actor ConnectorHub {
                 causedBy: suggestion.causedBy))
         guard rejected else { throw Self.error("This suggestion was already handled.") }
         reporter?.finish(id: suggestion.id, state: .cancelled, outcome: "Proposal declined; no action taken")
+    }
+
+    /// Gateway calls have their own transient approval and metadata-only
+    /// audit path. They must never enter the legacy Suggestion persistence path.
+    public func executeGateway(_ invocation: MCPGatewayInvocation, tool: MCPGatewayTool, arguments: JSONValue,
+        approvals: GatewayApprovalBroker, rules: @Sendable () async throws -> GatewayPolicyRules,
+        revalidate: MCPGateway.Authorize,
+        operation: @Sendable () async throws -> MCPGatewayToolResult) async throws -> MCPGatewayToolResult {
+        guard !GatewayAuditContext.active else { throw MCPGatewayCallError.denied }
+        let coordinator = GatewayCallCoordinator(stores: stores, approvals: approvals)
+        return try await coordinator.execute(invocation, tool: tool, arguments: arguments,
+            decision: { [self] in try await gatewayDecision(tool, invocation: invocation, rules: rules()) },
+            revalidate: revalidate) { [self] in
+                guard ActivityExecution.permits(ActivityTaskContext.automaticFeature ?? .connectors,
+                    stores: stores, reporter: reporter) else { throw MCPGatewayCallError.denied }
+                return try await GatewayAuditContext.$active.withValue(true) { try await operation() }
+            }
+    }
+
+    private func gatewayDecision(_ tool: MCPGatewayTool, invocation: MCPGatewayInvocation,
+                                 rules: GatewayPolicyRules) -> GatewayPolicyDecision {
+        GatewayPolicyDecision(tool: tool, invocation: invocation, rules: rules, policy: policy)
+    }
+
+    /// Only used by the scoped adapter inside a policy-authorized gateway call.
+    func gatewayConnector(_ id: String) throws -> any Connector {
+        guard GatewayAuditContext.active, let connector = connectors[id] else { throw MCPGatewayCallError.unavailable }
+        return connector
     }
 
     private func executeTracked(_ connector: any Connector, connectorID: String,

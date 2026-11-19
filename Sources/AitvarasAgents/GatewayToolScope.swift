@@ -11,10 +11,11 @@ public enum GatewayToolScopeError: Error, Equatable, Sendable {
     case notGranted, invalidArguments, recordOutsideProject
 }
 
-/// The trusted adapter declares every record ID argument. Project queries
-/// must use the project in the invocation context to filter their results.
+/// The trusted adapter chooses the resource boundary. Profile tools share
+/// the profile after a project grant, while project queries filter by project.
 public struct GatewayScopedTool: Sendable {
     public enum Access: Sendable {
+        case profile
         case projectQuery
         case records(idArguments: Set<String>)
     }

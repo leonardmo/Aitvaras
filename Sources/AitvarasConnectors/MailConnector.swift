@@ -25,7 +25,7 @@ struct AppleScriptError: Error, LocalizedError, Sendable {
 /// New-mail detection polls every minute for messages received in the last
 /// 15 minutes, deduplicated through `Stores.markSeen` — the belt to the
 /// Mail-rule suspenders discussed in D5.
-public actor MailConnector: Connector {
+public actor MailConnector: GatewayProfileConnector {
     public nonisolated let id = "mail"
     public nonisolated let displayName = "Mail"
 
@@ -108,12 +108,7 @@ public actor MailConnector: Connector {
             return try messages.map { try agentFacingLine(for: $0) }
                 .joined(separator: "\n")
         case "get_message":
-            let messageID = try args.requiredString("messageID")
-            let messages = try await fetchMessages(script: Self.getMessageScript(messageID: messageID, contentLimit: 8000))
-            guard let message = messages.first else {
-                throw ConnectorError("No inbox message with message id '\(messageID)'.")
-            }
-            return try agentFacingLine(for: message)
+            return try await getMessage(id: args.requiredString("messageID"))
         case "search_messages":
             let query = try args.requiredString("query")
             let count = min(max(args.int("count") ?? 10, 1), 20)
@@ -124,6 +119,14 @@ public actor MailConnector: Connector {
         default:
             throw ConnectorError("Mail connector has no tool named '\(toolName)'.")
         }
+    }
+
+    private func getMessage(id: String) async throws -> String {
+        let messages = try await fetchMessages(script: Self.getMessageScript(messageID: id, contentLimit: 8000))
+        guard let message = messages.first else {
+            throw ConnectorError("No inbox message with message id '\(id)'.")
+        }
+        return try agentFacingLine(for: message)
     }
 
     public func events() -> AsyncStream<ConnectorEvent> {

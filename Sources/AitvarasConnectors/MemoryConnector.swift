@@ -10,7 +10,7 @@ import AitvarasStore
 ///
 /// A retrieval-protocol line in the system prompt tells the model to call
 /// `memory.search` before answering non-trivial personal questions.
-public actor MemoryConnector: Connector {
+public actor MemoryConnector: GatewayProfileConnector {
     public nonisolated let id = "memory"
     public nonisolated let displayName = "Memory"
 
@@ -58,7 +58,24 @@ public actor MemoryConnector: Connector {
     public func health() async -> ConnectorHealth { .ready }
 
     public func execute(toolName: String, argumentsJSON: String) async throws -> String {
+        try await execute(toolName: toolName, argumentsJSON: argumentsJSON, gatewayProjectID: nil)
+    }
+
+    public func executeGatewayTool(toolName: String, argumentsJSON: String, projectID: UUID,
+                                   authorize: @Sendable () throws -> Void) async throws -> String {
+        try Task.checkCancellation()
+        try authorize()
+        guard ["search", "about", "remember", "revise"].contains(toolName) else {
+            throw ConnectorError("Unavailable gateway memory tool.")
+        }
+        let result = try await execute(toolName: toolName, argumentsJSON: argumentsJSON, gatewayProjectID: projectID)
+        if toolName == "search" || toolName == "about" { try authorize() }
+        return result
+    }
+
+    private func execute(toolName: String, argumentsJSON: String, gatewayProjectID: UUID?) async throws -> String {
         let args = try ToolArgs(json: argumentsJSON)
+        let writeSource: MemoryFact.Source = gatewayProjectID == nil ? .userStated : .extracted
         switch toolName {
         case "search":
             let query = try Self.validated(
@@ -75,11 +92,12 @@ public actor MemoryConnector: Connector {
             guard let entity = try stores.entity(named: name) else {
                 return "Nothing remembered about \"\(name)\" yet."
             }
-            let facts = try stores.facts(forEntity: entity.id)
+            let facts = try stores.facts(forEntity: entity.id).filter { !$0.needsReview && $0.isCurrentlyValid }
+            if gatewayProjectID != nil, facts.isEmpty { return "Nothing remembered about \"\(name)\" yet." }
             var lines = [JSONText.object([
                 ("entity", .string(entity.name)),
                 ("kind", .string(entity.kindValue.rawValue)),
-                ("summary", entity.summary.isEmpty ? nil : .string(entity.summary))
+                ("summary", gatewayProjectID != nil || entity.summary.isEmpty ? nil : .string(entity.summary))
             ])]
             lines += facts.map(Self.render)
             return lines.joined(separator: "\n")
@@ -90,14 +108,15 @@ public actor MemoryConnector: Connector {
                 kindRaw: args.string("kind"),
                 importance: args.int("importance"),
                 entityNames: args.string("entities"),
-                source: .userStated)
+                source: writeSource, gatewayProjectID: gatewayProjectID)
+            if fact.needsReview { return JSONText.object([("needsReview", .bool(true))]) }
             return JSONText.object([("remembered", .bool(true)), ("id", .string(fact.id.uuidString))])
 
         case "revise":
             guard let oldID = UUID(uuidString: try args.requiredString("old_id")) else {
                 throw ConnectorError("Invalid old_id — use search to get real fact ids.")
             }
-            guard let old = try stores.fact(id: oldID) else {
+            guard let old = try stores.fact(id: oldID), gatewayProjectID == nil || (!old.needsReview && old.isCurrentlyValid) else {
                 throw ConnectorError("No fact with id \(oldID.uuidString).")
             }
             let (replacement, entityNames) = try await prepare(
@@ -105,8 +124,10 @@ public actor MemoryConnector: Connector {
                 kindRaw: old.kind,
                 importance: old.importance,
                 entityNames: old.entitiesText,
-                source: .userStated)
-            try stores.replaceFact(oldID, with: replacement, entityNames: entityNames)
+                source: writeSource)
+            try Task.checkCancellation()
+            try stores.replaceFact(oldID, with: replacement, entityNames: entityNames, gatewayProjectID: gatewayProjectID)
+            if replacement.needsReview { return JSONText.object([("needsReview", .bool(true))]) }
             return JSONText.object([
                 ("revised", .bool(true)),
                 ("new_id", .string(replacement.id.uuidString)),
@@ -147,11 +168,12 @@ public actor MemoryConnector: Connector {
 
     /// Create a fact: resolve/attach entities, embed best-effort, persist.
     private func store(text: String, kindRaw: String?, importance: Int?,
-                       entityNames: String?, source: MemoryFact.Source) async throws -> MemoryFact {
+                       entityNames: String?, source: MemoryFact.Source, gatewayProjectID: UUID?) async throws -> MemoryFact {
         let (fact, normalizedEntityNames) = try await prepare(
             text: text, kindRaw: kindRaw, importance: importance,
             entityNames: entityNames, source: source)
-        try stores.saveFact(fact, entityNames: normalizedEntityNames)
+        try Task.checkCancellation()
+        try stores.saveFact(fact, entityNames: normalizedEntityNames, gatewayProjectID: gatewayProjectID)
         return fact
     }
 
@@ -183,6 +205,7 @@ public actor MemoryConnector: Connector {
             text: text, entitiesText: entitiesText, kind: kind,
             importance: importance ?? 5, confidence: source == .extracted ? 0.8 : 1.0,
             source: source)
+        SensitiveFacts.applyPolicy(to: &fact)
         fact.embedding = await recall.embedding(for: fact.searchText)
         return (fact, entitiesText)
     }
