@@ -46,6 +46,9 @@ jobs:
   # They also run when this job fails (`!cancelled()`) and then fail themselves:
   # a job skipped because a dependency failed counts as passed for a required
   # check, which would let an auto-merging PR through untested.
+  # A PR whose latest commit carries `CI-Build: skip (<reason>)` is treated
+  # like docs-only (AGENTS.md, "Skipping the builds"). Pushes to main always
+  # build, so main stays verified and the build caches stay fresh.
   changes:
     name: Detect code changes
     runs-on: ubuntu-latest
@@ -80,6 +83,13 @@ jobs:
               *) code=true ;;
             esac
           done <<< "$files"
+          if [[ "$code" == true && "$EVENT" == pull_request ]]; then
+            skip="$(git log -1 --format='%(trailers:key=CI-Build,valueonly)' "$PR_HEAD" | head -1)"
+            if [[ "$skip" == skip* ]]; then
+              echo "::notice title=Builds skipped::CI-Build: $skip"
+              code=false
+            fi
+          fi
           echo "code=$code" >> "$GITHUB_OUTPUT"
           echo "Code changed: $code"
 

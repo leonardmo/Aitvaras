@@ -19,7 +19,9 @@ Follow `AGENTS.md` → "How work flows". Steps:
    it reports.
 5. **Commit.** Write an imperative subject of 72 characters or fewer and a
    body that says why. Add no attribution trailers; the commit-msg hook
-   rejects them.
+   rejects them. If the change can't affect the package tests or the app
+   build, end the message with `CI-Build: skip (<reason>)` (`AGENTS.md`,
+   "Skipping the builds").
 6. **Rebase and push.**
    `git fetch origin && git rebase origin/main`. On conflicts in migrations
    or `D<n>` numbers, follow the collision rules. Then

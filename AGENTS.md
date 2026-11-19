@@ -153,6 +153,25 @@ record.
 
 Small doc-only fixes may go straight to a PR without an issue.
 
+### Skipping the builds
+
+CI skips the macOS jobs (package tests, app build) for docs-only PRs. For
+other changes that can't affect them, such as a helper script that no test or
+build runs, end the PR's latest commit message with a trailer that gives the
+reason:
+
+```
+CI-Build: skip (codex-task.sh only; no test or build runs it)
+```
+
+The privacy, rule and commit checks still run. Never use it when the PR
+touches `Sources/`, `App/`, `Tests/`, `Package.*`, `project.yml`,
+`.github/workflows/` or a script that CI or `make check` runs. Don't use
+GitHub's own skip markers (`skip ci` or `ci skip` in square brackets, a
+`skip-checks` trailer) either: they skip the required checks too, and the PR
+can never merge. GitHub reacts to the text alone, so don't even quote them
+in a commit message.
+
 ### Collision hotspots
 
 Parallel branches tend to collide in a few places. Rules for each:
