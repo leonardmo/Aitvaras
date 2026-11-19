@@ -18,6 +18,7 @@ extension BackgroundFeature {
         case .routines: "Scheduled routines"
         case .delivery: "External notification delivery"
         case .focus: "Focus observations"
+        case .chatWakeups: "Chat wake-ups"
         }
     }
 }
@@ -295,6 +296,9 @@ extension AppModel {
         if let voiceActivityID { activityReporter?.finish(id: voiceActivityID, state: .cancelled, outcome: "Voice stopped for quit") }
         voiceActivityID = nil
         let nightlyTask = stopNightlyConsolidationScheduler()
+        let wakeTask = chatWakeSchedulerTask
+        wakeTask?.cancel()
+        chatWakeSchedulerTask = nil
         let routineTask = routineSchedulerTask
         routineTask?.cancel()
         routineSchedulerTask = nil
@@ -303,6 +307,7 @@ extension AppModel {
         await integrations?.stopAutomaticWork()
         await nightlyTask?.value
         await routineTask?.value
+        await wakeTask?.value
         for task in backgroundTasks { await task.value }
         automaticTasks.removeAll()
     }

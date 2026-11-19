@@ -139,7 +139,7 @@ public struct ServiceStatus: Codable, Sendable, Identifiable, Equatable {
 
 public enum BackgroundFeature: String, Codable, Sendable, CaseIterable {
     case mail, notifications, connectors, indexing, archiving, memory
-    case routineReview, routines, delivery, focus
+    case routineReview, routines, delivery, focus, chatWakeups
 }
 
 /// At most one metadata-only check summary per service and UTC day.

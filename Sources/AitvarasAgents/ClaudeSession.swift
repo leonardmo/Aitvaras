@@ -165,6 +165,13 @@ actor ClaudeRun: AgentRun {
         if ["assistant", "user"].contains(type) {
             if let uuid = value["uuid"]?.stringValue, !seenMessages.insert(uuid).inserted { return }
         }
+        if type == "user", injectedReason(value) == .backgroundTask {
+            let content = value["message"]?["content"] ?? .null
+            let text = content.stringValue ?? hookOutputStrings(content).joined(separator: "\n")
+            if let start = text.range(of: "<task-id>"), let end = text.range(of: "</task-id>", range: start.upperBound..<text.endIndex) {
+                emit(.unknown(name: "backgroundTaskFinished", payload: .string(String(text[start.upperBound..<end.lowerBound]))))
+            }
+        }
         // Only actual work starts a turn. Inventories, hook status and results
         // on their own cannot turn resumed history into a fresh response.
         let startsTurn = ["stream_event", "assistant", "control_request"].contains(type)
@@ -198,6 +205,12 @@ actor ClaudeRun: AgentRun {
             emit(.setupReported(availableSetup))
         case "system" where ["hook_started", "hook_response"].contains(value["subtype"]?.stringValue):
             await parseHook(value)
+        case "system" where value["subtype"]?.stringValue == "task_notification":
+            if let taskID = value["task_id"]?.stringValue,
+               ["completed", "failed", "stopped"].contains(value["status"]?.stringValue ?? "") {
+                lastAutonomousReason = .backgroundTask
+                emit(.unknown(name: "backgroundTaskFinished", payload: .string(taskID)))
+            }
         case "system": break
         case "control_request":
             guard let requestID, case .string = requestID, let raw = value["request"] else { await disconnected(.invalidRequest); return }
@@ -454,6 +467,7 @@ actor ClaudeRun: AgentRun {
         let messageID = message["id"]?.stringValue ?? value["uuid"]?.stringValue
         let blocks = message["content"]?.arrayValue ?? []
         var texts: [String] = []
+        if let text = message["content"]?.stringValue { texts.append(text) }
         for block in blocks {
             switch block["type"]?.stringValue {
             case "text": if let text = block["text"]?.stringValue { texts.append(text) }

@@ -39,6 +39,13 @@ extension Stores: AgentHistoryPersistence {
         var journalInputID: UUID?
         var canonical: [AgentTranscriptEntry] = []
         for incoming in entries {
+            if incoming.kind == "user", let nativeID = incoming.nativeMessageID,
+               let id = UUID(uuidString: nativeID) ?? all.first(where: { $0.kind == "wakeup" && $0.nativeMessageID == nativeID })?.id,
+               let turn = try AgentJournalTurn.fetchOne(dbc, key: id),
+               turn.sessionID == session.id, case .autonomous = turn.origin {
+                journalInputID = turn.id
+                continue
+            }
             var value = incoming
             let metadata = incoming.payloadJSON.flatMap(JSONValue.parse)?["nativeHistory"]
             let nativeTurn = metadata?["turnID"]?.stringValue

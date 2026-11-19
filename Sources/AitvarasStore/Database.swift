@@ -1117,6 +1117,31 @@ public final class AitvarasDatabase: Sendable {
         m.registerMigration("v39-repair-claude-user-identities") { db in
             try Self.repairClaudeUserIdentities(in: db)
         }
+        m.registerMigration("v40-agent-pending-wake") { db in
+            try db.create(table: "agentPendingWake") { t in
+                t.primaryKey("id", .text)
+                t.column("chatID", .text).notNull().references("workspaceChat", onDelete: .cascade)
+                t.column("sessionID", .text).notNull().references("agentChatSession", onDelete: .cascade)
+                t.column("kind", .text).notNull()
+                t.column("fireAt", .datetime)
+                t.column("cronSpec", .text)
+                t.column("prompt", .text)
+                t.column("nativeToolID", .text).notNull()
+                t.column("createdAt", .datetime).notNull()
+                t.column("claimedAt", .datetime)
+                t.column("firedAt", .datetime)
+                t.column("claimedTurnID", .text)
+                t.column("transportID", .text)
+                t.column("recurring", .boolean).notNull().defaults(to: true)
+                t.uniqueKey(["sessionID", "nativeToolID"])
+            }
+            try db.alter(table: "agentTurn") { t in t.add(column: "autonomousPrompt", .text) }
+            try db.execute(sql: """
+                CREATE TRIGGER agentWakeArchived AFTER UPDATE OF archivedAt ON workspaceChat
+                WHEN NEW.archivedAt IS NOT NULL
+                BEGIN DELETE FROM agentPendingWake WHERE chatID = NEW.id; END;
+                """)
+        }
         return m
     }
 

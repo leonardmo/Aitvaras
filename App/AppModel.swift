@@ -189,6 +189,7 @@ final class AppModel {
     private var voiceMicSessionActive = false
     private var wakeBriefingRunning = false
     private var newsSchedulerTask: Task<Void, Never>?
+    var chatWakeSchedulerTask: Task<Void, Never>?
     var routineSchedulerTask: Task<Void, Never>?
     private var routineBannerTask: Task<Void, Never>?
     private var nightlySchedulerTask: Task<Void, Never>?
@@ -492,6 +493,7 @@ final class AppModel {
             NativeBackendSessionReader(provider: provider, backend: available[provider == .claude ? .claude : .codex])
         }
         agentSessionManager = manager
+        startChatWakeScheduler()
         chatModel = ChatModel(manager: manager, stores: stores, backends: available, profileBackends: profileBackends,
             claudeDefaultDirectory: metadataUserDirectory ?? (isolated
                 ? AitvarasPaths.stateDirectory.appendingPathComponent("FakeProviders/claude")
@@ -1550,6 +1552,7 @@ final class AppModel {
         defer { wakeBriefingRunning = false }
 
         await bootstrapIfNeeded()
+        await runChatWakeups()
         guard let stores, let integrations,
               BackgroundFeature.allCases.contains(where: { automaticWorkAllowed($0) }) else { return }
         do {
@@ -1714,6 +1717,30 @@ final class AppModel {
             refreshSidebandData()
         } catch {
             presentError(title: "Routine could not be deleted", error: error)
+        }
+    }
+
+    func runChatWakeups() async {
+        guard let stores, let manager = agentSessionManager else { return }
+        let permitted = automaticWorkAllowed(.chatWakeups)
+            && ActivityExecution.permits(.chatWakeups, stores: stores, reporter: activityReporter, trigger: .automatic)
+        do {
+            try await ActivityTaskContext.$trigger.withValue(.automatic) {
+                try await manager.runDueWakeups(permitted: permitted)
+            }
+        } catch {
+            // Durable due work stays pending when it was provably not delivered.
+            reportBackgroundError(code: .chatWakeup, title: "Chat wake-up could not be delivered", error: error)
+        }
+    }
+
+    private func startChatWakeScheduler() {
+        chatWakeSchedulerTask?.cancel()
+        chatWakeSchedulerTask = Task { [weak self] in
+            while !Task.isCancelled {
+                await self?.runChatWakeups()
+                do { try await Task.sleep(for: .seconds(30)) } catch { return }
+            }
         }
     }
 

@@ -888,6 +888,7 @@ private extension BackgroundFeature {
         case .routines: "Run only separately reviewed, activated routines at their saved schedules. Their fixed tools use the destinations shown in each routine."
         case .delivery: "Send queued updates to the configured phone-notification destination. This transmits notification content outside this Mac."
         case .focus: "Observe configured focus signals only during a focus session you explicitly start."
+        case .chatWakeups: "Resume due chat wake-ups after quit, restart or sleep through the selected official CLI. Missed recurring slots collapse to one turn. Native timers in a live CLI continue independently."
         }
     }
 }

@@ -121,6 +121,7 @@ public struct AgentJournalTurn: Codable, Sendable, Equatable {
     /// Follow-ups belong to an existing active input, never a second root turn.
     public var parentInputID: UUID?
     public var prompt: String?
+    public var autonomousPrompt: String?
     public var origin: AgentTurnOrigin
     public var delivery: AgentDeliveryState
     public var state: AgentJournalState
