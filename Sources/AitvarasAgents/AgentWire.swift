@@ -10,16 +10,19 @@ actor AgentWire {
     private var pending: [AgentRequestID: CheckedContinuation<JSONValue, Error>] = [:]
     private var timers: [AgentRequestID: Task<Void, Never>] = [:]
     private var reader: Task<Void, Never>?
-    private var failure: AgentFailure?
+    private var failure: AgentFailureReport?
+    // Request waiters may resume before the disconnect callback reaches their
+    // run. Keep its category available for the run's failure event, not a throw.
+    var failureReport: AgentFailureReport? { failure }
     private var receive: (@Sendable (JSONValue, AgentRequestID?) async -> Void)?
-    private var disconnected: (@Sendable (AgentFailure) async -> Void)?
+    private var disconnected: (@Sendable (AgentFailureReport) async -> Void)?
 
     init(process: StreamingProcess, format: Format) { self.process = process; self.format = format }
 
     deinit { reader?.cancel(); process.terminate() }
 
     func open(receive: @escaping @Sendable (JSONValue, AgentRequestID?) async -> Void,
-              disconnected: @escaping @Sendable (AgentFailure) async -> Void) throws {
+              disconnected: @escaping @Sendable (AgentFailureReport) async -> Void) throws {
         try process.start()
         self.receive = receive; self.disconnected = disconnected
         reader = Task { [weak self, process] in
@@ -36,22 +39,26 @@ actor AgentWire {
                 let code = try await process.waitForExit()
                 await self?.fail(.crashed(exitCode: code))
             } catch {
-                await self?.fail((error as? AgentFailure) ?? .crashed(exitCode: nil))
+                await self?.fail(AgentFailureDiagnostics.capture(error,
+                    mappedTo: (error as? AgentFailure) ?? .crashed(exitCode: nil)))
             }
         }
     }
 
     func write(_ value: JSONValue) async throws {
-        if let failure { throw failure }
+        if let failure { throw failure.failure }
         do { try await process.write(line: value.jsonString) }
-        catch { await fail(.crashed(exitCode: nil)); throw AgentFailure.crashed(exitCode: nil) }
+        catch {
+            let report = AgentFailureDiagnostics.capture(error, mappedTo: .crashed(exitCode: nil))
+            await fail(report); throw report.failure
+        }
     }
 
     func request(_ method: String, _ parameters: JSONValue = .object([:]),
                  id explicitID: AgentRequestID? = nil, timeout: Duration = .seconds(30),
                  failOnTimeout: Bool = true) async throws -> JSONValue {
         try Task.checkCancellation()
-        if let failure { throw failure }
+        if let failure { throw failure.failure }
         guard pending.count < 64 else { throw AgentFailure.invalidTransition }
         nextID += 1
         let id = explicitID ?? (format == .claude ? .string("client-\(nextID)") : .integer(nextID))
@@ -116,11 +123,14 @@ actor AgentWire {
         await fail(.offline)
     }
     private func fail(_ error: AgentFailure) async {
+        await fail(AgentFailureDiagnostics.capture(error))
+    }
+    private func fail(_ error: AgentFailureReport) async {
         guard failure == nil else { return }
         failure = error
         let waiters = pending; pending.removeAll()
         timers.values.forEach { $0.cancel() }; timers.removeAll()
-        waiters.values.forEach { $0.resume(throwing: error) }
+        waiters.values.forEach { $0.resume(throwing: error.failure) }
         process.terminate()
         await disconnected?(error)
     }
@@ -160,11 +170,14 @@ extension AgentRequestID {
 
 extension AgentWire {
     func writeResponse(id: AgentRequestID, result: JSONValue?, error: Bool = false) async throws {
-        if let failure { throw failure }
+        if let failure { throw failure.failure }
         let body = error ? "\"error\":{\"code\":-32601,\"message\":\"Unsupported request\"}"
             : "\"result\":\((result ?? .null).jsonString)"
         do { try await process.write(line: "{\"id\":\(id.encoded),\(body)}") }
-        catch { await fail(.crashed(exitCode: nil)); throw AgentFailure.crashed(exitCode: nil) }
+        catch {
+            let report = AgentFailureDiagnostics.capture(error, mappedTo: .crashed(exitCode: nil))
+            await fail(report); throw report.failure
+        }
     }
 }
 

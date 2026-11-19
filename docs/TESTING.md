@@ -137,7 +137,94 @@ Measure memory against the model budget, test coexistence with voice/capture,
 and review light/dark and minimum-window states. Exposing Aitvaras knowledge
 through a policy-gated MCP server remains an open follow-up.
 
+## Claude tool-result identity repair and failure diagnostics
+
+`AgentTranscriptIdentityMigrationTests` upgrades an on-disk synthetic database
+through v36 and reopens it twice. It checks proven corrupt active/retired Claude
+user IDs, valid identities, canonical/imported history, fork markers, other
+providers, malformed/conflicting metadata and corroborated journal links. Only
+proven corrupt native IDs may change; content, journals, sessions, positions,
+retirement flags and history observations stay intact. A native refresh after
+repair must reuse the original input row without duplicates. Later opens do
+not rerun the migration. Ordinary upgrades have no automatic database backup:
+back up the database manually before installing an upgrade.
+
+`AgentFailureDiagnosticsTests` injects failures at local reply, stream,
+approval, pre-delivery and real store-identity boundaries. Synthetic path,
+prompt and credential canaries must never enter serialized Activity events.
+Reports retain type/case categories through the coordinator and manager;
+process-error tests cover Claude and Codex wire teardown. A broken Activity
+sink must not recursively audit itself or replace the original failure.
+Approval/conformance tests retain their authorization-event assertions and
+also require the new diagnostic event where a turn fails.
+
+Host verification must build the App, check the send/sign-in catch paths and
+inspect unified-log privacy with synthetic diagnostics. Package tests verify
+Activity contents, not the system's private-log retention configuration. Test
+the repair against a backed-up private database copy without publishing it.
+`AgentStoppedTurnTests` covers the failure/delivery label and action matrix,
+transactional terminal-row rollback, duplicate finalization, reopening and
+startup recovery with no provider launch. Hand-written executable fixtures
+verify the exact Continue instruction and original resume identity, duplicate
+click rejection, native refresh retaining a Continued marker, quota reset
+metadata and manual recovery, and explicit Retry restoring the original wire
+envelope and attachment bytes for prepared/unknown delivery. Refusal tests
+cover absent/changed native identities, internal errors, bogus/stale rows and
+Retry of acknowledged input. Failed recovery preparation must roll back its
+claim before any provider write. A blocked stopped-row write must retain an
+in-memory internal diagnostic without offering recovery or claiming durability.
+Backend diagnostics tests assert that thrown and stream errors remain
+`AgentFailure` while failure events retain the original safe category. A normal
+Claude turn accepts foreign-session subagent/compaction frames; an explicit
+Continue rejects a different authoritative system/init identity. The managed
+Local scope test permits only its expected failure audit, verifies that it is
+excluded from Consolidator evidence and contains no project text, and retains
+its checks against global learning.
+
+Host gate: build the App and use a synthetic project in an isolated profile.
+With Haiku, interrupt a response, simulate a closed CLI and exercise Continue,
+Retry and Sign in. Reopen the chat and refresh native history. Check that the
+fixed Continue instruction remains a small marker and reaches the same native
+session; retry must preserve the saved input rather than the current draft.
+Check quota rows with/without known reset time, internal-error Copy details
+(safe category only), double clicks and changed provider/profile selection.
+Review actual light/dark windows at 800×500: each compact row has an icon,
+short label and actions, with no nested popovers. Composer failure text must
+disappear for acknowledged/uncertain delivery. No quota reset may trigger a
+send automatically. Package fixtures do not establish live CLI/UI acceptance.
+
 ## Project agent setup (D34)
+
+Issue #23 hook gate: on the host, build the App and use a fresh isolated state
+profile with external integrations disabled, Haiku and a throwaway repository.
+Configure two PreToolUse Bash hooks there: one passes; one exits 2 with a short
+stderr reason only for a specific harmless command, such as `echo blocked-example`.
+Request at least three tool calls, including that command. Verify one icon per
+hook on its tool row, no matched standalone hook rows, and the block reason
+visible without expanding. Expand a tool to inspect each hook's name, Pre/Post,
+status icon and reason; check tooltips and accessibility labels. Reopen the chat
+and confirm the hooks and reason persist. Review real light/dark windows at
+800×500, with no nested popovers. Package tests cover matching, hook-ID pinning,
+PostToolUse fallback, block/failure parsing, unknown responses and reopening;
+they do not establish live CLI or window acceptance.
+
+The self-drive scenario `hook-tools` automates the live part of this gate.
+`scripts/run-self-drive.sh` copies the generic fixture in
+`UITests/self-drive/fixtures/hook-project` into its throwaway project when
+`AITVARAS_SELF_DRIVE_TEMPLATE` points there, and defaults Claude to Haiku through
+the debug-only `AITVARAS_SELF_DRIVE_CLAUDE_MODEL`. The scenario requires the
+inline provider segments, so run it at 1080×720 (at 800×500 they collapse into a
+native menu the driver cannot open):
+
+```sh
+AITVARAS_SELF_DRIVE_TEMPLATE=$PWD/UITests/self-drive/fixtures/hook-project \
+  AITVARAS_SELF_DRIVE_APPEARANCE=light AITVARAS_SELF_DRIVE_SIZE=1080x720 \
+  scripts/run-self-drive.sh hook-tools
+```
+
+It checks Haiku is selected, three Bash calls complete with no error row, and
+the block reason appears on its row; review `hooks-tool-rows.png` and
+`hooks-tree.txt` for one icon per hook in light and dark.
 
 `Fixtures/agents/claude/setup-hooks.jsonl` is a **hand-written** protocol fixture
 using the P0 field shapes, with generic `echo`/`docs` servers, a `shout` skill,

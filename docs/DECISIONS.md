@@ -394,6 +394,63 @@ failures do not replace the inline send/sign-in error. A second complete observa
 it does not reserve the native session against another client. Changed native
 content evicts an idle run so the next Send resumes the updated native session.
 
+Issue #23: successive tool-result UUIDs were rebinding the input row and causing
+a persistence identity conflict that killed the turn. Claude user frames
+consisting entirely of tool results finish their tools but
+are not user messages: their UUIDs never bind the input row. Input bindings
+also refuse a second, different native identity. The one-time v39 repair clears
+only Claude user-row native UUIDs that differ from a proven owning journal
+input UUID. The journal must match chat/session; links through `journalInputID`
+require corroborating `nativeHistory.itemID`. Conflicting or malformed metadata,
+inherited fork rows and unowned imports remain untouched. Native-history
+evidence, journals, content and display IDs are preserved. Ordinary GRDB
+migrations have no automatic database backup; installation requires a manual
+database backup before upgrading. No app-level backup is added for this repair.
+Hook events fold into their tool payloads under the matching rules in D34.
+
+Turn-ending error catches retain a typed safe category across backend and
+coordinator boundaries through `AgentEvent.failureReport`. Public backend/run
+throws and stream errors unwrap diagnostic carriers to `AgentFailure`.
+Activity records only the error type and case plus
+chat/input provenance, never descriptions, associated values, paths, prompts
+or credentials. Full caught errors go to unified log with explicit `.private`
+interpolation. Unknown error types use a validated metatype name and an
+`unknown` case, without inspecting the value. Failure diagnostics are excluded
+from memory evidence. If the Activity write itself fails, the full error is
+privately logged without recursively auditing the audit failure; durable
+diagnostics cannot be guaranteed while storage is unavailable.
+
+An abnormal turn end now commits a compact `stopped` transcript entry with
+the journal outcome. It retains delivery evidence, provider/profile and native
+session identity, the safe error category and any reported quota reset time.
+Reopening and native history refresh preserve it. Startup recovery creates a
+Connection lost row for unfinished journals without sending anything. Explicit
+Stop creates a Stopped row. Internal failures show “Aitvaras error · category”
+with only Copy details, which copies the category. Connection failures show
+“Connection lost”; quota failures show “Usage limit reached”, with a local
+24-hour reset time when known. These offer Continue for acknowledged input and
+Retry otherwise. Authentication keeps the existing Sign in flow.
+Provider-reported result/assistant errors use the fixed `providerError` case
+and the Connection lost actions. Internal catches retain `unknown` or their
+safe store/history category; provider error text never becomes composer copy.
+
+Recovery is manual. The manager's recovery API validates the original durable
+session and rejects absent or changed native identities for Continue. Continue
+checks Claude's authoritative system/init identity; foreign session IDs on
+ordinary tool, subagent, hook or compaction frames do not terminate a turn. Continue
+sends exactly “Continue where you stopped.” through the normal policy boundary,
+without a catch-up envelope, and persists a small `continued` marker instead of
+a user bubble. Native refresh preserves that marker only for the exact recorded
+instruction; an edited native message renders as user text. Retry restores the
+original wire prompt and selected composer bytes, including when delivery is
+unknown. Each click claims the stopped row and prepares one new journaled attempt
+atomically before writing to the provider. Old delivery evidence is retained;
+repeated/stale claims cannot send again. There is no reset timer or automatic
+continuation; issue #27 may use this explicit recovery API in a later change.
+Composer failures remain only for provably undelivered input. Stopped diagnostics
+stay outside provider context, and Continued markers delimit their own journal
+when selecting completed assistant context.
+
 Catch-up scans normalized entries and the chat's legacy local, owned and linked
 timeline without the UI page limit. Completed messages from other sessions are
 eligible, including earlier sessions of the same provider. Acknowledged handovers
@@ -727,12 +784,25 @@ within each tier.
 Assistant selection views have no intrinsic width and use the proposed
 transcript width on every measurement, including after completion and resize.
 
-Claude launches include hook events. `hook_started` and `hook_response` are
-correlated by `hook_id`; `statusMessage` comes from settings matched by event
-and matcher. A PreToolUse exit code 2 is blocked, with bounded, redacted stderr
-as its reason. Successful rows collapse; blocked/error rows remain visible.
-Only an explicit tool-use identity attaches a hook row to a tool; otherwise
-it remains a separate row. Unknown informational system events are ignored.
+Claude launches include hook events. PreToolUse hooks without a tool-use ID
+start on the earliest same-name tool without a real result or a completed Pre
+hook. All starts in that batch stay together. An interleaved next-tool start
+closes the previous Pre batch; sequential configured hooks can stay on the
+current unfinished tool when no next eligible tool waits. PostToolUse matches
+the most recent unfinished tool, then the most recently finished match. The
+first observation pins `hook_id` to that tool, so overlapping same-name tools
+cannot steal responses. Tool payloads persist a `hooks` array in observation
+order with id, name, event, status and an optional short reason. Exit 2 or a
+block/deny decision is blocked; other nonzero exits/errors are failed. Reasons
+use redacted stderr or structured decision reasons, one line capped at 240
+UTF-8 bytes, never full output. Unknown responses and unmatched starts keep
+standalone rows; unknown informational system events are ignored.
+Real successful tool results supersede hook-derived denied/error flags in
+either arrival order, while the hook outcome and reason remain in history.
+
+Matched hooks appear as status icons beside the tool label. Block reasons
+remain visible on the collapsed row; all hook details use the tool's existing
+disclosure, without another popover. Unmatched rows keep their existing UI.
 
 Claude **Fork from here** creates a chat in the same project with
 `--resume <sid> --fork-session --resume-session-at <assistant uuid>`. It records

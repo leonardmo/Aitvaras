@@ -21,8 +21,10 @@ actor ClaudeRun: AgentRun {
     private var acknowledged = false
     private var interrupted = false
     private var assistantFailure: AgentFailure?
+    private var rateLimitReset: Date?
     private var closed = false
     private var terminalFailure: AgentFailure?
+    private let verifiesResumeIdentity: Bool
     private var modeState: AgentModeState
     private var requests: [AgentRequestID: (AgentRequest, JSONValue)] = [:]
     private var seenResults: Set<String> = []
@@ -44,6 +46,7 @@ actor ClaudeRun: AgentRun {
         self.metadataReader = metadataReader ?? AgentProjectMetadataReader(projectDirectory: configuration.directory)
         seenMessages = configuration.knownMessageIDs
         self.profile = profile; session = configuration.forkSession ? nil : configuration.resume; modeState = AgentModeState(configuration.mode)
+        verifiesResumeIdentity = configuration.verifiesResumeIdentity
         forkSource = configuration.forkSession ? configuration.resume : nil
         var arguments = ["-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose",
                          "--include-partial-messages", "--permission-prompt-tool", "stdio", "--permission-mode",
@@ -104,8 +107,8 @@ actor ClaudeRun: AgentRun {
     private func scope(item: String? = nil) -> AgentEventScope {
         AgentEventScope(runID: id, session: session, inputID: input, itemID: item)
     }
-    private func emit(_ kind: AgentEvent.Kind, item: String? = nil) {
-        switch continuation.yield(AgentEvent(scope: scope(item: item), kind: kind)) {
+    private func emit(_ kind: AgentEvent.Kind, item: String? = nil, report: AgentFailureReport? = nil) {
+        switch continuation.yield(AgentEvent(scope: scope(item: item), kind: kind, failureReport: report)) {
         case .enqueued: break
         case .dropped, .terminated:
             continuation.finish(throwing: AgentFailure.invalidTransition)
@@ -117,7 +120,7 @@ actor ClaudeRun: AgentRun {
         guard !closed, input == nil, !writing else { throw AgentFailure.invalidTransition }
         let frame = try userFrame(value)
         autonomous = false
-        input = value.id; acknowledged = false; interrupted = false; assistantFailure = nil; streamedThinking.removeAll(); streamTools.removeAll(); streamTexts.removeAll(); streamingMessageID = nil
+        input = value.id; acknowledged = false; interrupted = false; assistantFailure = nil; rateLimitReset = nil; streamedThinking.removeAll(); streamTools.removeAll(); streamTexts.removeAll(); streamingMessageID = nil
         do { try await willDeliver() } catch { input = nil; throw error }
         guard !closed, input == value.id, !interrupted else { throw AgentFailure.invalidTransition }
         emit(.delivery(.deliveryUnknown))
@@ -175,6 +178,11 @@ actor ClaudeRun: AgentRun {
         }
         switch value["type"]?.stringValue {
         case "system" where value["subtype"]?.stringValue == "init":
+            if verifiesResumeIdentity, let native = value["session_id"]?.stringValue {
+                // Let the manager's expectedNative check validate Continue.
+                // Tool, subagent, hook and compaction frames are not identity.
+                emit(.sessionStarted(.init(provider: .claude, profile: profile, nativeID: native)))
+            }
             if value["apiKeySource"]?.stringValue != "none" { await disconnected(.unsupported); return }
             do {
                 // The CLI has consumed the file; retain only the in-memory
@@ -237,10 +245,20 @@ actor ClaudeRun: AgentRun {
             parseStream(value["event"] ?? .null)
         case "assistant", "user":
             acknowledge()
-            if let error = value["error"]?.stringValue { assistantFailure = error == "authentication_failed" ? .authRequired : .unknown }
+            if let error = value["error"]?.stringValue {
+                if error == "authentication_failed" { assistantFailure = .authRequired }
+                else if ["rate_limit", "rate_limit_error", "usage_limit"].contains(error) { assistantFailure = .quota(resetsAt: rateLimitReset) }
+                else { assistantFailure = .providerError }
+            }
             // Injected reminders are provenance for the marker, never a user bubble.
             if !(autonomous && type == "user" && injectedReason(value) != nil) { await parseMessage(value) }
-        case "rate_limit_event": emit(.rateLimits(claudeRateLimits(value["rate_limit_info"] ?? .null)))
+        case "rate_limit_event":
+            let info = value["rate_limit_info"] ?? .null
+            if info["status"]?.stringValue == "rejected" {
+                rateLimitReset = info["resetsAt"]?.date
+                assistantFailure = .quota(resetsAt: rateLimitReset)
+            }
+            emit(.rateLimits(claudeRateLimits(info)))
         case "result":
             if let nativeID = value["uuid"]?.stringValue, !seenResults.insert(nativeID).inserted { return }
             guard input != nil else { return }
@@ -254,7 +272,7 @@ actor ClaudeRun: AgentRun {
             let aborted = value["terminal_reason"]?.stringValue == "aborted_streaming"
             let outcome: AgentTurnOutcome = (interrupted || aborted)
                 ? .interrupted : assistantFailure.map { .failed($0) }
-                    ?? (value["is_error"]?.boolValue == false ? .completed : .failed(.unknown))
+                    ?? (value["is_error"]?.boolValue == false ? .completed : .failed(.providerError))
             let completed = [input!] + queue
             continuation.yield(.init(scope: .init(runID: id, session: session, inputID: input,
                 completedInputIDs: completed.count > 1 ? completed : []), kind: .turnEnded(outcome)))
@@ -309,10 +327,13 @@ actor ClaudeRun: AgentRun {
         _ = try await wire.request("interrupt", timeout: .seconds(1))
     }
     func disconnected(_ error: AgentFailure) async {
+        await disconnected(AgentFailureDiagnostics.capture(error))
+    }
+    func disconnected(_ error: AgentFailureReport) async {
         guard !closed else { return }
-        closed = true; terminalFailure = error; requests.removeAll()
-        if input != nil { emit(.turnEnded(.failed(error))); input = nil }
-        continuation.finish(throwing: error)
+        closed = true; terminalFailure = error.failure; requests.removeAll()
+        if input != nil { emit(.turnEnded(.failed(error.failure)), report: error); input = nil }
+        continuation.finish(throwing: error.failure)
         await closeTransport()
     }
     func abort() async {
@@ -340,19 +361,27 @@ actor ClaudeRun: AgentRun {
             guard hookPhases[id] == nil else { return }; phase = .running
         } else {
             guard hookPhases[id] == nil || hookPhases[id] == .running else { return }
-            guard let exit = value["exit_code"]?.int, let outcome = value["outcome"]?.stringValue,
-                  ["success", "error"].contains(outcome) else { return }
-            phase = event == "PreToolUse" && exit == 2 ? .blocked : (exit != 0 || outcome == "error" ? .error : .success)
+            let exit = value["exit_code"]?.int, outcome = value["outcome"]?.stringValue
+            let output = value["stdout"]?.stringValue.flatMap(JSONValue.parse)
+            let decision = value["decision"]?.stringValue ?? value["hookSpecificOutput"]?["permissionDecision"]?.stringValue
+                ?? output?["decision"]?.stringValue ?? output?["hookSpecificOutput"]?["permissionDecision"]?.stringValue
+            guard exit != nil || ["success", "error"].contains(outcome ?? "") || ["block", "deny"].contains(decision ?? "") else { return }
+            phase = exit == 2 || ["block", "deny"].contains(decision ?? "") ? .blocked
+                : ((exit ?? 0) != 0 || outcome == "error" ? .error : .success)
         }
         hookPhases[id] = phase
         let tool = rawName.split(separator: ":", maxSplits: 1).dropFirst().first.map(String.init) ?? ""
         let status = availableSetup.metadata.statusMessage(event: event, tool: tool)
         var reason: String?
         if phase == .blocked || phase == .error {
-            let text = [value["stderr"]?.stringValue, value["output"]?.stringValue, value["stdout"]?.stringValue]
-                .compactMap { $0 }.first { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty } ?? "Hook failed."
+            let output = value["stdout"]?.stringValue.flatMap(JSONValue.parse)
+            let text = [value["stderr"]?.stringValue, value["reason"]?.stringValue,
+                value["hookSpecificOutput"]?["permissionDecisionReason"]?.stringValue,
+                output?["reason"]?.stringValue, output?["hookSpecificOutput"]?["permissionDecisionReason"]?.stringValue]
+                .compactMap { $0 }.first { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+                ?? (phase == .blocked ? "Hook blocked." : "Hook failed.")
             let runtimeRedacted = await runtimeFile?.redacted(text) ?? text
-            reason = await metadataReader.redact(runtimeRedacted)
+            reason = AgentTranscriptContent.shortHookReason(await metadataReader.redact(runtimeRedacted))
         }
         let name = await metadataReader.redact(rawName, limit: 512)
         let safeEvent = await metadataReader.redact(event, limit: 128)
@@ -423,8 +452,9 @@ actor ClaudeRun: AgentRun {
     private func parseMessage(_ value: JSONValue) async {
         let message = value["message"] ?? .null
         let messageID = message["id"]?.stringValue ?? value["uuid"]?.stringValue
+        let blocks = message["content"]?.arrayValue ?? []
         var texts: [String] = []
-        for block in message["content"]?.arrayValue ?? [] {
+        for block in blocks {
             switch block["type"]?.stringValue {
             case "text": if let text = block["text"]?.stringValue { texts.append(text) }
             case "thinking":
@@ -448,7 +478,12 @@ actor ClaudeRun: AgentRun {
             default: emit(.unknown(name: block["type"]?.stringValue ?? "content", payload: block), item: messageID)
             }
         }
-        if message["role"]?.stringValue == "user" { texts = [ClaudeCommandText.display(texts.joined(separator: "\n"))] }
+        if message["role"]?.stringValue == "user" {
+            // Tool-result UUIDs identify tool output, not an echo of our input.
+            // Emit their completions above without binding a user message ID.
+            if !blocks.isEmpty, blocks.allSatisfy({ $0["type"]?.stringValue == "tool_result" }) { return }
+            texts = [ClaudeCommandText.display(texts.joined(separator: "\n"))]
+        }
         if let messageID, !texts.isEmpty {
             let native = value["uuid"]?.stringValue ?? messageID
             let role = message["role"]?.stringValue ?? "assistant"

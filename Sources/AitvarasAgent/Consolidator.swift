@@ -361,7 +361,7 @@ public actor Consolidator {
             true
         case .eventReceived, .classification, .suggestionOffered,
              .notificationQueued, .notificationSent, .notificationFailed, .heldNotificationChanged, .attentionChanged,
-             .delegationRun, .consolidationRun, .captureFinished, .wakeBriefing,
+             .delegationRun, .agentFailure, .consolidationRun, .captureFinished, .wakeBriefing,
              .shortcutLearned, .shortcutTaken, .automationSuggested,
              .automationApproved, .automationChanged, .automationRun:
             false

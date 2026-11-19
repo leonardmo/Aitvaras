@@ -243,7 +243,7 @@ import AitvarasStore
         try await manager.shutdown()
     }
 
-    @Test func journalBarrierFailurePreventsWriteAndDuplicateInputDoesNotDisturbLiveTurn() async throws {
+    @Test func journalBarrierFailureCannotRetryAndDuplicateInputDoesNotDisturbLiveTurn() async throws {
         let stores = try inMemoryStores()
         let chat = try agentStoreChat(stores).0.id
         let backend = ManagerTestBackend()
@@ -257,9 +257,15 @@ import AitvarasStore
         #expect(await backend.totalWrites() == 0)
         #expect(try stores.agentTurn(id: input.id)?.delivery == .prepared)
         try await stores.db.queue.write { try $0.execute(sql: "DROP TRIGGER testBarrierFailure") }
-        try await manager.resendPrepared(turnID: input.id)
-        await #expect(throws: AgentSessionManagerError.chatBusy) { try await manager.send(chatID: chat, provider: .claude, input: input) }
-        #expect(try stores.agentTurn(id: input.id)?.state == .running)
+        await #expect(throws: AgentFailure.invalidTransition) { try await manager.resendPrepared(turnID: input.id) }
+        #expect(try stores.agentEntries(chatID: chat).last?.stoppedTurn?.actions == [.copyDetails])
+        #expect(await backend.totalWrites() == 0)
+        // Fixing storage permits a new explicit Send, while the failed input
+        // remains diagnostic-only and can never be silently replayed.
+        let next = AgentInput(text: "New input")
+        try await manager.send(chatID: chat, provider: .claude, input: next)
+        await #expect(throws: AgentSessionManagerError.chatBusy) { try await manager.send(chatID: chat, provider: .claude, input: next) }
+        #expect(try stores.agentTurn(id: next.id)?.state == .running)
         try await manager.shutdown()
     }
 
@@ -277,7 +283,10 @@ import AitvarasStore
         #expect(try stores.agentTurn(id: input.id)?.delivery == .deliveryUnknown)
         #expect(try await manager.state(chatID: chat.id).entries.first?.text == "kept")
         #expect(await backend.runs.isEmpty)
-        #expect(try await manager.state(chatID: chat.id).outcome == .interrupted)
+        let recovered = try await manager.state(chatID: chat.id)
+        #expect(recovered.outcome == .failed(.offline))
+        #expect(recovered.currentStoppedTurn?.reason.kind == .connection)
+        #expect(recovered.currentStoppedTurn?.actions == [.retry])
         try await manager.shutdown()
     }
 
@@ -512,6 +521,39 @@ import AitvarasStore
         try await manager.shutdown()
     }
 
+    @Test func queuedInputNativeIdentityCannotBeOverwrittenByAnotherEcho() async throws {
+        let stores = try inMemoryStores()
+        let (chat, _) = try agentStoreChat(stores, provider: .claude)
+        let backend = ManagerTestBackend()
+        let manager = try AgentSessionManager(persistence: stores, backend: { _ in backend }, audit: { _ in })
+        let first = AgentInput(text: "first"), queued = AgentInput(text: "queued input")
+        try await manager.send(chatID: chat.id, provider: .claude, input: first)
+        try await manager.send(chatID: chat.id, provider: .claude, input: queued)
+        let run = try #require(await backend.runs.first)
+        await run.emit(.message(id: "queued-native", role: "user", text: "wire text"), input: queued.id)
+        try await waitManager {
+            try stores.agentEntries(chatID: chat.id).first { $0.id == queued.id }?.nativeMessageID == "queued-native"
+        }
+        await run.emit(.message(id: "queued-native", role: "user", text: "wire text"), input: queued.id)
+        await run.emit(.message(id: "different-native", role: "user", text: ""), input: queued.id)
+        // A subsequent root event proves the conflicting echo was consumed.
+        await run.emit(.textDelta("still running"), input: first.id)
+        try await waitManager {
+            let state = try await manager.state(chatID: chat.id)
+            return !state.isRunning || state.streamingText == "still running"
+        }
+        let state = try await manager.state(chatID: chat.id)
+        #expect(state.isRunning)
+        #expect(state.streamingText == "still running")
+        #expect(state.entries.first { $0.id == queued.id }?.nativeMessageID == "queued-native")
+        let users = try stores.agentEntries(chatID: chat.id).filter { $0.kind == "user" }
+        #expect(users.map(\.id) == [first.id, queued.id])
+        #expect(users.last?.nativeMessageID == "queued-native")
+        #expect(users.last?.text == queued.text)
+        #expect(try stores.agentTurn(id: queued.id)?.state == .running)
+        try await manager.shutdown()
+    }
+
     @Test func reducerStableMessagesToolsHooksUsageAndOutcome() {
         let chat = UUID(); let input = AgentInput(text: "test")
         let session = AgentChatSession(chatID: chat, provider: .claude, cwd: "/tmp", model: "test")
@@ -648,6 +690,9 @@ private actor ManagerTestRun: AgentRun {
         inputs.append(input)
         writes += 1
         if failure == .after { throw AgentFailure.offline }
+    }
+    func followup(_ input: AgentInput, willDeliver: @escaping @Sendable () async throws -> Void) async throws {
+        try await send(input, willDeliver: willDeliver)
     }
     func respond(to request: AgentRequest, with response: AgentResponse) { responses.append(response) }
     func setMode(_ mode: AgentMode) {}

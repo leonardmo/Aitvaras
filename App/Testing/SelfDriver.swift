@@ -85,6 +85,9 @@ import AitvarasStore
             if let model = env["AITVARAS_SELF_DRIVE_CODEX_MODEL"]?.trimmingCharacters(in: .whitespacesAndNewlines), !model.isEmpty {
                 AppModel.shared.chatModel?.selfDriveCodexModel = model
             }
+            if let model = env["AITVARAS_SELF_DRIVE_CLAUDE_MODEL"]?.trimmingCharacters(in: .whitespacesAndNewlines), !model.isEmpty {
+                AppModel.shared.chatModel?.selfDriveClaudeModel = model
+            }
             if let model = env["AITVARAS_SELF_DRIVE_LOCAL_MODEL"]?.trimmingCharacters(in: .whitespacesAndNewlines), !model.isEmpty {
                 AppModel.shared.chatModel?.selfDriveLocalModel = model
             }

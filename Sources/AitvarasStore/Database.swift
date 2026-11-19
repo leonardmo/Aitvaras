@@ -1114,6 +1114,67 @@ public final class AitvarasDatabase: Sendable {
                 BEGIN SELECT RAISE(ABORT, 'Chat already has an active input'); END;
                 """)
         }
+        m.registerMigration("v39-repair-claude-user-identities") { db in
+            try Self.repairClaudeUserIdentities(in: db)
+        }
         return m
+    }
+
+    /// Only a journal-owned input proves which UUID Claude was sent. Native
+    /// imports and inherited fork rows may legitimately have different IDs.
+    private static func repairClaudeUserIdentities(in db: Database) throws {
+        // Frozen column projections: future record fields must not affect an
+        // upgrade from the schema this migration was written for.
+        let rows = try Row.fetchAll(db, sql: """
+            SELECT id, chatID, sessionID, nativeMessageID, payloadJSON
+            FROM agentTranscriptEntry
+            WHERE provider = 'claude' AND kind = 'user' AND nativeMessageID IS NOT NULL
+            """)
+        func journal(_ id: UUID) throws -> Row? {
+            try Row.fetchOne(db, sql: "SELECT id, chatID, sessionID FROM agentTurn WHERE id = ?", arguments: [id])
+        }
+        for row in rows {
+            let rowID: UUID = row["id"], chatID: UUID = row["chatID"]
+            let nativeText: String? = row["nativeMessageID"], owningSession: UUID? = row["sessionID"]
+            guard let nativeID = nativeText.flatMap(UUID.init(uuidString:)),
+                  let sessionID = owningSession,
+                  let session = try Row.fetchOne(db, sql: "SELECT provider, chatID FROM agentChatSession WHERE id = ?", arguments: [sessionID]),
+                  session["provider"] as String == "claude", session["chatID"] as UUID == chatID else { continue }
+            let payload: [String: JSONValue]
+            if let json: String = row["payloadJSON"] {
+                guard case .object(let object)? = JSONValue.parse(json) else { continue }
+                payload = object
+            } else { payload = [:] }
+            guard payload["forkInheritedForSession"] == nil, payload["forkSourceEntryID"] == nil,
+                  payload["legacyID"] == nil else { continue }
+            let metadataInput: UUID?
+            if let value = payload["journalInputID"] {
+                guard let id = value.stringValue.flatMap(UUID.init(uuidString:)) else { continue }
+                metadataInput = id
+            } else { metadataInput = nil }
+            let historyInput: UUID?
+            if let history = payload["nativeHistory"] {
+                guard case .object = history,
+                      let id = history["itemID"]?.stringValue.flatMap(UUID.init(uuidString:)) else { continue }
+                historyInput = id
+            } else { historyInput = nil }
+            let turn: Row
+            if let own = try journal(rowID) {
+                guard metadataInput == nil || metadataInput == own["id"] as UUID else { continue }
+                turn = own
+            } else {
+                guard let metadataInput, historyInput == metadataInput,
+                      let linked = try journal(metadataInput) else { continue }
+                turn = linked
+            }
+            let turnID: UUID = turn["id"], turnChatID: UUID = turn["chatID"], turnSessionID: UUID = turn["sessionID"]
+            guard turnChatID == chatID, turnSessionID == sessionID,
+                  historyInput == nil || historyInput == turnID,
+                  nativeID != turnID else { continue }
+            // Intentionally bypass saveEntry's immutable-identity guard only in
+            // this migration. Record encoding keeps all UUID columns intact.
+            try Table<Row>("agentTranscriptEntry").filter(Column("id") == rowID)
+                .updateAll(db, Column("nativeMessageID").set(to: nil as String?))
+        }
     }
 }

@@ -24,10 +24,15 @@ state="$(mktemp -d -t aitvaras-e2e-state)"; project="$(mktemp -d -t aitvaras-e2e
 rm -rf "$out"; mkdir -p "$out"
 git -C "$project" init -q
 echo "Throwaway test project" > "$project/README.md"
-git -C "$project" add README.md
+# Optional generic fixture content (for example project hooks) copied in first.
+if [[ -n "${AITVARAS_SELF_DRIVE_TEMPLATE:-}" ]]; then
+    rsync -a --exclude .git "$AITVARAS_SELF_DRIVE_TEMPLATE/" "$project/" || exit 2
+fi
+git -C "$project" add -A
 git -C "$project" -c user.name=test -c user.email=test@example.invalid commit -q -m init
 env AITVARAS_SELF_DRIVE="$PWD/UITests/self-drive/$scenario.json" AITVARAS_SELF_DRIVE_OUTPUT="$out" \
     AITVARAS_SELF_DRIVE_PROJECT="$project" AITVARAS_SELF_DRIVE_CODEX_MODEL="${AITVARAS_SELF_DRIVE_CODEX_MODEL:-gpt-6-luna}" \
+    AITVARAS_SELF_DRIVE_CLAUDE_MODEL="${AITVARAS_SELF_DRIVE_CLAUDE_MODEL:-haiku}" \
     AITVARAS_STATE_DIR="$state" AITVARAS_DISABLE_EXTERNAL_INTEGRATIONS=1 \
     AITVARAS_AGENT_TEST_PROVIDERS=real "$app" > "$out/app.log" 2>&1 &
 pid=$!

@@ -9,6 +9,9 @@ struct AgentTranscriptView: View {
     var fork: (() -> Void)? = nil
     var forkEnabled = false
     var edit: (() -> Void)? = nil
+    var recovery: ((AgentRecoveryAction) -> Void)? = nil
+    var recoveryEnabled = false
+    var recoveryError: String? = nil
     @State private var expanded = false
 
     var body: some View {
@@ -16,6 +19,32 @@ struct AgentTranscriptView: View {
             if entry.kind == "wakeup" {
                 Label(entry.text, systemImage: "clock.arrow.circlepath")
                     .font(.caption).foregroundStyle(.secondary)
+            } else if let stop = entry.stoppedTurn {
+                HStack(spacing: 6) {
+                    Image(systemName: stop.icon).foregroundStyle(stop.reason.kind == .internalError ? Color.orange : Color.secondary)
+                        .accessibilityIdentifier(stop.reason.kind == .interrupted ? "chat.interrupted" : "chat.stopped.icon.\(entry.id)")
+                    Text(stop.label()).lineLimit(1).truncationMode(.middle).help(stop.label())
+                    Spacer(minLength: 6)
+                    if let recoveryError {
+                        Image(systemName: "exclamationmark.circle").foregroundStyle(.orange)
+                            .help(recoveryError).accessibilityLabel(recoveryError)
+                    }
+                    ForEach(stop.actions, id: \.rawValue) { action in
+                        Button(action.label) {
+                            if action == .copyDetails {
+                                NSPasteboard.general.clearContents()
+                                NSPasteboard.general.setString(stop.reason.category.name, forType: .string)
+                            } else { recovery?(action) }
+                        }
+                        .disabled(action != .copyDetails && (!recoveryEnabled || (action == .continueTurn && !stop.canContinue)))
+                        .help(action == .continueTurn && !stop.canContinue ? "The original session is unavailable." : action.label)
+                        .accessibilityIdentifier("chat.stopped.\(action.rawValue).\(entry.id)")
+                    }
+                }.font(.caption).controlSize(.small)
+            } else if entry.kind == "continued" {
+                Label("Continued", systemImage: "arrow.turn.down.right")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .accessibilityIdentifier("chat.continued.\(entry.id)")
             } else if entry.kind == "hook" {
                 hookRow(payload ?? .null)
             } else if entry.kind == "importedHistory" {
@@ -26,6 +55,18 @@ struct AgentTranscriptView: View {
                         VStack(alignment: .leading, spacing: 10) {
                             if entry.kind == "tool" {
                                 toolDetails
+                                ForEach(entry.toolHooks) { hook in
+                                    VStack(alignment: .leading, spacing: 3) {
+                                        HStack(spacing: 6) {
+                                            foldedHookIcon(hook)
+                                            Text(hook.name).lineLimit(2)
+                                            Text(hook.eventLabel).foregroundStyle(.secondary)
+                                        }
+                                        if let reason = hook.reason, !reason.isEmpty {
+                                            Text(reason).foregroundStyle(.secondary).textSelection(.enabled)
+                                        }
+                                    }.font(.caption)
+                                }
                             } else {
                                 Text(AgentTranscriptContent.bounded(entry.text))
                                     .font(.caption.monospaced()).textSelection(.enabled)
@@ -39,13 +80,17 @@ struct AgentTranscriptView: View {
                             Image(systemName: entry.toolPresentationIcon)
                         }
                         Text(title).lineLimit(1).truncationMode(.middle)
-
+                        if entry.kind == "tool" {
+                            ForEach(entry.toolHooks) { hook in foldedHookIcon(hook) }
+                        }
                     }.font(.caption).foregroundStyle(.secondary)
                 }
                 if entry.kind == "tool" {
-                    ForEach(Array((payload?["hooks"]?.arrayValue ?? []).enumerated()), id: \.offset) { _, hook in
-                        hookRow(hook)
-                    }.padding(.leading, 12)
+                    if let reason = entry.blockedHookReason {
+                        Text(reason).font(.caption).foregroundStyle(.red).lineLimit(1).truncationMode(.tail)
+                            .help(reason).padding(.leading, 12)
+                            .accessibilityIdentifier("chat.tool.\(entry.id).blockedReason")
+                    }
                 }
             } else if entry.kind == "user" {
                 HStack {
@@ -84,6 +129,13 @@ struct AgentTranscriptView: View {
         // Give completion a fresh AX container as well as a new identifier,
         // keeping the row identity stable throughout streaming.
         .id(entry.presentationIdentifier)
+    }
+    private func foldedHookIcon(_ hook: AgentToolHookPresentation) -> some View {
+        Image(systemName: hook.icon)
+            .foregroundStyle(hook.status == .blocked ? Color.red : hook.status == .failed ? Color.orange : Color.secondary)
+            .help(hook.accessibilityLabel)
+            .accessibilityLabel(hook.accessibilityLabel)
+            .accessibilityIdentifier("chat.tool.\(entry.id).hook.\(hook.id)")
     }
     @ViewBuilder private func hookRow(_ hook: JSONValue) -> some View {
         let phase = hook["phase"]?.stringValue ?? "interrupted"

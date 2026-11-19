@@ -206,11 +206,15 @@ final class ChatModel {
     var selfDriveLocalModel: String? {
         didSet { settings = settings.filter { $0.value.provider != .local }; try? loadSettings() }
     }
+    var selfDriveClaudeModel: String? {
+        didSet { settings = settings.filter { $0.value.provider != .claude }; try? loadSettings() }
+    }
     #endif
     private var newSessionModel: String {
         #if DEBUG
         if provider == .codex, let selfDriveCodexModel { return selfDriveCodexModel }
         if provider == .local, let selfDriveLocalModel { return selfDriveLocalModel }
+        if provider == .claude, let selfDriveClaudeModel { return selfDriveClaudeModel }
         #endif
         return provider == .local ? "local" : provider == .claude ? (claudeProfiles.first { $0.nativeProfile == claudeProfile }?.defaultModel ?? "opus") : "default"
     }
@@ -630,6 +634,7 @@ final class ChatModel {
         // A cost-limited run must fail rather than fall back to another model.
         if provider == .codex, selfDriveCodexModel == session.model { automaticallySelect = false }
         if provider == .local, selfDriveLocalModel == session.model { automaticallySelect = false }
+        if provider == .claude, selfDriveClaudeModel == session.model { automaticallySelect = false }
         #endif
         let restored = ChatSettings.restoring(session, models: models, automaticallySelect: automaticallySelect)
         if restored != session { saveSettings(restored) }
@@ -871,6 +876,12 @@ final class ChatModel {
                 error = "The self-drive Local model is unavailable."; return
             }
         }
+        if provider == .claude, let selfDriveClaudeModel {
+            await loadModels()
+            guard models.contains(where: { $0.id == selfDriveClaudeModel }) else {
+                error = "The self-drive Claude model is unavailable."; return
+            }
+        }
         #endif
         if chatID == nil {
             guard canSubmit, hasInput, let projectID = newProjectID else { return }
@@ -968,10 +979,12 @@ final class ChatModel {
                     }
                     return
                 }
-                let failure = (error as? AgentFailure) ?? .unknown
-                try? await manager.reportSendFailure(chatID: id, failure: failure)
+                let failure = (try? await manager.reportSendFailure(chatID: id, inputID: input.id, error: error))
+                    ?? AgentFailureDiagnostics.failure(for: error)
                 if chatID == id { failed(inputID: input.id, failure: failure) }
-                if chatID == id { self.error = AgentFailure.sendMessage(for: error, provider: provider) }
+                if chatID == id {
+                    self.error = showsComposerFailure(inputID: input.id) ? AgentFailure.sendMessage(for: error, provider: provider) : nil
+                }
             }
         }
     }
@@ -1012,7 +1025,7 @@ final class ChatModel {
         guard !handledFailures.contains(inputID), let attempt = attempts.removeValue(forKey: inputID) else { return }
         handledFailures.insert(inputID)
         authProvider = failure == .authRequired ? attempt.provider : nil
-        error = AgentFailure.sendMessage(for: failure, provider: attempt.provider)
+        error = showsComposerFailure(inputID: inputID) ? AgentFailure.sendMessage(for: failure, provider: attempt.provider) : nil
         guard failure == .authRequired, let id = chatID, attempt.provider == provider else { return }
         do {
             guard let turn = try stores.agentTurn(id: inputID), turn.chatID == id, turn.delivery == .prepared, turn.resendCount == 0,
@@ -1021,7 +1034,59 @@ final class ChatModel {
                                           hasAttachments: !attempt.input.attachments.isEmpty)
             try stores.savePendingSend(pending)
             armPendingExpiry(pending)
-        } catch { self.error = "Sign in to \(provider.rawValue.capitalized)" }
+        } catch {
+            self.error = showsComposerFailure(inputID: inputID) ? "Sign in to \(provider.rawValue.capitalized)" : nil
+        }
+    }
+
+    private func showsComposerFailure(inputID: UUID) -> Bool {
+        do {
+            let delivery = try stores.agentTurn(id: inputID)?.delivery
+            return delivery == nil || delivery == .prepared
+        } catch { return false } // Unreadable delivery evidence cannot prove an undelivered input.
+    }
+
+    var recoveryErrors: [UUID: String] = [:]
+    private var recoveryTasks = Set<UUID>()
+    func recover(_ entry: AgentTranscriptEntry, action: AgentRecoveryAction) {
+        guard let stop = entry.stoppedTurn, chatID == entry.chatID, stop.actions.contains(action),
+              !isBusy, !conversationBusy, signingIn == nil, recoveryTasks.insert(entry.id).inserted else { return }
+        recoveryErrors[entry.id] = nil
+        error = nil; authProvider = nil
+        if action == .signIn {
+            defer { recoveryTasks.remove(entry.id) }
+            setChoice(stop.choice)
+            guard choice == stop.choice else {
+                recoveryErrors[entry.id] = "The original provider profile is unavailable."
+                return
+            }
+            do {
+                guard let fresh = try stores.agentEntries(chatID: entry.chatID).first(where: { $0.id == entry.id })?.stoppedTurn,
+                      fresh.actions.contains(.signIn), try stores.latestAgentTurn(chatID: entry.chatID)?.id == stop.inputID,
+                      try stores.agentTurn(id: stop.inputID)?.resendCount == stop.attempt else { throw AgentFailure.invalidTransition }
+                if let turn = try stores.agentTurn(id: stop.inputID), turn.delivery == .prepared, turn.resendCount == 0,
+                   let original = try stores.agentEntries(chatID: entry.chatID).first(where: { $0.id == turn.id }) {
+                    let input = try AgentInput.restoring(id: turn.id, text: original.text, payload: original.payloadJSON)
+                    attempts[turn.id] = (input, stop.choice.provider, profileStatuses[stop.choice]?.accountID)
+                    handledFailures.remove(turn.id)
+                    failed(inputID: turn.id, failure: .authRequired)
+                }
+                signIn(stop.choice)
+            } catch { recoveryErrors[entry.id] = AgentFailure.sendMessage(for: error, provider: entry.provider) }
+            return
+        }
+        Task { [weak self] in
+            guard let self else { return }
+            defer { self.recoveryTasks.remove(entry.id) }
+            do {
+                try await self.manager.recover(chatID: entry.chatID, stoppedEntryID: entry.id, action: action)
+            } catch {
+                AgentFailureDiagnostics.logPrivate(error)
+                if self.chatID == entry.chatID {
+                    self.recoveryErrors[entry.id] = AgentFailure.sendMessage(for: error, provider: entry.provider)
+                }
+            }
+        }
     }
     private func armPendingExpiry(_ pending: PendingSend) {
         pendingExpiry?.cancel()
@@ -1113,7 +1178,11 @@ final class ChatModel {
                 if (error as? ProviderSignInError) == .staleIntent {
                     self.error = nil; self.authProvider = nil
                 } else if let retriedInput {
-                    self.failed(inputID: retriedInput, failure: (error as? AgentFailure) ?? .unknown)
+                    guard let currentChat = self.chatID else { return }
+                    let failure = (try? await self.manager.reportSendFailure(chatID: currentChat, inputID: retriedInput, error: error))
+                        ?? AgentFailureDiagnostics.failure(for: error)
+                    guard self.chatID == currentChat, self.choice == selected else { return }
+                    self.failed(inputID: retriedInput, failure: failure)
                 } else {
                     self.error = error is CancellationError ? nil : "Sign-in did not complete. The message remains in this chat."
                     self.authProvider = self.choice == selected ? provider : nil

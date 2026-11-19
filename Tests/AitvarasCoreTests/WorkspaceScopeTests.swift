@@ -156,7 +156,18 @@ private actor WorkspaceArchiveGate: InferenceEngine {
         #expect(try await archiver.retryStoredConversations(excluding: []) == 0)
         #expect(await engine.snapshot().calls == 1)
         #expect(try stores.allFacts().map(\.text) == ["SHARED_FACT_CANARY"])
-        #expect(try stores.recentActivity().isEmpty)
+        // Failed managed turns still leave a safe audit. Diagnostics are not
+        // Consolidator evidence and must never contain project content.
+        let activity = try stores.recentActivity()
+        #expect(activity.map(\.kind) == (fabricatedTool ? [.agentFailure] : []))
+        if fabricatedTool {
+            let event = try #require(activity.first)
+            #expect(event.runID == input.id)
+            #expect(JSONValue.parse(event.detailJSON ?? "")?["errorCase"]?.stringValue == "invalidRequest")
+            #expect(!Consolidator.isMemoryEvidence(event.kind))
+            #expect(!String(describing: activity).contains("THIS_CHAT_REQUEST"))
+            #expect(!String(describing: activity).contains("CAPTURE_CANARY"))
+        }
         #expect(try stores.commandObservations().isEmpty)
         for provider in [AgentProvider.local, .claude, .codex] {
             let context = try stores.agentContext(session: .init(chatID: chat.id, provider: provider, cwd: "/tmp", model: "fixture"))
