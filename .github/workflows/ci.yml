@@ -46,12 +46,19 @@ jobs:
   # They also run when this job fails (`!cancelled()`) and then fail themselves:
   # a job skipped because a dependency failed counts as passed for a required
   # check, which would let an auto-merging PR through untested.
+  # A PR whose latest commit carries `CI-Build: skip (<reason>)` is treated
+  # like docs-only; `CI-Build: skip-package (<reason>)` skips only the package
+  # tests (AGENTS.md, "Skipping the builds"). Pushes to main always
+  # build, so main stays verified and the build caches stay fresh.
+  # The repository variable PR_PACKAGE_TESTS=off switches package tests off
+  # for PRs only (AGENTS.md, "Switching PR package tests off").
   changes:
     name: Detect code changes
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
       code: ${{ steps.diff.outputs.code }}
+      package: ${{ steps.diff.outputs.code == 'true' && steps.diff.outputs.package != 'false' && (github.event_name != 'pull_request' || vars.PR_PACKAGE_TESTS != 'off') }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -80,26 +87,41 @@ jobs:
               *) code=true ;;
             esac
           done <<< "$files"
+          if [[ "$code" == true && "$EVENT" == pull_request ]]; then
+            skip="$(git log -1 --format='%(trailers:key=CI-Build,valueonly)' "$PR_HEAD" | head -1)"
+            all='^skip([[:space:]]|[(]|$)'
+            package_only='^skip-package([[:space:]]|[(]|$)'
+            if [[ "$skip" =~ $all ]]; then
+              echo "::notice title=Builds skipped::CI-Build: $skip"
+              code=false
+            elif [[ "$skip" =~ $package_only ]]; then
+              echo "::notice title=Package tests skipped::CI-Build: $skip"
+              echo "package=false" >> "$GITHUB_OUTPUT"
+            fi
+          fi
           echo "code=$code" >> "$GITHUB_OUTPUT"
           echo "Code changed: $code"
+      - name: PR package tests switch
+        if: github.event_name == 'pull_request' && vars.PR_PACKAGE_TESTS == 'off'
+        run: echo "::notice title=PR package tests off::Repository variable PR_PACKAGE_TESTS=off. Run make check locally; main still runs the package tests after merge."
 
   package:
     name: Package tests
     needs: changes
     if: ${{ !cancelled() }}
-    runs-on: ${{ needs.changes.outputs.code == 'true' && 'macos-26' || 'ubuntu-latest' }}
+    runs-on: ${{ needs.changes.outputs.package == 'true' && 'macos-26' || 'ubuntu-latest' }}
     timeout-minutes: 120
     env:
-      CODE: ${{ needs.changes.outputs.code }}
+      CODE: ${{ needs.changes.outputs.package }}
     steps:
       - name: Require change detection
         if: needs.changes.result != 'success'
         run: |
           echo "::error::Detect code changes ended with '${{ needs.changes.result }}'; not reporting package tests as passed."
           exit 1
-      - name: Docs-only change
+      - name: Not needed
         if: env.CODE != 'true'
-        run: echo "No code changed; package tests skipped."
+        run: echo "Package tests skipped (docs-only, CI-Build trailer or PR switch; see Detect code changes)."
       - uses: actions/checkout@v7
         if: env.CODE == 'true'
         with:
