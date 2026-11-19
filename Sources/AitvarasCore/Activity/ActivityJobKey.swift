@@ -88,7 +88,7 @@ public enum ActivityJobKey {
 /// Explicit incident identities, independent of their user-facing explanation.
 public enum ActivityProblemCode: String, Sendable {
     case archiveRecovery, routineReview, conversationArchive, voiceArchive, wakeBriefing
-    case chatWakeup, routineExecution, indexing, incomingLookup, senderTrustLookup, incomingSave
+    case chatWakeup, pullRequestWatch, routineExecution, indexing, incomingLookup, senderTrustLookup, incomingSave
     case notificationQueue, phoneQueueRead, phoneQueueUpdate, phoneRetrySchedule, phoneResultSave
     case savedNativeHistory, heldNotificationSave, heldNotificationRead, heldNotificationConsume
     case focusRestore, focusChange, focusRefresh, focusSummaryGoals, focusCoachingGoals

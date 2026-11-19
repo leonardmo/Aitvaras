@@ -20,7 +20,7 @@ final class NotificationRouter {
 
     /// No permission request and no sensitive preview. Only a failure of work
     /// the user requested (or capture data-loss risk) calls this path.
-    static func requestedWorkNeedsAttention() {
+    static func requestedWorkNeedsAttention(message: String? = nil) {
         guard !NSApplication.shared.isActive else { return }
         Task {
             let center = UNUserNotificationCenter.current()
@@ -28,7 +28,7 @@ final class NotificationRouter {
             guard settings.authorizationStatus == .authorized || settings.authorizationStatus == .provisional else { return }
             let content = UNMutableNotificationContent()
             content.title = "Aitvaras needs your attention"
-            content.body = "A requested action could not finish. Open Aitvaras to review it."
+            content.body = message ?? "A requested action could not finish. Open Aitvaras to review it."
             try? await center.add(UNNotificationRequest(identifier: "requested-work-needs-attention", content: content, trigger: nil))
         }
     }

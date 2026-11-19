@@ -190,6 +190,7 @@ final class AppModel {
     private var wakeBriefingRunning = false
     private var newsSchedulerTask: Task<Void, Never>?
     var chatWakeSchedulerTask: Task<Void, Never>?
+    var pullRequestWatchTask: Task<Void, Never>?
     var routineSchedulerTask: Task<Void, Never>?
     private var routineBannerTask: Task<Void, Never>?
     private var nightlySchedulerTask: Task<Void, Never>?
@@ -503,6 +504,7 @@ final class AppModel {
         chatModel?.observeSidebar(workspaceSidebarChats)
         if let selectedWorkspaceChatID { chatModel?.select(selectedWorkspaceChatID) }
         else { chatModel?.prepareNew(projectID: try? stores.newChatProjectID()) }
+        startPullRequestWatchScheduler()
     }
 
     private func localAgentReply(agentLoop: AgentLoop, configuration: AgentSessionConfiguration,
@@ -1553,8 +1555,14 @@ final class AppModel {
 
         await bootstrapIfNeeded()
         await runChatWakeups()
+        async let watch: Void = runPullRequestWatch()
+        await catchUpConnectorsAfterWake(at: wokeAt)
+        await watch
+    }
+
+    private func catchUpConnectorsAfterWake(at wokeAt: Date) async {
         guard let stores, let integrations,
-              // Default-on chat wake-ups never open the reviewed connector catch-up.
+              // The connector catch-up requires an enabled, reviewed feature.
               BackgroundFeature.allCases.contains(where: {
                   !BackgroundWorkPolicy.defaultOn.contains($0) && automaticWorkAllowed($0)
               }) else { return }
@@ -1743,6 +1751,44 @@ final class AppModel {
             while !Task.isCancelled {
                 await self?.runChatWakeups()
                 do { try await Task.sleep(for: .seconds(30)) } catch { return }
+            }
+        }
+    }
+
+    private func pullRequestWatchPermitted() -> Bool {
+        guard let stores, chatModel?.forgeEnabled == true else { return false }
+        return automaticWorkAllowed(.pullRequestWatch)
+            && ActivityExecution.permits(.pullRequestWatch, stores: stores, reporter: activityReporter, trigger: .automatic)
+    }
+
+    private func runPullRequestWatch() async {
+        guard let stores, let chatModel, pullRequestWatchPermitted() else { return }
+        let focusKey = FocusCoach.sessionKey
+        do {
+            let updates = try await ActivityTaskContext.$trigger.withValue(.automatic) {
+                try await chatModel.pullRequestWatcher.tick(permitted: { [weak self] in
+                    await self?.pullRequestWatchPermitted() == true
+                }, attention: { change in
+                    if let title = change.title(watching: false),
+                       (try? stores.value(forKey: focusKey)) != "1" {
+                        await NotificationRouter.requestedWorkNeedsAttention(message: title)
+                    }
+                })
+            }
+            for update in updates { chatModel.applyPullRequestWatchUpdate(update) }
+        } catch is CancellationError {
+            return
+        } catch {
+            reportBackgroundError(code: .pullRequestWatch, title: "Pull request Auto-fix could not refresh", error: error)
+        }
+    }
+
+    private func startPullRequestWatchScheduler() {
+        pullRequestWatchTask?.cancel()
+        pullRequestWatchTask = Task { [weak self] in
+            while !Task.isCancelled {
+                await self?.runPullRequestWatch()
+                do { try await Task.sleep(for: .seconds(60)) } catch { return }
             }
         }
     }

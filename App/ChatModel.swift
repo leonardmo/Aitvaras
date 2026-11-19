@@ -13,9 +13,13 @@ final class ChatModel {
     private let stores: Stores
     let gitActions: AgentGitActionCoordinator
     let forgeActions: AgentForgeActionCoordinator
+    let pullRequestWatcher: PullRequestWatcher
     private(set) var pullRequestBinding: AgentPullRequest?
     private(set) var pullRequest: ForgePullRequest?
     private(set) var pullRequestChecks: [ForgeCheck] = []
+    private(set) var pullRequestCheckedAt: Date?
+    private(set) var pullRequestSignedIn = false
+    private(set) var autoFixBusy = false
     private(set) var forgeError: String?
     private(set) var forgeBusy = false
     private(set) var forgeDraft: ForgeRequestDraft?
@@ -291,7 +295,10 @@ final class ChatModel {
         self.agentSetup = agentSetup
         signInCoordinator = ProviderSignIn(persistence: stores)
         gitActions = AgentGitActionCoordinator(persistence: stores, audit: { _ = try stores.record($0) })
-        forgeActions = AgentForgeActionCoordinator(persistence: stores, registry: ForgeRegistry(environment: forgeEnvironment), audit: { _ = try stores.record($0) })
+        let registry = ForgeRegistry(environment: forgeEnvironment)
+        forgeActions = AgentForgeActionCoordinator(persistence: stores, registry: registry, audit: { _ = try stores.record($0) })
+        pullRequestWatcher = PullRequestWatcher(persistence: stores, manager: manager, registry: registry,
+            git: GitWorkspace(environment: forgeEnvironment))
         let scopedFactory: AgentSessionManager.ProfileBackendFactory? = profileBackends.map { pool in
             { @Sendable choice in try pool.backend(choice) }
         }
@@ -560,6 +567,7 @@ final class ChatModel {
         if let pending = try? stores.pendingSend(), pending.session.chatID != id { invalidatePending() }
         state = id.flatMap { sidebarStates[$0] }; error = nil; authProvider = nil; changes = nil; canDiscardChanges = false; branchStatus = nil; pushDisabledReason = "Refresh branch status first."; gitError = nil
         pullRequest = nil; pullRequestBinding = id.flatMap { try? stores.agentPullRequest(chatID: $0) }; pullRequestChecks = []; forgeError = nil; forgeDraft = nil; forgeKind = nil; forgeNeedsSignIn = false; forgeRefreshID = nil
+        pullRequestCheckedAt = nil; pullRequestSignedIn = false
         do {
             let saved = try stores.value(forKey: id.map { "agent.provider.\($0.uuidString)" } ?? "agent.lastProvider")
             selection.select(id, provider: saved.flatMap(AgentProvider.init(rawValue:)) ?? .local)
@@ -711,7 +719,7 @@ final class ChatModel {
         if chatID == owner { await refreshChanges(); await refreshPullRequest() }
     }
 
-    private var forgeEnabled: Bool {
+    var forgeEnabled: Bool {
         let env = ProcessInfo.processInfo.environment
         return env["AITVARAS_DISABLE_EXTERNAL_INTEGRATIONS"] != "1" && env["AITVARAS_UI_TEST_MODE"] != "1"
     }
@@ -720,6 +728,56 @@ final class ChatModel {
         return forgeEnabled && pullRequest == nil && !branch.detached && !branch.isDefaultBranch
             && branch.upstream == "origin/" + branch.branch && branch.ahead == 0 && branch.behind == 0
     }
+    var canToggleAutoFix: Bool {
+        guard forgeEnabled, pullRequestSignedIn, let request = pullRequest, let binding = pullRequestBinding,
+              request.state == .open || request.state == .draft else { return false }
+        guard binding.number == request.number, binding.repo == request.repo, binding.host == request.host else { return false }
+        if binding.watch { return true }
+        guard !request.sourceIsFork, let head = request.head, let branchStatus else { return false }
+        return !branchStatus.detached && branchStatus.branch == head && branchStatus.upstream == "origin/" + head
+    }
+    var autoFixStatus: String? {
+        guard pullRequestBinding != nil else { return nil }
+        if !forgeEnabled { return "Auto-fix is unavailable in this profile." }
+        if let state = pullRequest?.state, state == .closed || state == .merged { return "Auto-fix requires an open pull request." }
+        if !pullRequestSignedIn { return "Sign in to the forge CLI to use Auto-fix." }
+        if !canToggleAutoFix { return "Auto-fix requires the pull request’s branch in this checkout." }
+        if pullRequestBinding?.watch != true { return "Auto-fix is off for this pull request." }
+        if (try? stores.backgroundWorkPolicy().permits(.pullRequestWatch)) != true { return "Pull request Auto-fix is paused in Activity." }
+        return nil
+    }
+    func setAutoFix(_ on: Bool) async {
+        guard canToggleAutoFix, !autoFixBusy, let binding = pullRequestBinding else { return }
+        autoFixBusy = true
+        defer { autoFixBusy = false }
+        do {
+            try await pullRequestWatcher.setPullRequestWatch(chatID: binding.chatID, on: on, expected: binding)
+            guard chatID == binding.chatID else { return }
+            pullRequestBinding = try stores.agentPullRequest(chatID: binding.chatID)
+            pullRequestCheckedAt = nil
+            forgeError = nil
+        } catch {
+            if chatID == binding.chatID { forgeError = (error as? ForgeError)?.message ?? "Could not change Auto-fix." }
+        }
+    }
+    func applyPullRequestWatchUpdate(_ update: PullRequestWatchUpdate) {
+        guard chatID == update.binding.chatID,
+              (try? stores.agentPullRequest(chatID: update.binding.chatID)) == update.binding else { return }
+        pullRequestBinding = update.binding
+        forgeKind = update.binding.forge
+        if let request = update.request {
+            pullRequest = request
+            pullRequestSignedIn = true
+            forgeNeedsSignIn = false
+        }
+        if let checks = update.checks { pullRequestChecks = checks }
+        if update.error == .signedOut || update.error == .notInstalled {
+            pullRequestSignedIn = false
+            forgeNeedsSignIn = update.error == .signedOut
+        }
+        pullRequestCheckedAt = update.checkedAt
+        forgeError = update.error?.message
+    }
     func refreshPullRequest() async {
         guard forgeEnabled, let owner = chatID, let directory = changes?.directory else { return }
         let token = UUID(); forgeRefreshID = token
@@ -727,14 +785,22 @@ final class ChatModel {
             let snapshot = try await forgeActions.refresh(chatID: owner, directory: directory)
             guard chatID == owner, forgeRefreshID == token else { return }
             pullRequest = snapshot.request; pullRequestChecks = snapshot.checks; forgeError = snapshot.checkError?.message; forgeNeedsSignIn = false
+            pullRequestSignedIn = snapshot.signedIn
+            pullRequestCheckedAt = snapshot.request == nil || snapshot.checkError != nil ? nil : .now
             forgeKind = snapshot.forge
             pullRequestBinding = try? stores.agentPullRequest(chatID: owner)
+            if let update = await pullRequestWatcher.status(chatID: owner), let error = update.error, update.binding.watch,
+               !(snapshot.signedIn && error == .signedOut),
+               chatID == owner, forgeRefreshID == token, pullRequestBinding == update.binding {
+                forgeError = error.message
+            }
         } catch {
             guard chatID == owner, forgeRefreshID == token else { return }
             let host = branchStatus?.remoteHost
             let kind = try? await forgeActions.kind(host: host)
             guard chatID == owner, forgeRefreshID == token else { return }
             forgeKind = kind; forgeNeedsSignIn = error as? ForgeError == .signedOut
+            if forgeNeedsSignIn || error as? ForgeError == .notInstalled { pullRequestSignedIn = false }
             if error as? ForgeError == .notInstalled, let kind {
                 forgeError = "Install \(kind.title) CLI (\(kind.executableName)) to see \(kind.requestName)s"
             } else { forgeError = (error as? ForgeError)?.message ?? "Could not refresh pull request." }

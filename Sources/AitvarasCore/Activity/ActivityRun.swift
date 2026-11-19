@@ -139,7 +139,7 @@ public struct ServiceStatus: Codable, Sendable, Identifiable, Equatable {
 
 public enum BackgroundFeature: String, Codable, Sendable, CaseIterable {
     case mail, notifications, connectors, indexing, archiving, memory
-    case routineReview, routines, delivery, focus, chatWakeups
+    case routineReview, routines, delivery, focus, chatWakeups, pullRequestWatch
 }
 
 /// At most one metadata-only check summary per service and UTC day.
@@ -176,9 +176,8 @@ public struct BackgroundWorkPolicy: Codable, Sendable, Equatable {
     /// Default-on features the person switched off.
     public var declined: Set<BackgroundFeature>
 
-    /// Features that only continue work the person already asked for (a chat's
-    /// own wake-ups), so they run without review until switched off or paused.
-    public static let defaultOn: Set<BackgroundFeature> = [.chatWakeups]
+    /// These features continue work already requested by the person.
+    public static let defaultOn: Set<BackgroundFeature> = [.chatWakeups, .pullRequestWatch]
 
     public init(version: Int = Self.currentVersion, reviewed: Bool = false,
                 paused: Bool = false, allowed: Set<BackgroundFeature> = [],

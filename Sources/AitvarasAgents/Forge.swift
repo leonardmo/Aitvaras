@@ -6,6 +6,9 @@ public enum ForgeKind: String, Codable, Sendable, CaseIterable {
     public var title: String { self == .github ? "GitHub" : "GitLab" }
     public var requestName: String { self == .github ? "pull request" : "merge request" }
     public var publicHost: String { self == .github ? "github.com" : "gitlab.com" }
+    func sameRepository(_ lhs: String, _ rhs: String) -> Bool {
+        self == .github ? lhs.lowercased() == rhs.lowercased() : lhs == rhs
+    }
 }
 public enum ForgeError: String, Error, Sendable {
     case notInstalled, signedOut, notFound, unsupportedHost, network, failed
@@ -41,12 +44,34 @@ public struct ForgePullRequest: Sendable, Equatable {
     public let state: State
     public let mergeable: Mergeable
     public let reviewDecision: String?
+    public var base: String? = nil
+    public var head: String? = nil
+    public var sourceIsFork = false
 }
 public struct ForgeCheck: Sendable, Equatable {
     public enum Status: String, Sendable { case pending, passing, failing, skipped }
     public let name: String
     public let status: Status
     public let url: URL?
+    public let identity: String?
+    fileprivate let logTarget: LogTarget?
+
+    fileprivate enum LogTarget: Sendable, Equatable {
+        case actions(run: Int, job: Int?), gitlab(job: Int)
+    }
+
+    init(name: String, status: Status, url: URL?) {
+        self.init(name: name, status: status, url: url, logTarget: nil)
+    }
+
+    fileprivate init(name: String, status: Status, url: URL?, logTarget: LogTarget?) {
+        self.name = name; self.status = status; self.url = url; self.logTarget = logTarget
+        switch logTarget {
+        case .actions(let run, let job): identity = "actions/\(run)/\(job.map(String.init) ?? name)"
+        case .gitlab(let job): identity = "job/\(job)"
+        case nil: identity = nil
+        }
+    }
 }
 public struct ForgeComment: Sendable, Equatable {
     public let id: String
@@ -63,6 +88,7 @@ public protocol Forge: Sendable {
     func createPullRequest(directory: URL, branch: String, base: String, title: String, body: String, draft: Bool) async throws -> ForgePullRequest
     func checks(directory: URL, number: Int) async throws -> [ForgeCheck]
     func comments(directory: URL, number: Int) async throws -> [ForgeComment]
+    func failedLog(directory: URL, number: Int, check: ForgeCheck) async -> String?
 }
 
 /// Host selection never guesses from a company's hostname. Enterprise hosts
@@ -74,6 +100,12 @@ public struct ForgeRegistry: Sendable {
         github = GitHubForge(environment: environment); gitlab = GitLabForge(environment: environment)
     }
     public init(github: GitHubForge, gitlab: GitLabForge) { self.github = github; self.gitlab = gitlab }
+    func forge(kind: ForgeKind) -> any Forge {
+        switch kind {
+        case .github: github
+        case .gitlab: gitlab
+        }
+    }
     public func forge(host: String?) async throws -> any Forge {
         guard let rawHost = host, ForgeCLI.validHost(rawHost) else { throw ForgeError.unsupportedHost }
         let host = rawHost.lowercased()
@@ -102,6 +134,7 @@ public struct GitHubForge: Forge {
     public func createPullRequest(directory: URL, branch: String, base: String, title: String, body: String, draft: Bool) async throws -> ForgePullRequest { try await cli.create(directory, branch, base, title, body, draft) }
     public func checks(directory: URL, number: Int) async throws -> [ForgeCheck] { try await cli.checks(directory, number) }
     public func comments(directory: URL, number: Int) async throws -> [ForgeComment] { try await cli.comments(directory, number) }
+    public func failedLog(directory: URL, number: Int, check: ForgeCheck) async -> String? { await cli.failedLog(directory, number, check) }
     public func signIn(host: String, onDeviceCode: @escaping @Sendable (String) async -> Void = { _ in }, onBrowserURL: @escaping @Sendable (URL) async -> Void) async throws { try await cli.signIn(host, onDeviceCode, onBrowserURL) }
 }
 public struct GitLabForge: Forge {
@@ -119,10 +152,12 @@ public struct GitLabForge: Forge {
     public func createPullRequest(directory: URL, branch: String, base: String, title: String, body: String, draft: Bool) async throws -> ForgePullRequest { try await cli.create(directory, branch, base, title, body, draft) }
     public func checks(directory: URL, number: Int) async throws -> [ForgeCheck] { try await cli.checks(directory, number) }
     public func comments(directory: URL, number: Int) async throws -> [ForgeComment] { try await cli.comments(directory, number) }
+    public func failedLog(directory: URL, number: Int, check: ForgeCheck) async -> String? { await cli.failedLog(directory, number, check) }
     public func signIn(host: String, onDeviceCode: @escaping @Sendable (String) async -> Void = { _ in }, onBrowserURL: @escaping @Sendable (URL) async -> Void) async throws { try await cli.signIn(host, onDeviceCode, onBrowserURL) }
 }
 
 actor ForgeCLI {
+    @TaskLocal static var watchBinding: AgentPullRequest?
     let kind: ForgeKind
     let executable: URL?
     let environment: [String: String]
@@ -141,7 +176,8 @@ actor ForgeCLI {
     static func validHost(_ host: String) -> Bool {
         !host.isEmpty && !host.hasPrefix("-") && host.utf8.allSatisfy { (48...57).contains($0) || (65...90).contains($0) || (97...122).contains($0) || $0 == 45 || $0 == 46 }
     }
-    func run(_ args: [String], _ directory: URL? = nil, allowed: Set<Int32> = [0]) async throws -> OneShotProcess.Output {
+    func run(_ args: [String], _ directory: URL? = nil, allowed: Set<Int32> = [0],
+             stdoutTailBytes: Int = 0) async throws -> OneShotProcess.Output {
         guard let executable else { throw ForgeError.notInstalled }
         do {
             var env = environment
@@ -149,6 +185,9 @@ actor ForgeCLI {
             if let directory {
                 let origin = try await GitWorkspace(environment: environment).command(["remote", "get-url", "origin"], in: directory)
                 let identity = try Self.repository(origin)
+                if let binding = Self.watchBinding {
+                    guard binding.host == identity.host, kind.sameRepository(binding.repo, identity.repo) else { throw ForgeError.failed }
+                }
                 // Explicit origin beats CLI heuristics (e.g. an unrelated upstream
                 // remote) and inherited GH_REPO/GLAB_REPO/host overrides.
                 env["GH_REPO"] = identity.host + "/" + identity.repo
@@ -165,7 +204,8 @@ actor ForgeCLI {
                     }
                 }
             }
-            let output = try await OneShotProcess.run(executable: executable, arguments: arguments, currentDirectory: directory, environment: env, timeout: timeout)
+            let output = try await OneShotProcess.run(executable: executable, arguments: arguments, currentDirectory: directory,
+                environment: env, timeout: timeout, stdoutTailBytes: stdoutTailBytes)
             guard !output.timedOut else { throw ForgeError.network }
             guard allowed.contains(output.exitCode) else { throw Self.failure(output) }
             return output
@@ -278,8 +318,16 @@ actor ForgeCLI {
             state = (row["isDraft"] as? Bool ?? row["draft"] as? Bool ?? row["work_in_progress"] as? Bool ?? false) ? .draft : .open
         } else { throw ForgeError.failed }
         let merge = (row["mergeable"] as? String ?? row["detailed_merge_status"] as? String ?? row["merge_status"] as? String ?? "").lowercased()
-        let mergeable: ForgePullRequest.Mergeable = ["mergeable", "can_be_merged"].contains(merge) ? .yes : ["conflicting", "conflict", "cannot_be_merged"].contains(merge) ? .conflicting : ["not_approved", "blocked_status", "ci_must_pass", "discussions_not_resolved", "draft_status"].contains(merge) ? .no : .unknown
-        return .init(forge: kind, host: url.host!.lowercased(), repo: repoParts.joined(separator: "/"), number: number, url: url, title: title, state: state, mergeable: mergeable, reviewDecision: review ?? (row["reviewDecision"] as? String).flatMap { ["APPROVED", "CHANGES_REQUESTED", "REVIEW_REQUIRED"].contains($0) ? $0 : nil })
+        let mergeable: ForgePullRequest.Mergeable
+        if row["has_conflicts"] as? Bool == true || ["conflicting", "conflict", "cannot_be_merged"].contains(merge) { mergeable = .conflicting }
+        else if ["mergeable", "can_be_merged"].contains(merge) { mergeable = .yes }
+        else if ["not_approved", "blocked_status", "ci_must_pass", "discussions_not_resolved", "draft_status"].contains(merge) { mergeable = .no }
+        else { mergeable = .unknown }
+        let sourceIsFork = kind == .github ? row["isCrossRepository"] as? Bool == true
+            : (row["source_project_id"] as? Int) != (row["target_project_id"] as? Int)
+        return .init(forge: kind, host: url.host!.lowercased(), repo: repoParts.joined(separator: "/"), number: number, url: url, title: title, state: state, mergeable: mergeable, reviewDecision: review ?? (row["reviewDecision"] as? String).flatMap { ["APPROVED", "CHANGES_REQUESTED", "REVIEW_REQUIRED"].contains($0) ? $0 : nil },
+                     base: row[kind == .github ? "baseRefName" : "target_branch"] as? String,
+                     head: row[kind == .github ? "headRefName" : "source_branch"] as? String, sourceIsFork: sourceIsFork)
     }
     func view(_ directory: URL, _ branch: String, byNumber: Bool = false) async throws -> ForgePullRequest? {
         guard !branch.isEmpty, !branch.hasPrefix("-"), !branch.contains("\0") else { throw ForgeError.failed }
@@ -292,7 +340,7 @@ actor ForgeCLI {
                 guard let number = rows.compactMap({ $0[kind == .github ? "number" : "iid"] as? Int }).filter({ $0 > 0 }).max() else { return nil }
                 return try await view(directory, String(number), byNumber: true)
             }
-            let args = kind == .github ? ["pr", "view", branch, "--json", "number,url,title,state,isDraft,mergeable,reviewDecision"] : ["mr", "view", branch, "-F", "json"]
+            let args = kind == .github ? ["pr", "view", branch, "--json", "number,url,title,state,isDraft,mergeable,reviewDecision,baseRefName,headRefName,isCrossRepository"] : ["mr", "view", branch, "-F", "json"]
             let text = try await run(args, directory).stdout
             let request = try parsePR(text)
             if byNumber, request.number != Int(branch) { throw ForgeError.failed }
@@ -327,24 +375,71 @@ actor ForgeCLI {
             guard let id = pipelines.compactMap({ $0["id"] as? Int }).max() else { return [] }
             rows = try Self.array(try await run(["api", "projects/:id/pipelines/\(id)/jobs", "--paginate"], directory).stdout)
         }
+        let origin = try Self.repository(try await GitWorkspace(environment: environment).command(["remote", "get-url", "origin"], in: directory))
         return try rows.map { row in
             guard let name = row["name"] as? String, let raw = (row["state"] ?? row["status"]) as? String else { throw ForgeError.failed }
             let status = raw.lowercased()
             let mapped: ForgeCheck.Status = ["success", "passed"].contains(status) ? .passing : ["failure", "failed", "error", "timed_out", "action_required", "startup_failure"].contains(status) ? .failing : ["skipped", "neutral", "cancelled", "canceled", "manual"].contains(status) ? .skipped : .pending
-            return ForgeCheck(name: name, status: mapped, url: try? Self.browserURL(row[kind == .github ? "link" : "web_url"]))
+            let url = try? Self.browserURL(row[kind == .github ? "link" : "web_url"])
+            let target: ForgeCheck.LogTarget?
+            if kind == .github { target = Self.actionsTarget(url, host: origin.host, repo: origin.repo) }
+            else if let job = row["id"] as? Int, job > 0 { target = .gitlab(job: job) }
+            else { target = nil }
+            return ForgeCheck(name: name, status: mapped, url: url, logTarget: target)
         }
+    }
+    private static func actionsTarget(_ url: URL?, host: String, repo: String) -> ForgeCheck.LogTarget? {
+        guard let url, url.host?.lowercased() == host else { return nil }
+        let prefix = "/" + repo + "/actions/runs/"
+        guard url.path.lowercased().hasPrefix(prefix.lowercased()) else { return nil }
+        let parts = url.path.dropFirst(prefix.count).split(separator: "/", omittingEmptySubsequences: false)
+        guard let first = parts.first, let run = Int(first), run > 0 else { return nil }
+        if parts.count == 1 { return .actions(run: run, job: nil) }
+        guard parts.count == 3, parts[1] == "job", let job = Int(parts[2]), job > 0 else { return nil }
+        return .actions(run: run, job: job)
+    }
+    func failedLog(_ directory: URL, _ number: Int, _ check: ForgeCheck) async -> String? {
+        guard number > 0, check.status == .failing else { return nil }
+        let args: [String]
+        switch (kind, check.logTarget) {
+        case (.github, .actions(let run, let job)):
+            if let job { args = ["run", "view", "--job", String(job), "--log-failed"] }
+            else { args = ["run", "view", String(run), "--log-failed"] }
+        case (.gitlab, .gitlab(let job)):
+            args = ["api", "projects/:id/jobs/\(job)/trace"]
+        default: return nil
+        }
+        guard let output = try? await run(args, directory, stdoutTailBytes: 16_384), !output.stdout.isEmpty else { return nil }
+        var lines = output.stdout.split(omittingEmptySubsequences: false, whereSeparator: \.isNewline)
+        if lines.last?.isEmpty == true { lines.removeLast() }
+        let tail = lines.suffix(200).joined(separator: "\n")
+        return String(decoding: tail.utf8.suffix(16_384).drop(while: { $0 & 0xC0 == 0x80 }), as: UTF8.self)
     }
     func comments(_ directory: URL, _ number: Int) async throws -> [ForgeComment] {
         guard number > 0 else { throw ForgeError.failed }
         let args = kind == .github ? ["api", "repos/{owner}/{repo}/issues/\(number)/comments", "--paginate", "--slurp"] : ["api", "projects/:id/merge_requests/\(number)/notes", "--paginate"]
-        var rows = try Self.array(try await run(args, directory).stdout)
-        if kind == .github { rows += try Self.array(try await run(["api", "repos/{owner}/{repo}/pulls/\(number)/comments", "--paginate", "--slurp"], directory).stdout) }
-        return try rows.map { row in
-            guard let id = row["id"] as? Int, let body = row["body"] as? String,
-                  let user = row[kind == .github ? "user" : "author"] as? [String: Any], let author = user[kind == .github ? "login" : "username"] as? String,
-                  let date = row["created_at"] as? String, let created = Self.date(date) else { throw ForgeError.failed }
-            return ForgeComment(id: String(id), author: author, body: body, url: try? Self.browserURL(row[kind == .github ? "html_url" : "web_url"]), createdAt: created)
-        }
+        let rows = try Self.array(try await run(args, directory).stdout)
+        let notes = try rows.filter { kind != .gitlab || $0["system"] as? Bool != true }.map { try comment($0) }
+        guard kind == .github else { return notes }
+        let inline = try Self.array(try await run(["api", "repos/{owner}/{repo}/pulls/\(number)/comments", "--paginate", "--slurp"], directory).stdout)
+        let reviews = try Self.array(try await run(["api", "repos/{owner}/{repo}/pulls/\(number)/reviews", "--paginate", "--slurp"], directory).stdout)
+        return notes + (try inline.map { try comment($0, prefix: "inline/") }) + (try reviews.compactMap { row in
+            let state = row["state"] as? String
+            let body = row["body"] as? String ?? ""
+            guard state != "PENDING", state == "CHANGES_REQUESTED" || !body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+            return try comment(row, prefix: "review/", dateKey: "submitted_at", fallbackBody: "Changes requested.")
+        })
+    }
+    private func comment(_ row: [String: Any], prefix: String = "", dateKey: String = "created_at",
+                         fallbackBody: String? = nil) throws -> ForgeComment {
+        guard let id = row["id"] as? Int, id > 0,
+              let date = row[dateKey] as? String, let created = Self.date(date),
+              let rawBody = (row["body"] as? String) ?? fallbackBody else { throw ForgeError.failed }
+        let author = row[kind == .github ? "user" : "author"] as? [String: Any]
+        let name = author?[kind == .github ? "login" : "username"] as? String ?? "Unknown author"
+        let body = rawBody.isEmpty ? fallbackBody ?? rawBody : rawBody
+        return ForgeComment(id: prefix + String(id), author: name, body: body,
+                            url: try? Self.browserURL(row[kind == .github ? "html_url" : "web_url"]), createdAt: created)
     }
     static func date(_ text: String) -> Date? {
         let formatter = ISO8601DateFormatter()

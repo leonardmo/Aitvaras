@@ -81,20 +81,26 @@ public struct AgentTurnStore: Sendable {
         }
         Self.notifyMonitoring()
     }
-    private func change(_ id: UUID, monitoring: Bool = false, _ body: (inout AgentJournalTurn) throws -> Void) throws {
+    private func change(_ id: UUID, _ body: (inout AgentJournalTurn) throws -> Void) throws {
         try db.queue.write { dbc in
             guard var turn = try AgentJournalTurn.fetchOne(dbc, key: id) else { throw AgentStoreError.missingTurn }
             try body(&turn)
             try turn.update(dbc)
-            if monitoring { try Self.monitor(turn, in: dbc) }
         }
-        if monitoring { Self.notifyMonitoring() }
     }
     public func advanceDelivery(id: UUID, to state: AgentDeliveryState) throws {
-        try change(id, monitoring: true) { turn in
-            guard turn.state == .running else { throw AgentFailure.invalidTransition }
-            turn.delivery = try turn.delivery.advancing(to: state)
+        try db.queue.write { db in
+            guard let turn = try AgentJournalTurn.fetchOne(db, key: id) else { throw AgentStoreError.missingTurn }
+            try Self.advanceDelivery(turn, to: state, in: db)
         }
+        Self.notifyMonitoring()
+    }
+    static func advanceDelivery(_ turn: AgentJournalTurn, to state: AgentDeliveryState, in db: Database) throws {
+        guard turn.state == .running else { throw AgentFailure.invalidTransition }
+        var updated = turn
+        updated.delivery = try turn.delivery.advancing(to: state)
+        try updated.update(db)
+        try monitor(updated, in: db)
     }
     public func savePartial(id: UUID, text: String) throws {
         try change(id) { turn in

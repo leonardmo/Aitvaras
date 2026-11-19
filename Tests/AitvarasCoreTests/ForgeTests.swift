@@ -6,7 +6,7 @@ import AitvarasCore
 
 private let githubPR = #"{"number":7,"url":"https://github.com/example/repo/pull/7","title":"Example request","state":"OPEN","isDraft":true,"mergeable":"CONFLICTING","reviewDecision":"CHANGES_REQUESTED","future":true}"#
 private let gitlabPR = #"{"iid":9,"web_url":"https://gitlab.com/example/repo/-/merge_requests/9","title":"Example request","state":"opened","draft":true,"detailed_merge_status":"mergeable","unknown":42}"#
-private struct ForgeFixture {
+struct ForgeFixture {
     let fake: AgentExecutableFixture
     let git: GitWorkspace
     var root: URL { fake.directory.resolvingSymlinksInPath() }
@@ -33,9 +33,11 @@ private struct ForgeFixture {
         'auth status') echo '{"hosts":{"github.com":[{"state":"success","active":true}],"forge.example.org":[{"state":"success"}]}}';;
         'pr view') test "$GH_REPO" = 'github.com/example/repo' || exit 99; echo '\(githubPR)';;
         'pr create') test "$GH_REPO" = 'github.com/example/repo' || exit 99; printf '%s\\n' "$@" > create-args; echo 'https://github.com/example/repo/pull/7';;
-        'pr checks') echo '[{"name":"Build","state":"SUCCESS","link":"https://example.org/check"},{"name":"Test","state":"FAILURE"},{"name":"Queue","state":"IN_PROGRESS"},{"name":"Skip","state":"SKIPPED"},{"name":"Future","state":"FUTURE"}]'; exit 1;;
+        'pr checks') echo '[{"name":"Build","state":"SUCCESS","link":"https://example.org/check"},{"name":"Test","state":"FAILURE","link":"https://github.com/example/repo/actions/runs/8/job/42"},{"name":"Queue","state":"IN_PROGRESS"},{"name":"Skip","state":"SKIPPED"},{"name":"Future","state":"FAILURE","link":"https://example.org/example/repo/actions/runs/8/job/43"}]'; exit 1;;
+        'run view') test "$3 $4 $5" = '--job 42 --log-failed' || exit 99; awk 'BEGIN { for(i=1;i<=400;i++) print "line " i }';;
         'api repos/{owner}/{repo}/issues/7/comments') echo '[[{"id":3,"user":{"login":"example"},"body":"A comment","created_at":"2026-01-01T00:00:00Z","html_url":"https://github.com/example/repo/issues/7#issuecomment-3"}]]';;
         'api repos/{owner}/{repo}/pulls/7/comments') echo '[]';;
+        'api repos/{owner}/{repo}/pulls/7/reviews') echo '[{"id":3,"user":{"login":"example"},"body":"","state":"CHANGES_REQUESTED","submitted_at":"2026-01-01T00:00:00Z"},{"id":4,"user":{"login":"example"},"body":"Looks good","state":"APPROVED","submitted_at":"2026-01-01T00:00:00Z"},{"id":5,"body":"","state":"APPROVED"},{"id":6,"body":"Pending","state":"PENDING"}]';;
         *) exit 99;;
         esac
         """)
@@ -52,9 +54,15 @@ private struct ForgeFixture {
         let args = try String(contentsOf: f.root.appendingPathComponent("create-args"), encoding: .utf8)
         #expect(args.contains("--draft") && args.contains("Literal $(false)") && args.contains("- One\n- Two"))
         let checks = try await forge.checks(directory: f.root, number: 7)
-        #expect(checks.map(\.status) == [.passing, .failing, .pending, .skipped, .pending])
+        #expect(checks.map(\.status) == [.passing, .failing, .pending, .skipped, .failing])
+        #expect(checks[1].identity == "actions/8/42")
+        let log = try #require(await forge.failedLog(directory: f.root, number: 7, check: checks[1]))
+        #expect(log.split(separator: "\n").count == 200)
+        #expect(log.hasPrefix("line 201\n") && log.hasSuffix("line 400"))
+        #expect(await forge.failedLog(directory: f.root, number: 7, check: checks[4]) == nil)
         let comments = try await forge.comments(directory: f.root, number: 7)
-        #expect(comments.count == 1 && comments[0].id == "3" && comments[0].author == "example" && comments[0].body == "A comment")
+        #expect(comments.map(\.id) == ["3", "review/3", "review/4"])
+        #expect(comments.map(\.body) == ["A comment", "Changes requested.", "Looks good"])
     }
     @Test func gitlabParsingCreateChecksAndComments() async throws {
         let f = try ForgeFixture("""
@@ -64,8 +72,9 @@ private struct ForgeFixture {
         'api projects/example%2Frepo/merge_requests/9/approvals') echo '{"approved":true,"approvals_required":1,"approvals_left":0}';;
         'mr create') printf '%s\\n' "$@" > create-args; echo 'https://gitlab.com/example/repo/-/merge_requests/9';;
         'api projects/example%2Frepo/merge_requests/9/pipelines') echo '[{"id":4},{"id":3}]';;
-        'api projects/example%2Frepo/pipelines/4/jobs') echo '[{"name":"Build","status":"success","web_url":"https://gitlab.com/example/repo/-/jobs/4"},{"name":"Test","status":"failed"},{"name":"Queue","status":"created"},{"name":"Manual","status":"manual"}]';;
-        'api projects/example%2Frepo/merge_requests/9/notes') echo '[{"id":5,"author":{"username":"example"},"body":"Review note","created_at":"2026-01-01T00:00:00.123Z"}]'; echo '[]';;
+        'api projects/example%2Frepo/pipelines/4/jobs') echo '[{"name":"Build","status":"success","web_url":"https://gitlab.com/example/repo/-/jobs/4"},{"id":8,"name":"Test","status":"failed"},{"name":"Queue","status":"created"},{"name":"Manual","status":"manual"}]';;
+        'api projects/example%2Frepo/jobs/8/trace') awk 'BEGIN { for(i=1;i<=20000;i++) printf "x"; print " end" }';;
+        'api projects/example%2Frepo/merge_requests/9/notes') echo '[{"system":true,"body":"Changed the milestone"},{"id":5,"author":{"username":"example"},"body":"Review note","created_at":"2026-01-01T00:00:00.123Z"}]'; echo '[]';;
         *) exit 99;;
         esac
         """)
@@ -76,8 +85,12 @@ private struct ForgeFixture {
         #expect(view.reviewDecision == "APPROVED")
         #expect(view.number == 9 && view.state == .draft && view.mergeable == .yes && view.repo == "example/repo")
         #expect(try await forge.createPullRequest(directory: f.root, branch: "feature", base: "main", title: "Example", body: "Description", draft: true) == view)
-        #expect(try await forge.checks(directory: f.root, number: 9).map(\.status) == [.passing, .failing, .pending, .skipped])
-        #expect(try await forge.comments(directory: f.root, number: 9).first?.body == "Review note")
+        let checks = try await forge.checks(directory: f.root, number: 9)
+        #expect(checks.map(\.status) == [.passing, .failing, .pending, .skipped])
+        #expect(checks[1].identity == "job/8")
+        let log = try #require(await forge.failedLog(directory: f.root, number: 9, check: checks[1]))
+        #expect(log.utf8.count <= 16_384 && log.hasSuffix(" end"))
+        #expect(try await forge.comments(directory: f.root, number: 9).map(\.body) == ["Review note"])
         let args = try String(contentsOf: f.root.appendingPathComponent("create-args"), encoding: .utf8)
         #expect(args.contains("--draft") && args.contains("--yes"))
     }

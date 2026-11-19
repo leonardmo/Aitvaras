@@ -79,16 +79,23 @@ public struct AgentTranscriptEntry: Codable, Sendable, Equatable, Identifiable {
 
 /// The cause is durable metadata, independent of a provider's injected prompt.
 public enum AgentAutonomousReason: String, Codable, Sendable, Equatable {
-    case wakeup, backgroundTask, monitor, scheduled, unknown
+    case wakeup, backgroundTask, monitor, scheduled, pullRequest, unknown
     public var markerText: String {
         switch self {
         case .wakeup, .scheduled: "Woke up: scheduled check"
         case .backgroundTask: "Background task finished"
         case .monitor: "Woke up: monitor update"
+        case .pullRequest: "Pull request update"
         case .unknown: "Continued on its own"
         }
     }
-    public var activityTitle: String { self == .backgroundTask ? "Background task finished" : "Chat woke up" }
+    public var activityTitle: String {
+        switch self {
+        case .backgroundTask: "Background task finished"
+        case .pullRequest: "Auto-fix: pull request update"
+        default: "Chat woke up"
+        }
+    }
 }
 
 public enum AgentTurnOrigin: Sendable, Equatable, Codable {

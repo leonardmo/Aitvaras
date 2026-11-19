@@ -20,6 +20,7 @@ public final class StreamingProcess: @unchecked Sendable {
     private let directory: URL?
     private let environment: [String: String]
     private let keepEmptyLines: Bool
+    private let stdoutTailLimit: Int
     private let terminationDelay: Duration
     private let io = DispatchQueue(label: "aitvaras.agent.process")
     private var pid: pid_t = 0
@@ -36,6 +37,8 @@ public final class StreamingProcess: @unchecked Sendable {
     private var buffer = Data()
     private var scanned = 0
     private var stderrTail = Data()
+    private var stdoutTail = Data()
+    fileprivate var stdoutTailText: String { io.sync { String(decoding: stdoutTail, as: UTF8.self) } }
     private var streamFinished = false
     private var writes: [PendingWrite] = []
     private var pendingWriteBytes = 0
@@ -50,10 +53,11 @@ public final class StreamingProcess: @unchecked Sendable {
 
     public init(executable: URL, arguments: [String], currentDirectory: URL?,
                 environment: [String: String]? = nil, keepEmptyLines: Bool = false,
-                terminationDelay: Duration = .milliseconds(200)) {
+                terminationDelay: Duration = .milliseconds(200), stdoutTailBytes: Int = 0) {
         self.executable = executable; self.arguments = arguments; directory = currentDirectory
         self.environment = environment ?? ProcessInfo.processInfo.environment
         self.keepEmptyLines = keepEmptyLines
+        stdoutTailLimit = max(0, min(stdoutTailBytes, Self.maximumLineBytes))
         self.terminationDelay = terminationDelay
         (lines, continuation) = AsyncThrowingStream.makeStream(bufferingPolicy: .bufferingOldest(Self.maximumQueuedLines))
         continuation.onTermination = { [weak self] reason in
@@ -159,6 +163,9 @@ public final class StreamingProcess: @unchecked Sendable {
             if stderr {
                 stderrTail.append(data)
                 if stderrTail.count > Self.stderrLimit { stderrTail.removeFirst(stderrTail.count - Self.stderrLimit) }
+            } else if stdoutTailLimit > 0 {
+                stdoutTail.append(data)
+                if stdoutTail.count > stdoutTailLimit { stdoutTail.removeFirst(stdoutTail.count - stdoutTailLimit) }
             } else {
                 buffer.append(data)
                 while let newline = buffer[buffer.index(buffer.startIndex, offsetBy: scanned)...].firstIndex(of: 10) {
@@ -350,10 +357,10 @@ public enum OneShotProcess {
 
     public static func run(executable: URL, arguments: [String], currentDirectory: URL? = nil,
                            environment: [String: String]? = nil,
-                           timeout: Duration = .seconds(120)) async throws -> Output {
+                           timeout: Duration = .seconds(120), stdoutTailBytes: Int = 0) async throws -> Output {
         try Task.checkCancellation()
         let process = StreamingProcess(executable: executable, arguments: arguments,
-            currentDirectory: currentDirectory, environment: environment, keepEmptyLines: true)
+            currentDirectory: currentDirectory, environment: environment, keepEmptyLines: true, stdoutTailBytes: stdoutTailBytes)
         try process.start(); process.closeInput()
         let timer = Task { () -> Bool in
             do { try await Task.sleep(for: timeout) }
@@ -376,7 +383,8 @@ public enum OneShotProcess {
             let status = try await process.waitForExit()
             timer.cancel()
             let timedOut = await timer.value
-            return Output(stdout: output, stderr: process.stderrText, exitCode: status, timedOut: timedOut)
+            return Output(stdout: stdoutTailBytes > 0 ? process.stdoutTailText : output,
+                          stderr: process.stderrText, exitCode: status, timedOut: timedOut)
         } catch {
             try? await process.shutdown(grace: .zero)
             throw error
