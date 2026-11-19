@@ -266,6 +266,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 await AppModel.shared.neuralVoiceInstaller.stopBeforeTermination()
                 await SpeechAssetReadiness.shared.stopBeforeTermination(reporter: AppModel.shared.activityReporter)
                 try await AppModel.shared.capture?.stopBeforeTermination()
+                await AppModel.shared.stopGatewaySocket()
                 sender.reply(toApplicationShouldTerminate: true)
             } catch {
                 terminationPending = false

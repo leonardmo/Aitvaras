@@ -3,7 +3,7 @@ import Dispatch
 import Foundation
 
 public struct GatewayLaunchContext: Equatable, Sendable {
-    public enum Client: Sendable { case claude, codex }
+    public enum Client: String, Codable, Sendable { case claude, codex }
 
     public let client: Client
     public let projectID: UUID?
@@ -81,10 +81,20 @@ public actor GatewayLaunchRegistry {
 
     /// The socket listener must verify the bundled launcher, using this peer's
     /// audit token. A same-user connection alone confers no registration right.
-    public func registerLauncher(on socket: Int32, context: GatewayLaunchContext,
+    func registerLauncher(on socket: Int32, context: GatewayLaunchContext,
                                  verifyLauncher: @Sendable (GatewaySocketPeer) throws -> Bool) throws -> GatewayLaunch {
         let peer = try inspector.socketPeer(socket)
         guard try verifyLauncher(peer) else { throw GatewayLaunchRegistryError.unauthorized }
+        return try register(root: peer.identity, context: context)
+    }
+
+    public func registerLauncher(on socket: Int32, client: GatewayLaunchContext.Client,
+                                 verifyLauncher: @Sendable (GatewaySocketPeer) throws -> Bool,
+                                 resolveContext: @Sendable (GatewaySocketPeer, GatewayLaunchContext.Client) throws -> GatewayLaunchContext) throws -> GatewayLaunch {
+        let peer = try inspector.socketPeer(socket)
+        guard try verifyLauncher(peer) else { throw GatewayLaunchRegistryError.unauthorized }
+        let context = try resolveContext(peer, client)
+        guard context.client == client else { throw GatewayLaunchRegistryError.unauthorized }
         return try register(root: peer.identity, context: context)
     }
 

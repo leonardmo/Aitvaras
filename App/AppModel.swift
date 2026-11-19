@@ -8,6 +8,7 @@ import AitvarasEngines
 import AitvarasAgent
 import AitvarasAgents
 import AitvarasConnectors
+import AitvarasRAG
 import AitvarasVoice
 
 /// One chat bubble in the UI.
@@ -68,6 +69,7 @@ final class AppModel {
     private(set) var router: EngineRouter?
     private(set) var captureOllamaModelName: String?
     private(set) var hub: ConnectorHub?
+    @ObservationIgnored private var gatewaySocketService: GatewaySocketService?
     private(set) var agentLoop: AgentLoop?
     private(set) var agentSessionManager: AgentSessionManager?
     private(set) var agentAutoContinueLifecycle: AgentAutoContinueLifecycle?
@@ -349,6 +351,7 @@ final class AppModel {
                 stores: stores, keychain: keychain, hub: hub, router: router, reporter: reporter)
             self.integrations = integrations
             await integrations.registerAll()
+            await startGatewaySocket(stores: stores, hub: hub)
 
             // Both wrappers resolve their feature setting at call time. Keep
             // them wired permanently so provider changes apply immediately.
@@ -548,6 +551,35 @@ final class AppModel {
             }
             continuation.onTermination = { _ in task.cancel() }
         }
+    }
+
+    private func startGatewaySocket(stores: Stores, hub: ConnectorHub) async {
+        guard gatewaySocketService == nil else { return }
+        do {
+            let bundle = Bundle.main
+            guard let app = bundle.executableURL else { throw GatewayTransportError.missingBundle }
+            _ = try GatewayCodeIdentity(executable: app, signingLocation: bundle.bundleURL)
+            let binary = bundle.bundleURL.appendingPathComponent("Contents/Helpers/aitvaras")
+            let identity = try GatewayCodeIdentity(executable: binary)
+            let tools = GatewayToolService(stores: stores, hub: hub, approvals: GatewayApprovalBroker(),
+                                           knowledgeEmbedder: OllamaEmbedder())
+            let service = GatewaySocketService(endpoint: .init(),
+                verifyLauncher: { identity.matches($0) },
+                resolveContext: { peer, client in
+                    try stores.gatewayLaunchContext(client: client, startingDirectory: peer.startingDirectory())
+                },
+                makeSession: { invocation, authorize in tools.connect(invocation: invocation, authorize: authorize) })
+            try await service.start()
+            gatewaySocketService = service
+        } catch {
+            try? stores.record(ActivityEvent(kind: .agentFailure, connectorID: "agent.gateway",
+                                             summary: "The gateway socket could not start."))
+        }
+    }
+
+    func stopGatewaySocket() async {
+        await gatewaySocketService?.stop()
+        gatewaySocketService = nil
     }
 
     func shutdownAgentChats() async throws {

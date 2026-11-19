@@ -17,6 +17,24 @@ public struct GatewaySocketPeer: Sendable {
     public let identity: GatewayProcessIdentity
     /// Kernel audit token, available to the listener for launcher code identity checks.
     public let auditToken: Data
+
+    public func startingDirectory() throws -> URL {
+        let inspector = GatewayProcessInspector.live
+        guard try inspector.snapshot(identity.pid).identity == identity else { throw GatewayProcessInspectionError.invalidPeer }
+        var info = proc_vnodepathinfo()
+        let size = Int32(MemoryLayout<proc_vnodepathinfo>.size)
+        guard proc_pidinfo(identity.pid, PROC_PIDVNODEPATHINFO, 0, &info, size) == size else {
+            throw GatewayProcessInspectionError.system(operation: "PROC_PIDVNODEPATHINFO", code: errno)
+        }
+        let path = withUnsafeBytes(of: &info.pvi_cdir.vip_path) { bytes -> String? in
+            guard let end = bytes.firstIndex(of: 0) else { return nil }
+            return String(bytes: bytes[..<end], encoding: .utf8)
+        }
+        guard let path, path.hasPrefix("/"), try inspector.snapshot(identity.pid).identity == identity else {
+            throw GatewayProcessInspectionError.invalidPeer
+        }
+        return URL(fileURLWithPath: path, isDirectory: true)
+    }
 }
 
 public enum GatewayProcessInspectionError: Error, Equatable, Sendable {

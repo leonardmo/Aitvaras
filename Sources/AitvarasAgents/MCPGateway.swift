@@ -197,31 +197,56 @@ public actor MCPGateway {
     }
 
     public func receive(_ data: Data) async -> Data? {
-        guard state != .closed else { return nil }
-        guard data.count <= 128 * 1024, Self.boundedNesting(data) else { return Self.error(-32600, "Invalid request.", id: .null) }
+        let response = beginFrame(data)
+        return await withTaskCancellationHandler { await response.value } onCancel: { response.cancel() }
+    }
+
+    /// Admits frames in their transport order while their responses may
+    /// arrive independently. A following cancellation can see the request ID.
+    func beginFrame(_ data: Data) -> Task<Data?, Never> {
+        func immediate(_ result: Data?) -> Task<Data?, Never> { Task { result } }
+        guard state != .closed else { return immediate(nil) }
+        guard data.count <= 128 * 1024, Self.boundedNesting(data) else { return immediate(Self.error(-32600, "Invalid request.", id: .null)) }
         guard let raw = String(data: data, encoding: .utf8), let message = JSONValue.parse(raw) else {
-            return Self.error(-32700, "Parse error.", id: .null)
+            return immediate(Self.error(-32700, "Parse error.", id: .null))
         }
         let id = RequestID(message["id"])
         guard message["jsonrpc"] == .string("2.0"), let method = message["method"]?.stringValue,
               message["result"] == nil, message["error"] == nil, message["id"] == nil || id != nil else {
-            return Self.error(-32600, "Invalid request.", id: id?.json ?? .null)
+            return immediate(Self.error(-32600, "Invalid request.", id: id?.json ?? .null))
         }
         guard let id else {
             handleNotification(method, params: message["params"])
-            return nil
+            return immediate(nil)
         }
         guard message["params"] == nil || message["params"]?.objectValue != nil else {
-            return Self.error(-32602, "Invalid parameters.", id: id.json)
+            return immediate(Self.error(-32602, "Invalid parameters.", id: id.json))
         }
-        if method != "tools/list" && method != "tools/call" {
-            do { try await authorize() }
-            catch { return Self.error(-32000, "Launch is unavailable.", id: id.json) }
+        if method == "tools/list" || method == "tools/call" {
+            guard state == .ready else { return immediate(Self.error(-32000, "Session is not ready.", id: id.json)) }
+            guard active[id] == nil, active.count < 32 else {
+                return immediate(Self.error(-32600, "Duplicate request ID or too many active requests.", id: id.json))
+            }
+            let params = message["params"]
+            let task = Task { await self.toolRequest(method, params: params, id: id) }
+            active[id] = task
+            return Task {
+                let outcome = await withTaskCancellationHandler { await task.value } onCancel: { task.cancel() }
+                active.removeValue(forKey: id)
+                return state == .closed || task.isCancelled ? nil : Data(outcome.jsonString.utf8)
+            }
         }
+        let version = message["params"]?["protocolVersion"]?.stringValue
+        return Task { await authenticatedControl(method, version: version, id: id) }
+    }
+
+    private func authenticatedControl(_ method: String, version: String?, id: RequestID) async -> Data? {
+        do { try await authorize() }
+        catch { return Self.error(-32000, "Launch is unavailable.", id: id.json) }
         guard state != .closed else { return nil }
         switch method {
         case "initialize":
-            guard state == .initial, let version = message["params"]?["protocolVersion"]?.stringValue else {
+            guard state == .initial, let version else {
                 return Self.error(-32602, "Invalid initialization.", id: id.json)
             }
             state = .initialized
@@ -230,17 +255,6 @@ public actor MCPGateway {
                 "capabilities": .object(["tools": .object(["listChanged": .bool(true)])])]), id: id)
         case "ping":
             return Self.reply(.object([:]), id: id)
-        case "tools/list", "tools/call":
-            guard state == .ready else { return Self.error(-32000, "Session is not ready.", id: id.json) }
-            guard active[id] == nil, active.count < 32 else {
-                return Self.error(-32600, "Duplicate request ID or too many active requests.", id: id.json)
-            }
-            let params = message["params"]
-            let task = Task { await self.toolRequest(method, params: params, id: id) }
-            active[id] = task
-            let outcome = await withTaskCancellationHandler { await task.value } onCancel: { task.cancel() }
-            active.removeValue(forKey: id)
-            return state == .closed || task.isCancelled ? nil : Data(outcome.jsonString.utf8)
         default:
             return Self.error(-32601, "Method not found.", id: id.json)
         }

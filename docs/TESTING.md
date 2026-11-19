@@ -1913,6 +1913,32 @@ and Mail data, verify that ownership tags survive a fetch, tagged items can
 be changed, untagged items can be read but cannot be changed, and reading a
 message leaves it unread.
 
+For the Unix transport and launcher, filter the sandbox package run with
+`GatewayTransportTests|GatewaySocketHostTests|GatewayPTYHostTests|MCPGatewayTests`.
+The host socket fixtures check private endpoint modes, stale versus active
+sockets, signature matching, kernel cwd, and cancellation on revoke. The PTY
+fixture checks tty input, window resize, Ctrl-C and terminal restoration. If
+an operation is denied under supervision, rerun the unchanged fixture on the
+host. Fixtures have their own deadlines.
+
+After `make app`, the supervisor can test a throwaway state profile with
+external integrations disabled. The launcher is
+`Contents/Helpers/aitvaras` and the stdio relay is
+`Contents/MacOS/aitvaras-mcp`. The launcher uses Helpers so its name does not
+collide with `Aitvaras` on a case-insensitive volume. An isolated launch uses
+`open -g -n` with the selected state directory so an existing default app
+cannot satisfy it. The startup deadline is ten seconds and stdout is reserved
+for MCP frames. A state path too long for Darwin's Unix socket address must
+be shortened. The gateway never falls back to another profile or port.
+
+Xcode's development targets sign the commands ad hoc and embed them before
+signing the App. An unsigned local build can use the same path by signing the
+launcher with `codesign --force --options runtime --sign -` before embedding
+it, then signing the enclosing build. Restart the app after replacing the
+binary so it pins the new hash. There is no unsigned opt-out. When testing
+registration before adapter integration, use a finite dummy CLI on PATH
+and verify the launcher waits for the app's reply before spawning it.
+
 For the remaining G1 work, use a local fake upstream for MCP discovery,
 dynamic registration, S256 PKCE, token exchange, refresh and protected calls.
 Test against injected HTTP transport and a fake credential store in the

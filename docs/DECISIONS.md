@@ -1122,6 +1122,10 @@ such as Linear. The gateway does not call cloud LLM APIs.
   Outside Chat, the bundled `aitvaras` launcher registers over the Unix socket
   using the peer's kernel PID and process start time. It supervises the CLI as
   a child, retaining the terminal and forwarding signals. It does not `exec`.
+  Registration checks the running slice's CDHash against the bundled
+  launcher's signed slices and checks the executable path. The app reads
+  the starting directory from that peer.
+  Development launchers may be signed ad hoc. Unsigned launchers are rejected.
   MCP peer admission requires a live registered ancestor with the same start
   time. Agent-spawned descendants share that launch's policy and cannot
   register a separate launch under it. There is no

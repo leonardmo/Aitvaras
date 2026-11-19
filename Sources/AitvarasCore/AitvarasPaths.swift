@@ -65,6 +65,11 @@ public enum AitvarasPaths {
 
     // MARK: Well-known locations
 
+    public static func gatewaySocketURL(stateDirectory: URL = AitvarasPaths.stateDirectory) -> URL {
+        stateDirectory.resolvingSymlinksInPath().standardizedFileURL
+            .appendingPathComponent("Gateway", isDirectory: true).appendingPathComponent("mcp.sock")
+    }
+
     /// Per-chat git worktrees created for agent chats.
     public static var agentWorktreesDirectory: URL {
         stateDirectory.appendingPathComponent("AgentWorktrees", isDirectory: true)
