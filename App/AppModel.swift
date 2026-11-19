@@ -493,12 +493,10 @@ final class AppModel {
             guard let backend = available[provider] else { throw AgentFailure.offline }
             return backend
         }, profileBackend: { try profileBackends.backend($0) }, audit: { _ = try stores.record($0) }, mcpPolicy: mcpPolicy, autoContinuePersistence: continuationStore)
-        let armingEnabled = AgentAutoContinueLifecycle.productionArmingEnabled
         let scheduler = AgentAutoContinueScheduler(manager: manager, turns: stores, persistence: continuationStore,
-            backend: { try profileBackends.backend($0) }, audit: { _ = try stores.record($0) }, armingEnabled: armingEnabled)
+            backend: { try profileBackends.backend($0) }, audit: { _ = try stores.record($0) })
         let keepAwake = AgentAutoContinueKeepAwake(persistence: continuationStore, audit: { _ = try stores.record($0) })
-        agentAutoContinueLifecycle = AgentAutoContinueLifecycle(manager: manager, scheduler: scheduler, keepAwake: keepAwake,
-            armingEnabled: armingEnabled)
+        agentAutoContinueLifecycle = AgentAutoContinueLifecycle(manager: manager, scheduler: scheduler, keepAwake: keepAwake)
         agentAutoContinuePowerObserver = AgentAutoContinuePowerObserver()
         nativeWorkspace.readerFactory = { provider in
             NativeBackendSessionReader(provider: provider, backend: available[provider == .claude ? .claude : .codex])
@@ -508,7 +506,7 @@ final class AppModel {
         chatModel = ChatModel(manager: manager, stores: stores, backends: available, profileBackends: profileBackends,
             claudeDefaultDirectory: metadataUserDirectory ?? (isolated
                 ? AitvarasPaths.stateDirectory.appendingPathComponent("FakeProviders/claude")
-                : FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".claude")), agentSetup: setup, forgeEnvironment: environment)
+                : FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".claude")), agentSetup: setup, forgeEnvironment: environment, autoContinue: agentAutoContinueLifecycle)
         chatModel?.didCreateChat = { [weak self] id in self?.openWorkspaceChat(id) }
         chatModel?.activityChanged = { [weak self] in self?.refreshWorkspaces() }
         chatModel?.observeSidebar(workspaceSidebarChats)
@@ -516,7 +514,7 @@ final class AppModel {
         else { chatModel?.prepareNew(projectID: try? stores.newChatProjectID()) }
         startPullRequestWatchScheduler()
         startAutoContinuePowerObservation()
-        try? await agentAutoContinueLifecycle?.launch(power: armingEnabled ? SystemPowerState.autoContinuePower() : .unknown)
+        try? await agentAutoContinueLifecycle?.launch(power: SystemPowerState.autoContinuePower())
     }
 
     private func localAgentReply(agentLoop: AgentLoop, configuration: AgentSessionConfiguration,

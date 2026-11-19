@@ -233,7 +233,9 @@ struct AgentChatView: View {
             edit: edit, recovery: { action in chat.recover(entry, action: action) },
             recoveryEnabled: !chat.isBusy && !chat.conversationBusy && chat.signingIn == nil && canSend
                 && chat.state?.canRecover(entry) == true,
-            recoveryError: chat.recoveryErrors[entry.id])
+            recoveryError: chat.recoveryErrors[entry.id], autoContinue: chat.autoContinueRow(entry),
+            autoContinueChange: { chat.setAutoContinue(entry, option: $0) },
+            autoContinueUpdating: chat.isUpdatingAutoContinue(entry))
     }
 
     private var composer: some View {

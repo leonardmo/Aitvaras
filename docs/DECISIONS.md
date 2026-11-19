@@ -435,7 +435,7 @@ Provider-reported result/assistant errors use the fixed `providerError` case
 and the Connection lost actions. Internal catches retain `unknown` or their
 safe store/history category; provider error text never becomes composer copy.
 
-Recovery is manual. The manager's recovery API validates the original durable
+Manual recovery remains available for Stopped rows. The manager's recovery API validates the original durable
 session and rejects absent or changed native identities for Continue. Continue
 checks Claude's authoritative system/init identity; foreign session IDs on
 ordinary tool, subagent, hook or compaction frames do not terminate a turn. Continue
@@ -446,8 +446,8 @@ instruction; an edited native message renders as user text. Retry restores the
 original wire prompt and selected composer bytes, including when delivery is
 unknown. Each click claims the stopped row and prepares one new journaled attempt
 atomically before writing to the provider. Old delivery evidence is retained;
-repeated/stale claims cannot send again. There is no reset timer or automatic
-continuation; issue #27 may use this explicit recovery API in a later change.
+repeated/stale claims cannot send again. Usage-limit rows also support the
+separately audited automatic continuation in D41.
 Composer failures remain only for provably undelivered input. Stopped diagnostics
 stay outside provider context, and Continued markers delimit their own journal
 when selecting completed assistant context.
@@ -1052,9 +1052,12 @@ a fresh watch and baselines the discussion again.
 
 ## D41 — Continue once after a provider usage reset ✅ (2026-11-18)
 
-A usage-limit Stopped row offers “Continue automatically after reset”, on by
-default, plus Cancel and the next continuation/check time. “Keep Mac awake
-until it continues” defaults off. These controls belong to the row, not Settings.
+An eligible usage-limit Stopped row offers “Auto-continue when the limit resets”,
+checked by default. Unchecking cancels the pending continuation. Checking it
+again re-arms the same eligible stop. The row shows the reset time or that
+Aitvaras is checking for it. “Keep Mac awake until it continues” defaults off
+and appears directly below the first choice. Manual Continue remains available
+through the existing recovery action.
 The saved row choice authorizes one bounded continuation through the existing
 policy/action coordinator; it never grants approval to subsequent tools.
 
@@ -1086,8 +1089,6 @@ power, firing, cancellation, expiry or shutdown. It does not override normal
 closed-lid sleep without an external display, wake a sleeping Mac, or survive
 app termination. Wake alarms remain outside this feature (issue #28).
 
-Implementation is split at issue #23: Part A supplies persistence, provider
-mapping, scheduling logic and lifecycle infrastructure; production arming stays
-inactive until Part B provides the Stopped-row controls and marker. Offline
-fake-provider and clock tests spend no usage. Any later live check uses Haiku
-or the smallest available Codex model.
+The app starts the scheduler after journal recovery. Only verified usage-limit
+stops can arm it. Offline fake-provider and clock tests spend no usage. Any
+later live check uses Haiku or the smallest available Codex model.

@@ -102,6 +102,13 @@ public actor AgentSessionManager {
             inputRevision: try continuationPersistence.inputRevision(chatID: chatID), stoppedAt: continuationClock.now())
     }
 
+    func publishAutomaticMarker(chatID: UUID, inputID: UUID) throws {
+        guard states[chatID] != nil, states[chatID]?.entries.contains(where: { $0.id == inputID }) == false,
+              let entry = try persistence.agentEntries(chatID: chatID).first(where: { $0.id == inputID && $0.kind == "automaticContinuation" }) else { return }
+        states[chatID]?.entries.append(entry)
+        publish(chatID)
+    }
+
     public func state(chatID: UUID) throws -> ChatState {
         if let state = states[chatID] { return state }
         var value = ChatState(chatID: chatID, entries: try persistence.agentEntries(chatID: chatID))
@@ -678,7 +685,11 @@ public actor AgentSessionManager {
                 case .message(_, "assistant", let text): worked = !text.isEmpty
                 default: worked = false
                 }
-                if worked { try continuationPersistence.finish(id: intentID, state: .fired, now: continuationClock.now()); continuationChanged() }
+                if worked {
+                    try continuationPersistence.finish(id: intentID, state: .fired, now: continuationClock.now())
+                    if let inputID = pending.continuationInputID { try publishAutomaticMarker(chatID: chatID, inputID: inputID) }
+                    continuationChanged()
+                }
             }
             let previous = states[chatID]?.entries ?? []
             switch event.kind {

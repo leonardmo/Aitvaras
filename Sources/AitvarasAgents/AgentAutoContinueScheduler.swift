@@ -1,6 +1,6 @@
 import Foundation
 
-/// Application-owned; production activation remains gated until row controls exist.
+/// Application-owned scheduler for verified usage-limit stops.
 public actor AgentAutoContinueScheduler {
     public typealias Backend = @Sendable (AgentProviderChoice) throws -> any AgentBackend
     private let manager: AgentSessionManager
@@ -9,7 +9,6 @@ public actor AgentAutoContinueScheduler {
     private let backend: Backend
     private let audit: AgentActionCoordinator.Audit
     private let clock: AgentAutoContinueClock
-    private let enabled: Bool
     private var generation = UUID()
     private var subscribers: [UUID: AsyncStream<Void>.Continuation] = [:]
     private var active = false
@@ -21,10 +20,9 @@ public actor AgentAutoContinueScheduler {
 
     public init(manager: AgentSessionManager, turns: any AgentSessionPersistence,
                 persistence: any AgentAutoContinuePersistence, backend: @escaping Backend,
-                audit: @escaping AgentActionCoordinator.Audit, clock: AgentAutoContinueClock = .live,
-                armingEnabled: Bool = false) {
+                audit: @escaping AgentActionCoordinator.Audit, clock: AgentAutoContinueClock = .live) {
         self.manager = manager; self.turns = turns; self.persistence = persistence
-        self.backend = backend; self.audit = audit; self.clock = clock; enabled = armingEnabled
+        self.backend = backend; self.audit = audit; self.clock = clock
     }
     deinit {
         listener?.cancel(); timer?.cancel(); dispatch?.cancel()
@@ -46,7 +44,7 @@ public actor AgentAutoContinueScheduler {
     }
 
     public func start() async throws {
-        guard enabled, !Task.isCancelled else { return }
+        guard !Task.isCancelled else { return }
         if active { try await wake(); return }
         generation = UUID(); active = true
         let generation = generation
@@ -74,9 +72,28 @@ public actor AgentAutoContinueScheduler {
         try persistence.setOptions(id: id, enabled: enabled, keepAwake: keepAwake, now: clock.now())
         changed(); try await wake()
     }
+    /// A row can be toggled while registration is awaiting the provider's status.
+    /// Save the choice first; dispatch and polling still verify the current account.
+    public func setRowOption(failedInputID: UUID, _ option: AgentAutoContinueRowOption) throws {
+        guard active else { throw AgentFailure.invalidTransition }
+        if let existing = try persistence.continuation(failedInputID: failedInputID) {
+            let choices = option.applying(enabled: existing.enabled, keepAwake: existing.keepAwake)
+            try persistence.setOptions(id: existing.id, enabled: choices.enabled, keepAwake: choices.keepAwake, now: clock.now())
+        } else {
+            guard let stop = try turns.quotaStops().first(where: { $0.id == failedInputID }),
+                  try turns.latestAgentTurn(chatID: stop.chatID)?.id == stop.id,
+                  try persistence.inputRevision(chatID: stop.chatID) == stop.inputRevision else { throw AgentFailure.invalidTransition }
+            if let receipt = try turns.automaticInput(id: stop.id),
+               try persistence.continuation(id: receipt.intentID)?.state != .fired { throw AgentFailure.invalidTransition }
+            let choices = option.applying(enabled: true, keepAwake: false)
+            try schedule(stop, enabled: choices.enabled, keepAwake: choices.keepAwake)
+        }
+        changed()
+        wakeCurrentGeneration()
+    }
     /// Wake, launch and timer all converge here; actor reentrancy cannot dispatch twice.
     public func wake() async throws {
-        guard active, enabled, !Task.isCancelled else { return }
+        guard active, !Task.isCancelled else { return }
         if processing { requested = true; changed(); return }
         let generation = generation
         processing = true
@@ -112,22 +129,29 @@ public actor AgentAutoContinueScheduler {
             if try persistence.continuation(failedInputID: stop.id) != nil { continue }
             let allSessions = try turns.agentSessions(chatID: stop.chatID)
             guard allSessions.contains(where: { $0.id == stop.sessionID && $0.sessionID == stop.native }) else { continue }
-            let provider = try backend(.init(provider: stop.native.provider, profile: stop.providerProfile))
             let status: AgentStatus
-            do { status = try await AgentActionCoordinator.quotaStopStatus(stop, backend: provider, clock: clock, audit: audit) }
-            catch let failure as AgentFailure where failure == .authRequired { continue }
+            do {
+                try turns.requireAgentChatAvailable(chatID: stop.chatID)
+                let provider = try backend(.init(provider: stop.native.provider, profile: stop.providerProfile))
+                status = try await AgentActionCoordinator.quotaStopStatus(stop, backend: provider, clock: clock, audit: audit)
+            } catch { continue }
             guard current(generation), status.accountID == stop.accountID, try turns.latestAgentTurn(chatID: stop.chatID)?.id == stop.id,
                   try persistence.inputRevision(chatID: stop.chatID) == stop.inputRevision else { continue }
-            let scope = AgentUsageLimitScope(provider: stop.native.provider, providerProfile: stop.providerProfile, accountID: status.accountID)
-            let resolver = AgentUsageResetResolver(clock: clock), schedule = AgentAutoContinueSchedule(clock: clock)
-            let reset = resolver.resolve(scope: scope, failure: stop.evidence, cached: try persistence.observations(scope: scope))
-            let pending = AgentAutoContinue(chatID: stop.chatID, failedInputID: stop.id, sessionID: stop.sessionID,
-                native: stop.native, scope: scope, createdAt: stop.stoppedAt, inputRevision: stop.inputRevision,
-                windowID: reset?.windowID, resetsAt: reset?.resetsAt, resetSource: reset?.source ?? .fallback,
-                nextCheckAt: max(stop.stoppedAt, schedule.firstCheck(startedAt: stop.stoppedAt, reset: reset)),
-                nextPollAt: stop.native.provider == .codex ? stop.stoppedAt.addingTimeInterval(600) : nil)
-            _ = try persistence.schedule(pending, causedBy: nil)
+            do { try schedule(stop) }
+            catch AgentSessionManagerError.chatUnavailable { continue }
         }
+    }
+    private func schedule(_ stop: AgentQuotaStop, enabled: Bool = true, keepAwake: Bool = false) throws {
+        let scope = AgentUsageLimitScope(provider: stop.native.provider, providerProfile: stop.providerProfile, accountID: stop.accountID)
+        let resolver = AgentUsageResetResolver(clock: clock), schedule = AgentAutoContinueSchedule(clock: clock)
+        let reset = resolver.resolve(scope: scope, failure: stop.evidence, cached: try persistence.observations(scope: scope))
+        let pending = AgentAutoContinue(chatID: stop.chatID, failedInputID: stop.id, sessionID: stop.sessionID,
+            native: stop.native, scope: scope, createdAt: stop.stoppedAt, inputRevision: stop.inputRevision,
+            enabled: enabled, keepAwake: keepAwake, windowID: reset?.windowID, resetsAt: reset?.resetsAt,
+            resetSource: reset?.source ?? .fallback,
+            nextCheckAt: max(stop.stoppedAt, schedule.firstCheck(startedAt: stop.stoppedAt, reset: reset)),
+            nextPollAt: stop.native.provider == .codex ? stop.stoppedAt.addingTimeInterval(600) : nil)
+        try persistence.schedule(pending, causedBy: nil)
     }
     private func recoverClaims(generation: UUID) async throws {
         for value in try persistence.pending() where value.state == .claimed {
@@ -142,6 +166,9 @@ public actor AgentAutoContinueScheduler {
                 if value.delivery == .prepared { try persistence.advanceDelivery(id: value.id, inputID: turn!.id, to: .deliveryUnknown, now: clock.now()) }
                 if value.delivery != .acknowledged { try persistence.advanceDelivery(id: value.id, inputID: turn!.id, to: .acknowledged, now: clock.now()) }
                 try persistence.finish(id: value.id, state: .fired, now: clock.now())
+                if let inputID = value.continuationInputID {
+                    try await manager.publishAutomaticMarker(chatID: value.chatID, inputID: inputID)
+                }
             } else if receipt?.outcome != nil || value.delivery != .prepared || turn?.delivery == .deliveryUnknown {
                 try persistence.finish(id: value.id, state: .cancelled, now: clock.now())
             } else {

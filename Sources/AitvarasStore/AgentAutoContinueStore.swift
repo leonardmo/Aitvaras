@@ -88,7 +88,7 @@ public struct AgentAutoContinueStore: AgentAutoContinuePersistence {
                   value.scope.accountID?.isEmpty != true else { throw AgentFailure.invalidTransition }
             var saved = value
             saved.lastActivityID = causedBy
-            try Self.audit(&saved, status: "scheduled", at: value.createdAt, in: dbc)
+            try Self.audit(&saved, status: value.enabled ? "scheduled" : "cancelled", at: value.createdAt, in: dbc)
             try saved.insert(dbc)
             return saved
         }
@@ -108,8 +108,14 @@ public struct AgentAutoContinueStore: AgentAutoContinuePersistence {
         }
     }
     @discardableResult public func setOptions(id: UUID, enabled: Bool, keepAwake: Bool, now: Date) throws -> AgentAutoContinue {
-        try change(id, at: now, status: enabled ? "scheduled" : "cancelled") { value, _ in
-            guard value.state == .pending else { throw AgentFailure.invalidTransition }
+        try change(id, at: now, status: enabled ? "scheduled" : "cancelled") { value, dbc in
+            try Self.requireSession(value, in: dbc)
+            guard value.inputRevision == (try Self.revision(value.chatID, in: dbc)),
+                  value.state == .pending || (value.state == .claimed && value.delivery == .prepared && !enabled) else {
+                throw AgentFailure.invalidTransition
+            }
+            // Preserve the attempt ID so re-arming cannot reuse its delivery authorization.
+            value.state = .pending
             value.enabled = enabled; value.keepAwake = keepAwake
         }
     }
@@ -149,7 +155,7 @@ public struct AgentAutoContinueStore: AgentAutoContinuePersistence {
     }
     @discardableResult public func finish(id: UUID, state: AgentAutoContinue.State, now: Date) throws -> AgentAutoContinue {
         guard [.fired, .cancelled, .expired].contains(state) else { throw AgentFailure.invalidTransition }
-        return try change(id, at: now, status: state.rawValue) { value, _ in
+        return try change(id, at: now, status: state.rawValue) { value, dbc in
             if value.state == state { return }
             guard [.pending, .claimed].contains(value.state),
                   state != .fired || (value.state == .claimed && value.delivery == .acknowledged) else {
@@ -157,6 +163,13 @@ public struct AgentAutoContinueStore: AgentAutoContinuePersistence {
             }
             value.state = state
             if state == .cancelled { value.enabled = false }
+            if state == .fired, let inputID = value.continuationInputID,
+               try AgentAutomaticInput.fetchOne(dbc, key: inputID) != nil {
+                let last = try AgentTranscriptEntry.filter(Column("chatID") == value.chatID)
+                    .order(Column("position").desc).fetchOne(dbc)
+                try AgentTranscriptEntry(id: inputID, chatID: value.chatID, provider: value.scope.provider,
+                    kind: "automaticContinuation", sessionID: value.sessionID, position: (last?.position ?? -1) + 1).insert(dbc)
+            }
         }
     }
     public func releasePrepared(id: UUID, inputID: UUID?, now: Date) throws {

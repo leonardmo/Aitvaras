@@ -12,6 +12,9 @@ struct AgentTranscriptView: View {
     var recovery: ((AgentRecoveryAction) -> Void)? = nil
     var recoveryEnabled = false
     var recoveryError: String? = nil
+    var autoContinue: AgentAutoContinueRow? = nil
+    var autoContinueChange: ((AgentAutoContinueRowOption) -> Void)? = nil
+    var autoContinueUpdating = false
     @State private var expanded = false
 
     var body: some View {
@@ -20,27 +23,51 @@ struct AgentTranscriptView: View {
                 Label(entry.text, systemImage: "clock.arrow.circlepath")
                     .font(.caption).foregroundStyle(.secondary)
             } else if let stop = entry.stoppedTurn {
-                HStack(spacing: 6) {
-                    Image(systemName: stop.icon).foregroundStyle(stop.reason.kind == .internalError ? Color.orange : Color.secondary)
-                        .accessibilityIdentifier(stop.reason.kind == .interrupted ? "chat.interrupted" : "chat.stopped.icon.\(entry.id)")
-                    Text(stop.label()).lineLimit(1).truncationMode(.middle).help(stop.label())
-                    Spacer(minLength: 6)
-                    if let recoveryError {
-                        Image(systemName: "exclamationmark.circle").foregroundStyle(.orange)
-                            .help(recoveryError).accessibilityLabel(recoveryError)
-                    }
-                    ForEach(stop.actions, id: \.rawValue) { action in
-                        Button(action.label) {
-                            if action == .copyDetails {
-                                NSPasteboard.general.clearContents()
-                                NSPasteboard.general.setString(stop.reason.category.name, forType: .string)
-                            } else { recovery?(action) }
+                let label = autoContinue?.status == nil ? stop.label() : "Usage limit reached"
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(spacing: 6) {
+                        Image(systemName: stop.icon).foregroundStyle(stop.reason.kind == .internalError ? Color.orange : Color.secondary)
+                            .accessibilityIdentifier(stop.reason.kind == .interrupted ? "chat.interrupted" : "chat.stopped.icon.\(entry.id)")
+                        Text(label).lineLimit(1).truncationMode(.middle).help(label)
+                        Spacer(minLength: 6)
+                        if let recoveryError {
+                            Image(systemName: "exclamationmark.circle").foregroundStyle(.orange)
+                                .help(recoveryError).accessibilityLabel(recoveryError)
                         }
-                        .disabled(action != .copyDetails && (!recoveryEnabled || (action == .continueTurn && !stop.canContinue)))
-                        .help(action == .continueTurn && !stop.canContinue ? "The original session is unavailable." : action.label)
-                        .accessibilityIdentifier("chat.stopped.\(action.rawValue).\(entry.id)")
+                        ForEach(stop.actions, id: \.rawValue) { action in
+                            Button(action.label) {
+                                if action == .copyDetails {
+                                    NSPasteboard.general.clearContents()
+                                    NSPasteboard.general.setString(stop.reason.category.name, forType: .string)
+                                } else { recovery?(action) }
+                            }
+                            .disabled(action != .copyDetails && (!recoveryEnabled || (action == .continueTurn && !stop.canContinue)))
+                            .help(action == .continueTurn && !stop.canContinue ? "The original session is unavailable." : action.label)
+                            .accessibilityIdentifier("chat.stopped.\(action.rawValue).\(entry.id)")
+                        }
+                    }
+                    if let autoContinue {
+                        Toggle("Auto-continue when the limit resets", isOn: Binding(
+                            get: { autoContinue.enabled }, set: { autoContinueChange?(.enabled($0)) }))
+                            .toggleStyle(.checkbox)
+                            .disabled(!autoContinue.canToggle || autoContinueUpdating)
+                            .accessibilityIdentifier("chat.stopped.autoContinue.\(entry.id)")
+                        Toggle("Keep Mac awake until it continues", isOn: Binding(
+                            get: { autoContinue.keepAwake }, set: { autoContinueChange?(.keepAwake($0)) }))
+                            .toggleStyle(.checkbox)
+                            .disabled(!autoContinue.canChangeKeepAwake || autoContinueUpdating)
+                            .help("Keeps the Mac awake while waiting on AC power.")
+                            .accessibilityIdentifier("chat.stopped.keepAwake.\(entry.id)")
+                        if let status = autoContinue.status {
+                            Text(status).foregroundStyle(.secondary)
+                                .accessibilityIdentifier("chat.stopped.autoContinueStatus.\(entry.id)")
+                        }
                     }
                 }.font(.caption).controlSize(.small)
+            } else if entry.kind == "automaticContinuation" {
+                Label("Continued automatically after the usage reset", systemImage: "arrow.turn.down.right")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .accessibilityIdentifier("chat.continued.automatic.\(entry.id)")
             } else if entry.kind == "continued" {
                 Label("Continued", systemImage: "arrow.turn.down.right")
                     .font(.caption).foregroundStyle(.secondary)

@@ -42,18 +42,17 @@ final class AutoContinueTimerClock: Sendable {
             autoContinuePersistence: AgentAutoContinueStore(db: stores.db), continuationClock: clock.clock)
     }
     private func scheduler(_ manager: AgentSessionManager, _ stores: Stores, _ backend: AutoContinueBackend,
-                           _ clock: AutoContinueTimerClock, enabled: Bool = true) -> AgentAutoContinueScheduler {
+                           _ clock: AutoContinueTimerClock) -> AgentAutoContinueScheduler {
         .init(manager: manager, turns: stores, persistence: AgentAutoContinueStore(db: stores.db), backend: { _ in backend },
-            audit: { _ = try stores.record($0) }, clock: clock.clock, armingEnabled: enabled)
+            audit: { _ = try stores.record($0) }, clock: clock.clock)
     }
-    @Test func productionDefaultDoesNotArmOrDispatch() async throws {
+    @Test func launchArmsDueQuotaWorkWithoutAFeatureFlag() async throws {
         let stores = try inMemoryStores(), saved = try autoContinueIntent(stores), clock = AutoContinueTimerClock(), backend = AutoContinueBackend()
         let manager = try manager(stores, backend, clock)
-        let scheduler = AgentAutoContinueScheduler(manager: manager, turns: stores, persistence: AgentAutoContinueStore(db: stores.db),
-            backend: { _ in backend }, audit: { _ = try stores.record($0) }, clock: clock.clock)
-        try await scheduler.start(); try await scheduler.wake()
-        #expect(await backend.runs.isEmpty)
-        #expect(try AgentAutoContinueStore(db: stores.db).continuation(id: saved.id) == saved)
+        let scheduler = scheduler(manager, stores, backend, clock)
+        try await scheduler.start()
+        try await autoWait { await backend.runs.first?.inputs.count == 1 }
+        #expect(try AgentAutoContinueStore(db: stores.db).continuation(id: saved.id)?.state == .claimed)
         await scheduler.shutdown(); try await manager.shutdown()
     }
 

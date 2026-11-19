@@ -1757,8 +1757,10 @@ signed in. Use Haiku for live autonomous turns.
 
 ### Usage-reset continuation (D41, issue #27)
 
-The foundation is delivered before the issue #23 Stopped row. Production arming
-remains inactive until that row exposes both persisted choices and Cancel.
+The quota Stopped row enables automatic continuation by default.
+`AgentAutoContinueRowTests` covers quota-only controls, reset/checking labels,
+defaults, cancellation during registration, re-arming the same stop, manual
+Continue, and the single automatic marker without a user bubble.
 Offline acceptance covers rejected versus allowed provider events, the exact
 hit-window reset, account/profile isolation, malformed/missing evidence, durable
 pending transitions and audit rollback, restart recovery, and fake-clock reset,
@@ -1795,9 +1797,8 @@ bindings, but these tests never acquire a real power assertion.
 
 The app installs the lifecycle owner after journal recovery, forwards
 NSWorkspace didWake, stops scheduling and power observation before chat shutdown,
-and reopens the chat owner if termination is cancelled. The compiled production
-arming constant remains false until Part B supplies the Stopped-row controls;
-launch/wake cannot dispatch or acquire assertions with that gate off.
+and reopens the chat owner if termination is cancelled. Launch and wake
+evaluate eligible quota stops using their saved options.
 The keep-awake choice prevents idle system sleep on positively known AC power.
 The display may sleep; normal closed-lid sleep without an external display is
 not overridden. Starting delivery releases the assertion; a definite quota rejection
@@ -1812,8 +1813,11 @@ isolated profile with external integrations disabled: launch/wake, quit and
 cancelled termination, AC/battery transitions, assertion release, and normal
 closed-lid sleep without an external display. The idle-sleep assertion does not
 wake the Mac. App compilation and real power behavior are not established by
-package tests. Part B also needs accessible row controls, light/dark and narrow
-layout review, and the automatic marker without a user bubble. Any live provider
+package tests. Check the row controls in light and dark appearance at the minimum window
+width. Confirm the checkbox defaults on, Keep Mac awake defaults off, the reset
+or checking state is visible, and unchecking and rechecking persists the choice.
+Check keyboard access to both controls and manual Continue, and verify that
+non-quota rows omit the controls. Any live provider
 check uses Haiku or the smallest available Codex model.
 
 
@@ -1828,7 +1832,6 @@ The supervisor must regenerate the Xcode project and run `make app` and the host
 `make check`; SwiftPM does not compile the App adapters. In an isolated profile,
 check the IOPS callback on AC/battery changes, real assertion presence/release
 (e.g. read-only `pmset -g assertions`), forced sleep/wake, normal closed-lid sleep,
-and quit/cancelled termination. The current production gate is deliberately off;
-use synthetic injected eligibility on the host to exercise the dormant assertion
-adapter without turning on provider arming. Do not schedule wake alarms or use
+and quit/cancelled termination. Use synthetic quota stops and fake providers in
+the isolated profile for those checks. Do not schedule wake alarms or use
 admin commands. Unit tests cannot establish these OS behaviors.

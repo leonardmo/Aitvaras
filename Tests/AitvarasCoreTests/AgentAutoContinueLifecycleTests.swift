@@ -13,7 +13,7 @@ private struct AutoContinueLifecycleFixture {
     let assertions: AutoContinueTestAssertions
     let manager: AgentSessionManager
     let lifecycle: AgentAutoContinueLifecycle
-    init(resetAfter: TimeInterval = 3600, enabled: Bool = true) throws {
+    init(resetAfter: TimeInterval = 3600) throws {
         stores = try inMemoryStores(); storage = AgentAutoContinueStore(db: stores.db)
         clock = AutoContinueTimerClock(); backend = AutoContinueBackend(); assertions = AutoContinueTestAssertions()
         let value = try autoContinueIntent(stores, reset: autoContinueTestDate.addingTimeInterval(resetAfter))
@@ -22,10 +22,10 @@ private struct AutoContinueLifecycleFixture {
         manager = try AgentSessionManager(persistence: stores, backend: { _ in backend }, audit: { _ = try stores.record($0) },
             autoContinuePersistence: storage, continuationClock: clock.clock)
         let scheduler = AgentAutoContinueScheduler(manager: manager, turns: stores, persistence: storage,
-            backend: { _ in backend }, audit: { _ = try stores.record($0) }, clock: clock.clock, armingEnabled: enabled)
+            backend: { _ in backend }, audit: { _ = try stores.record($0) }, clock: clock.clock)
         let keepAwake = AgentAutoContinueKeepAwake(persistence: storage, driver: assertions.driver,
             audit: { _ = try stores.record($0) }, clock: clock.clock)
-        lifecycle = AgentAutoContinueLifecycle(manager: manager, scheduler: scheduler, keepAwake: keepAwake, armingEnabled: enabled)
+        lifecycle = AgentAutoContinueLifecycle(manager: manager, scheduler: scheduler, keepAwake: keepAwake)
     }
     func stop() async throws { try await lifecycle.prepareForTermination(); try await manager.shutdown() }
 }
@@ -177,17 +177,18 @@ private struct AutoContinueLifecycleFixture {
         try await f.stop()
     }
 
-    @Test func productionGateKeepsLaunchWakeAndPowerInert() async throws {
-        #expect(!AgentAutoContinueLifecycle.productionArmingEnabled)
-        let f = try AutoContinueLifecycleFixture(resetAfter: 0, enabled: false)
+    @Test func launchRetainsOptOutAcrossWakeAndCancelledTermination() async throws {
+        let f = try AutoContinueLifecycleFixture(resetAfter: 0)
+        let off = try f.storage.setOptions(id: f.saved.id, enabled: false, keepAwake: true, now: f.clock.now)
         try await f.lifecycle.launch(power: .ac)
         try await f.lifecycle.didWake(power: .ac)
         try await f.lifecycle.powerChanged(.ac)
         #expect(await f.backend.runs.isEmpty)
         #expect(f.assertions.creations == 0)
-        #expect(try f.storage.continuation(id: f.saved.id) == f.saved)
+        #expect(try f.storage.continuation(id: f.saved.id) == off)
         try await f.lifecycle.prepareForTermination(); try await f.manager.shutdown()
         try await f.lifecycle.terminationCancelled(power: .ac)
+        #expect(await f.backend.runs.isEmpty)
         #expect(f.assertions.creations == 0)
         try await f.stop()
     }
