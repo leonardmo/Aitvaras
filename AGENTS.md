@@ -164,9 +164,26 @@ reason:
 CI-Build: skip (codex-task.sh only; no test or build runs it)
 ```
 
-The privacy, rule and commit checks still run. Never use it when the PR
-touches `Sources/`, `App/`, `Tests/`, `Package.*`, `project.yml`,
-`.github/workflows/` or a script that CI or `make check` runs. Don't use
+Never use it when the PR touches `Sources/`, `App/`, `Tests/`, `Package.*`,
+`project.yml`, `.github/workflows/` or a script that CI or `make check` runs.
+
+To skip only the package tests (about 10–15 minutes) and keep the app build,
+use `skip-package`:
+
+```
+CI-Build: skip-package (App/ only; package unchanged)
+CI-Build: skip-package (make check passed on a rebase onto current origin/main)
+```
+
+Use it when the package tests can't catch anything new: the change is
+outside `Sources/`, `Tests/`, `Package.*` and the Node helpers, or you ran
+`make check` on a branch rebased onto current `origin/main` and nothing
+changed since. Rebase again and drop the trailer if `main` moved in a way
+that touches your code.
+
+Both trailers cover only the commit they are on: a later commit without one
+gets full CI again. The privacy, rule and commit checks always run, and
+pushes to `main` always build and test. Don't use
 GitHub's own skip markers (`skip ci` or `ci skip` in square brackets, a
 `skip-checks` trailer) either: they skip the required checks too, and the PR
 can never merge. GitHub reacts to the text alone, so don't even quote them

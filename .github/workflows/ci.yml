@@ -47,7 +47,8 @@ jobs:
   # a job skipped because a dependency failed counts as passed for a required
   # check, which would let an auto-merging PR through untested.
   # A PR whose latest commit carries `CI-Build: skip (<reason>)` is treated
-  # like docs-only (AGENTS.md, "Skipping the builds"). Pushes to main always
+  # like docs-only; `CI-Build: skip-package (<reason>)` skips only the package
+  # tests (AGENTS.md, "Skipping the builds"). Pushes to main always
   # build, so main stays verified and the build caches stay fresh.
   # The repository variable PR_PACKAGE_TESTS=off switches package tests off
   # for PRs only (AGENTS.md, "Switching PR package tests off").
@@ -57,7 +58,7 @@ jobs:
     timeout-minutes: 5
     outputs:
       code: ${{ steps.diff.outputs.code }}
-      package: ${{ steps.diff.outputs.code == 'true' && (github.event_name != 'pull_request' || vars.PR_PACKAGE_TESTS != 'off') }}
+      package: ${{ steps.diff.outputs.code == 'true' && steps.diff.outputs.package != 'false' && (github.event_name != 'pull_request' || vars.PR_PACKAGE_TESTS != 'off') }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -88,9 +89,14 @@ jobs:
           done <<< "$files"
           if [[ "$code" == true && "$EVENT" == pull_request ]]; then
             skip="$(git log -1 --format='%(trailers:key=CI-Build,valueonly)' "$PR_HEAD" | head -1)"
-            if [[ "$skip" == skip* ]]; then
+            all='^skip([[:space:]]|[(]|$)'
+            package_only='^skip-package([[:space:]]|[(]|$)'
+            if [[ "$skip" =~ $all ]]; then
               echo "::notice title=Builds skipped::CI-Build: $skip"
               code=false
+            elif [[ "$skip" =~ $package_only ]]; then
+              echo "::notice title=Package tests skipped::CI-Build: $skip"
+              echo "package=false" >> "$GITHUB_OUTPUT"
             fi
           fi
           echo "code=$code" >> "$GITHUB_OUTPUT"
