@@ -70,6 +70,8 @@ final class AppModel {
     private(set) var hub: ConnectorHub?
     private(set) var agentLoop: AgentLoop?
     private(set) var agentSessionManager: AgentSessionManager?
+    private(set) var agentAutoContinueLifecycle: AgentAutoContinueLifecycle?
+    private(set) var agentAutoContinuePowerObserver: AgentAutoContinuePowerObserver?
     private(set) var agentSetupCoordinator: AgentSetupCoordinator?
     private(set) var chatModel: ChatModel?
     private(set) var localAgentReplyActive = false
@@ -469,10 +471,18 @@ final class AppModel {
             },
             audit: { _ = try stores.record($0) })
         agentSetupCoordinator = setup
+        let continuationStore = AgentAutoContinueStore(db: stores.db)
         let manager = try AgentSessionManager(persistence: stores, backend: { provider in
             guard let backend = available[provider] else { throw AgentFailure.offline }
             return backend
-        }, profileBackend: { try profileBackends.backend($0) }, audit: { _ = try stores.record($0) }, mcpPolicy: mcpPolicy)
+        }, profileBackend: { try profileBackends.backend($0) }, audit: { _ = try stores.record($0) }, mcpPolicy: mcpPolicy, autoContinuePersistence: continuationStore)
+        let armingEnabled = AgentAutoContinueLifecycle.productionArmingEnabled
+        let scheduler = AgentAutoContinueScheduler(manager: manager, turns: stores, persistence: continuationStore,
+            backend: { try profileBackends.backend($0) }, audit: { _ = try stores.record($0) }, armingEnabled: armingEnabled)
+        let keepAwake = AgentAutoContinueKeepAwake(persistence: continuationStore, audit: { _ = try stores.record($0) })
+        agentAutoContinueLifecycle = AgentAutoContinueLifecycle(manager: manager, scheduler: scheduler, keepAwake: keepAwake,
+            armingEnabled: armingEnabled)
+        agentAutoContinuePowerObserver = AgentAutoContinuePowerObserver()
         nativeWorkspace.readerFactory = { provider in
             NativeBackendSessionReader(provider: provider, backend: available[provider == .claude ? .claude : .codex])
         }
@@ -486,6 +496,8 @@ final class AppModel {
         chatModel?.observeSidebar(workspaceSidebarChats)
         if let selectedWorkspaceChatID { chatModel?.select(selectedWorkspaceChatID) }
         else { chatModel?.prepareNew(projectID: try? stores.newChatProjectID()) }
+        startAutoContinuePowerObservation()
+        try? await agentAutoContinueLifecycle?.launch(power: armingEnabled ? SystemPowerState.autoContinuePower() : .unknown)
     }
 
     private func localAgentReply(agentLoop: AgentLoop, configuration: AgentSessionConfiguration,
@@ -518,7 +530,14 @@ final class AppModel {
     }
 
     func shutdownAgentChats() async throws {
-        try await chatModel?.shutdown()
+        agentAutoContinuePowerObserver?.stop()
+        var failure: (any Error)?
+        do { try await agentAutoContinueLifecycle?.prepareForTermination() }
+        catch { failure = error }
+        // Chat cleanup still runs if assertion release/auditing fails.
+        do { try await chatModel?.shutdown() }
+        catch { failure = failure ?? error }
+        if let failure { throw failure }
     }
 
     func send(_ text: String) -> Bool {

@@ -1,8 +1,11 @@
 import Foundation
 import IOKit.ps
 import AitvarasAgent
+import AitvarasAgents
 
 enum SystemPowerState {
+    static func autoContinuePower() -> AgentAutoContinuePower { AgentAutoContinuePowerSource.current() }
+
     static func current() -> NightlyPowerSnapshot {
         guard let info = IOPSCopyPowerSourcesInfo()?.takeRetainedValue(),
               let sourceList = IOPSCopyPowerSourcesList(info)?.takeRetainedValue()

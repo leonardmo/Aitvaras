@@ -759,6 +759,10 @@ public actor AgentSessionManager {
 
     /// Detach generations first. Bounded cleanup never poisons the owner: if
     /// application quit is cancelled, the next Send creates a fresh live run.
+    /// Shutdown retires all generations and journals before returning. A cancelled
+    /// app termination may reopen the owner; old callbacks still fail their tokens.
+    public func resumeAfterCancelledTermination() { closing = false }
+
     public func shutdown(timeout: Duration = .seconds(2)) async throws {
         guard !closing else { return }
         closing = true

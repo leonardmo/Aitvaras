@@ -50,6 +50,7 @@ actor AutoContinueBackend: AgentBackend {
     var accountID: String? = "ACCOUNT_CANARY"
     var windows: [AgentRateLimitWindow] = []
     var history: [AgentEvent]?
+    var statusGate: AutoContinueGate?
     var startGate: AutoContinueGate?
     var pollGate: AutoContinueGate?
     var sendGate: AutoContinueGate?
@@ -61,11 +62,16 @@ actor AutoContinueBackend: AgentBackend {
     func setAuthentication(_ value: AgentStatus.Authentication) { authentication = value }
     func setWindows(_ value: [AgentRateLimitWindow]) { windows = value }
     func setHistory(_ value: [AgentEvent]?) { history = value }
+    func setStatusGate(_ gate: AutoContinueGate?) { statusGate = gate }
     func setStartGate(_ gate: AutoContinueGate?) { startGate = gate }
     func setPollGate(_ gate: AutoContinueGate?) { pollGate = gate }
     func setSendGate(_ gate: AutoContinueGate?) { sendGate = gate }
     func setFailure(_ value: AgentFailure?) { failure = value }
-    func status() -> AgentStatus { .init(installed: true, authentication: authentication, capabilities: [], accountID: accountID) }
+    func status() async -> AgentStatus {
+        let result = AgentStatus(installed: true, authentication: authentication, capabilities: [], accountID: accountID)
+        if let statusGate { await statusGate.wait() }
+        return result
+    }
     func rateLimits() async -> [AgentRateLimitWindow] { reads += 1; if let pollGate { await pollGate.wait() }; return windows }
     func signIn(onBrowserURL: @escaping @Sendable (URL) async -> Void) throws { throw AgentFailure.unsupported }
     func models() -> [AgentModel] { [] }

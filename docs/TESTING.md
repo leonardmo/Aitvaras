@@ -1501,8 +1501,24 @@ migration; take its next free number at rebase. Claude receipts use the submitte
 UUID and do not depend on tool-result user frames. Codex automatic inputs send
 a client message UUID; unbound native identity fails closed rather than becoming
 a person-authored bubble. Unknown delivery is never replayed automatically.
-Production arming is still disabled: row controls, lifecycle and power wiring
-remain separate work.
+`AgentAutoContinueKeepAwakeTests` covers AC-only assertion ownership, unknown
+power, both choices, multiple chats, delivery/retry transitions, expiry,
+shutdown, stale notifications and assertion/audit failures using a fake driver.
+`AgentAutoContinueLifecycleTests` covers launch, repeated wake, timer-only expiry,
+quit, cancelled termination, retired startup/poll generations and assertion failures
+without suppressing continuation. The package build compiles the real IOKit
+bindings, but these tests never acquire a real power assertion.
+
+The app installs the lifecycle owner after journal recovery, forwards
+NSWorkspace didWake, stops scheduling and power observation before chat shutdown,
+and reopens the chat owner if termination is cancelled. The compiled production
+arming constant remains false until Part B supplies the Stopped-row controls;
+launch/wake cannot dispatch or acquire assertions with that gate off.
+The keep-awake choice prevents idle system sleep on positively known AC power.
+The display may sleep; normal closed-lid sleep without an external display is
+not overridden. Starting delivery releases the assertion; a definite quota rejection
+can reacquire it while waiting for the next attempt. Quit releases assertions
+without removing the durable pending intent. No wake alarms are scheduled.
 
 Later integration acceptance must additionally cover cancellation racing send,
 poll and wake; one dispatch across duplicate triggers; uncertain-delivery
@@ -1515,3 +1531,20 @@ wake the Mac. App compilation and real power behavior are not established by
 package tests. Part B also needs accessible row controls, light/dark and narrow
 layout review, and the automatic marker without a user bubble. Any live provider
 check uses Haiku or the smallest available Codex model.
+
+
+For this foundation, run `scripts/codex-swift.sh build --build-tests`, then
+`scripts/codex-swift.sh test --skip-build --filter 'AgentAutoContinue|AgentUsageResetResolverTests|AgentSessionManagerTests'`
+in the supervised sandbox, plus `make privacy` and `make rules`. The known
+sandbox-only `ClaudeBackendTests.twoTurnsAllBlocksNativeIDsAndJournalBarrier`
+exact-argument failure remains a host check; do not alter its assertion or CLI
+launch policy. The wrapper's existing sandbox exclusions remain host checks too.
+
+The supervisor must regenerate the Xcode project and run `make app` and the host
+`make check`; SwiftPM does not compile the App adapters. In an isolated profile,
+check the IOPS callback on AC/battery changes, real assertion presence/release
+(e.g. read-only `pmset -g assertions`), forced sleep/wake, normal closed-lid sleep,
+and quit/cancelled termination. The current production gate is deliberately off;
+use synthetic injected eligibility on the host to exercise the dormant assertion
+adapter without turning on provider arming. Do not schedule wake alarms or use
+admin commands. Unit tests cannot establish these OS behaviors.
