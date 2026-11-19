@@ -1,5 +1,6 @@
 import Foundation
 import AitvarasCore
+import AitvarasAgents
 import AitvarasStore
 import Testing
 
@@ -224,6 +225,27 @@ import Testing
         // Second seed refuses — an existing profile is never polluted.
         #expect(try !StateFixtures.seedDemoProfile(into: stores))
         #expect(try stores.factStats().total == stats.total)
+    }
+
+    @Test func demoProfileIncludesTwoStoppedChatsWithoutAnArmedContinuation() throws {
+        let stores = try inMemoryStores()
+        let before = Date.now
+        #expect(try StateFixtures.seedDemoProfile(into: stores))
+        let project = try #require(try stores.workspaceProjects().first { $0.title == "Agent recovery examples" })
+        let chats = try stores.workspaceChats(projectID: project.id)
+        let quota = try #require(chats.first { $0.title == "Usage limit example" })
+        let connection = try #require(chats.first { $0.title == "Connection lost example" })
+        let quotaStop = try #require(try stores.agentEntries(chatID: quota.id).last?.stoppedTurn)
+        #expect(quotaStop.provider == .claude)
+        #expect(quotaStop.reason.kind == .quota)
+        let reset = try #require(quotaStop.reason.resetsAt)
+        #expect(reset >= before.addingTimeInterval(7200))
+        #expect(reset <= Date.now.addingTimeInterval(7200))
+        let row = AgentAutoContinueRow(stop: quotaStop, intent: nil, isCurrent: true)
+        #expect(row?.enabled == true)
+        #expect(row?.keepAwake == false)
+        #expect(try stores.agentEntries(chatID: connection.id).last?.stoppedTurn?.reason.kind == .connection)
+        #expect(try AgentAutoContinueStore(db: stores.db).pending().isEmpty)
     }
 
     @Test func databaseOpenFailureThrowsInsteadOfCrashing() throws {

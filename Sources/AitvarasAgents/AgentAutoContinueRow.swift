@@ -23,6 +23,13 @@ public struct AgentAutoContinueRow: Sendable, Equatable {
     public init?(stop: AgentStoppedTurn, intent: AgentAutoContinue?, isCurrent: Bool, timeZone: TimeZone = .current) {
         guard stop.reason.kind == .quota else { return nil }
         let current = isCurrent && stop.canContinue && stop.provider != .local && stop.recoveryInputID == nil
+        let scope = AgentUsageLimitScope(provider: stop.provider, providerProfile: stop.providerProfile,
+                                         accountKey: intent?.scope.accountKey ?? stop.quotaContext?.accountKey)
+        guard scope.hasKnownAccount else {
+            enabled = false; keepAwake = false; canToggle = false; canChangeKeepAwake = false
+            status = "Automatic continuation requires a verified provider account."
+            return
+        }
         let editable = intent.map { $0.state == .pending } ?? current
         let revocable = intent?.state == .claimed && intent?.delivery == .prepared
         canToggle = editable || revocable

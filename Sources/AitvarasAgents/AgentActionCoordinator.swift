@@ -80,6 +80,7 @@ public actor AgentActionCoordinator: AgentRun {
         guard authorization.chatID == provenance.chatID, session == authorization.native,
               input.id == authorization.continuationInputID, input.automaticIntentID == authorization.id, input.text == AgentAutoContinue.prompt,
               input.attachments.isEmpty, input.mentions.isEmpty, input.command == nil else { throw AgentFailure.invalidRequest }
+        guard authorization.scope.matches(accountID: accountID) else { throw AgentFailure.invalidTransition }
         try Self.validateContinuation(authorization, persistence: persistence, clock: clock, claimed: true)
         let tool = ToolDefinition(name: "continueAfterReset", description: "Continue stopped chat", parametersJSON: "{}", risk: .confirmable)
         if policy.verdict(for: tool, connectorID: "agent.autoContinue") == .requireConfirmation {
@@ -112,7 +113,7 @@ public actor AgentActionCoordinator: AgentRun {
         try validateContinuation(authorization, persistence: persistence, clock: clock, claimed: false)
         let status = try await backend.status()
         guard status.authentication == .subscription else { throw AgentFailure.authRequired }
-        guard status.accountID == authorization.scope.accountID else { throw AgentFailure.invalidTransition }
+        guard authorization.scope.matches(accountID: status.accountID) else { throw AgentFailure.invalidTransition }
         try validateContinuation(authorization, persistence: persistence, clock: clock, claimed: false)
         let windows = try await backend.rateLimits()
         try validateContinuation(authorization, persistence: persistence, clock: clock, claimed: false)
@@ -152,13 +153,14 @@ public actor AgentActionCoordinator: AgentRun {
         try validateContinuation(authorization, persistence: persistence, clock: clock, claimed: true)
         let status = try await backend.status()
         guard status.authentication == .subscription else { throw AgentFailure.authRequired }
-        guard status.accountID == authorization.scope.accountID else { throw AgentFailure.invalidTransition }
+        guard authorization.scope.matches(accountID: status.accountID) else { throw AgentFailure.invalidTransition }
         try validateContinuation(authorization, persistence: persistence, clock: clock, claimed: true)
     }
 
     private static func validateContinuation(_ authorization: AgentAutoContinue, persistence: any AgentAutoContinuePersistence,
                                              clock: AgentAutoContinueClock, claimed: Bool) throws {
         try Task.checkCancellation()
+        guard authorization.scope.hasKnownAccount else { throw AgentFailure.invalidTransition }
         try persistence.validate(authorization)
         guard let current = try persistence.continuation(id: authorization.id), current == authorization,
               current.enabled, current.state == (claimed ? .claimed : .pending),

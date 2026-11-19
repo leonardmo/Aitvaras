@@ -6,16 +6,20 @@ import AitvarasStore
 
 let autoContinueTestDate = Date(timeIntervalSince1970: 2_000_000_000)
 
-func autoContinueIntent(_ stores: Stores, provider: AgentProvider = .codex, reset: Date? = autoContinueTestDate) throws -> AgentAutoContinue {
+func autoContinueIntent(_ stores: Stores, provider: AgentProvider = .codex, reset: Date? = autoContinueTestDate,
+                        profile: String = "default") throws -> AgentAutoContinue {
     var session = try agentStoreChat(stores, provider: provider).1
-    session.sessionID = .init(provider: provider, profile: "default", nativeID: "NATIVE_CANARY-" + session.id.uuidString)
+    if profile != "default" {
+        session = AgentChatSession(chatID: session.chatID, provider: provider, cwd: session.cwd, model: session.model, providerProfile: profile)
+    }
+    session.sessionID = .init(provider: provider, profile: profile, nativeID: "NATIVE_CANARY-" + session.id.uuidString)
     try stores.saveAgentSession(session)
     let input = AgentInput(text: "PRIVATE_PROMPT_CANARY")
     try stores.prepareAgentTurn(.init(input: input, chatID: session.chatID, sessionID: session.id))
     try stores.finishAgentTurn(id: input.id, state: .failed)
     return try AgentAutoContinueStore(db: stores.db).schedule(.init(chatID: session.chatID, failedInputID: input.id,
         sessionID: session.id, native: try #require(session.sessionID),
-        scope: .init(provider: provider, accountID: "ACCOUNT_CANARY"), createdAt: autoContinueTestDate, inputRevision: 0,
+        scope: .init(provider: provider, providerProfile: profile, accountID: "ACCOUNT_CANARY"), createdAt: autoContinueTestDate, inputRevision: 0,
         resetsAt: reset, resetSource: reset == nil ? .fallback : .request, nextCheckAt: reset ?? autoContinueTestDate))
 }
 
@@ -55,6 +59,7 @@ actor AutoContinueBackend: AgentBackend {
     var pollGate: AutoContinueGate?
     var sendGate: AutoContinueGate?
     var failure: AgentFailure?
+    var sendFailure: AgentFailure?
     private(set) var configurations: [AgentSessionConfiguration] = []
     private(set) var runs: [AutoContinueRun] = []
     private(set) var reads = 0
@@ -67,6 +72,7 @@ actor AutoContinueBackend: AgentBackend {
     func setPollGate(_ gate: AutoContinueGate?) { pollGate = gate }
     func setSendGate(_ gate: AutoContinueGate?) { sendGate = gate }
     func setFailure(_ value: AgentFailure?) { failure = value }
+    func setSendFailure(_ value: AgentFailure?) { sendFailure = value }
     func status() async -> AgentStatus {
         let result = AgentStatus(installed: true, authentication: authentication, capabilities: [], accountID: accountID)
         if let statusGate { await statusGate.wait() }
@@ -79,7 +85,8 @@ actor AutoContinueBackend: AgentBackend {
         configurations.append(configuration)
         if let startGate { await startGate.wait() }
         if let failure { throw failure }
-        let run = AutoContinueRun(session: configuration.resume ?? .init(provider: .codex, profile: "default", nativeID: "fixture-" + UUID().uuidString), gate: sendGate)
+        let run = AutoContinueRun(session: configuration.resume ?? .init(provider: .codex, profile: "default", nativeID: "fixture-" + UUID().uuidString),
+                                  gate: sendGate, accountID: accountID, sendFailure: sendFailure)
         runs.append(run)
         await run.emit(.sessionStarted(run.session))
         return run
@@ -93,22 +100,25 @@ actor AutoContinueBackend: AgentBackend {
 
 actor AutoContinueRun: AgentRun {
     nonisolated let id = UUID()
-    nonisolated let accountID: String? = "ACCOUNT_CANARY"
+    nonisolated let accountID: String?
     nonisolated let session: AgentSessionID
     nonisolated let events: AsyncThrowingStream<AgentEvent, Error>
     private let continuation: AsyncThrowingStream<AgentEvent, Error>.Continuation
     private let gate: AutoContinueGate?
+    private let sendFailure: AgentFailure?
     private var inputID: UUID?
     private(set) var inputs: [AgentInput] = []
     private(set) var responses: [AgentResponse] = []
-    init(session: AgentSessionID, gate: AutoContinueGate? = nil) {
-        self.session = session; self.gate = gate
+    init(session: AgentSessionID, gate: AutoContinueGate? = nil, accountID: String? = "ACCOUNT_CANARY",
+         sendFailure: AgentFailure? = nil) {
+        self.session = session; self.gate = gate; self.accountID = accountID; self.sendFailure = sendFailure
         (events, continuation) = AsyncThrowingStream.makeStream()
     }
     func send(_ input: AgentInput, willDeliver: @escaping @Sendable () async throws -> Void) async throws {
         if let gate { await gate.wait() }
         try await willDeliver()
         inputID = input.id; inputs.append(input)
+        if let sendFailure { throw sendFailure }
         emit(.delivery(.acknowledged))
     }
     func emit(_ kind: AgentEvent.Kind, input: UUID? = nil, turn: String? = nil) {

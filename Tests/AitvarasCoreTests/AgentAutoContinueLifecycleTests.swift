@@ -13,10 +13,16 @@ private struct AutoContinueLifecycleFixture {
     let assertions: AutoContinueTestAssertions
     let manager: AgentSessionManager
     let lifecycle: AgentAutoContinueLifecycle
-    init(resetAfter: TimeInterval = 3600) throws {
+    init(resetAfter: TimeInterval = 3600, namedClaudeProfile: Bool = false) throws {
         stores = try inMemoryStores(); storage = AgentAutoContinueStore(db: stores.db)
         clock = AutoContinueTimerClock(); backend = AutoContinueBackend(); assertions = AutoContinueTestAssertions()
-        let value = try autoContinueIntent(stores, reset: autoContinueTestDate.addingTimeInterval(resetAfter))
+        let reset = autoContinueTestDate.addingTimeInterval(resetAfter)
+        let value: AgentAutoContinue
+        if namedClaudeProfile {
+            let profile = AgentProviderProfile(name: "Example", configDirectory: "/tmp/example-profile")
+            try stores.saveClaudeProfile(profile)
+            value = try autoContinueIntent(stores, provider: .claude, reset: reset, profile: profile.nativeProfile)
+        } else { value = try autoContinueIntent(stores, reset: reset) }
         saved = try storage.setOptions(id: value.id, enabled: true, keepAwake: true, now: clock.now)
         let stores = stores, storage = storage, backend = backend
         manager = try AgentSessionManager(persistence: stores, backend: { _ in backend }, audit: { _ = try stores.record($0) },
@@ -61,20 +67,32 @@ private struct AutoContinueLifecycleFixture {
         try await f.stop()
     }
 
-    @Test func optionChangesCancellationAndPowerChangesRefreshImmediately() async throws {
+    @Test func optionAndPowerChangesReconcileAndCancellationReleasesImmediately() async throws {
         let f = try AutoContinueLifecycleFixture()
         try await f.lifecycle.launch(power: .ac)
         try await f.lifecycle.powerChanged(.battery)
         #expect(f.assertions.liveCount == 0)
         try await f.lifecycle.powerChanged(.ac)
-        #expect(f.assertions.liveCount == 1)
+        try await autoWait { f.assertions.liveCount == 1 }
         try await f.lifecycle.setOptions(id: f.saved.id, enabled: true, keepAwake: false)
         #expect(f.assertions.liveCount == 0)
         try await f.lifecycle.setOptions(id: f.saved.id, enabled: true, keepAwake: true)
-        #expect(f.assertions.liveCount == 1)
+        try await autoWait { f.assertions.liveCount == 1 }
         try await f.lifecycle.cancel(id: f.saved.id)
         #expect(f.assertions.liveCount == 0)
         #expect(try f.storage.continuation(id: f.saved.id)?.state == .cancelled)
+        try await f.stop()
+    }
+
+    @Test func deletingTheProfileReleasesTheAssertionBeforeTheReset() async throws {
+        let f = try AutoContinueLifecycleFixture(namedClaudeProfile: true)
+        try await f.lifecycle.launch(power: .ac)
+        #expect(f.assertions.liveCount == 1)
+        let profileID = try #require(UUID(uuidString: f.saved.scope.providerProfile))
+        try f.stores.deleteClaudeProfile(id: profileID)
+        try await f.lifecycle.profilesChanged()
+        #expect(f.assertions.liveCount == 0)
+        #expect(await f.backend.runs.isEmpty)
         try await f.stop()
     }
 

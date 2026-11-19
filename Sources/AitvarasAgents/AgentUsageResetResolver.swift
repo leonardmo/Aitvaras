@@ -29,7 +29,7 @@ public struct AgentUsageResetResolver: Sendable {
     public func resolve(scope: AgentUsageLimitScope, failure: AgentUsageLimit?,
                         cached: [AgentUsageResetObservation] = [], polled: AgentUsageLimitSnapshot? = nil,
                         rejectedAt: Date? = nil) -> AgentUsageResetResolution? {
-        guard scope.provider != .local else { return nil }
+        guard scope.provider != .local, scope.hasKnownAccount else { return nil }
         let now = clock.now()
         func usable(_ date: Date) -> Bool {
             guard date.isUsageResetDate else { return false }

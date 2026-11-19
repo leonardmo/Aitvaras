@@ -1757,6 +1757,18 @@ signed in. Use Haiku for live autonomous turns.
 
 ### Usage-reset continuation (D41, issue #27)
 
+Launch the stopped-row demo with an isolated profile:
+
+```sh
+AITVARAS_STATE_DIR="$(mktemp -d)" AITVARAS_DISABLE_EXTERNAL_INTEGRATIONS=1 \
+  .build-xcode/Build/Products/Debug/Aitvaras.app/Contents/MacOS/Aitvaras --seed-demo-state
+```
+
+Open **Usage limit example** and **Connection lost example** under **Agent
+recovery examples**. The first chat has a Claude reset about two hours ahead.
+The second has a connection-lost row. Demo mode disables both subscription
+provider backends. The fixture seeds transcript rows without scheduling a send.
+
 The quota Stopped row enables automatic continuation by default.
 `AgentAutoContinueRowTests` covers quota-only controls, reset/checking labels,
 defaults, cancellation during registration, re-arming the same stop, manual
@@ -1783,7 +1795,7 @@ registration, polling, capacity deferral and crash/quit recovery. Timed waits us
 a manually advanced clock; provider activity uses fakes or offline executables.
 The auto-continue and receipt migrations are appended after the main migrations.
 Quota failures and reset times reuse the Stopped row. Its optional scheduling
-metadata captures the window, account and chat input revision. Claude receipts use the submitted
+metadata captures the window, derived account key and chat input revision. Claude receipts use the submitted
 UUID and do not depend on tool-result user frames. Codex automatic inputs send
 a client message UUID; unbound native identity fails closed rather than becoming
 a person-authored bubble. Unknown delivery is never replayed automatically.

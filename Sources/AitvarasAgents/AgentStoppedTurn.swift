@@ -63,11 +63,11 @@ public struct AgentStoppedTurn: Codable, Sendable, Equatable {
     /// Evidence used by the usage-reset scheduler. Failure and reset stay in reason.
     public struct QuotaContext: Codable, Sendable, Equatable {
         public let windowID: String?
-        public let accountID: String?
+        public let accountKey: String?
         public let inputRevision: Int
         public let stoppedAt: Date
-        public init(windowID: String?, accountID: String?, inputRevision: Int, stoppedAt: Date) {
-            self.windowID = windowID; self.accountID = accountID
+        public init(windowID: String?, accountKey: String?, inputRevision: Int, stoppedAt: Date) {
+            self.windowID = windowID; self.accountKey = accountKey
             self.inputRevision = inputRevision; self.stoppedAt = stoppedAt
         }
     }

@@ -16,7 +16,7 @@ extension Stores {
                 return AgentQuotaStop(id: stopped.inputID, chatID: row.chatID, sessionID: sessionID, native: native,
                     providerProfile: stopped.providerProfile,
                     evidence: .init(status: .rejected, windowID: context.windowID, resetsAt: stopped.reason.resetsAt),
-                    stoppedAt: context.stoppedAt, inputRevision: context.inputRevision, accountID: context.accountID)
+                    stoppedAt: context.stoppedAt, inputRevision: context.inputRevision, accountKey: context.accountKey)
             }.sorted { $0.stoppedAt < $1.stoppedAt }
         }
     }
@@ -52,12 +52,14 @@ extension Stores {
     public func bindAutomaticInput(id: UUID, messageID: String?, turnID: String?) throws {
         try db.queue.write { dbc in
             guard var receipt = try AgentAutomaticInput.fetchOne(dbc, key: id) else { throw AgentFailure.invalidRequest }
+            // Approved plan execution can use a second turn under this journal input.
+            // Its items do not change the original automatic input's receipt.
+            if let original = receipt.nativeTurnID, let turnID, original != turnID { return }
             if let messageID {
                 guard receipt.nativeMessageID == nil || receipt.nativeMessageID == messageID else { throw AgentNativeHistoryError.identityConflict }
                 receipt.nativeMessageID = messageID
             }
             if let turnID {
-                guard receipt.nativeTurnID == nil || receipt.nativeTurnID == turnID else { throw AgentNativeHistoryError.identityConflict }
                 receipt.nativeTurnID = turnID
             }
             try receipt.update(dbc)

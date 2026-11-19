@@ -98,7 +98,8 @@ public actor AgentSessionManager {
     public func isInputRunning(chatID: UUID, inputID: UUID) -> Bool { live[chatID]?.inputID == inputID }
     private func quotaContext(for stop: AgentStopReason?, chatID: UUID, slot: Live) throws -> AgentStoppedTurn.QuotaContext? {
         guard let continuationPersistence, stop?.kind == .quota, slot.session.sessionID != nil else { return nil }
-        return .init(windowID: slot.usageLimit?.windowID, accountID: slot.accountID,
+        let scope = AgentUsageLimitScope(provider: slot.session.provider, providerProfile: slot.session.providerProfile, accountID: slot.accountID)
+        return .init(windowID: slot.usageLimit?.windowID, accountKey: scope.accountKey,
             inputRevision: try continuationPersistence.inputRevision(chatID: chatID), stoppedAt: continuationClock.now())
     }
 
@@ -404,7 +405,7 @@ public actor AgentSessionManager {
         let old = live[chatID]
         var configuration = session.configuration
         configuration.knownMessageIDs = Set((states[chatID]?.entries ?? []).filter { $0.sessionID == session.id }.compactMap(\.nativeMessageID))
-        configuration.verifiesResumeIdentity = recovery?.action == .continueTurn
+        configuration.verifiesResumeIdentity = automatic != nil || recovery?.action == .continueTurn
         configuration.projectID = try persistence.agentProjectID(chatID: chatID)
         let revision = try (provider == .claude || provider == .local)
             ? mcpPolicy.snapshot(directory: configuration.directory, projectID: configuration.projectID).status.revision : nil
@@ -605,7 +606,7 @@ public actor AgentSessionManager {
             case .rateLimits(let windows):
                 if let continuationPersistence, slot.session.provider != .local {
                     let scope = AgentUsageLimitScope(provider: slot.session.provider, providerProfile: slot.session.providerProfile, accountID: slot.accountID)
-                    for window in windows {
+                    for window in windows where scope.hasKnownAccount {
                         if let reset = window.resetsAt {
                             try continuationPersistence.observe(.init(scope: scope, windowID: window.id, resetsAt: reset, observedAt: continuationClock.now()))
                         }

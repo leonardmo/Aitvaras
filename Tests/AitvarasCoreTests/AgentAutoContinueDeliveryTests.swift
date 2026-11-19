@@ -6,8 +6,8 @@ import AitvarasCore
 @testable import AitvarasAgents
 
 @Suite(.timeLimit(.minutes(2))) struct AgentAutoContinueDeliveryTests {
-    @Test(arguments: [AgentProvider.claude, .codex])
-    func exactSessionPromptAndHiddenInputSurviveReconciliation(provider: AgentProvider) async throws {
+    @Test(arguments: [(AgentProvider.claude, false), (.codex, false), (.codex, true)])
+    func exactSessionPromptAndHiddenInputSurviveReconciliation(provider: AgentProvider, echoPrecedesTurnID: Bool) async throws {
         let stores = try inMemoryStores(), pending = try autoContinueIntent(stores, provider: provider)
         let storage = AgentAutoContinueStore(db: stores.db), backend = AutoContinueBackend()
         let manager = try AgentSessionManager(persistence: stores, backend: { _ in backend }, audit: { _ = try stores.record($0) },
@@ -17,25 +17,47 @@ import AitvarasCore
         #expect(await backend.configurations.last?.resume == pending.native)
         #expect(await run.inputs == [.init(id: input, text: AgentAutoContinue.prompt, automaticIntentID: pending.id)])
         try await autoWait { try stores.agentTurn(id: input)?.delivery == .acknowledged }
-        if provider == .codex { await run.emit(.message(id: "native-input", role: "user", text: AgentAutoContinue.prompt), turn: "turn-test") }
+        if provider == .codex {
+            await run.emit(.message(id: "native-input", role: "user", text: AgentAutoContinue.prompt),
+                           turn: echoPrecedesTurnID ? nil : "turn-test")
+        }
         await run.emit(.textDelta("Continued answer"), turn: provider == .codex ? "turn-test" : nil)
         await run.emit(.turnEnded(.completed), turn: provider == .codex ? "turn-test" : nil)
         try await autoWait { try stores.automaticInput(id: input)?.outcome == "completed" }
         #expect(try stores.agentEntries(chatID: pending.chatID).allSatisfy { $0.kind != "user" })
         let receipt = try #require(try stores.automaticInput(id: input))
-        let session = try #require(try stores.agentSessions(chatID: pending.chatID).first { $0.id == pending.sessionID })
-        let userID = try #require(receipt.nativeMessageID)
-        let metadata = JSONValue.object(["nativeHistory": .object(["turnID": receipt.nativeTurnID.map(JSONValue.string) ?? .null, "completed": .bool(true)])]).jsonString
-        let user = AgentTranscriptEntry(chatID: pending.chatID, provider: provider, kind: "user", text: AgentAutoContinue.prompt,
-            payloadJSON: metadata, sessionID: session.id, nativeMessageID: userID)
-        let answer = AgentTranscriptEntry(chatID: pending.chatID, provider: provider, kind: "assistant", text: "Continued answer",
-            payloadJSON: metadata, sessionID: session.id, nativeMessageID: "native-answer")
-        try stores.reconcileAgentHistory(session: session, entries: [user, answer])
-        try stores.reconcileAgentHistory(session: session, entries: [user, answer])
+        let userID = provider == .codex ? "native-input" : input.uuidString
+        let boundID = echoPrecedesTurnID ? userID : pending.native.canonicalMessageID(userID, turnID: receipt.nativeTurnID)
+        #expect(receipt.nativeMessageID == boundID)
+        let scope = AgentEventScope(runID: run.id, session: pending.native, turnID: receipt.nativeTurnID)
+        let user = AgentEvent(scope: scope, kind: .message(id: userID, role: "user", text: AgentAutoContinue.prompt))
+        let answer = AgentEvent(scope: scope, kind: .message(id: "native-answer", role: "assistant", text: "Continued answer"))
+        await backend.setHistory([user, answer])
+        try await manager.refreshNativeHistory(chatID: pending.chatID)
+        try await manager.refreshNativeHistory(chatID: pending.chatID)
         #expect(try stores.agentEntries(chatID: pending.chatID).allSatisfy { $0.kind != "user" })
-        var typed = user; typed.id = UUID(); typed.nativeMessageID = "typed-native-input"
-        try stores.reconcileAgentHistory(session: session, entries: [user, answer, typed])
+        let typed = AgentEvent(scope: scope, kind: .message(id: "typed-native-input", role: "user", text: AgentAutoContinue.prompt))
+        await backend.setHistory([user, answer, typed])
+        try await manager.refreshNativeHistory(chatID: pending.chatID)
         #expect(try stores.agentEntries(chatID: pending.chatID).filter { $0.kind == "user" }.map(\.text) == [AgentAutoContinue.prompt])
+        try await manager.shutdown()
+    }
+
+    @Test func approvedExecutionUnderSameJournalInputKeepsOriginalReceipt() async throws {
+        let stores = try inMemoryStores(), pending = try autoContinueIntent(stores), backend = AutoContinueBackend()
+        let manager = try AgentSessionManager(persistence: stores, backend: { _ in backend }, audit: { _ = try stores.record($0) },
+            autoContinuePersistence: AgentAutoContinueStore(db: stores.db), continuationClock: UsageResetTestClock(autoContinueTestDate).clock)
+        let input = try await manager.continueAutomatically(id: pending.id)
+        let run = try #require(await backend.runs.first)
+        await run.emit(.message(id: "original-item", role: "user", text: AgentAutoContinue.prompt), turn: "plan-turn")
+        await run.emit(.textDelta("Executing the approved plan"), turn: "execution-turn")
+        await run.emit(.turnEnded(.completed), turn: "execution-turn")
+        try await autoWait { try stores.automaticInput(id: input)?.outcome != nil }
+        let receipt = try #require(try stores.automaticInput(id: input))
+        #expect(receipt.outcome == "completed")
+        #expect(receipt.nativeMessageID == pending.native.canonicalMessageID("original-item", turnID: "plan-turn"))
+        #expect(receipt.nativeTurnID == "plan-turn")
+        #expect(try stores.agentTurn(id: input)?.partialOutput == "Executing the approved plan")
         try await manager.shutdown()
     }
 

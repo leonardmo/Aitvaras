@@ -70,7 +70,7 @@ import AitvarasStore
         #expect(result.scope == saved.scope && result.observedAt == autoContinueTestDate)
         await backend.setAccount("other-account")
         await #expect(throws: AgentFailure.invalidTransition) { _ = try await AgentActionCoordinator.autoContinueRateLimits(saved, backend: backend, persistence: persistence, clock: clock, audit: { _ = try stores.record($0) }) }
-        await backend.setAccount(saved.scope.accountID)
+        await backend.setAccount("ACCOUNT_CANARY")
         await #expect(throws: AgentFailure.offline) { _ = try await AgentActionCoordinator.autoContinueRateLimits(saved, backend: backend, persistence: persistence, clock: clock, audit: { _ in throw AgentFailure.offline }) }
         await #expect(throws: AgentFailure.invalidTransition) { _ = try await AgentActionCoordinator.autoContinueRateLimits(saved, backend: backend, persistence: persistence, clock: clock, audit: { _ in try persistence.noteNewInput(chatID: saved.chatID, now: autoContinueTestDate) }) }
         #expect(await backend.reads == 1)

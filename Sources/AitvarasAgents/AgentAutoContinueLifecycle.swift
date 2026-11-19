@@ -71,6 +71,11 @@ public actor AgentAutoContinueLifecycle {
         try await scheduler.cancel(id: id)
         if running { try await keepAwake.refresh() }
     }
+    public func profilesChanged() async throws {
+        guard running else { return }
+        try await keepAwake.refresh()
+        try await scheduler.wake()
+    }
     public func updates() async -> AsyncStream<Void> { await scheduler.updates() }
     public func setRowOption(failedInputID: UUID, _ option: AgentAutoContinueRowOption) async throws {
         guard running else { throw AgentFailure.invalidTransition }

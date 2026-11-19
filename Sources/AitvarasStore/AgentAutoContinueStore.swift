@@ -23,8 +23,16 @@ public struct AgentAutoContinueStore: AgentAutoContinuePersistence {
     public func validate(_ authorization: AgentAutoContinue) throws {
         try db.queue.read { dbc in
             try Self.requireSession(authorization, in: dbc)
-            guard try AgentAutoContinue.fetchOne(dbc, key: authorization.id) == authorization,
+            guard authorization.scope.hasKnownAccount,
+                  try AgentAutoContinue.fetchOne(dbc, key: authorization.id) == authorization,
                   authorization.inputRevision == (try Self.revision(authorization.chatID, in: dbc)) else { throw AgentFailure.invalidTransition }
+        }
+    }
+    public func hasValidSession(_ value: AgentAutoContinue) throws -> Bool {
+        try db.queue.read { dbc in
+            do { try Self.requireSession(value, in: dbc); return true }
+            catch AgentStoreError.identityConflict { return false }
+            catch AgentSessionManagerError.chatUnavailable { return false }
         }
     }
     public func pending() throws -> [AgentAutoContinue] {
@@ -85,7 +93,7 @@ public struct AgentAutoContinueStore: AgentAutoContinuePersistence {
                   value.fallbackStartedAt == value.createdAt,
                   value.nextCheckAt >= value.createdAt,
                   (value.resetSource == .fallback) == (value.resetsAt == nil),
-                  value.scope.accountID?.isEmpty != true else { throw AgentFailure.invalidTransition }
+                  value.scope.hasKnownAccount else { throw AgentFailure.invalidTransition }
             var saved = value
             saved.lastActivityID = causedBy
             try Self.audit(&saved, status: value.enabled ? "scheduled" : "cancelled", at: value.createdAt, in: dbc)
@@ -110,7 +118,8 @@ public struct AgentAutoContinueStore: AgentAutoContinuePersistence {
     @discardableResult public func setOptions(id: UUID, enabled: Bool, keepAwake: Bool, now: Date) throws -> AgentAutoContinue {
         try change(id, at: now, status: enabled ? "scheduled" : "cancelled") { value, dbc in
             try Self.requireSession(value, in: dbc)
-            guard value.inputRevision == (try Self.revision(value.chatID, in: dbc)),
+            guard (!enabled || value.scope.hasKnownAccount),
+                  value.inputRevision == (try Self.revision(value.chatID, in: dbc)),
                   value.state == .pending || (value.state == .claimed && value.delivery == .prepared && !enabled) else {
                 throw AgentFailure.invalidTransition
             }
@@ -131,7 +140,7 @@ public struct AgentAutoContinueStore: AgentAutoContinuePersistence {
     @discardableResult public func claim(id: UUID, version: Int, inputID: UUID, now: Date) throws -> AgentAutoContinue {
         try change(id, at: now, status: "claimed") { value, dbc in
             try Self.requireSession(value, in: dbc)
-            guard value.state == .pending, value.enabled, value.version == version,
+            guard value.state == .pending, value.enabled, value.version == version, value.scope.hasKnownAccount,
                   value.inputRevision == (try Self.revision(value.chatID, in: dbc)),
                   value.nextCheckAt <= now, inputID != value.failedInputID, inputID != value.continuationInputID,
                   try AgentJournalTurn.fetchOne(dbc, key: inputID) == nil else { throw AgentFailure.invalidTransition }
@@ -213,11 +222,11 @@ public struct AgentAutoContinueStore: AgentAutoContinuePersistence {
     }
     private static func observationQuery(_ scope: AgentUsageLimitScope) -> QueryInterfaceRequest<AgentUsageResetObservation> {
         AgentUsageResetObservation.filter(Column("provider") == scope.provider.rawValue)
-            .filter(Column("providerProfile") == scope.providerProfile).filter(Column("accountKey") == (scope.accountID ?? ""))
+            .filter(Column("providerProfile") == scope.providerProfile).filter(Column("accountKey") == (scope.accountKey ?? ""))
     }
     public func observe(_ observation: AgentUsageResetObservation) throws {
         guard observation.provider != .local, !observation.providerProfile.isEmpty, !observation.windowID.isEmpty,
-              observation.scope.accountID != "", observation.resetsAt.timeIntervalSince1970.isFinite,
+              observation.scope.hasKnownAccount, observation.resetsAt.timeIntervalSince1970.isFinite,
               observation.observedAt.timeIntervalSince1970.isFinite else { throw AgentStoreError.invalidValue }
         try db.queue.write { dbc in
             var value = observation

@@ -79,11 +79,12 @@ public actor AgentAutoContinueKeepAwake {
         guard active, power == .ac else { return nil }
         if let actual = driver.currentPower(), actual != .ac { return nil }
         return try persistence.pending().first { value in
-            guard value.enabled, value.keepAwake,
+            guard value.enabled, value.keepAwake, value.scope.hasKnownAccount,
                   value.state != .claimed || value.delivery == .prepared else { return false }
             var pending = value; pending.state = .pending
             let plan = AgentAutoContinueSchedule(clock: clock).plan(pending)
-            return plan.state == .waiting || plan.state == .ready
+            guard plan.state == .waiting || plan.state == .ready else { return false }
+            return try persistence.hasValidSession(value)
         }
     }
     public func refresh() async throws {

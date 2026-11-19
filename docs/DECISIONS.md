@@ -1057,7 +1057,8 @@ checked by default. Unchecking cancels the pending continuation. Checking it
 again re-arms the same eligible stop. The row shows the reset time or that
 Aitvaras is checking for it. “Keep Mac awake until it continues” defaults off
 and appears directly below the first choice. Manual Continue remains available
-through the existing recovery action.
+through the existing recovery action. A usage-limit row with an unknown
+provider account explains why automatic continuation is unavailable.
 The saved row choice authorizes one bounded continuation through the existing
 policy/action coordinator; it never grants approval to subsequent tools.
 
@@ -1069,7 +1070,11 @@ Any valid new-message submission in that chat cancels the pending intent, even
 if subsequent provider startup fails. A later usage stop gets fresh defaults.
 
 Reset evidence comes first from the failing request's hit window, then the last
-relevant observation for that provider account/profile. Codex also polls its
+relevant observation for that provider account/profile. Both sides of an
+account match must be known. Persist only a lowercase hex SHA-256 key over
+the provider, profile and provider account ID, framed as a JSON array. Raw
+account IDs are transient and never appear in the database, activity or logs.
+Codex also polls its
 CLI's account/rateLimits/read every ten minutes while waiting, without a model
 prompt. With no usable reset, retry intervals are five, ten, twenty, then thirty
 minutes repeatedly: elapsed minutes 5, 15, 35, 65, and so on. This fallback ends
@@ -1085,7 +1090,7 @@ and expired transitions are durably audited with provenance and metadata only.
 
 An optional idle-system-sleep IOPMAssertion is held only while eligible work is
 pending and AC power is positively known, and is released on battery/unknown
-power, firing, cancellation, expiry or shutdown. It does not override normal
+power, firing, cancellation, expiry, loss of profile eligibility or shutdown. It does not override normal
 closed-lid sleep without an external display, wake a sleeping Mac, or survive
 app termination. Wake alarms remain outside this feature (issue #28).
 

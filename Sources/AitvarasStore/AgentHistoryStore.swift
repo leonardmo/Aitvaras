@@ -53,8 +53,11 @@ extension Stores: AgentHistoryPersistence {
             if incoming.kind == "user", let receipt = automaticInputs.first(where: { receipt in
                 guard receipt.native == native, let messageID = incoming.nativeMessageID else { return false }
                 if native.provider == .claude { return UUID(uuidString: messageID) == receipt.id }
-                return receipt.nativeMessageID == messageID
-                    || (nativeTurn == receipt.nativeTurnID && messageID == native.canonicalMessageID(receipt.id.uuidString, turnID: nativeTurn))
+                guard nativeTurn == receipt.nativeTurnID else { return false }
+                if let bound = receipt.nativeMessageID {
+                    return messageID == bound || messageID == native.canonicalMessageID(bound, turnID: nativeTurn)
+                }
+                return messageID == native.canonicalMessageID(receipt.id.uuidString, turnID: nativeTurn)
             }), incoming.text == AgentAutoContinue.prompt {
                 guard try AgentJournalTurn.fetchOne(dbc, key: receipt.id)?.delivery == .acknowledged else { throw AgentNativeHistoryError.identityConflict }
                 journalInputID = receipt.id

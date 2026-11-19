@@ -310,7 +310,7 @@ final class AppModel {
             // profile with the fictional demo persona. Combine with
             // AITVARAS_STATE_DIR for a throwaway profile; a database that
             // already has facts is never touched.
-            if CommandLine.arguments.contains("--seed-demo-state") {
+            if CommandLine.arguments.contains("--seed-demo-state"), AitvarasPaths.isIsolated {
                 _ = try? StateFixtures.seedDemoProfile(into: stores)
             }
             // `--seed-home-attention` (D36, TESTING.md) adds fictional attention
@@ -467,7 +467,11 @@ final class AppModel {
             return try await self.localAgentReply(agentLoop: agentLoop, configuration: configuration, input: input)
         }
         let backends: [AgentProvider: any AgentBackend] = [.claude: claude, .codex: codex, .local: local]
-        let available = backends.filter { AgentProviderLaunchPolicy.allows($0.key, environment: inherited, isolated: isolated) }
+        let demo = CommandLine.arguments.contains("--seed-demo-state")
+        let available = backends.filter {
+            if demo { return $0.key == .local }
+            return AgentProviderLaunchPolicy.allows($0.key, environment: inherited, isolated: isolated)
+        }
         let profileBackends = AgentProfileBackends { choice in
             guard let fallback = available[choice.provider] else { throw AgentFailure.offline }
             guard choice.provider == .claude, choice.profile != "default" else { return fallback }

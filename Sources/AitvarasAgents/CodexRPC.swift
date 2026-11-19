@@ -117,7 +117,7 @@ actor CodexRun: AgentRun {
             parameters["sandboxPolicy"] = .object(["type": .string("workspaceWrite"),
                 "writableRoots": .array(configuration.additionalDirectories.map { .string($0.path) })])
         }
-        if automaticInput == input || (content.arrayValue?.count ?? 0) > 1, let input {
+        if (automaticInput == input && !executingApprovedPlan) || (content.arrayValue?.count ?? 0) > 1, let input {
             parameters["clientUserMessageId"] = .string(input.uuidString)
         }
         if let effort = configuration.effort { parameters["effort"] = .string(effort) }

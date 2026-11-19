@@ -64,8 +64,12 @@ final class ChatModel {
         return backends[choice.provider]
     }
     func reloadProfiles() {
-        do { claudeProfiles = try stores.claudeProfiles() }
-        catch { self.error = "Claude profiles could not be loaded." }
+        do {
+            let profiles = try stores.claudeProfiles()
+            guard claudeProfiles != profiles else { return }
+            claudeProfiles = profiles
+            if let autoContinue { Task { try? await autoContinue.profilesChanged() } }
+        } catch { self.error = "Claude profiles could not be loaded." }
     }
     private func syncSelectedStatus() {
         statuses[.claude] = profileStatuses[.init(provider: .claude, profile: claudeProfile)]

@@ -23,7 +23,8 @@ struct AgentTranscriptView: View {
                 Label(entry.text, systemImage: "clock.arrow.circlepath")
                     .font(.caption).foregroundStyle(.secondary)
             } else if let stop = entry.stoppedTurn {
-                let label = autoContinue?.status == nil ? stop.label() : "Usage limit reached"
+                let showsAutomaticReset = autoContinue?.enabled == true && autoContinue?.status != nil
+                let label = showsAutomaticReset ? "Usage limit reached" : stop.label()
                 VStack(alignment: .leading, spacing: 4) {
                     HStack(spacing: 6) {
                         Image(systemName: stop.icon).foregroundStyle(stop.reason.kind == .internalError ? Color.orange : Color.secondary)

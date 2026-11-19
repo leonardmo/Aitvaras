@@ -46,6 +46,32 @@ final class AutoContinueTimerClock: Sendable {
         .init(manager: manager, turns: stores, persistence: AgentAutoContinueStore(db: stores.db), backend: { _ in backend },
             audit: { _ = try stores.record($0) }, clock: clock.clock)
     }
+    @Test func unknownAccountQuotaStopOffersOnlyManualContinue() async throws {
+        let stores = try inMemoryStores(), clock = AutoContinueTimerClock(), backend = AutoContinueBackend()
+        let (chat, _) = try agentStoreChat(stores, provider: .codex)
+        let manager = try manager(stores, backend, clock), scheduler = scheduler(manager, stores, backend, clock)
+        await backend.setAccount(nil)
+        try await scheduler.start()
+        let input = AgentInput(text: "Example request")
+        try await manager.send(chatID: chat.id, provider: .codex, input: input)
+        let run = try #require(await backend.runs.first)
+        await run.emit(.turnEnded(.failed(.quota(resetsAt: clock.now.addingTimeInterval(3600)))))
+        try await autoWait { try stores.quotaStops().contains { $0.id == input.id } }
+        try await scheduler.wake()
+        await #expect(throws: AgentFailure.invalidTransition) {
+            try await scheduler.setRowOption(failedInputID: input.id, .enabled(true))
+        }
+        let entry = try #require(try stores.agentEntries(chatID: chat.id).first { $0.stoppedTurn?.inputID == input.id })
+        let stopped = try #require(entry.stoppedTurn)
+        let row = try #require(AgentAutoContinueRow(stop: stopped, intent: nil, isCurrent: true))
+        #expect(!row.enabled && !row.canToggle)
+        #expect(row.status == "Automatic continuation requires a verified provider account.")
+        #expect(try AgentAutoContinueStore(db: stores.db).continuation(failedInputID: input.id) == nil)
+        try await manager.recover(chatID: chat.id, stoppedEntryID: entry.id, action: .continueTurn)
+        #expect(await run.inputs.map(\.text) == [input.text, AgentStoppedTurn.continuationText])
+        await scheduler.shutdown(); try await manager.shutdown()
+    }
+
     @Test func launchArmsDueQuotaWorkWithoutAFeatureFlag() async throws {
         let stores = try inMemoryStores(), saved = try autoContinueIntent(stores), clock = AutoContinueTimerClock(), backend = AutoContinueBackend()
         let manager = try manager(stores, backend, clock)
@@ -91,6 +117,57 @@ final class AutoContinueTimerClock: Sendable {
         try await scheduler.wake()
         try await autoWait { try persistence.continuation(id: saved.id)?.state == .expired }
         #expect(await backend.runs.first?.inputs.count == 4)
+        await scheduler.shutdown(); try await manager.shutdown()
+    }
+
+    @Test func quotaThrownFromSendKeepsTheFallbackIntentPending() async throws {
+        let stores = try inMemoryStores(), saved = try autoContinueIntent(stores, reset: nil), clock = AutoContinueTimerClock()
+        let backend = AutoContinueBackend(), storage = AgentAutoContinueStore(db: stores.db)
+        await backend.setSendFailure(.quota(resetsAt: nil))
+        let manager = try manager(stores, backend, clock), scheduler = scheduler(manager, stores, backend, clock)
+        try await scheduler.start()
+        clock.advance(5 * 60)
+        try await scheduler.wake()
+        try await autoWait {
+            let intent = try storage.continuation(id: saved.id)
+            return intent?.retryCount == 1 || intent?.state == .cancelled
+        }
+        let retry = try #require(try storage.continuation(id: saved.id))
+        #expect(retry.state == .pending)
+        #expect(retry.nextCheckAt == autoContinueTestDate.addingTimeInterval(15 * 60))
+        #expect(try stores.automaticInput(id: #require(retry.continuationInputID))?.outcome == "quota")
+        await backend.setSendFailure(nil)
+        clock.advance(10 * 60)
+        try await scheduler.wake()
+        try await autoWait {
+            let runs = await backend.runs
+            guard runs.count == 2 else { return false }
+            return await runs[1].inputs.count == 1
+        }
+        await scheduler.shutdown(); try await manager.shutdown()
+    }
+
+    @Test func pastResetFromPollDispatchesWithAnAdvancingWallClock() async throws {
+        let stores = try inMemoryStores(), saved = try autoContinueIntent(stores, reset: nil), timer = AutoContinueTimerClock()
+        let backend = AutoContinueBackend(), storage = AgentAutoContinueStore(db: stores.db)
+        try storage.reschedule(id: saved.id, version: saved.version, windowID: nil, resetsAt: nil, source: .fallback,
+            nextCheckAt: timer.now.addingTimeInterval(1200), nextPollAt: timer.now.addingTimeInterval(600), now: timer.now)
+        let reads = Mutex(0)
+        let clock = AgentAutoContinueClock(now: {
+            timer.now.addingTimeInterval(reads.withLock { count in count += 1; return Double(count) / 1_000 })
+        }, sleepUntil: timer.clock.sleepUntil)
+        let pastReset = timer.now.addingTimeInterval(540)
+        await backend.setWindows([.init(id: "codex.primary", utilization: 1, resetsAt: pastReset)])
+        let manager = try AgentSessionManager(persistence: stores, backend: { _ in backend }, audit: { _ = try stores.record($0) },
+            autoContinuePersistence: storage, continuationClock: clock)
+        let scheduler = AgentAutoContinueScheduler(manager: manager, turns: stores, persistence: storage,
+            backend: { _ in backend }, audit: { _ = try stores.record($0) }, clock: clock)
+        try await scheduler.start()
+        timer.advance(600)
+        try await scheduler.wake()
+        try await autoWait { await backend.runs.first?.inputs.count == 1 }
+        #expect(try storage.continuation(id: saved.id)?.resetsAt == pastReset)
+        #expect(await backend.reads == 1)
         await scheduler.shutdown(); try await manager.shutdown()
     }
 

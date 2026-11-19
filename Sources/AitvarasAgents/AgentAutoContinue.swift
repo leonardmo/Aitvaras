@@ -1,12 +1,30 @@
 import Foundation
+import CryptoKit
 
-/// CLI account identities are opaque metadata, never credentials or audit fields.
+/// A durable scope contains only a one-way key, never the CLI account ID.
 public struct AgentUsageLimitScope: Codable, Sendable, Equatable, Hashable {
     public let provider: AgentProvider
     public let providerProfile: String
-    public let accountID: String?
+    public let accountKey: String?
     public init(provider: AgentProvider, providerProfile: String = "default", accountID: String? = nil) {
-        self.provider = provider; self.providerProfile = providerProfile; self.accountID = accountID
+        self.init(provider: provider, providerProfile: providerProfile,
+                  accountKey: Self.deriveAccountKey(provider: provider, profile: providerProfile, accountID: accountID))
+    }
+    public init(provider: AgentProvider, providerProfile: String, accountKey: String?) {
+        self.provider = provider; self.providerProfile = providerProfile; self.accountKey = accountKey
+    }
+    public static func deriveAccountKey(provider: AgentProvider, profile: String, accountID: String?) -> String? {
+        guard let accountID, !accountID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+        let scope = JSONValue.array([.string(provider.rawValue), .string(profile), .string(accountID)])
+        return SHA256.hash(data: Data(scope.jsonString.utf8)).map { String(format: "%02x", $0) }.joined()
+    }
+    public var hasKnownAccount: Bool {
+        guard let accountKey else { return false }
+        return accountKey.utf8.count == 64 && accountKey.utf8.allSatisfy { (48...57).contains($0) || (97...102).contains($0) }
+    }
+    func matches(accountID: String?) -> Bool {
+        guard hasKnownAccount, let observed = Self.deriveAccountKey(provider: provider, profile: providerProfile, accountID: accountID) else { return false }
+        return accountKey == observed
     }
 }
 
@@ -64,11 +82,11 @@ public struct AgentUsageResetObservation: Codable, Sendable, Equatable, Identifi
     public let resetsAt: Date
     public let observedAt: Date
     public var scope: AgentUsageLimitScope {
-        .init(provider: provider, providerProfile: providerProfile, accountID: accountKey.isEmpty ? nil : accountKey)
+        .init(provider: provider, providerProfile: providerProfile, accountKey: accountKey.isEmpty ? nil : accountKey)
     }
     public init(id: UUID = UUID(), scope: AgentUsageLimitScope, windowID: String, resetsAt: Date, observedAt: Date) {
         self.id = id; provider = scope.provider; providerProfile = scope.providerProfile
-        accountKey = scope.accountID ?? ""; self.windowID = windowID; self.resetsAt = resetsAt; self.observedAt = observedAt
+        accountKey = scope.accountKey ?? ""; self.windowID = windowID; self.resetsAt = resetsAt; self.observedAt = observedAt
     }
 }
 
@@ -98,12 +116,12 @@ public struct AgentQuotaStop: Codable, Sendable, Equatable, Identifiable {
     public let native: AgentSessionID
     public let providerProfile: String
     public let evidence: AgentUsageLimit
-    public let accountID: String?
+    public let accountKey: String?
     public let stoppedAt: Date
     public let inputRevision: Int
     public init(id: UUID, chatID: UUID, sessionID: UUID, native: AgentSessionID, providerProfile: String,
-                evidence: AgentUsageLimit, stoppedAt: Date, inputRevision: Int, accountID: String? = nil) {
-        self.accountID = accountID
+                evidence: AgentUsageLimit, stoppedAt: Date, inputRevision: Int, accountKey: String? = nil) {
+        self.accountKey = accountKey
         self.id = id; self.chatID = chatID; self.sessionID = sessionID; self.native = native
         self.providerProfile = providerProfile; self.evidence = evidence; self.stoppedAt = stoppedAt; self.inputRevision = inputRevision
     }

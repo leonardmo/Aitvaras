@@ -247,6 +247,7 @@ extension AgentTranscriptEntry {
 /// Dormant storage seam; scheduling/dispatch is wired only after row controls exist.
 public protocol AgentAutoContinuePersistence: Sendable {
     func validate(_ authorization: AgentAutoContinue) throws
+    func hasValidSession(_ value: AgentAutoContinue) throws -> Bool
     func pending() throws -> [AgentAutoContinue]
     func continuation(id: UUID) throws -> AgentAutoContinue?
     func continuation(failedInputID: UUID) throws -> AgentAutoContinue?

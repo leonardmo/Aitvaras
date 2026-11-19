@@ -81,6 +81,51 @@ import AitvarasAgents
         #expect(try stores.db.queue.read { try Row.fetchAll($0, sql: "PRAGMA foreign_key_check").isEmpty })
     }
 
+    @Test func accountKeyMigrationRewritesLegacyPayloadsAndDiscardsRawObservations() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let url = root.appendingPathComponent("state.sqlite")
+        let raw = "ACCOUNT_CANARY"
+        let expected = "bc8fe99dda1df7a8c325551cad4aee9699fcd61d23e5ea24de96d38be719e7d8"
+        let saved: AgentAutoContinue
+        do {
+            let stores = Stores(db: try AitvarasDatabase(url: url))
+            let store = AgentAutoContinueStore(db: stores.db)
+            saved = try store.schedule(intent(stores))
+            #expect(saved.scope.accountKey == expected)
+            let stop = try #require(try stores.agentEntries(chatID: saved.chatID).first { $0.kind == "stopped" })
+            let quotaContext = AgentStoppedTurn.QuotaContext(windowID: "codex.primary", accountKey: nil,
+                inputRevision: 0, stoppedAt: now)
+            let contextJSON = String(decoding: try JSONEncoder().encode(quotaContext), as: UTF8.self)
+            try store.observe(.init(scope: saved.scope, windowID: "codex.primary", resetsAt: now, observedAt: now))
+            try stores.db.queue.write { db in
+                try db.execute(sql: """
+                    UPDATE agentAutoContinue SET scope = json_set(json_remove(scope, '$.accountKey'), '$.accountID', ?)
+                    WHERE id = ?
+                    """, arguments: [raw, saved.id])
+                try db.execute(sql: """
+                    UPDATE agentTranscriptEntry SET payloadJSON =
+                        json_set(payloadJSON, '$.quotaContext', json_set(json(?), '$.accountID', ?))
+                    WHERE id = ?
+                    """, arguments: [contextJSON, raw, stop.id])
+                try db.execute(sql: "UPDATE agentUsageResetObservation SET accountKey = ?", arguments: [raw])
+                try db.execute(sql: "DELETE FROM grdb_migrations WHERE identifier = ?", arguments: ["v44-agent-account-keys"])
+            }
+        }
+        let stores = Stores(db: try AitvarasDatabase(url: url))
+        let store = AgentAutoContinueStore(db: stores.db)
+        #expect(try store.continuation(id: saved.id) == saved)
+        let stop = try #require(try stores.agentEntries(chatID: saved.chatID).first { $0.kind == "stopped" })
+        #expect(stop.stoppedTurn?.quotaContext?.accountKey == expected)
+        #expect(stop.payloadJSON?.contains(raw) == false)
+        try stores.db.queue.read { db in
+            let scopes = try String.fetchAll(db, sql: "SELECT scope FROM agentAutoContinue")
+            #expect(scopes.allSatisfy { !$0.contains(raw) })
+            #expect(try Int.fetchOne(db, sql: "SELECT count(*) FROM agentUsageResetObservation") == 0)
+        }
+    }
+
     @Test func scheduleIsIdempotentAndOnlyOneIntentPerChatIsActive() throws {
         let stores = try inMemoryStores(), store = AgentAutoContinueStore(db: stores.db)
         let candidate = try intent(stores)
@@ -126,7 +171,7 @@ import AitvarasAgents
         try stores.prepareAgentTurn(.init(input: input, chatID: chat.id, sessionID: session.id))
         try stores.finishAgentTurn(id: input.id, state: .failed)
         let value = AgentAutoContinue(chatID: chat.id, failedInputID: input.id, sessionID: session.id,
-            native: try #require(session.sessionID), scope: .init(provider: .claude, providerProfile: profile.nativeProfile),
+            native: try #require(session.sessionID), scope: .init(provider: .claude, providerProfile: profile.nativeProfile, accountID: "ACCOUNT_CANARY"),
             createdAt: now, inputRevision: 0, nextCheckAt: now)
         let saved = try store.schedule(value)
         try stores.deleteClaudeProfile(id: profile.id)
@@ -209,8 +254,8 @@ import AitvarasAgents
 
     @Test func resetObservationsAreScopedMonotonicAndDurable() throws {
         let stores = try inMemoryStores(), store = AgentAutoContinueStore(db: stores.db)
-        let scopes: [AgentUsageLimitScope] = [.init(provider: .codex), .init(provider: .codex, accountID: "account-a"),
-            .init(provider: .claude), .init(provider: .claude, providerProfile: "profile-b")]
+        let scopes: [AgentUsageLimitScope] = [.init(provider: .codex, accountID: "account-b"), .init(provider: .codex, accountID: "account-a"),
+            .init(provider: .claude, accountID: "account-a"), .init(provider: .claude, providerProfile: "profile-b", accountID: "account-a")]
         for (index, scope) in scopes.enumerated() {
             let reset = now.addingTimeInterval(Double(index + 1) * 600)
             let observation = AgentUsageResetObservation(scope: scope, windowID: "primary", resetsAt: reset, observedAt: now)
@@ -220,7 +265,11 @@ import AitvarasAgents
             try store.observe(.init(scope: scope, windowID: "primary", resetsAt: reset.addingTimeInterval(100), observedAt: now.addingTimeInterval(1)))
             #expect(try store.observations(scope: scope).first?.id == observation.id)
         }
-        #expect(throws: AgentStoreError.invalidValue) { try store.observe(.init(scope: .init(provider: .local), windowID: "primary", resetsAt: now, observedAt: now)) }
+        for provider in [AgentProvider.local, .codex] {
+            #expect(throws: AgentStoreError.invalidValue) {
+                try store.observe(.init(scope: .init(provider: provider), windowID: "primary", resetsAt: now, observedAt: now))
+            }
+        }
     }
 
     @Test func reschedulePreservesFallbackStartAndAuditContainsOnlyLocalProvenance() throws {

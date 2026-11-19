@@ -9,7 +9,9 @@ import AitvarasStore
         session.sessionID = intent.native
         var turn = AgentJournalTurn(input: .init(id: intent.failedInputID, text: "Example"), chatID: intent.chatID, sessionID: intent.sessionID)
         turn.delivery = .acknowledged
-        return .init(turn: turn, session: session, reason: .failure(failure))
+        var value = AgentStoppedTurn(turn: turn, session: session, reason: .failure(failure))
+        value.quotaContext = .init(windowID: nil, accountKey: intent.scope.accountKey, inputRevision: 0, stoppedAt: autoContinueTestDate)
+        return value
     }
 
     @Test func quotaRowShowsDefaultsResetAndCheckingWithoutChangingManualContinue() throws {

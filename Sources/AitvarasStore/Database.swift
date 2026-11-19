@@ -1245,6 +1245,45 @@ public final class AitvarasDatabase: Sendable {
                 t.uniqueKey(["sessionID", "nativeMessageID"])
             }
         }
+        m.registerMigration("v44-agent-account-keys") { db in
+            let intents = try Row.fetchAll(db, sql: """
+                SELECT id, scope FROM agentAutoContinue WHERE json_type(scope, '$.accountID') IS NOT NULL
+                """)
+            for row in intents {
+                let scope: String = row["scope"]
+                let id: UUID = row["id"]
+                guard case .object(var fields)? = JSONValue.parse(scope) else { continue }
+                let raw = fields.removeValue(forKey: "accountID")?.stringValue
+                if let provider = fields["provider"]?.stringValue.flatMap(AgentProvider.init(rawValue:)),
+                   let profile = fields["providerProfile"]?.stringValue,
+                   let key = AgentUsageLimitScope.deriveAccountKey(provider: provider, profile: profile, accountID: raw) {
+                    fields["accountKey"] = .string(key)
+                }
+                try db.execute(sql: "UPDATE agentAutoContinue SET scope = ? WHERE id = ?",
+                               arguments: [JSONValue.object(fields).jsonString, id])
+            }
+            let stops = try Row.fetchAll(db, sql: """
+                SELECT id, payloadJSON FROM agentTranscriptEntry WHERE kind = 'stopped' AND
+                    json_type(CASE WHEN json_valid(payloadJSON) THEN payloadJSON END, '$.quotaContext.accountID') IS NOT NULL
+                """)
+            for row in stops {
+                let payload: String = row["payloadJSON"]
+                let id: UUID = row["id"]
+                guard case .object(var fields)? = JSONValue.parse(payload),
+                      case .object(var context)? = fields["quotaContext"] else { continue }
+                let raw = context.removeValue(forKey: "accountID")?.stringValue
+                if let provider = fields["provider"]?.stringValue.flatMap(AgentProvider.init(rawValue:)),
+                   let profile = fields["providerProfile"]?.stringValue,
+                   let key = AgentUsageLimitScope.deriveAccountKey(provider: provider, profile: profile, accountID: raw) {
+                    context["accountKey"] = .string(key)
+                }
+                fields["quotaContext"] = .object(context)
+                try db.execute(sql: "UPDATE agentTranscriptEntry SET payloadJSON = ? WHERE id = ?",
+                               arguments: [JSONValue.object(fields).jsonString, id])
+            }
+            // Rate limit observations are disposable. New observations require a known key.
+            try db.execute(sql: "DELETE FROM agentUsageResetObservation")
+        }
         return m
     }
 

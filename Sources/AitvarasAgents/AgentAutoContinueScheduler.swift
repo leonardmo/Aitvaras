@@ -81,6 +81,7 @@ public actor AgentAutoContinueScheduler {
             try persistence.setOptions(id: existing.id, enabled: choices.enabled, keepAwake: choices.keepAwake, now: clock.now())
         } else {
             guard let stop = try turns.quotaStops().first(where: { $0.id == failedInputID }),
+                  scope(for: stop).hasKnownAccount,
                   try turns.latestAgentTurn(chatID: stop.chatID)?.id == stop.id,
                   try persistence.inputRevision(chatID: stop.chatID) == stop.inputRevision else { throw AgentFailure.invalidTransition }
             if let receipt = try turns.automaticInput(id: stop.id),
@@ -121,7 +122,8 @@ public actor AgentAutoContinueScheduler {
     }
     private func registerStops(generation: UUID) async throws {
         for stop in try turns.quotaStops() {
-            guard current(generation), try turns.latestAgentTurn(chatID: stop.chatID)?.id == stop.id,
+            let scope = scope(for: stop)
+            guard current(generation), scope.hasKnownAccount, try turns.latestAgentTurn(chatID: stop.chatID)?.id == stop.id,
                   try persistence.inputRevision(chatID: stop.chatID) == stop.inputRevision else { continue }
             if let receipt = try turns.automaticInput(id: stop.id),
                try persistence.continuation(id: receipt.intentID)?.state != .fired { continue }
@@ -135,14 +137,17 @@ public actor AgentAutoContinueScheduler {
                 let provider = try backend(.init(provider: stop.native.provider, profile: stop.providerProfile))
                 status = try await AgentActionCoordinator.quotaStopStatus(stop, backend: provider, clock: clock, audit: audit)
             } catch { continue }
-            guard current(generation), status.accountID == stop.accountID, try turns.latestAgentTurn(chatID: stop.chatID)?.id == stop.id,
+            guard current(generation), scope.matches(accountID: status.accountID), try turns.latestAgentTurn(chatID: stop.chatID)?.id == stop.id,
                   try persistence.inputRevision(chatID: stop.chatID) == stop.inputRevision else { continue }
             do { try schedule(stop) }
             catch AgentSessionManagerError.chatUnavailable { continue }
         }
     }
+    private func scope(for stop: AgentQuotaStop) -> AgentUsageLimitScope {
+        .init(provider: stop.native.provider, providerProfile: stop.providerProfile, accountKey: stop.accountKey)
+    }
     private func schedule(_ stop: AgentQuotaStop, enabled: Bool = true, keepAwake: Bool = false) throws {
-        let scope = AgentUsageLimitScope(provider: stop.native.provider, providerProfile: stop.providerProfile, accountID: stop.accountID)
+        let scope = scope(for: stop)
         let resolver = AgentUsageResetResolver(clock: clock), schedule = AgentAutoContinueSchedule(clock: clock)
         let reset = resolver.resolve(scope: scope, failure: stop.evidence, cached: try persistence.observations(scope: scope))
         let pending = AgentAutoContinue(chatID: stop.chatID, failedInputID: stop.id, sessionID: stop.sessionID,
@@ -188,6 +193,10 @@ public actor AgentAutoContinueScheduler {
             nextPollAt: value.scope.provider == .codex ? value.nextPollAt ?? value.createdAt.addingTimeInterval(600) : nil, now: now)
     }
     private func process(_ pending: AgentAutoContinue, generation: UUID) async throws {
+        guard pending.scope.hasKnownAccount else {
+            try persistence.finish(id: pending.id, state: .cancelled, now: clock.now())
+            return
+        }
         let schedule = AgentAutoContinueSchedule(clock: clock), plan = schedule.plan(pending)
         switch plan.state {
         case .expired: try persistence.finish(id: pending.id, state: .expired, now: clock.now())
@@ -203,8 +212,14 @@ public actor AgentAutoContinueScheduler {
                 guard current(generation) else { return }
                 try deferCheck(pending)
             } catch {
-                guard current(generation) else { return }
-                if let current = try persistence.continuation(id: pending.id), current.state == .claimed || current == pending {
+                guard current(generation), let saved = try persistence.continuation(id: pending.id) else { return }
+                // A failed send can journal a definite rejection before throwing.
+                // Require that receipt so a pre-claim quota error cannot loop.
+                if case .quota? = error as? AgentFailure, saved.state == .claimed,
+                   let inputID = saved.continuationInputID, let receipt = try turns.automaticInput(id: inputID),
+                   receipt.outcome == "quota" {
+                    try retry(saved, inputID: inputID, resetsAt: receipt.resetsAt)
+                } else if saved.state == .claimed || saved == pending {
                     try persistence.finish(id: pending.id, state: .cancelled, now: clock.now())
                 }
             }
@@ -226,11 +241,12 @@ public actor AgentAutoContinueScheduler {
                 try persistence.finish(id: pending.id, state: .cancelled, now: clock.now()); return
             } catch { /* Reads can be unavailable; the bounded fallback still applies. */ }
             guard current(generation), try persistence.continuation(id: pending.id) == pending else { return }
+            let now = clock.now()
             try persistence.reschedule(id: pending.id, version: pending.version, windowID: reset?.windowID ?? pending.windowID,
                 resetsAt: reset?.resetsAt ?? pending.resetsAt, source: reset?.source ?? pending.resetSource,
-                nextCheckAt: reset.map { schedule.firstCheck(startedAt: pending.createdAt, reset: $0) } ?? max(clock.now(), pending.nextCheckAt),
-                nextPollAt: schedule.nextPoll(provider: pending.scope.provider), now: clock.now())
-            requested = reset != nil && reset!.resetsAt <= clock.now()
+                nextCheckAt: max(now, reset?.resetsAt ?? pending.nextCheckAt),
+                nextPollAt: now.addingTimeInterval(AgentAutoContinueSchedule.pollingInterval), now: now)
+            if let reset, reset.resetsAt <= now { requested = true }
         default: break
         }
     }
