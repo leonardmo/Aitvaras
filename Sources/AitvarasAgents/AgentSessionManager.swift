@@ -281,9 +281,10 @@ public actor AgentSessionManager {
             input = AgentInput(text: AgentStoppedTurn.continuationText)
             wire = input.text; context = nil
         } else {
-            guard let original else { throw AgentFailure.invalidTransition }
+            // Autonomous turns have no user prompt to resend.
+            guard let original, let prompt = turn.prompt else { throw AgentFailure.invalidTransition }
             input = try .restoring(id: UUID(), text: original.text, payload: original.payloadJSON)
-            wire = turn.prompt; context = try persistence.agentHandover(turnID: turn.id)
+            wire = prompt; context = try persistence.agentHandover(turnID: turn.id)
         }
         let recovery = RecoveryDelivery(stoppedEntryID: stoppedEntryID, action: action, session: session,
             wireText: wire, context: context, continued: action == .continueTurn || original?.kind == "continued")

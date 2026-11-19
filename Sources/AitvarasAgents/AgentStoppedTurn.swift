@@ -57,15 +57,19 @@ public struct AgentStoppedTurn: Codable, Sendable, Equatable {
     public let delivery: AgentDeliveryState
     public let reason: AgentStopReason
     public var recoveryInputID: UUID?
+    /// CLI-started turns have no user prompt, so Retry cannot apply.
+    public var autonomous: Bool?
 
     public init(turn: AgentJournalTurn, session: AgentChatSession, reason: AgentStopReason) {
         inputID = turn.id; attempt = turn.resendCount; provider = session.provider; providerProfile = session.providerProfile
         nativeSession = session.sessionID; delivery = turn.delivery; self.reason = reason
+        autonomous = turn.prompt == nil ? true : nil
     }
     public var actions: [AgentRecoveryAction] {
         if reason.kind == .internalError { return [.copyDetails] }
         guard recoveryInputID == nil else { return [] }
         if reason.kind == .signIn { return [.signIn] }
+        if autonomous == true { return [.continueTurn] }
         return [delivery == .acknowledged ? .continueTurn : .retry]
     }
     public var canContinue: Bool {
@@ -112,6 +116,7 @@ extension ChatState {
     }
     public var showsComposerFailure: Bool {
         guard case .failed = outcome else { return false }
-        return currentStoppedTurn.map { $0.delivery == .prepared } ?? (delivery == nil || delivery == .prepared)
+        // Nothing was sent by the user for a CLI-started turn.
+        return currentStoppedTurn.map { $0.autonomous != true && $0.delivery == .prepared } ?? (delivery == nil || delivery == .prepared)
     }
 }

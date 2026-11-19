@@ -40,6 +40,25 @@ struct AgentStoppedTurnTests {
         }
     }
 
+    /// CLI-started turns carry no user prompt: never offer Retry or a composer error.
+    @Test(arguments: [AgentDeliveryState.prepared, .deliveryUnknown, .acknowledged])
+    func autonomousTurnsOfferOnlyContinue(delivery: AgentDeliveryState) throws {
+        let session = AgentChatSession(chatID: UUID(), provider: .claude, cwd: "/tmp", model: "test")
+        var turn = AgentJournalTurn(autonomousID: UUID(), reason: .backgroundTask, chatID: session.chatID, sessionID: session.id)
+        turn.delivery = delivery
+        let stop = AgentStoppedTurn(turn: turn, session: session, reason: .failure(.offline))
+        #expect(stop.autonomous == true)
+        #expect(stop.actions == [.continueTurn])
+        #expect(AgentStoppedTurn(turn: turn, session: session, reason: .failure(.unknown)).actions == [.copyDetails])
+        let row = AgentTranscriptEntry(chatID: session.chatID, provider: .claude, kind: "stopped", payloadJSON: try stop.payload())
+        var state = ChatState(chatID: session.chatID, entries: [row])
+        turn.state = .failed; state.restore(turn: turn)
+        #expect(!state.showsComposerFailure)
+        let user = AgentStoppedTurn(turn: AgentJournalTurn(input: .init(text: "Example"), chatID: session.chatID, sessionID: session.id),
+                                    session: session, reason: .failure(.offline))
+        #expect(user.autonomous == nil)
+    }
+
     @Test func stoppedRowAndJournalCommitTogetherAndSurviveReopening() throws {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("stopped-" + UUID().uuidString + ".sqlite")
         defer { try? FileManager.default.removeItem(at: url) }
