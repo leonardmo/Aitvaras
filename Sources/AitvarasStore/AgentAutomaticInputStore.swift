@@ -6,22 +6,25 @@ extension AgentAutomaticInput: FetchableRecord, PersistableRecord {
     public static var databaseTableName: String { "agentAutomaticInput" }
 }
 
-extension AgentQuotaStop: FetchableRecord, PersistableRecord {
-    public static var databaseTableName: String { "agentQuotaStop" }
-}
-
 extension Stores {
-    public func recordQuotaStop(_ stop: AgentQuotaStop) throws {
-        try db.queue.write { dbc in
-            guard stop.evidence.status == .rejected, let turn = try AgentJournalTurn.fetchOne(dbc, key: stop.id),
-                  turn.state == .failed, turn.chatID == stop.chatID, turn.sessionID == stop.sessionID,
-                  let session = try AgentChatSession.fetchOne(dbc, key: stop.sessionID), session.sessionID == stop.native,
-                  session.providerProfile == stop.providerProfile else { throw AgentFailure.invalidTransition }
-            if try AgentQuotaStop.fetchOne(dbc, key: stop.id) == nil { try stop.insert(dbc) }
+    public func quotaStops() throws -> [AgentQuotaStop] {
+        try db.queue.read { dbc in
+            try AgentTranscriptEntry.filter(Column("kind") == "stopped").fetchAll(dbc).compactMap { row in
+                guard let stopped = row.stoppedTurn, stopped.reason.kind == .quota,
+                      let context = stopped.quotaContext, let native = stopped.nativeSession,
+                      let sessionID = row.sessionID else { return nil }
+                return AgentQuotaStop(id: stopped.inputID, chatID: row.chatID, sessionID: sessionID, native: native,
+                    providerProfile: stopped.providerProfile,
+                    evidence: .init(status: .rejected, windowID: context.windowID, resetsAt: stopped.reason.resetsAt),
+                    stoppedAt: context.stoppedAt, inputRevision: context.inputRevision, accountID: context.accountID)
+            }.sorted { $0.stoppedAt < $1.stoppedAt }
         }
     }
-    public func quotaStops() throws -> [AgentQuotaStop] {
-        try db.queue.read { try AgentQuotaStop.order(Column("stoppedAt")).fetchAll($0) }
+    static func stoppedRow(for turn: AgentJournalTurn, in dbc: Database) throws -> AgentTranscriptEntry? {
+        try AgentTranscriptEntry.filter(Column("chatID") == turn.chatID && Column("kind") == "stopped")
+            .order(Column("position").desc).fetchAll(dbc).first {
+                $0.stoppedTurn?.inputID == turn.id && $0.stoppedTurn?.attempt == turn.resendCount
+            }
     }
     public func prepareAutomaticTurn(_ turn: AgentJournalTurn, authorization: AgentAutoContinue) throws {
         try AgentTurnStore(db: db).prepare(turn, automatic: authorization)
@@ -30,7 +33,21 @@ extension Stores {
         try AgentTurnStore(db: db).advanceDelivery(id: id, to: .deliveryUnknown, authorization: authorization, now: now)
     }
     public func automaticInput(id: UUID) throws -> AgentAutomaticInput? {
-        try db.queue.read { try AgentAutomaticInput.fetchOne($0, key: id) }
+        try db.queue.read { dbc in
+            guard var receipt = try AgentAutomaticInput.fetchOne(dbc, key: id),
+                  let turn = try AgentJournalTurn.fetchOne(dbc, key: id) else { return nil }
+            let reason = try Self.stoppedRow(for: turn, in: dbc)?.stoppedTurn?.reason
+            switch turn.state {
+            case .running: break
+            case .completed: receipt.outcome = "completed"
+            case .interrupted:
+                if reason?.kind == .interrupted { receipt.outcome = "interrupted" }
+            case .failed:
+                receipt.outcome = reason?.kind == .quota ? "quota" : "failed"
+                receipt.resetsAt = reason?.resetsAt
+            }
+            return receipt
+        }
     }
     public func bindAutomaticInput(id: UUID, messageID: String?, turnID: String?) throws {
         try db.queue.write { dbc in
@@ -45,10 +62,5 @@ extension Stores {
             }
             try receipt.update(dbc)
         }
-    }
-    public func finishAutomaticTurn(id: UUID, outcome: AgentTurnOutcome) throws {
-        let state: AgentJournalState
-        switch outcome { case .completed: state = .completed; case .interrupted: state = .interrupted; case .failed: state = .failed }
-        try AgentTurnStore(db: db).finish(id: id, state: state, outcome: outcome)
     }
 }

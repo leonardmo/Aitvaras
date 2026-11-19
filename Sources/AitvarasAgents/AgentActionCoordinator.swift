@@ -31,6 +31,7 @@ public actor AgentActionCoordinator: AgentRun {
     private var mode: AgentMode
     private var inputID: UUID?
     private var automaticProvenance: [UUID: Provenance] = [:]
+    private var terminalReport: AgentFailureReport?
     private var followups: Set<UUID> = []
     private var closed = false
     private var interrupting = false
@@ -64,10 +65,10 @@ public actor AgentActionCoordinator: AgentRun {
                 do {
                     for try await event in run.events { await self?.receive(event) }
                     await self?.exited(nil)
-                } catch { await self?.exited((error as? AgentFailure) ?? .unknown) }
+                } catch { await self?.failed(error) }
             }
         }
-        inputID = input.id; followups.removeAll(); interrupting = false
+        inputID = input.id; terminalReport = nil; followups.removeAll(); interrupting = false
         do { try await run.send(input, willDeliver: willDeliver) }
         catch { if inputID == input.id { inputID = nil }; throw error }
     }
@@ -219,7 +220,7 @@ public actor AgentActionCoordinator: AgentRun {
             // The denial already went out, so only this late answer is invalid;
             // the session stays open for the native interrupted result.
             if interrupting, error as? AgentFailure == .invalidRequest { throw error }
-            await exited((error as? AgentFailure) ?? .unknown)
+            await failed(error)
             throw error
         }
     }
@@ -238,7 +239,7 @@ public actor AgentActionCoordinator: AgentRun {
             try await finish(request, response: .allow(updatedInput: nil), decision: "approved and allowed in project")
         } catch {
             if interrupting, error as? AgentFailure == .invalidRequest { throw error }
-            await exited((error as? AgentFailure) ?? .unknown)
+            await failed(error)
             throw error
         }
     }
@@ -281,8 +282,14 @@ public actor AgentActionCoordinator: AgentRun {
 
     private func receive(_ event: AgentEvent) async {
         guard !closed, event.scope.runID == id else { return }
+        var forwarded = event
         // Late callbacks from an earlier input on this same connection must not
         // clear or authorize the current turn.
+        if case .autonomousTurnStarted(let input, _) = event.kind {
+            guard inputID == nil, event.scope.inputID == input else { return }
+            // An acknowledged Stop ends one turn; a retained CLI may wake again.
+            inputID = input; interrupting = false
+        }
         if case .inputActivated = event.kind {
             guard let input = event.scope.inputID, followups.remove(input) != nil, !interrupting else { return }
             inputID = input
@@ -310,15 +317,21 @@ public actor AgentActionCoordinator: AgentRun {
                 // Never persist raw arguments, command output, paths or diffs:
                 // they may contain secrets. Scope metadata retains provenance.
                 try await record(scope: event.scope, decision: observation(event.kind))
-            case .turnEnded:
+            case .turnEnded(let outcome):
                 await denyPending()
                 if let inputID { automaticProvenance.removeValue(forKey: inputID) }
                 inputID = nil
                 followups.subtract(event.scope.completedInputIDs)
+                if case .failed(let failure) = outcome {
+                    let report = event.failureReport ?? AgentFailureDiagnostics.capture(failure)
+                    let recorded = await report.recording(chatID: provenance.chatID, inputID: event.scope.inputID, audit: audit)
+                    terminalReport = recorded
+                    forwarded = .init(scope: event.scope, kind: event.kind, failureReport: recorded)
+                }
             default: break
             }
             guard !closed else { return }
-            switch continuation.yield(event) {
+            switch continuation.yield(forwarded) {
             case .enqueued: break
             case .dropped, .terminated: throw AgentFailure.invalidTransition
             @unknown default: throw AgentFailure.invalidTransition
@@ -328,7 +341,7 @@ public actor AgentActionCoordinator: AgentRun {
             // The denial already went out; let the native interrupted result
             // arrive instead of replacing it with an invalid-request failure.
             if interrupting, error as? AgentFailure == .invalidRequest { return }
-            await exited((error as? AgentFailure) ?? .unknown)
+            await failed(error)
         }
     }
 
@@ -425,11 +438,23 @@ public actor AgentActionCoordinator: AgentRun {
         }
     }
 
-    private func exited(_ failure: AgentFailure?) async {
+    private func failed(_ error: any Error) async {
+        await exited(AgentFailureDiagnostics.capture(error))
+    }
+    private func exited(_ report: AgentFailureReport?) async {
         guard !closed else { return }
+        let owner = inputID
         closed = true; inputID = nil
         await denyPending()
-        continuation.finish(throwing: failure)
+        // A provider failure event already owns its category and audit. Its
+        // public stream error carries only AgentFailure and must not re-audit.
+        let diagnostic = owner == nil ? terminalReport ?? report : report
+        let recorded = await diagnostic?.recording(chatID: provenance.chatID, inputID: owner, audit: audit)
+        if let recorded, let owner {
+            continuation.yield(.init(scope: .init(runID: id, inputID: owner),
+                kind: .turnEnded(.failed(recorded.failure)), failureReport: recorded))
+        }
+        continuation.finish(throwing: recorded?.failure)
         try? await run.shutdown()
     }
 

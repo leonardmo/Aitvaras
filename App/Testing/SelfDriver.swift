@@ -2,6 +2,7 @@
 import AppKit
 import SwiftUI
 import AitvarasCore
+import AitvarasStore
 
 /// No AXUIElement client, event posting, screen capture or system automation.
 /// All objects and events belong to the single window created here.
@@ -71,12 +72,21 @@ import AitvarasCore
             window.contentView = NSHostingView(rootView: MainWindow().environment(AppModel.shared))
             window.orderFront(nil) // Never makeKey, activate or orderFrontRegardless.
             await AppModel.shared.bootstrapIfNeeded()
+            if scenario.seed?.contains(.homeAttention) == true {
+                guard let stores = AppModel.shared.stores else { throw SelfDriveFailure("No stores to seed") }
+                try HomeAttentionFixtures.seed(into: stores)
+                AppModel.shared.refreshSidebandData()
+                AppModel.shared.refreshMonitoring()
+            }
             // Bootstrap applies the profile preference to existing windows first.
             // Only this driver's window gets the explicit test override.
             if let appearance { window.appearance = appearance }
             window.setContentSize(size)
             if let model = env["AITVARAS_SELF_DRIVE_CODEX_MODEL"]?.trimmingCharacters(in: .whitespacesAndNewlines), !model.isEmpty {
                 AppModel.shared.chatModel?.selfDriveCodexModel = model
+            }
+            if let model = env["AITVARAS_SELF_DRIVE_CLAUDE_MODEL"]?.trimmingCharacters(in: .whitespacesAndNewlines), !model.isEmpty {
+                AppModel.shared.chatModel?.selfDriveClaudeModel = model
             }
             if let model = env["AITVARAS_SELF_DRIVE_LOCAL_MODEL"]?.trimmingCharacters(in: .whitespacesAndNewlines), !model.isEmpty {
                 AppModel.shared.chatModel?.selfDriveLocalModel = model

@@ -27,7 +27,7 @@ extension Stores {
             let byID = Dictionary(uniqueKeysWithValues: turns.map { ($0.id, $0) })
             var current: AgentJournalTurn?
             let completed = entries.filter { entry in
-                if entry.kind == "user", !entry.isLegacyProjection { current = byID[entry.id] }
+                if ["user", "continued"].contains(entry.kind), !entry.isLegacyProjection { current = byID[entry.id] }
                 if let payload = entry.payloadJSON.flatMap(JSONValue.parse) {
                     if entry.isLegacyProjection { return payload["completed"]?.boolValue == true }
                     if payload["nativeHistory"] != nil {

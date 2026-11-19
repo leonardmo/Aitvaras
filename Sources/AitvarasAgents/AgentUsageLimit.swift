@@ -16,7 +16,7 @@ public struct AgentUsageLimit: Codable, Sendable, Equatable {
         let rawWindow = value["rateLimitType"]?.stringValue
         let window = rawWindow.flatMap { ["five_hour", "seven_day"].contains($0) ? $0 : nil }
         let reset = window.flatMap { value["unifiedWindows"]?[$0]?["resetsAt"]?.usageResetDate }
-            ?? (window == nil ? nil : value["resetsAt"]?.usageResetDate)
+            ?? (window != nil || value["rateLimitType"] == nil ? value["resetsAt"]?.usageResetDate : nil)
         return .init(status: status, windowID: window, resetsAt: reset)
     }
 

@@ -56,6 +56,8 @@ public actor Indexer {
     private let embedder: any EmbeddingEngine
     private let reporter: ActivityReporter?
     private var scanRunID: UUID?
+    private var scanJobKey: String?
+    private let jobSourceIDs: [String]?
     private let onProgress: ProgressHandler?
     private let onError: ErrorHandler?
     private var watchTask: Task<Void, Never>?
@@ -74,12 +76,14 @@ public actor Indexer {
 
     public init(stores: Stores, embedder: any EmbeddingEngine,
                 reporter: ActivityReporter? = nil,
-                onProgress: ProgressHandler? = nil, onError: ErrorHandler? = nil) {
+                onProgress: ProgressHandler? = nil, onError: ErrorHandler? = nil,
+                jobSourceIDs: [String]? = nil) {
         self.stores = stores
         self.embedder = embedder
         self.reporter = reporter
         self.onProgress = onProgress
         self.onError = onError
+        self.jobSourceIDs = jobSourceIDs
     }
 
     deinit {
@@ -97,7 +101,8 @@ public actor Indexer {
         }
         guard !workInProgress else { throw IndexerWorkError.alreadyRunning }
         workInProgress = true
-        defer { workInProgress = false; scanRunID = nil }
+        scanJobKey = ActivityJobKey.indexing(sourceIDs: jobSourceIDs ?? sources.map(\.id))
+        defer { workInProgress = false; scanRunID = nil; scanJobKey = nil }
         do {
             try await performScan(sources: sources)
             if let scanRunID { reporter?.finish(id: scanRunID, state: .succeeded,
@@ -115,7 +120,7 @@ public actor Indexer {
         scanRunID = reporter?.begin(ActivityRun(category: .knowledge, trigger: .automatic,
             title: "Update changed sources", stage: "Indexing changed files",
             executionLocation: "This Mac", dataAccess: "Available registered folders",
-            dataDestination: "Local search index; configured embedding provider"))
+            dataDestination: "Local search index; configured embedding provider", jobKey: scanJobKey))
     }
 
     private func performScan(sources: [IndexSource]) async throws {

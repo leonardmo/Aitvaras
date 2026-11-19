@@ -107,6 +107,13 @@ public struct ClaudeNativeHistory: Sendable {
             title: displayTitle.isEmpty ? "Claude chat" : displayTitle, directory: URL(fileURLWithPath: cwd),
             sourceVersion: own.compactMap { $0["version"]?.stringValue }.last ?? Self.formatVersion), records: own, snapshot: NativeHistoryPagination.fingerprint(text))
     }
+    /// The CLI records task notifications, wake-ups and cron prompts as
+    /// system-sourced user records. They start autonomous turns; they are not
+    /// something the person typed, so the transcript never shows them.
+    static func isInjectedPrompt(_ record: JSONValue) -> Bool {
+        guard record["type"]?.stringValue == "user" else { return false }
+        return record["promptSource"]?.stringValue == "system" || record["origin"]?["kind"]?.stringValue != nil
+    }
     private static func messageText(_ content: JSONValue?) -> String? {
         if let text = content?.stringValue { return text }
         let parts = content?.arrayValue?.compactMap { $0["type"]?.stringValue == "text" ? $0["text"]?.stringValue : nil } ?? []
@@ -126,6 +133,19 @@ public struct ClaudeNativeHistory: Sendable {
         guard sessions.allSatisfy({ seen.insert($0.id).inserted }) else { throw AgentNativeHistoryError.identityConflict }
         return try NativeHistoryPagination.page(sessions, cursor: cursor,
             key: "claude-list:\(profile):\(root ?? "*")", snapshot: snapshots.joined(separator: "\n"))
+    }
+    /// Include tool-only and injected records, which the text projection omits.
+    func replayMessageIDs(session: AgentSessionID) throws -> Set<String> {
+        guard session.provider == .claude, session.profile == profile, session.host == "local",
+              UUID(uuidString: session.nativeID) != nil else { throw AgentFailure.invalidRequest }
+        let matches = try files().filter { $0.deletingPathExtension().lastPathComponent == session.nativeID }
+        guard matches.count == 1, let file = matches.first else {
+            throw matches.isEmpty ? AgentNativeHistoryError.notFound : AgentNativeHistoryError.identityConflict
+        }
+        return Set(try read(file).records.compactMap { record in
+            guard ["user", "assistant"].contains(record["type"]?.stringValue ?? "") else { return nil }
+            return record["uuid"]?.stringValue
+        })
     }
     public func history(session: AgentSessionID, cursor: String?) throws -> AgentPage<AgentEvent> {
         guard session.provider == .claude, session.profile == profile, session.host == "local",
@@ -159,7 +179,7 @@ public struct ClaudeNativeHistory: Sendable {
         var events: [AgentEvent] = [], seen = Set<String>(), pending: [String] = [], completed = Set<String>()
         for record in records {
             guard let role = record["type"]?.stringValue, ["user", "assistant"].contains(role),
-                  record["isMeta"]?.boolValue != true,
+                  record["isMeta"]?.boolValue != true, !Self.isInjectedPrompt(record),
                   let text = Self.messageText(record["message"]?["content"]), !text.isEmpty else { continue }
             guard let id = record["uuid"]?.stringValue, !id.isEmpty, seen.insert(id).inserted else {
                 throw AgentNativeHistoryError.malformedHistory

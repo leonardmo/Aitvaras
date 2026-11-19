@@ -70,8 +70,8 @@ import AitvarasCore
             let stores = Stores(db: try AitvarasDatabase(url: url))
             saved = try autoContinueIntent(stores)
             try stores.db.queue.write { db in
-                try db.drop(table: "agentAutomaticInput"); try db.drop(table: "agentQuotaStop")
-                try db.execute(sql: "DELETE FROM grdb_migrations WHERE identifier = ?", arguments: ["v37-agent-automatic-input-receipts"])
+                try db.drop(table: "agentAutomaticInput")
+                try db.execute(sql: "DELETE FROM grdb_migrations WHERE identifier = ?", arguments: ["v43-agent-automatic-input-receipts"])
             }
         }
         let stores = Stores(db: try AitvarasDatabase(url: url)), storage = AgentAutoContinueStore(db: stores.db)

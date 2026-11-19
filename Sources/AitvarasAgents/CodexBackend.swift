@@ -294,10 +294,10 @@ public actor CodexBackend: AgentBackend {
         guard let nativeID = result["thread"]?["id"]?.stringValue, runs[nativeID] == nil else { throw AgentFailure.invalidRequest }
         if let provider = result["thread"]?["modelProvider"]?.stringValue, provider != "openai" { throw AgentFailure.unsupported }
         let session = AgentSessionID(provider: .codex, profile: profile, nativeID: nativeID)
-        let run = CodexRun(backend: self, wire: connection, session: session, configuration: configuration, accountID: status.accountID)
+        let run = CodexRun(backend: self, wire: connection, session: session, configuration: configuration, accountID: status.accountID,
+            initialLimitWindows: observedLimits)
         runs[nativeID] = run
         await run.started()
-        await run.rateLimits(observedLimits)
         if availableSetup.serversAvailable { await run.setup(availableSetup) }
         return run
     }
@@ -365,7 +365,7 @@ public actor CodexBackend: AgentBackend {
         }
         await run.receive(method, parameters: parameters, requestID: id)
     }
-    private func disconnected(_ error: AgentFailure, generation: UUID) async {
+    private func disconnected(_ error: AgentFailureReport, generation: UUID) async {
         guard generation == self.generation else { return }
         let current = runs; runs.removeAll(); wire = nil; transport = nil
         publishRateLimits([]); observedAccountID = nil

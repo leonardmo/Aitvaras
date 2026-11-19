@@ -249,7 +249,7 @@ struct MainWindow: View {
         case .chat, .voice: ChatDetailView()
         case .capture: CaptureWorkspaceView()
         case .library, .memory, .knowledge: LibraryWorkspaceView(initialKnowledge: selection == .knowledge).id(selection)
-        case .activity: ActivityView()
+        case .activity: ActivityView(selection: $selection, attentionRequested: model.historyAttentionRequested)
         case .setup, .connectors, .shortcuts:
             SettingsWorkspaceView(initialRoute: selection, initialBackground: settingsBackgroundRequested)
                 .id("\(selection.rawValue).\(settingsBackgroundRequested)")

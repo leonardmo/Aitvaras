@@ -25,9 +25,13 @@ actor ClaudeRun: AgentRun {
     private var usageFailure: AgentFailure?
     private var closed = false
     private var terminalFailure: AgentFailure?
+    private let verifiesResumeIdentity: Bool
     private var modeState: AgentModeState
     private var requests: [AgentRequestID: (AgentRequest, JSONValue)] = [:]
     private var seenResults: Set<String> = []
+    private var seenMessages: Set<String>
+    private var autonomous = false
+    private var lastAutonomousReason: AgentAutonomousReason = .unknown
     private var streamedThinking: Set<String> = []
     private var seenRequests: Set<AgentRequestID> = []
     private(set) var availableModels: [AgentModel] = []
@@ -42,7 +46,9 @@ actor ClaudeRun: AgentRun {
         self.id = id; self.runtimeFile = runtimeFile; self.mcpSetup = mcpSetup
         self.permissionSource = permissionSource
         self.metadataReader = metadataReader ?? AgentProjectMetadataReader(projectDirectory: configuration.directory)
+        seenMessages = configuration.knownMessageIDs
         self.profile = profile; session = configuration.forkSession ? nil : configuration.resume; modeState = AgentModeState(configuration.mode)
+        verifiesResumeIdentity = configuration.verifiesResumeIdentity
         forkSource = configuration.forkSession ? configuration.resume : nil
         var arguments = ["-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose",
                          "--include-partial-messages", "--permission-prompt-tool", "stdio", "--permission-mode",
@@ -103,8 +109,8 @@ actor ClaudeRun: AgentRun {
     private func scope(item: String? = nil) -> AgentEventScope {
         AgentEventScope(runID: id, session: session, inputID: input, itemID: item)
     }
-    private func emit(_ kind: AgentEvent.Kind, item: String? = nil) {
-        switch continuation.yield(AgentEvent(scope: scope(item: item), kind: kind)) {
+    private func emit(_ kind: AgentEvent.Kind, item: String? = nil, report: AgentFailureReport? = nil) {
+        switch continuation.yield(AgentEvent(scope: scope(item: item), kind: kind, failureReport: report)) {
         case .enqueued: break
         case .dropped, .terminated:
             continuation.finish(throwing: AgentFailure.invalidTransition)
@@ -115,6 +121,7 @@ actor ClaudeRun: AgentRun {
     func send(_ value: AgentInput, willDeliver: @escaping @Sendable () async throws -> Void) async throws {
         guard !closed, input == nil, !writing else { throw AgentFailure.invalidTransition }
         let frame = try userFrame(value)
+        autonomous = false
         input = value.id; acknowledged = false; interrupted = false; assistantFailure = nil; usageFailure = nil; streamedThinking.removeAll(); streamTools.removeAll(); streamTexts.removeAll(); streamingMessageID = nil
         do { try await willDeliver() } catch { input = nil; throw error }
         guard !closed, input == value.id, !interrupted else { throw AgentFailure.invalidTransition }
@@ -155,8 +162,36 @@ actor ClaudeRun: AgentRun {
             session = AgentSessionID(provider: .claude, profile: profile, nativeID: native)
             emit(.sessionStarted(session!))
         }
+        let type = value["type"]?.stringValue ?? ""
+        if value["isReplay"]?.boolValue == true { return }
+        if ["assistant", "user"].contains(type) {
+            if let uuid = value["uuid"]?.stringValue, !seenMessages.insert(uuid).inserted { return }
+        }
+        if type == "user", injectedReason(value) == .backgroundTask {
+            let content = value["message"]?["content"] ?? .null
+            let text = content.stringValue ?? hookOutputStrings(content).joined(separator: "\n")
+            if let start = text.range(of: "<task-id>"), let end = text.range(of: "</task-id>", range: start.upperBound..<text.endIndex) {
+                emit(.unknown(name: "backgroundTaskFinished", payload: .string(String(text[start.upperBound..<end.lowerBound]))))
+            }
+        }
+        // Only actual work starts a turn. Inventories, hook status and results
+        // on their own cannot turn resumed history into a fresh response.
+        let startsTurn = ["stream_event", "assistant", "control_request"].contains(type)
+            || (type == "user" && injectedReason(value) != nil)
+        if input == nil, startsTurn {
+            let reason = injectedReason(value) ?? lastAutonomousReason
+            input = UUID(); autonomous = true; acknowledged = false; interrupted = false; assistantFailure = nil; usageFailure = nil
+            streamedThinking.removeAll(); streamTools.removeAll(); streamTexts.removeAll(); streamingMessageID = nil
+            emit(.autonomousTurnStarted(input!, reason))
+            emit(.delivery(.deliveryUnknown))
+        }
         switch value["type"]?.stringValue {
         case "system" where value["subtype"]?.stringValue == "init":
+            if verifiesResumeIdentity, let native = value["session_id"]?.stringValue {
+                // Let the manager's expectedNative check validate Continue.
+                // Tool, subagent, hook and compaction frames are not identity.
+                emit(.sessionStarted(.init(provider: .claude, profile: profile, nativeID: native)))
+            }
             if value["apiKeySource"]?.stringValue != "none" { await disconnected(.unsupported); return }
             do {
                 // The CLI has consumed the file; retain only the in-memory
@@ -172,6 +207,12 @@ actor ClaudeRun: AgentRun {
             emit(.setupReported(availableSetup))
         case "system" where ["hook_started", "hook_response"].contains(value["subtype"]?.stringValue):
             await parseHook(value)
+        case "system" where value["subtype"]?.stringValue == "task_notification":
+            if let taskID = value["task_id"]?.stringValue,
+               ["completed", "failed", "stopped"].contains(value["status"]?.stringValue ?? "") {
+                lastAutonomousReason = .backgroundTask
+                emit(.unknown(name: "backgroundTaskFinished", payload: .string(taskID)))
+            }
         case "system": break
         case "control_request":
             guard let requestID, case .string = requestID, let raw = value["request"] else { await disconnected(.invalidRequest); return }
@@ -221,11 +262,12 @@ actor ClaudeRun: AgentRun {
             acknowledge()
             if let error = value["error"]?.stringValue {
                 if error == "authentication_failed" { assistantFailure = .authRequired }
-                else if ["rate_limit", "rate_limit_error", "usage_limit_reached"].contains(error) {
+                else if ["rate_limit", "rate_limit_error", "usage_limit", "usage_limit_reached"].contains(error) {
                     usageFailure = usageFailure ?? .quota(resetsAt: nil)
-                } else { assistantFailure = .unknown }
+                } else { assistantFailure = .providerError }
             }
-            await parseMessage(value)
+            // Injected reminders are provenance for the marker, never a user bubble.
+            if !(autonomous && type == "user" && injectedReason(value) != nil) { await parseMessage(value) }
         case "rate_limit_event":
             let info = value["rate_limit_info"] ?? .null
             let evidence = AgentUsageLimit.claude(info)
@@ -245,11 +287,11 @@ actor ClaudeRun: AgentRun {
             let aborted = value["terminal_reason"]?.stringValue == "aborted_streaming"
             let outcome: AgentTurnOutcome = (interrupted || aborted)
                 ? .interrupted : (assistantFailure == .authRequired ? assistantFailure : usageFailure ?? assistantFailure).map { .failed($0) }
-                    ?? (value["is_error"]?.boolValue == false ? .completed : .failed(.unknown))
+                    ?? (value["is_error"]?.boolValue == false ? .completed : .failed(.providerError))
             let completed = [input!] + queue
             continuation.yield(.init(scope: .init(runID: id, session: session, inputID: input,
                 completedInputIDs: completed.count > 1 ? completed : []), kind: .turnEnded(outcome)))
-            input = nil; queue.removeAll(); requests.removeAll(); modeState.cancel()
+            input = nil; autonomous = false; queue.removeAll(); requests.removeAll(); modeState.cancel()
         default: emit(.unknown(name: value["type"]?.stringValue ?? "unknown", payload: value))
         }
     }
@@ -300,10 +342,13 @@ actor ClaudeRun: AgentRun {
         _ = try await wire.request("interrupt", timeout: .seconds(1))
     }
     func disconnected(_ error: AgentFailure) async {
+        await disconnected(AgentFailureDiagnostics.capture(error))
+    }
+    func disconnected(_ error: AgentFailureReport) async {
         guard !closed else { return }
-        closed = true; terminalFailure = error; requests.removeAll()
-        if input != nil { emit(.turnEnded(.failed(error))); input = nil }
-        continuation.finish(throwing: error)
+        closed = true; terminalFailure = error.failure; requests.removeAll()
+        if input != nil { emit(.turnEnded(.failed(error.failure)), report: error); input = nil }
+        continuation.finish(throwing: error.failure)
         await closeTransport()
     }
     func abort() async {
@@ -331,19 +376,27 @@ actor ClaudeRun: AgentRun {
             guard hookPhases[id] == nil else { return }; phase = .running
         } else {
             guard hookPhases[id] == nil || hookPhases[id] == .running else { return }
-            guard let exit = value["exit_code"]?.int, let outcome = value["outcome"]?.stringValue,
-                  ["success", "error"].contains(outcome) else { return }
-            phase = event == "PreToolUse" && exit == 2 ? .blocked : (exit != 0 || outcome == "error" ? .error : .success)
+            let exit = value["exit_code"]?.int, outcome = value["outcome"]?.stringValue
+            let output = value["stdout"]?.stringValue.flatMap(JSONValue.parse)
+            let decision = value["decision"]?.stringValue ?? value["hookSpecificOutput"]?["permissionDecision"]?.stringValue
+                ?? output?["decision"]?.stringValue ?? output?["hookSpecificOutput"]?["permissionDecision"]?.stringValue
+            guard exit != nil || ["success", "error"].contains(outcome ?? "") || ["block", "deny"].contains(decision ?? "") else { return }
+            phase = exit == 2 || ["block", "deny"].contains(decision ?? "") ? .blocked
+                : ((exit ?? 0) != 0 || outcome == "error" ? .error : .success)
         }
         hookPhases[id] = phase
         let tool = rawName.split(separator: ":", maxSplits: 1).dropFirst().first.map(String.init) ?? ""
         let status = availableSetup.metadata.statusMessage(event: event, tool: tool)
         var reason: String?
         if phase == .blocked || phase == .error {
-            let text = [value["stderr"]?.stringValue, value["output"]?.stringValue, value["stdout"]?.stringValue]
-                .compactMap { $0 }.first { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty } ?? "Hook failed."
+            let output = value["stdout"]?.stringValue.flatMap(JSONValue.parse)
+            let text = [value["stderr"]?.stringValue, value["reason"]?.stringValue,
+                value["hookSpecificOutput"]?["permissionDecisionReason"]?.stringValue,
+                output?["reason"]?.stringValue, output?["hookSpecificOutput"]?["permissionDecisionReason"]?.stringValue]
+                .compactMap { $0 }.first { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+                ?? (phase == .blocked ? "Hook blocked." : "Hook failed.")
             let runtimeRedacted = await runtimeFile?.redacted(text) ?? text
-            reason = await metadataReader.redact(runtimeRedacted)
+            reason = AgentTranscriptContent.shortHookReason(await metadataReader.redact(runtimeRedacted))
         }
         let name = await metadataReader.redact(rawName, limit: 512)
         let safeEvent = await metadataReader.redact(event, limit: 128)
@@ -364,6 +417,7 @@ actor ClaudeRun: AgentRun {
         let index = event["index"]?.int ?? 0
         if type == "content_block_start", let block = event["content_block"] {
             if block["type"]?.stringValue == "tool_use", let id = block["id"]?.stringValue {
+                rememberAutonomousTool(.init(name: block["name"]?.stringValue ?? "", input: block["input"] ?? .null))
                 streamTools[index] = id
                 emit(.toolStarted(.init(name: block["name"]?.stringValue ?? "Tool", input: block["input"] ?? .null)), item: id)
             }
@@ -389,18 +443,44 @@ actor ClaudeRun: AgentRun {
             }
         }
     }
+    private func injectedReason(_ value: JSONValue) -> AgentAutonomousReason? {
+        let content = value["message"]?["content"] ?? .null
+        let text = (content.stringValue ?? hookOutputStrings(content).joined(separator: "\n")).lowercased()
+        if text.contains("<task-notification>") { return .backgroundTask }
+        if text.contains("scheduled-wakeup") || text.contains("scheduled_wakeup") { return .wakeup }
+        if text.contains("<system-reminder>") {
+            if text.contains("monitor") { return .monitor }
+            if text.contains("cron") || text.contains("scheduled") { return .scheduled }
+            if text.contains("wakeup") || text.contains("wake-up") { return .wakeup }
+        }
+        return nil
+    }
+    private func rememberAutonomousTool(_ tool: AgentTool) {
+        switch tool.name {
+        case "ScheduleWakeup": lastAutonomousReason = .wakeup
+        case "CronCreate": lastAutonomousReason = .scheduled
+        case "Monitor": lastAutonomousReason = .monitor
+        case "Bash" where tool.input["run_in_background"]?.boolValue == true: lastAutonomousReason = .backgroundTask
+        default: break
+        }
+    }
     private func parseMessage(_ value: JSONValue) async {
         let message = value["message"] ?? .null
         let messageID = message["id"]?.stringValue ?? value["uuid"]?.stringValue
+        let blocks = message["content"]?.arrayValue ?? []
         var texts: [String] = []
-        for block in message["content"]?.arrayValue ?? [] {
+        if let text = message["content"]?.stringValue { texts.append(text) }
+        for block in blocks {
             switch block["type"]?.stringValue {
             case "text": if let text = block["text"]?.stringValue { texts.append(text) }
             case "thinking":
                 if messageID == nil || !streamedThinking.contains(messageID!) {
                     emit(.thinkingDelta(block["thinking"]?.stringValue ?? ""), item: messageID)
                 }
-            case "tool_use": emit(.toolStarted(AgentTool(name: block["name"]?.stringValue ?? "", input: block["input"] ?? .null)), item: block["id"]?.stringValue)
+            case "tool_use":
+                let tool = AgentTool(name: block["name"]?.stringValue ?? "", input: block["input"] ?? .null)
+                rememberAutonomousTool(tool)
+                emit(.toolStarted(tool), item: block["id"]?.stringValue)
             case "tool_result":
                 var output = block["content"] ?? .null
                 // Redact before bounding: clipping a long credential first
@@ -414,7 +494,12 @@ actor ClaudeRun: AgentRun {
             default: emit(.unknown(name: block["type"]?.stringValue ?? "content", payload: block), item: messageID)
             }
         }
-        if message["role"]?.stringValue == "user" { texts = [ClaudeCommandText.display(texts.joined(separator: "\n"))] }
+        if message["role"]?.stringValue == "user" {
+            // Tool-result UUIDs identify tool output, not an echo of our input.
+            // Emit their completions above without binding a user message ID.
+            if !blocks.isEmpty, blocks.allSatisfy({ $0["type"]?.stringValue == "tool_result" }) { return }
+            texts = [ClaudeCommandText.display(texts.joined(separator: "\n"))]
+        }
         if let messageID, !texts.isEmpty {
             let native = value["uuid"]?.stringValue ?? messageID
             let role = message["role"]?.stringValue ?? "assistant"

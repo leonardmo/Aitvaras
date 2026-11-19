@@ -60,8 +60,11 @@ public struct AgentSessionConfiguration: Sendable {
     public var mcpConfigPath: URL?
     public var includeHookEvents: Bool
     public var strictMCPConfig: Bool
+    public var knownMessageIDs: Set<String> = []
     public var forkSession = false
     public var resumeSessionAt: String?
+    /// Explicit Continue verifies the authoritative resumed-session init only.
+    public var verifiesResumeIdentity = false
 
     public init(directory: URL, resume: AgentSessionID? = nil, model: String,
                 effort: String? = nil, mode: AgentMode = .ask, instructions: String = "", additionalDirectories: [URL] = [],

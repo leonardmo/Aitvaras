@@ -12,7 +12,7 @@ final class NotificationRouter {
 
     /// Embodied announcement — show Aitvaras, speak, caption. Set by the app.
     var announce: ((_ text: String) -> Void)?
-    var reportError: ((_ title: String, _ error: Error) -> Void)?
+    var reportError: ((_ code: ActivityProblemCode, _ title: String, _ error: Error) -> Void)?
 
     init(stores: Stores) {
         self.stores = stores
@@ -20,7 +20,7 @@ final class NotificationRouter {
 
     /// No permission request and no sensitive preview. Only a failure of work
     /// the user requested (or capture data-loss risk) calls this path.
-    static func requestedWorkNeedsAttention() {
+    static func requestedWorkNeedsAttention(message: String? = nil) {
         guard !NSApplication.shared.isActive else { return }
         Task {
             let center = UNUserNotificationCenter.current()
@@ -28,7 +28,7 @@ final class NotificationRouter {
             guard settings.authorizationStatus == .authorized || settings.authorizationStatus == .provisional else { return }
             let content = UNMutableNotificationContent()
             content.title = "Aitvaras needs your attention"
-            content.body = "A requested action could not finish. Open Aitvaras to review it."
+            content.body = message ?? "A requested action could not finish. Open Aitvaras to review it."
             try? await center.add(UNNotificationRequest(identifier: "requested-work-needs-attention", content: content, trigger: nil))
         }
     }
@@ -51,7 +51,7 @@ final class NotificationRouter {
                 kind: .notificationSent, connectorID: "focus",
                 summary: "Update available inside Aitvaras"))
         } catch {
-            reportError?("Update could not be held for the next break", error)
+            reportError?(.heldNotificationSave, "Update could not be held for the next break", error)
             // Storage failure must degrade to immediate delivery, never loss.
             surface(title: title, body: body, urgent: false)
         }
@@ -62,7 +62,7 @@ final class NotificationRouter {
         do {
             return try stores.heldNotifications()
         } catch {
-            reportError?("Held updates could not be loaded", error)
+            reportError?(.heldNotificationRead, "Held updates could not be loaded", error)
             return []
         }
     }
@@ -72,12 +72,12 @@ final class NotificationRouter {
             try stores.clearHeldNotifications(ids: items.map(\.id))
         } catch {
             // Retaining them can duplicate a later briefing, but cannot lose it.
-            reportError?("Delivered updates could not be cleared", error)
+            reportError?(.heldNotificationConsume, "Delivered updates could not be cleared", error)
         }
     }
 
-    /// Compatibility hook for old break/wake paths. Held updates stay available
-    /// in Home until reviewed; a wake must not requeue, speak or discard them.
+    /// Compatibility hook for old break/wake paths. Held updates stay on Home
+    /// until consumed, dismissed or expired; this hook never replays or speaks them.
     func flushHeld(reason: String) {
         NotificationCenter.default.post(name: .aitvarasActivityChanged, object: nil)
     }

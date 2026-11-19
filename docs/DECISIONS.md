@@ -30,6 +30,7 @@ macOS 26+, Swift 6, SwiftUI. Full Xcode required (user installing). Core logic l
 - **Face animation**: blink/expressions/lip sync driven through the ARKit blendshapes — visemes derived from TTS output (phoneme timings where the engine provides them, audio-envelope fallback).
 - Rendered with **SceneKit + GLTFKit2** in v1 (loads the RPM GLB directly, morpher-based blendshape animation is straightforward there); RealityKit remains the target for a later pass — the animation state machine is renderer-independent.
 - **Floating companion window**: small, always-on-top, draggable, global hotkey show/hide. Speaks/listens/reacts with animation states (idle, listening, thinking, speaking).
+- **Minimal overlay is the default (2026-11-19).** With no saved choice, the companion opens as the minimal overlay, which renders no 3D model. The avatar is opt-in under Setup → Companion; a saved choice is kept.
 - **Full main window**: chat with history, activity log, connector settings, RAG index management.
 
 ## D22 — Complete Aitvaras naming ✅ (2026-07-13)
@@ -394,6 +395,63 @@ failures do not replace the inline send/sign-in error. A second complete observa
 it does not reserve the native session against another client. Changed native
 content evicts an idle run so the next Send resumes the updated native session.
 
+Issue #23: successive tool-result UUIDs were rebinding the input row and causing
+a persistence identity conflict that killed the turn. Claude user frames
+consisting entirely of tool results finish their tools but
+are not user messages: their UUIDs never bind the input row. Input bindings
+also refuse a second, different native identity. The one-time v39 repair clears
+only Claude user-row native UUIDs that differ from a proven owning journal
+input UUID. The journal must match chat/session; links through `journalInputID`
+require corroborating `nativeHistory.itemID`. Conflicting or malformed metadata,
+inherited fork rows and unowned imports remain untouched. Native-history
+evidence, journals, content and display IDs are preserved. Ordinary GRDB
+migrations have no automatic database backup; installation requires a manual
+database backup before upgrading. No app-level backup is added for this repair.
+Hook events fold into their tool payloads under the matching rules in D34.
+
+Turn-ending error catches retain a typed safe category across backend and
+coordinator boundaries through `AgentEvent.failureReport`. Public backend/run
+throws and stream errors unwrap diagnostic carriers to `AgentFailure`.
+Activity records only the error type and case plus
+chat/input provenance, never descriptions, associated values, paths, prompts
+or credentials. Full caught errors go to unified log with explicit `.private`
+interpolation. Unknown error types use a validated metatype name and an
+`unknown` case, without inspecting the value. Failure diagnostics are excluded
+from memory evidence. If the Activity write itself fails, the full error is
+privately logged without recursively auditing the audit failure; durable
+diagnostics cannot be guaranteed while storage is unavailable.
+
+An abnormal turn end now commits a compact `stopped` transcript entry with
+the journal outcome. It retains delivery evidence, provider/profile and native
+session identity, the safe error category and any reported quota reset time.
+Reopening and native history refresh preserve it. Startup recovery creates a
+Connection lost row for unfinished journals without sending anything. Explicit
+Stop creates a Stopped row. Internal failures show “Aitvaras error · category”
+with only Copy details, which copies the category. Connection failures show
+“Connection lost”; quota failures show “Usage limit reached”, with a local
+24-hour reset time when known. These offer Continue for acknowledged input and
+Retry otherwise. Authentication keeps the existing Sign in flow.
+Provider-reported result/assistant errors use the fixed `providerError` case
+and the Connection lost actions. Internal catches retain `unknown` or their
+safe store/history category; provider error text never becomes composer copy.
+
+Recovery is manual. The manager's recovery API validates the original durable
+session and rejects absent or changed native identities for Continue. Continue
+checks Claude's authoritative system/init identity; foreign session IDs on
+ordinary tool, subagent, hook or compaction frames do not terminate a turn. Continue
+sends exactly “Continue where you stopped.” through the normal policy boundary,
+without a catch-up envelope, and persists a small `continued` marker instead of
+a user bubble. Native refresh preserves that marker only for the exact recorded
+instruction; an edited native message renders as user text. Retry restores the
+original wire prompt and selected composer bytes, including when delivery is
+unknown. Each click claims the stopped row and prepares one new journaled attempt
+atomically before writing to the provider. Old delivery evidence is retained;
+repeated/stale claims cannot send again. There is no reset timer or automatic
+continuation; issue #27 may use this explicit recovery API in a later change.
+Composer failures remain only for provably undelivered input. Stopped diagnostics
+stay outside provider context, and Continued markers delimit their own journal
+when selecting completed assistant context.
+
 Catch-up scans normalized entries and the chat's legacy local, owned and linked
 timeline without the UI page limit. Completed messages from other sessions are
 eligible, including earlier sessions of the same provider. Acknowledged handovers
@@ -727,12 +785,25 @@ within each tier.
 Assistant selection views have no intrinsic width and use the proposed
 transcript width on every measurement, including after completion and resize.
 
-Claude launches include hook events. `hook_started` and `hook_response` are
-correlated by `hook_id`; `statusMessage` comes from settings matched by event
-and matcher. A PreToolUse exit code 2 is blocked, with bounded, redacted stderr
-as its reason. Successful rows collapse; blocked/error rows remain visible.
-Only an explicit tool-use identity attaches a hook row to a tool; otherwise
-it remains a separate row. Unknown informational system events are ignored.
+Claude launches include hook events. PreToolUse hooks without a tool-use ID
+start on the earliest same-name tool without a real result or a completed Pre
+hook. All starts in that batch stay together. An interleaved next-tool start
+closes the previous Pre batch; sequential configured hooks can stay on the
+current unfinished tool when no next eligible tool waits. PostToolUse matches
+the most recent unfinished tool, then the most recently finished match. The
+first observation pins `hook_id` to that tool, so overlapping same-name tools
+cannot steal responses. Tool payloads persist a `hooks` array in observation
+order with id, name, event, status and an optional short reason. Exit 2 or a
+block/deny decision is blocked; other nonzero exits/errors are failed. Reasons
+use redacted stderr or structured decision reasons, one line capped at 240
+UTF-8 bytes, never full output. Unknown responses and unmatched starts keep
+standalone rows; unknown informational system events are ignored.
+Real successful tool results supersede hook-derived denied/error flags in
+either arrival order, while the hook outcome and reason remain in history.
+
+Matched hooks appear as status icons beside the tool label. Block reasons
+remain visible on the collapsed row; all hook details use the tool's existing
+disclosure, without another popover. Unmatched rows keep their existing UI.
 
 Claude **Fork from here** creates a chat in the same project with
 `--resume <sid> --fork-session --resume-session-at <assistant uuid>`. It records
@@ -799,8 +870,187 @@ The existing vertical composer keeps its selection binding and draft-edit path.
 Shift/Option-Return replace the selection with a newline; plain Return accepts
 an open completion or sends. Marked text defers Return to the input method.
 
+## D36 — Home attention dismissal and recovery 🚧 (2026-11-18)
 
-## D36 — Continue once after a provider usage reset ✅ (2026-11-18)
+Home shows at most five attention rows in Decisions, Problems, Notices order,
+with approvals first and one “N more” link into History's attention mode for
+all remaining kinds. Agent permission requests use the same full approval
+card as Chat (every detail line, the reason, Allow/Deny and Always allow);
+plan approvals and question forms stay in Chat. Tool suggestions have labeled
+Approve and Reject buttons. Neither has a ✕ or Undo, and rejection keeps the
+existing policy and audit paths. Captures waiting to be saved have Save/Open
+actions only.
+
+Dismiss all acknowledges failed/interrupted problems, dismisses held updates
+and defers the automatic-work review prompt. It skips approvals, unsaved
+captures, every `outcomeUnknown` run and the monitoring error. A problem's own
+accessible ✕ sets `acknowledgedAt`; for an unknown outcome this counts as
+review, never retry or reversal. A monitoring incident's ✕ hides only that
+Home warning, without clearing the failure or resuming automatic work.
+“Later” persistently removes the review prompt from Home while keeping
+Settings → Automatic Work available and the unreviewed policy closed.
+
+Single ✕ and Dismiss all offer an inline “Dismissed N items · Undo” bar for
+about eight seconds; ⌘Z undoes while the bar is visible. Undo conditionally
+restores only that action's unchanged state, never consumed/expired updates
+or problems already recovered by a later success. Activity runs and their
+original outcomes always remain in History.
+
+Only background job owners receive an optional explicit `jobKey`: startup,
+consolidation, indexing, conversation archiving, capture summary/refinement,
+model preparation/download, routines, queued delivery and keyed background
+problems. The operation and stable subject identify the job, not its title.
+Failed/interrupted runs group by key with a count; a group's ✕ acknowledges
+all represented runs. A distinct successful run with the same key that started
+after the failure finished clears it through a database query over persisted
+evidence, without writing an automatic acknowledgement or using the recent-run
+window. Unkeyed runs neither group nor auto-clear; unknown outcomes never
+auto-clear. Chat responses and confirmed connector actions remain unkeyed.
+Existing parent/child ownership stays intact; an unkeyed failed helper under a
+keyed owner does not add its own Home row: the owner's row, or its recovery,
+covers it, and the helper stays in the owner's details and History.
+
+Held updates leave through ✕, Dismiss all, existing briefing consumption or a
+fixed 24-hour expiry. Dismissal is soft during Undo, then deletes the held row;
+expiry and consumption also delete with audit. Dismissed/expired rows cannot
+enter a later briefing. Opening their source elsewhere does not clear them.
+
+Operation details stay in a smaller resizable sheet: summary and main actions,
+result and privacy fields, then one collapsed Details section including raw
+JSON. Groups show the latest run and a short list of earlier failures.
+Open conversation/capture closes the sheet before navigating. Retry is offered
+only for failed capture summaries and safely identified stored-conversation
+archives through their existing targeted paths; no other job gains Retry.
+D36 stays 🚧 until the maintainer has reviewed the light/dark screenshots and
+the person-only checks in [TESTING.md](TESTING.md#home-attention-d36-issue-18).
+
+## D37 — Forge requests use installed CLIs 🚧 (2026-11-18)
+
+Project Chat uses the already installed and signed-in `gh` (GitHub and
+Enterprise) or `glab` (GitLab and self-hosted) CLI. Git push retains its Git
+credential helper. There is no app account, token extraction, token storage or
+API-key fallback. The origin hostname selects public forges; other hosts must
+appear in exactly one CLI's authentication listing. Unknown hosts retain push
+and show an unsupported-host message. A missing CLI shows an installation hint;
+an installed, signed-out CLI offers a managed, cancellable browser sign-in.
+Browser URLs pass `ProviderSignIn.validate`. Sign-in is never started on open.
+
+Request creation is outbound and always requires a visible confirmation under
+D13. The sheet previews editable commit-derived title/description, the default
+base branch and a segmented Draft choice. A matching branch request is bound
+instead of duplicated. Creation revalidates chat ownership, origin host/repository, branch,
+base and committed tip. The CLI explicitly targets origin rather than choosing
+an unrelated remote. Process output is bounded, commands time out, and failures
+become fixed error kinds without retaining raw diagnostics. Audit includes
+operation, chat provenance, risk and outcome; never titles, bodies or URLs.
+
+One latest request identity is stored per chat. `watch` defaults to false.
+Comments and checks are read-only, transient snapshots. Opening Chat, pushing
+and manual refresh update request/check status. D40 covers opt-in forge polling.
+The toolbar opens the request on the forge website. Merging stays there.
+Connections lists installed CLIs and their signed-in hosts with sign-in fallback.
+Offline fixtures establish parsing and policy behavior; live CLI/browser and
+isolated app acceptance remain required before marking this decision complete.
+## D38 — Chats show turns the CLI starts itself 🚧 (2026-11-18)
+
+A retained official CLI may start a turn without a new Send, for example when
+its wake-up fires or a background task completes. Chat gives that work a local
+turn identity and persists its origin as user or autonomous, with the reason
+wakeup, backgroundTask, monitor, scheduled or unknown. Existing turns remain
+user turns. Autonomous turns have no user prompt and cannot be resent. Their
+compact transcript marker replaces the injected CLI reminder; normal streaming,
+usage, audited approvals, follow-up Send, Stop and crash recovery still apply.
+Activity shows “Chat woke up” or “Background task finished”. A running autonomous
+turn keeps its transport out of idle eviction; completion re-arms idle expiry.
+
+Claude uses injected reminder markers when present, then the last scheduling,
+monitor or background-shell tool observed in that process, otherwise unknown.
+Reasons are descriptive provenance, never authorization. Native message UUIDs
+and replay flags suppress replayed messages on resume. Codex opens a turn only
+on an unsolicited turn/started for the bound thread and deduplicates completed
+turn IDs. Autonomous requests retain the same policy and audit path as Send.
+
+An unseen autonomous turn and its approvals mark that chat unread. Background
+attention uses the existing generic requested-work notification and respects
+Focus holds; no prompt or output enters a system notification. This batch only
+observes work in a live retained transport. It adds no durable scheduler,
+automatic restart, replay or catch-up after idle eviction or app shutdown.
+
+## D39 — Wake-ups survive quit and restart 🚧 (2026-11-19)
+
+Claude scheduling tool successes are mirrored as provider-neutral pending wakes
+per chat/session and transport generation. Replayed history creates none.
+Wake-ups and five-field numeric cron schedules survive transport eviction,
+quit and restart. Background shell tasks and monitors retain their process but
+cannot be restored: disposal drops their records with a metadata-only Activity
+note. Archiving/deleting a chat clears its pending wakes.
+
+A live creating transport owns its timers. Pending items prevent idle eviction;
+at the eight-transport cap, idle slots with the latest next fire are evicted
+first (slots without timed wakes first, oldest use breaks ties). Disposal
+transfers timers to the app. A wake more than 120 seconds overdue transfers
+only after retiring its idle native owner. Busy chats defer until a later tick.
+The app checks on launch, system wake and every 30 seconds; no daemon or login
+item runs while Aitvaras is closed. Missed cron slots collapse to one check,
+then reschedule strictly after the catch-up time in the device's time zone.
+
+Activity's Chat wake-ups feature controls app catch-ups. Unlike the other
+background features it is on by default, without the one-time review (owner,
+2026-11-19): it only continues work a chat already scheduled. Switching it off
+(stored as a declined feature) or pausing all automatic work stops catch-ups and
+leaves pending work intact; timers inside a live
+CLI continue independently. The clock badge lists all pending items and permits
+cancelling only unclaimed app-owned records, without killing native transports.
+
+Claims are atomic and carry a turn identity. App-authored autonomous inputs use
+the ordinary audited delivery/approval path and native resume, with a fixed
+scheduled-wake prefix and no user bubble. Their prompt is kept in the turn
+record, separate from user prompts; autonomous turns cannot be resent. Activity
+shows “Chat woke up (late)”. Catch-ups use the creating session and profile even
+if the composer has since selected another profile; that selection is unchanged.
+One unavailable chat does not prevent other due chats from waking.
+On crash recovery, claims with no delivery attempt
+are released; delivery-unknown/acknowledged claims are consumed rather than
+resent, because the CLI may already have acted. This chooses no duplicate side
+effects over retrying uncertain delivery. Unsupported cron syntax is not guessed.
+Codex can receive app-authored autonomous input but currently produces no timers.
+
+Offline tests cover protocol and store behavior. Live Haiku checks and isolated
+app acceptance remain required before marking D39 complete.
+
+## D40 — Pull request Auto-fix 🚧 (2026-11-19)
+
+An open or draft pull request can be watched from its chat's PR bar after
+forge sign-in. The switch is off by default. Enabling it records the newest
+comment time and IDs at that time, along with the initial conflict state.
+An already-failing check can trigger once. The Activity feature is on by
+default and can be declined or paused. The app checks at launch, after
+system wake and on a 60-second loop. Archived chats are skipped. Forge
+errors back off per request and appear in the chat's existing forge error
+line.
+
+The watcher batches newly failing checks, transitions into merge conflict,
+and new discussion or reviews into one autonomous turn in the owning chat.
+Busy chats defer without changing their cursors. The local checkout must
+track the request's source branch on origin. Log excerpts and comments are
+bounded and escaped inside the prompt's untrusted-data fences. Aitvaras
+keeps the marker and turn metadata in its journal. The watcher uses forge
+reads only. The turn uses the ordinary chat approval policy for
+working-tree changes and commands, including push. Merging stays on the
+forge website.
+
+The watermark comparison, watermark advance and delivery-unknown journal
+transition commit in one transaction at the provider write barrier.
+Pre-delivery failures leave events available. Uncertain deliveries are
+consumed. The turn journal accepts the new reason through v41. The watch
+cursors use the existing request columns. Three turns without entering an
+all-passing check state, or six turns in a rolling hour, turn off the
+switch and raise attention. A merged
+or closed request stops watching and records the outcome. Watch transitions
+and the turn's Activity mirror contain metadata only. A new opt-in starts
+a fresh watch and baselines the discussion again.
+
+## D41 — Continue once after a provider usage reset ✅ (2026-11-18)
 
 A usage-limit Stopped row offers “Continue automatically after reset”, on by
 default, plus Cancel and the next continuation/check time. “Keep Mac awake

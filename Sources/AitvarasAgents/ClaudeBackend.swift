@@ -189,6 +189,11 @@ public actor ClaudeBackend: AgentBackend {
                 throw AgentFailure.invalidTransition
             }
         } catch { try? await file?.remove(); throw error }
+        if let resume = configuration.resume, UUID(uuidString: resume.nativeID) != nil {
+            do { launch.knownMessageIDs.formUnion(try historyReader.replayMessageIDs(session: resume)) }
+            catch AgentNativeHistoryError.notFound { /* Durable transcript IDs remain available. */ }
+            catch { try? await file?.remove(); throw error }
+        }
         launch.settingsJSON = snapshot.resolution.settingsJSON
         launch.mcpConfigPath = file?.url
         launch.strictMCPConfig = snapshot.resolution.repositoryUnreadable

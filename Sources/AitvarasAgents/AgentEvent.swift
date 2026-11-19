@@ -134,6 +134,7 @@ public struct AgentEvent: Sendable, Equatable {
         case delivery(AgentDeliveryState)
         /// A queued Claude input becomes the output/approval owner.
         case inputActivated
+        case autonomousTurnStarted(UUID, AgentAutonomousReason)
         case textDelta(String)
         case thinkingDelta(String)
         case thinkingCompleted(String)
@@ -159,5 +160,8 @@ public struct AgentEvent: Sendable, Equatable {
     }
     public let scope: AgentEventScope
     public let kind: Kind
-    public init(scope: AgentEventScope, kind: Kind) { self.scope = scope; self.kind = kind }
+    public let failureReport: AgentFailureReport?
+    public init(scope: AgentEventScope, kind: Kind, failureReport: AgentFailureReport? = nil) {
+        self.scope = scope; self.kind = kind; self.failureReport = failureReport
+    }
 }

@@ -16,7 +16,8 @@ extension AppModel {
     func prepareCaptureAudioArchives() async {
         let id = activityReporter?.begin(ActivityRun(category: .startup,
             title: "Check retained capture audio", stage: "Applying chosen retention and finding interrupted recordings",
-            executionLocation: "This Mac", dataAccess: "App-owned audio metadata", dataDestination: "This Mac only"))
+            executionLocation: "This Mac", dataAccess: "App-owned audio metadata", dataDestination: "This Mac only",
+            jobKey: ActivityJobKey.captureAudioMaintenance))
         let store = captureAudioArchives
         do {
             let counts = try await Task.detached { () throws -> (Int, Int) in

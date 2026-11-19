@@ -425,6 +425,23 @@ exec /usr/bin/git "$@"
         #expect(GitWorkspace.remoteHost("file:///tmp/remote.git") == nil)
     }
 
+    @Test func pushFromSingleBranchCloneLeavesAResolvableUpstream() async throws {
+        let f = try GitFixture(); defer { f.remove() }; try await f.initialize()
+        let remote = try await f.remote()
+        // A single-branch clone's fetch refspec covers only main, so `push -u`
+        // alone cannot create a remote-tracking ref for a new branch.
+        let clone = f.root.appendingPathComponent("single")
+        try await f.git.command(["clone", "-q", "--single-branch", "--branch", "main", remote.path, clone.path], in: f.root)
+        try await f.git.command(["config", "user.name", "Example"], in: clone)
+        try await f.git.command(["config", "user.email", "person@example.org"], in: clone)
+        try await f.git.command(["checkout", "-q", "-b", "feature/single"], in: clone)
+        try await f.commit("single\n", at: clone)
+        try await f.git.push(at: clone, branch: "feature/single")
+        let status = try await f.git.branchStatus(at: clone)
+        #expect(status.upstream == "origin/feature/single")
+        #expect(status.ahead == 0 && status.behind == 0)
+    }
+
     @Test func pushEnvironmentKeepsCredentialsAndStripsOverrides() async throws {
         let fake = try AgentExecutableFixture(#"""
 case "$2" in

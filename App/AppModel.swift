@@ -86,9 +86,14 @@ final class AppModel {
     var activityReporter: ActivityReporter?
     var currentActivityRuns: [ActivityRun] = []
     var recentActivityRuns: [ActivityRun] = []
+    var homeAttentionSnapshot: HomeAttentionSnapshot?
+    var historyAttentionRequested = false
     var monitoredServices: [ServiceStatus] = []
     var backgroundPolicy = BackgroundWorkPolicy()
-    var monitoringError: String?
+    let attentionDismissals = AttentionDismissalHolder()
+    var monitoringError: String? {
+        didSet { attentionDismissals.updateMonitoringError(monitoringError) }
+    }
     var monitoringReady = false
     var monitoringObserver: NSObjectProtocol?
     var automaticTasks: [String: Task<Void, Never>] = [:]
@@ -186,6 +191,8 @@ final class AppModel {
     private var voiceMicSessionActive = false
     private var wakeBriefingRunning = false
     private var newsSchedulerTask: Task<Void, Never>?
+    var chatWakeSchedulerTask: Task<Void, Never>?
+    var pullRequestWatchTask: Task<Void, Never>?
     var routineSchedulerTask: Task<Void, Never>?
     private var routineBannerTask: Task<Void, Never>?
     private var nightlySchedulerTask: Task<Void, Never>?
@@ -267,6 +274,7 @@ final class AppModel {
             let db = try AitvarasDatabase()
             let stores = Stores(db: db)
             self.stores = stores
+            try stores.sweepHeldNotifications()
             try await AgentMCPRuntimeFile.sweep(stateDirectory: AitvarasPaths.stateDirectory,
                 audit: { _ = try stores.record($0) })
             let reporter = ActivityReporter(stores: stores)
@@ -281,7 +289,8 @@ final class AppModel {
             startupID = reporter.begin(ActivityRun(
                 category: .startup, trigger: .startup, title: "Starting Aitvaras",
                 stage: "Restoring saved conversations", executionLocation: "This Mac",
-                dataAccess: "Local app settings and saved history", dataDestination: "This Mac only"))
+                dataAccess: "Local app settings and saved history", dataDestination: "This Mac only",
+                jobKey: ActivityJobKey.startup))
             installMonitoringObserver()
             refreshMonitoring()
             await ActivityTaskContext.$runID.withValue(startupID) { await prepareCaptureAudioArchives() }
@@ -304,13 +313,19 @@ final class AppModel {
             if CommandLine.arguments.contains("--seed-demo-state") {
                 _ = try? StateFixtures.seedDemoProfile(into: stores)
             }
+            // `--seed-home-attention` (D36, TESTING.md) adds fictional attention
+            // items for Home/History checks. Only in an isolated profile.
+            if CommandLine.arguments.contains("--seed-home-attention"), AitvarasPaths.isIsolated {
+                _ = try? HomeAttentionFixtures.seed(into: stores)
+            }
 
             let mlx = MLXEngine(reportLoad: { event in
                 switch event {
                 case .started(let id, let model):
                     reporter.begin(ActivityRun(id: id, referenceID: model, category: .model,
                         title: "Prepare local model", stage: "Loading weights into memory",
-                        executionLocation: "This Mac", dataAccess: "Installed model files", dataDestination: "This Mac only"))
+                        executionLocation: "This Mac", dataAccess: "Installed model files", dataDestination: "This Mac only",
+                        jobKey: ActivityJobKey.modelPreparation(modelID: model)))
                 case .finished(let id, let succeeded):
                     reporter.finish(id: id, state: succeeded ? .succeeded : .failed,
                         outcome: succeeded ? "Local model is ready" : "Model preparation stopped or failed")
@@ -361,10 +376,11 @@ final class AppModel {
                 routineReviewer: routineReviewer, reporter: reporter)
             self.consolidator = consolidator
             startNightlyConsolidationScheduler()
-            NotificationCenter.default.addObserver(
-                forName: .aitvarasActivityChanged, object: nil, queue: .main
-            ) { _ in
-                Task { @MainActor in AppModel.shared.refreshSidebandData() }
+            for name in [Notification.Name.aitvarasActivityChanged, .aitvarasHeldNotificationsChanged,
+                         NSApplication.didBecomeActiveNotification] {
+                NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { _ in
+                    Task { @MainActor in AppModel.shared.refreshSidebandData() }
+                }
             }
             NotificationCenter.default.addObserver(
                 forName: .aitvarasFocusChanged, object: nil, queue: .main
@@ -380,7 +396,8 @@ final class AppModel {
             self.neuralTTS = neuralTTS
             let cleanupID = reporter.begin(ActivityRun(parentID: startupID, category: .startup,
                 trigger: .startup, title: "Check local voice helper", stage: "Cleaning up an unused helper",
-                executionLocation: "This Mac", dataAccess: "App-owned helper state", dataDestination: "This Mac only"))
+                executionLocation: "This Mac", dataAccess: "App-owned helper state", dataDestination: "This Mac only",
+                jobKey: ActivityJobKey.voiceHelperCleanup))
             automaticTasks["voiceHelperCleanup"] = Task { [weak self] in
                 defer { self?.automaticTasks["voiceHelperCleanup"] = nil }
                 await neuralTTS.cleanupUnownedServer()
@@ -487,15 +504,17 @@ final class AppModel {
             NativeBackendSessionReader(provider: provider, backend: available[provider == .claude ? .claude : .codex])
         }
         agentSessionManager = manager
+        startChatWakeScheduler()
         chatModel = ChatModel(manager: manager, stores: stores, backends: available, profileBackends: profileBackends,
             claudeDefaultDirectory: metadataUserDirectory ?? (isolated
                 ? AitvarasPaths.stateDirectory.appendingPathComponent("FakeProviders/claude")
-                : FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".claude")), agentSetup: setup)
+                : FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".claude")), agentSetup: setup, forgeEnvironment: environment)
         chatModel?.didCreateChat = { [weak self] id in self?.openWorkspaceChat(id) }
         chatModel?.activityChanged = { [weak self] in self?.refreshWorkspaces() }
         chatModel?.observeSidebar(workspaceSidebarChats)
         if let selectedWorkspaceChatID { chatModel?.select(selectedWorkspaceChatID) }
         else { chatModel?.prepareNew(projectID: try? stores.newChatProjectID()) }
+        startPullRequestWatchScheduler()
         startAutoContinuePowerObservation()
         try? await agentAutoContinueLifecycle?.launch(power: armingEnabled ? SystemPowerState.autoContinuePower() : .unknown)
     }
@@ -753,7 +772,7 @@ final class AppModel {
                 }
             } catch {
                 await MainActor.run {
-                    AppModel.shared.reportBackgroundError(
+                    AppModel.shared.reportBackgroundError(code: .conversationArchive, subjectID: id,
                         title: "Chat could not be archived", error: error)
                 }
             }
@@ -1063,7 +1082,7 @@ final class AppModel {
                 // App is shutting down.
             } catch {
                 await MainActor.run {
-                    AppModel.shared.reportBackgroundError(
+                    AppModel.shared.reportBackgroundError(code: .voiceArchive, subjectID: id,
                         title: "Voice conversation could not be archived", error: error)
                 }
             }
@@ -1554,8 +1573,18 @@ final class AppModel {
         defer { wakeBriefingRunning = false }
 
         await bootstrapIfNeeded()
+        await runChatWakeups()
+        async let watch: Void = runPullRequestWatch()
+        await catchUpConnectorsAfterWake(at: wokeAt)
+        await watch
+    }
+
+    private func catchUpConnectorsAfterWake(at wokeAt: Date) async {
         guard let stores, let integrations,
-              BackgroundFeature.allCases.contains(where: { automaticWorkAllowed($0) }) else { return }
+              // The connector catch-up requires an enabled, reviewed feature.
+              BackgroundFeature.allCases.contains(where: {
+                  !BackgroundWorkPolicy.defaultOn.contains($0) && automaticWorkAllowed($0)
+              }) else { return }
         do {
             guard let window = try stores.pendingWakeBriefingWindow(wokeAt: wokeAt) else {
                 return
@@ -1574,7 +1603,7 @@ final class AppModel {
         } catch {
             // Keep the durable sleep boundary intact so the next activation
             // can retry; connector intake itself is replay-safe and deduped.
-            reportBackgroundError(title: "Wake briefing could not be prepared", error: error)
+            reportBackgroundError(code: .wakeBriefing, title: "Wake briefing could not be prepared", error: error)
         }
     }
 
@@ -1613,16 +1642,20 @@ final class AppModel {
     }
 
     func refreshSidebandData() {
+        attentionDismissals.expireIfNeeded()
         guard let stores else { return }
         do {
+            try stores.sweepHeldNotifications()
             let refreshedSuggestions = try stores.pendingSuggestions()
             let refreshedActivity = try stores.recentActivity(limit: 300)
             let refreshedToday = try stores.todaySnapshot()
             let refreshedRoutines = try stores.commandRoutines(includeDismissed: true)
+            let heldMaintenanceAt = try stores.nextHeldNotificationMaintenanceAt()
             suggestions = refreshedSuggestions
             activity = refreshedActivity
             todaySnapshot = refreshedToday
             commandRoutines = refreshedRoutines
+            scheduleHeldNotificationMaintenance(at: heldMaintenanceAt)
         } catch {
             // Preserve the last known UI instead of pretending durable state
             // became empty when the database is temporarily unavailable.
@@ -1634,6 +1667,18 @@ final class AppModel {
         integrations?.focusCoach?.reconcile()
         focusSessionActive = integrations?.focusCoach?.isSessionActive ?? false
         refreshMonitoring()
+    }
+
+    private func scheduleHeldNotificationMaintenance(at deadline: Date?) {
+        automaticTasks["heldNotificationMaintenance"]?.cancel()
+        automaticTasks["heldNotificationMaintenance"] = nil
+        guard let deadline else { return }
+        automaticTasks["heldNotificationMaintenance"] = Task { [weak self] in
+            do { try await Task.sleep(for: .seconds(max(0.05, deadline.timeIntervalSinceNow))) }
+            catch { return }
+            guard !Task.isCancelled else { return }
+            self?.refreshSidebandData()
+        }
     }
 
     /// Mirrors the focus session for the companion overlay badge.
@@ -1705,6 +1750,68 @@ final class AppModel {
         }
     }
 
+    func runChatWakeups() async {
+        guard let stores, let manager = agentSessionManager else { return }
+        let permitted = automaticWorkAllowed(.chatWakeups)
+            && ActivityExecution.permits(.chatWakeups, stores: stores, reporter: activityReporter, trigger: .automatic)
+        do {
+            try await ActivityTaskContext.$trigger.withValue(.automatic) {
+                try await manager.runDueWakeups(permitted: permitted)
+            }
+        } catch {
+            // Durable due work stays pending when it was provably not delivered.
+            reportBackgroundError(code: .chatWakeup, title: "Chat wake-up could not be delivered", error: error)
+        }
+    }
+
+    private func startChatWakeScheduler() {
+        chatWakeSchedulerTask?.cancel()
+        chatWakeSchedulerTask = Task { [weak self] in
+            while !Task.isCancelled {
+                await self?.runChatWakeups()
+                do { try await Task.sleep(for: .seconds(30)) } catch { return }
+            }
+        }
+    }
+
+    private func pullRequestWatchPermitted() -> Bool {
+        guard let stores, chatModel?.forgeEnabled == true else { return false }
+        return automaticWorkAllowed(.pullRequestWatch)
+            && ActivityExecution.permits(.pullRequestWatch, stores: stores, reporter: activityReporter, trigger: .automatic)
+    }
+
+    private func runPullRequestWatch() async {
+        guard let stores, let chatModel, pullRequestWatchPermitted() else { return }
+        let focusKey = FocusCoach.sessionKey
+        do {
+            let updates = try await ActivityTaskContext.$trigger.withValue(.automatic) {
+                try await chatModel.pullRequestWatcher.tick(permitted: { [weak self] in
+                    await self?.pullRequestWatchPermitted() == true
+                }, attention: { change in
+                    if let title = change.title(watching: false),
+                       (try? stores.value(forKey: focusKey)) != "1" {
+                        await NotificationRouter.requestedWorkNeedsAttention(message: title)
+                    }
+                })
+            }
+            for update in updates { chatModel.applyPullRequestWatchUpdate(update) }
+        } catch is CancellationError {
+            return
+        } catch {
+            reportBackgroundError(code: .pullRequestWatch, title: "Pull request Auto-fix could not refresh", error: error)
+        }
+    }
+
+    private func startPullRequestWatchScheduler() {
+        pullRequestWatchTask?.cancel()
+        pullRequestWatchTask = Task { [weak self] in
+            while !Task.isCancelled {
+                await self?.runPullRequestWatch()
+                do { try await Task.sleep(for: .seconds(60)) } catch { return }
+            }
+        }
+    }
+
     func startCommandRoutineScheduler(using executor: CommandRoutineExecutor) {
         guard automaticWorkAllowed(.routines) else { return }
         routineSchedulerTask?.cancel()
@@ -1716,7 +1823,7 @@ final class AppModel {
                 for result in results {
                     showRoutineResult(result)
                     if !result.success {
-                        reportBackgroundError(
+                        reportBackgroundError(code: .routineExecution, subjectID: result.routineID,
                             title: "Scheduled routine failed",
                             message: result.spokenText)
                     }

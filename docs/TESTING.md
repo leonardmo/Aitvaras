@@ -137,7 +137,94 @@ Measure memory against the model budget, test coexistence with voice/capture,
 and review light/dark and minimum-window states. Exposing Aitvaras knowledge
 through a policy-gated MCP server remains an open follow-up.
 
+## Claude tool-result identity repair and failure diagnostics
+
+`AgentTranscriptIdentityMigrationTests` upgrades an on-disk synthetic database
+through v36 and reopens it twice. It checks proven corrupt active/retired Claude
+user IDs, valid identities, canonical/imported history, fork markers, other
+providers, malformed/conflicting metadata and corroborated journal links. Only
+proven corrupt native IDs may change; content, journals, sessions, positions,
+retirement flags and history observations stay intact. A native refresh after
+repair must reuse the original input row without duplicates. Later opens do
+not rerun the migration. Ordinary upgrades have no automatic database backup:
+back up the database manually before installing an upgrade.
+
+`AgentFailureDiagnosticsTests` injects failures at local reply, stream,
+approval, pre-delivery and real store-identity boundaries. Synthetic path,
+prompt and credential canaries must never enter serialized Activity events.
+Reports retain type/case categories through the coordinator and manager;
+process-error tests cover Claude and Codex wire teardown. A broken Activity
+sink must not recursively audit itself or replace the original failure.
+Approval/conformance tests retain their authorization-event assertions and
+also require the new diagnostic event where a turn fails.
+
+Host verification must build the App, check the send/sign-in catch paths and
+inspect unified-log privacy with synthetic diagnostics. Package tests verify
+Activity contents, not the system's private-log retention configuration. Test
+the repair against a backed-up private database copy without publishing it.
+`AgentStoppedTurnTests` covers the failure/delivery label and action matrix,
+transactional terminal-row rollback, duplicate finalization, reopening and
+startup recovery with no provider launch. Hand-written executable fixtures
+verify the exact Continue instruction and original resume identity, duplicate
+click rejection, native refresh retaining a Continued marker, quota reset
+metadata and manual recovery, and explicit Retry restoring the original wire
+envelope and attachment bytes for prepared/unknown delivery. Refusal tests
+cover absent/changed native identities, internal errors, bogus/stale rows and
+Retry of acknowledged input. Failed recovery preparation must roll back its
+claim before any provider write. A blocked stopped-row write must retain an
+in-memory internal diagnostic without offering recovery or claiming durability.
+Backend diagnostics tests assert that thrown and stream errors remain
+`AgentFailure` while failure events retain the original safe category. A normal
+Claude turn accepts foreign-session subagent/compaction frames; an explicit
+Continue rejects a different authoritative system/init identity. The managed
+Local scope test permits only its expected failure audit, verifies that it is
+excluded from Consolidator evidence and contains no project text, and retains
+its checks against global learning.
+
+Host gate: build the App and use a synthetic project in an isolated profile.
+With Haiku, interrupt a response, simulate a closed CLI and exercise Continue,
+Retry and Sign in. Reopen the chat and refresh native history. Check that the
+fixed Continue instruction remains a small marker and reaches the same native
+session; retry must preserve the saved input rather than the current draft.
+Check quota rows with/without known reset time, internal-error Copy details
+(safe category only), double clicks and changed provider/profile selection.
+Review actual light/dark windows at 800×500: each compact row has an icon,
+short label and actions, with no nested popovers. Composer failure text must
+disappear for acknowledged/uncertain delivery. No quota reset may trigger a
+send automatically. Package fixtures do not establish live CLI/UI acceptance.
+
 ## Project agent setup (D34)
+
+Issue #23 hook gate: on the host, build the App and use a fresh isolated state
+profile with external integrations disabled, Haiku and a throwaway repository.
+Configure two PreToolUse Bash hooks there: one passes; one exits 2 with a short
+stderr reason only for a specific harmless command, such as `echo blocked-example`.
+Request at least three tool calls, including that command. Verify one icon per
+hook on its tool row, no matched standalone hook rows, and the block reason
+visible without expanding. Expand a tool to inspect each hook's name, Pre/Post,
+status icon and reason; check tooltips and accessibility labels. Reopen the chat
+and confirm the hooks and reason persist. Review real light/dark windows at
+800×500, with no nested popovers. Package tests cover matching, hook-ID pinning,
+PostToolUse fallback, block/failure parsing, unknown responses and reopening;
+they do not establish live CLI or window acceptance.
+
+The self-drive scenario `hook-tools` automates the live part of this gate.
+`scripts/run-self-drive.sh` copies the generic fixture in
+`UITests/self-drive/fixtures/hook-project` into its throwaway project when
+`AITVARAS_SELF_DRIVE_TEMPLATE` points there, and defaults Claude to Haiku through
+the debug-only `AITVARAS_SELF_DRIVE_CLAUDE_MODEL`. The scenario requires the
+inline provider segments, so run it at 1080×720 (at 800×500 they collapse into a
+native menu the driver cannot open):
+
+```sh
+AITVARAS_SELF_DRIVE_TEMPLATE=$PWD/UITests/self-drive/fixtures/hook-project \
+  AITVARAS_SELF_DRIVE_APPEARANCE=light AITVARAS_SELF_DRIVE_SIZE=1080x720 \
+  scripts/run-self-drive.sh hook-tools
+```
+
+It checks Haiku is selected, three Bash calls complete with no error row, and
+the block reason appears on its row; review `hooks-tool-rows.png` and
+`hooks-tree.txt` for one icon per hook in light and dark.
 
 `Fixtures/agents/claude/setup-hooks.jsonl` is a **hand-written** protocol fixture
 using the P0 field shapes, with generic `echo`/`docs` servers, a `shout` skill,
@@ -1471,8 +1558,204 @@ The App wrapper and composer key handling still require `make app`, project
 regeneration and the host's isolated-profile native interaction checks. Package
 builds do not compile the SwiftUI App target or prove IME/focus behavior.
 
+## Home attention (D36, issue #18)
 
-### Usage-reset continuation (D36, issue #27)
+Package coverage, all offline with injected clocks:
+
+`ActivityAttentionTests` verifies the package's uncapped
+`Stores.activityAttentionSnapshot()` problem projection against persisted runs:
+exact-key recovery ordering, grouped occurrence counts, unknown outcomes,
+helper ownership, restart and queues beyond 100 failures. Reads preserve the
+original runs, acknowledgements, stages and events. Coded background problems
+remain manual-only while no producer records success for their problem key;
+service-check counters and successful jobs with other keys do not resolve them.
+This projection is the shared input for subsequent Home, bulk-dismissal and
+History attention integration; these package checks do not establish UI behaviour.
+
+`HeldNotificationLifecycleTests` injects a wall clock through `Stores` and checks
+the shared active-update predicate, the exact 24-hour boundary, conditional
+restore within eight seconds, restart cleanup, and exact-ID briefing consumption
+while dismissal and new arrivals race composition. Lifecycle mutations and their
+metadata-only audits commit together; injected audit failures must roll back all
+changes. Audits contain action/count/IDs and are not memory evidence. Startup,
+foreground, wake and the next retention/dismissal deadline refresh held updates;
+the App hooks require host compilation and do not implement the Undo bar.
+
+`AttentionDismissalTests` covers single and bulk dismissal receipts: Dismiss all
+skips approvals, tool suggestions, unsaved captures, every unknown outcome and
+the monitoring warning; Undo is single-use within eight seconds and never
+restores consumed or expired updates, never hides a newer failure and never
+resurrects a failure that a later success cleared. `HomeAttentionCardTests` and
+`AttentionHistoryTests` check row order, the five-row cap, the exact "N more"
+count and that History's attention mode reaches every omitted item.
+`ActivityRunDetailTests` checks the detail summary sentences and which actions
+appear per state. `StoredConversationRetryTests` proves Retry archives only the
+requested stored conversation and refuses, without model work, when it is open,
+project-owned, missing, changed, too short, already archived or in progress.
+
+**Seeded profile.** `--seed-home-attention` (isolated profiles only; it also
+disables external integrations) adds fictional attention items once: a pending
+tool suggestion, a grouped indexing failure ×3, a failed model download, an
+interrupted consolidation, a delivery with an unknown outcome, a failed archive
+of a stored conversation (Retry and Open conversation), two held updates and
+the automatic-work prompt. It also seeds a capture-summary failure that a later
+success already recovered (must not appear) and an expired held update (removed
+on the first read). `HomeAttentionFixtureTests` keeps the fixture, its fixed
+IDs and the self-drive scenario in step.
+
+```sh
+export AITVARAS_STATE_DIR="$(mktemp -d -t aitvaras-attention)"
+.build-xcode/Build/Products/Debug/Aitvaras.app/Contents/MacOS/Aitvaras --seed-home-attention
+```
+
+**Self-drive.** `UITests/self-drive/home-attention.json` declares
+`"seed": ["homeAttention"]`, so the driver seeds its throwaway profile after
+bootstrap. It checks the card (Approve/Reject without ✕ on the suggestion, the
+grouped indexing row with 3 occurrences, "N more"), opens the grouped detail
+sheet (summary, earlier failures, Dismiss, Details) and closes it, dismisses
+one group and undoes it, runs Dismiss all and verifies the suggestion and the
+unknown outcome stay before undoing it, follows "N more" into History's
+attention mode (screenshot only: the driver cannot reach SwiftUI `List` rows,
+so `AttentionHistoryTests` covers reachability), opens the archive failure's
+details (Retry, Open conversation) and opens the conversation, then dismisses
+four problems so the held updates reach Home and dismisses one of them. The
+driver includes an attached sheet in its accessibility tree, press dispatch
+and screenshots (`<name>-sheet.png`). Container identifiers use
+`.accessibilityElement(children: .contain)`; without it SwiftUI lets the
+container's identifier replace its children's after a re-render. Run it in
+both appearances at the minimum and default sizes:
+
+```sh
+for look in light dark; do for size in 800x500 1080x720; do
+  AITVARAS_SELF_DRIVE_APPEARANCE=$look AITVARAS_SELF_DRIVE_SIZE=$size scripts/run-self-drive.sh home-attention 300
+  mv .build-e2e/self-drive/home-attention .build-e2e/self-drive/home-attention-$look-$size
+done; done
+```
+
+**Needs a person:** reviewing the card and detail screenshots in light and dark,
+keyboard focus on the ✕ controls (Tab reaches each one; Space activates it),
+VoiceOver labels ("Dismiss …"), ⌘Z while the Undo bar is visible, and a real
+Retry against a local model.
+
+### Forge requests (D37)
+
+Offline `ForgeTests` exercise fake `gh`/`glab` JSON, host selection (including
+enterprise and unsupported hosts), signed-out/missing CLIs, view/create/checks/
+comments, unknown fields, malformed output, fixed failures, timeout, confirmation,
+duplicate creation, changed branch tips, metadata-only audit and the complete
+migration chain with one binding per chat and watch/watermark round-trips.
+
+Host checks, using an isolated profile and generic disposable repositories:
+
+- Open Connections → Git hosts. Check both missing and installed CLIs, public
+  and enterprise/self-hosted auth listings. Opening it never starts sign-in.
+  Check a signed-out host's sign-in action, validated browser launch, successful
+  completion, cancellation and timeout. No token or raw diagnostic enters UI,
+  logs, activity or the database.
+- Push a feature branch. Create a request with the first commit subject as
+  title and a bullet list of all subjects since origin's default branch as
+  body. Edit both fields, select Draft with the segmented control and cancel:
+  no request is created. Create confirms publication. Repeat with a request
+  already on the branch: it binds without another create.
+- Change the committed tip/branch while the sheet is open: creation refuses
+  stale input. Check an unpushed branch, default branch, detached HEAD and a
+  failed worktree. An unsupported host still permits Git push.
+- Reopen the chat and verify the request number, draft/open/closed/merged state,
+  review decision and mergeability. Refresh checks with passing, failing,
+  skipped and pending jobs; hover for failing names. Refresh after push and
+  manually; idle chat must not poll forge APIs. Simulate network/auth failures
+  and verify fixed errors and preserved request identity.
+- Open the website button and merge there. There is no in-app merge action.
+  Confirm only one identity row is bound per chat, watch remains false, and no
+  title, body, comment content or URL is included in activity payloads.
+- With both `origin` and another forge remote configured, verify all reads and
+  creation target origin. Test SSH and HTTPS origin URLs and GitLab subgroups.
+
+The sandbox package build does not compile App. The supervisor must run
+`make app`, host checks and isolated-profile visual/interaction checks. Real
+agent-assisted checks use a cheap model only; forge commands require no model.
+
+## CLI-started chat turns (D38)
+
+Use an isolated profile and a cheap model (Claude Haiku) for live checks. The
+fake executable fixtures establish routing and journal contracts, not native
+scheduler timing or UI acceptance.
+
+- Send a request that uses ScheduleWakeup. After its first result, leave the
+  transport alive and wait for the wake-up. Verify one compact wake-up marker,
+  streamed response, usage, terminal journal and “Chat woke up” Activity row.
+- Start a background Bash task and let it finish after the original result.
+  Verify “Background task finished”, one response and no synthetic user bubble.
+- Trigger a permission or AskUserQuestion request inside an autonomous turn.
+  Verify the normal card, Allow/Reject or answers, policy/audit provenance and
+  completion. Stop must interrupt this turn too.
+- Send while the autonomous response is running. Verify the existing Claude
+  follow-up queue consumes the input once and leaves no running journal behind.
+- Switch chats or deactivate the app before the wake-up. Verify the sidebar
+  unread dot and generic attention notification when already authorized. Verify
+  Focus holds suppress the notification. Approval cards also need attention.
+- Resume a session with prior tool/reminder/assistant messages. Verify replay
+  creates no autonomous turn or extra marker. Repeat with unsolicited Codex
+  turn/started, items and turn/completed on its bound thread.
+- Quit during autonomous work and restart. Verify recovery marks its journal
+  interrupted and never resends it. Let a completed turn idle out; verify the
+  transport closes. Wake-ups after eviction/restart are outside W1's scope.
+
+## Durable chat wake-ups (D39 / W2)
+
+Use an isolated profile and a cheap Claude model (Haiku) for live checks.
+Chat wake-ups are on by default, also in a fresh unreviewed profile; switching the feature off in Activity must stop catch-ups.
+
+- Schedule a wake-up, quit before it is due, restart after its due time: one
+  autonomous marker/answer, no user bubble, Activity “Chat woke up (late)”.
+  Restart again and verify no duplicate. Verify the native session was resumed.
+- Sleep through a due wake; wake the Mac and verify one catch-up. Leave a native
+  transport alive and verify its normal wake clears the badge without app replay.
+- Schedule a recurring cron, quit through at least three slots, restart: one
+  catch-up, then the next future slot. Verify local time and daylight-saving
+  behavior with the system's configured time zone.
+- Pause Chat wake-ups, restart with overdue app-owned work: no turn. Resume and
+  verify one catch-up. Native CLI timers continue while paused; their badge items
+  remain read-only. Review this distinction in the settings disclosure.
+- Keep a chat busy through a due time: defer until it finishes. Test engine-down
+  recovery and an approval during a catch-up; confirm tools retain policy checks.
+- Verify a pending timer survives the ten-minute idle deadline. Open nine chats
+  with timers and check the latest due idle slot is evicted and becomes app-owned.
+- Check clock badge/tooltip, per-item app-owned cancellation, native read-only
+  items, archive clearing, background task/monitor stop notes after restart,
+  and no injected prompt appearing after native history refresh.
+- Switch the composer's Claude profile after scheduling. Verify the catch-up
+  resumes the creating session/profile without changing the composer selection.
+
+## Pull request Auto-fix (D40 / P1)
+
+Use an isolated profile and a scratch repository with the forge CLI already
+signed in. Use Haiku for live autonomous turns.
+
+- Open an existing draft or open request with a failing check and an old
+  comment. Confirm the switch starts off. Enable Auto-fix and verify that
+  one turn mentions the failure, skips the old comment, and shows a
+  “Pull request update” marker without a user bubble.
+- Add a comment or review. Verify one further turn. If a new failure or
+  conflict appears in the same tick, verify that the turn covers it too.
+  Leave the request quiet for several ticks and verify that no turn or
+  Activity row is added.
+- Keep the chat busy or awaiting approval during an update. Verify it is
+  delivered once after the chat is free. Check the watching indicator's
+  last-check tooltip.
+- With checks remaining failed, trigger a third attempt. Verify Auto-fix
+  switches off and Activity shows “Auto-fix paused after 3 attempts”.
+  With the app inactive and notifications permitted, verify the pause
+  notification carries no request or chat content.
+- Merge or close a watched request on the forge website. Verify watching
+  stops and Activity records the terminal state.
+- Pause or decline Pull request Auto-fix in Activity, then add a comment
+  and sleep/wake. Verify no turn starts until the feature is enabled again.
+- Sign out while watching. Verify the request shows one forge error,
+  retries back off, and the watcher resumes after sign-in.
+- Verify push goes through the existing approval flow in a chat using Ask.
+
+### Usage-reset continuation (D41, issue #27)
 
 The foundation is delivered before the issue #23 Stopped row. Production arming
 remains inactive until that row exposes both persisted choices and Cancel.
@@ -1496,8 +1779,9 @@ audit/revocation failures, same-session delivery, atomic delivery barriers,
 identity-based transcript suppression, new-message cancellation, verified quota
 registration, polling, capacity deferral and crash/quit recovery. Timed waits use
 a manually advanced clock; provider activity uses fakes or offline executables.
-The receipt/quota-stop migration is independent of the issue #23 Stopped-row
-migration; take its next free number at rebase. Claude receipts use the submitted
+The auto-continue and receipt migrations are appended after the main migrations.
+Quota failures and reset times reuse the Stopped row. Its optional scheduling
+metadata captures the window, account and chat input revision. Claude receipts use the submitted
 UUID and do not depend on tool-result user frames. Codex automatic inputs send
 a client message UUID; unbound native identity fails closed rather than becoming
 a person-authored bubble. Unknown delivery is never replayed automatically.

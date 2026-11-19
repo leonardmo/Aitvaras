@@ -178,7 +178,7 @@ extension AppModel {
 
     private func reportSavedNativeHistoryFailure() {
         workspaceMessage = "Saved native history could not be displayed. The stored text has not been deleted."
-        activityReporter?.problem(title: "Saved native history unavailable",
+        activityReporter?.problem(code: .savedNativeHistory, title: "Saved native history unavailable",
             outcome: "Saved history could not be displayed. Stored text is retained; no provider request was retried.")
     }
 }

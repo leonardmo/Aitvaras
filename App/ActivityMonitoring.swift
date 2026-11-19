@@ -18,6 +18,8 @@ extension BackgroundFeature {
         case .routines: "Scheduled routines"
         case .delivery: "External notification delivery"
         case .focus: "Focus observations"
+        case .chatWakeups: "Chat wake-ups"
+        case .pullRequestWatch: "Pull request Auto-fix"
         }
     }
 }
@@ -45,6 +47,40 @@ struct ActivityMenuControls: View {
 }
 
 extension AppModel {
+    /// Called only after the operation sheet has disappeared. Reuse the
+    /// existing saved-chat and capture destinations, never an in-sheet copy.
+    func openActivityDestination(_ destination: ActivityDetailDestination) {
+        guard let stores else { return }
+        switch destination {
+        case .capture(let id):
+            do {
+                guard let record = try stores.captureRecord(id: id) else {
+                    throw ActivityRunDetailError.runNotFound
+                }
+                CaptureWindows.shared.showResult(record: record, model: self)
+            } catch { presentError(title: "The saved capture could not be opened", error: error) }
+        case .workspaceChat(let id):
+            openWorkspaceChat(id)
+            if selectedWorkspaceChatID == id {
+                NotificationCenter.default.post(name: .init("aitvaras.openWorkspaceChat"), object: nil)
+            }
+        case .conversation(let id):
+            openUnassignedConversation(id)
+            if selectedChatConversationID == id, selectedWorkspaceChatID == nil {
+                NotificationCenter.default.post(name: .init("aitvaras.openWorkspaceChat"), object: nil)
+            }
+        }
+    }
+
+    /// Home and History merge the same durable rows and live decisions.
+    var attentionCard: HomeAttentionCard {
+        let incident = attentionDismissals.visibleMonitoringError.flatMap { message in
+            attentionDismissals.monitoringIncidentID.map { HomeMonitoringIncident(id: $0, message: message) }
+        }
+        return HomeAttentionCard(snapshot: homeAttentionSnapshot ?? .init(),
+            approvals: chatModel?.approvalSuggestions ?? [], monitoring: incident)
+    }
+
     var topLevelCurrentActivity: [ActivityRun] {
         let activeIDs = Set(currentActivityRuns.map(\.id))
         return currentActivityRuns.filter { $0.parentID == nil || !activeIDs.contains($0.parentID!) }
@@ -73,6 +109,7 @@ extension AppModel {
                 .sorted { $0.startedAt > $1.startedAt }
             monitoredServices = try stores.serviceStatuses()
             backgroundPolicy = try stores.backgroundWorkPolicy()
+            homeAttentionSnapshot = try stores.homeAttentionSnapshot()
             monitoringReady = true
             monitoringError = activityReporter?.failureMessage
             if monitoringError != nil, !monitoringFailureHandled {
@@ -177,7 +214,7 @@ extension AppModel {
                     }
                     refreshSidebandData()
                 } catch is CancellationError { }
-                catch { reportBackgroundError(title: "Stored conversations could not be recovered", error: error) }
+                catch { reportBackgroundError(code: .archiveRecovery, title: "Stored conversations could not be recovered", error: error) }
             }
         }
         if automaticWorkAllowed(.routineReview), let routineReviewer,
@@ -192,7 +229,7 @@ extension AppModel {
                     }
                     refreshSidebandData()
                 } catch is CancellationError { }
-                catch { reportBackgroundError(title: "Routine review could not finish", error: error) }
+                catch { reportBackgroundError(code: .routineReview, title: "Routine review could not finish", error: error) }
             }
         }
     }
@@ -219,7 +256,7 @@ extension AppModel {
             status.enabled = enabled && configured
             status.paused = !enabled
             if !enabled || !configured {
-                status.stage = !backgroundPolicy.reviewed ? "Waiting for your review"
+                status.stage = !backgroundPolicy.reviewed && !BackgroundWorkPolicy.defaultOn.contains(feature) ? "Waiting for your review"
                     : !configured ? "Not configured"
                     : backgroundPolicy.paused ? "Automatic work paused" : "Off by your choice"
                 status.nextOpportunity = nil
@@ -235,13 +272,16 @@ extension AppModel {
         }
     }
 
-    func reportBackgroundError(title: String, error: Error) {
-        reportBackgroundError(title: title, message: "The operation could not finish. Review this feature's status before retrying.")
+    func reportBackgroundError(code: ActivityProblemCode, subjectID: UUID? = nil, title: String, error: Error) {
+        reportBackgroundError(code: code, subjectID: subjectID, title: title,
+            message: "The operation could not finish. Review this feature's status before retrying.")
     }
 
-    func reportBackgroundError(title: String, message: String) {
+    func reportBackgroundError(code: ActivityProblemCode, subjectID: UUID? = nil, title: String, message: String) {
         if let parent = ActivityTaskContext.runID { failedOperationIDs.insert(parent) }
-        if let id = activityReporter?.problem(title: title, outcome: message) { backgroundProblemRuns[title] = id }
+        if let id = activityReporter?.problem(code: code, subjectID: subjectID, title: title, outcome: message) {
+            backgroundProblemRuns[ActivityJobKey.problem(code, subjectID: subjectID)] = id
+        }
     }
 
     func shutdownMonitoring() async {
@@ -257,6 +297,12 @@ extension AppModel {
         if let voiceActivityID { activityReporter?.finish(id: voiceActivityID, state: .cancelled, outcome: "Voice stopped for quit") }
         voiceActivityID = nil
         let nightlyTask = stopNightlyConsolidationScheduler()
+        let wakeTask = chatWakeSchedulerTask
+        wakeTask?.cancel()
+        chatWakeSchedulerTask = nil
+        let watchTask = pullRequestWatchTask
+        watchTask?.cancel()
+        pullRequestWatchTask = nil
         let routineTask = routineSchedulerTask
         routineTask?.cancel()
         routineSchedulerTask = nil
@@ -265,8 +311,62 @@ extension AppModel {
         await integrations?.stopAutomaticWork()
         await nightlyTask?.value
         await routineTask?.value
+        await wakeTask?.value
+        await watchTask?.value
         for task in backgroundTasks { await task.value }
         automaticTasks.removeAll()
+    }
+
+    /// D36: Retry exists only for a failed capture summary and a failed archive
+    /// of one stored conversation, through their existing targeted paths.
+    func canRetryActivity(_ target: ActivityRetryTarget) -> Bool {
+        switch target {
+        case .captureSummary: capture != nil
+        case .conversationArchive: archiver != nil && stores != nil
+        }
+    }
+
+    /// Returns nil when the retry ran to a recorded result (a success clears the
+    /// failure from attention through its job key), or a short reason otherwise.
+    func retryActivity(_ target: ActivityRetryTarget) async -> String? {
+        defer { refreshSidebandData() }
+        switch target {
+        case .captureSummary(let recordID):
+            guard let capture else { return "Capture is not available yet." }
+            do {
+                _ = try await capture.retrySummary(for: recordID)
+                return nil
+            } catch let error as CaptureError {
+                return error.message
+            } catch is CancellationError {
+                return "The retry was stopped. The transcript is retained."
+            } catch {
+                return "The summary could not be completed. The transcript is retained."
+            }
+        case .conversationArchive(let conversationID, let jobKey):
+            guard let archiver, let stores else { return "Archiving is not available yet." }
+            // Never archive a conversation that is currently open in chat or voice.
+            var active: Set<UUID> = chatConversationID.map { [$0] } ?? []
+            for storedKey in ["chat.conversationID", "voice.conversationID"] {
+                if let raw = try? stores.value(forKey: storedKey), let id = UUID(uuidString: raw) { active.insert(id) }
+            }
+            do {
+                switch try await archiver.retryStoredConversation(id: conversationID, expectedJobKey: jobKey,
+                                                                  excluding: active) {
+                case .archived: return nil
+                case .notArchived: return "No archive was saved this time. The conversation is retained."
+                case .unavailable(.active): return "This conversation is still open. It is archived when you leave it."
+                case .unavailable(.projectChat): return "Project chats are never archived into shared memory."
+                case .unavailable(.missing): return "The saved conversation is no longer available."
+                case .unavailable(.changed): return "The conversation changed since this attempt, so it is not retried here."
+                case .unavailable(.notSubstantial): return "The conversation is too short to archive."
+                case .unavailable(.inProgress): return "This conversation is already being archived."
+                case .unavailable(.alreadyArchived): return "This conversation has already been archived."
+                }
+            } catch {
+                return "The conversation could not be checked for archiving."
+            }
+        }
     }
 
     func canStopActivityRun(_ run: ActivityRun) -> Bool {

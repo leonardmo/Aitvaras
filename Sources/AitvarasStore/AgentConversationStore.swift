@@ -34,10 +34,10 @@ extension Stores: AgentConversationPersistence {
         let requested = try String.fetchOne(db, sql: "SELECT value FROM kv WHERE key = ?", arguments: ["agent.worktreeRequested.\(chatID.uuidString)"]) == "true"
         if requested || owned != nil { guard owned?.state == .ready else { throw AgentGitError.creationFailed } }
         let entries = try AgentTranscriptEntry.filter(Column("chatID") == chatID).filter(Column("isActive") == true)
-            .order(Column("position")).fetchAll(db).filter { ["user", "assistant"].contains($0.kind) }
+            .order(Column("position")).fetchAll(db).filter { ["user", "assistant", "continued"].contains($0.kind) }
         var completed = Set<UUID>(), current: AgentJournalTurn?
         for entry in entries {
-            if entry.kind == "user" { current = try AgentJournalTurn.fetchOne(db, key: entry.id) }
+            if ["user", "continued"].contains(entry.kind) { current = try AgentJournalTurn.fetchOne(db, key: entry.id) }
             let payload = entry.payloadJSON.flatMap(JSONValue.parse)
             if let native = payload?["nativeHistory"] {
                 if native["completed"]?.boolValue == true {
@@ -75,9 +75,9 @@ extension Stores: AgentConversationPersistence {
                 else { entry.sessionID = nil; entry.nativeMessageID = nil }
                 let prior = original.payloadJSON.flatMap(JSONValue.parse)
                 var wireDigest = prior?["forkWireDigest"] ?? .null
-                if original.kind == "user", let turn = try AgentJournalTurn.fetchOne(db, key: original.id),
+                if ["user", "continued"].contains(original.kind), let turn = try AgentJournalTurn.fetchOne(db, key: original.id),
                    turn.sessionID == original.sessionID, turn.delivery == .acknowledged {
-                    wireDigest = .string(Self.conversationWireDigest(turn.prompt))
+                    wireDigest = turn.prompt.map { .string(Self.conversationWireDigest($0)) } ?? .null
                 }
                 entry.payloadJSON = JSONValue.object([
                     "composer": original.payloadJSON.flatMap(JSONValue.parse)?["composer"] ?? .null,

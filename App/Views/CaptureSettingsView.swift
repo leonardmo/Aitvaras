@@ -41,7 +41,8 @@ final class SpeechAssetReadiness {
         let operation = reporter?.begin(ActivityRun(category: .model,
             title: "Install speech assets", stage: "Downloading and installing selected language",
             provider: "Apple Speech", executionLocation: "This Mac",
-            dataAccess: "Public language assets", dataDestination: "Apple asset servers; no audio or transcript"))
+            dataAccess: "Public language assets", dataDestination: "Apple asset servers; no audio or transcript",
+            jobKey: ActivityJobKey.speechAssets(language: language)))
         operations[language] = operation
         tasks[language] = Task {
             defer { tasks[language] = nil; operations[language] = nil }

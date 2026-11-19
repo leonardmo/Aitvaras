@@ -1,0 +1,137 @@
+{
+ "steps": [
+  {
+   "action": "press",
+   "identifier": "bubble.left.and.text.bubble.right"
+  },
+  {
+   "action": "press",
+   "identifier": "chat.new.$project"
+  },
+  {
+   "action": "waitFor",
+   "identifier": "chat.composer.input",
+   "timeout": 10
+  },
+  {
+   "action": "waitFor",
+   "identifier": "chat.provider.claude",
+   "enabled": true,
+   "timeout": 180,
+   "delay": 1
+  },
+  {
+   "action": "press",
+   "identifier": "chat.provider.claude"
+  },
+  {
+   "action": "waitFor",
+   "text": "Haiku",
+   "within": "chat.model",
+   "timeout": 30
+  },
+  {
+   "action": "waitFor",
+   "identifier": "chat.composer.send",
+   "enabled": true,
+   "timeout": 180
+  },
+  {
+   "action": "type",
+   "text": "Use your Bash tool three separate times, one command per call, in this order: echo one, then echo blocked-example, then echo three. If a command is blocked, do not retry it; continue with the next. Afterwards reply with only DONE-HOOKS."
+  },
+  {
+   "action": "press",
+   "identifier": "chat.composer.send"
+  },
+  {
+   "action": "waitFor",
+   "text": "Use your Bash tool three separate times, one command per call, in this order: echo one, then echo blocked-example, then echo three. If a command is blocked, do not retry it; continue with the next. Afterwards reply with only DONE-HOOKS.",
+   "within": "chat.composer.input",
+   "absent": true,
+   "timeout": 15
+  },
+  {
+   "action": "waitFor",
+   "identifier": "chat.request.0.allow",
+   "enabled": true,
+   "timeout": 90,
+   "optional": true
+  },
+  {
+   "action": "press",
+   "identifier": "chat.request.0.allow",
+   "optional": true
+  },
+  {
+   "action": "waitFor",
+   "identifier": "chat.request.0.allow",
+   "enabled": true,
+   "timeout": 90,
+   "optional": true
+  },
+  {
+   "action": "press",
+   "identifier": "chat.request.0.allow",
+   "optional": true
+  },
+  {
+   "action": "waitFor",
+   "identifier": "chat.request.0.allow",
+   "enabled": true,
+   "timeout": 90,
+   "optional": true
+  },
+  {
+   "action": "press",
+   "identifier": "chat.request.0.allow",
+   "optional": true
+  },
+  {
+   "action": "waitFor",
+   "identifier": "chat.request.0.allow",
+   "enabled": true,
+   "timeout": 90,
+   "optional": true
+  },
+  {
+   "action": "press",
+   "identifier": "chat.request.0.allow",
+   "optional": true
+  },
+  {
+   "action": "waitFor",
+   "text": "DONE-HOOKS",
+   "within": "chat.transcript",
+   "caseSensitive": true,
+   "timeout": 240
+  },
+  {
+   "action": "waitFor",
+   "identifier": "chat.composer.stop",
+   "absent": true,
+   "timeout": 180
+  },
+  {
+   "action": "waitFor",
+   "identifier": "chat.error",
+   "absent": true,
+   "timeout": 0
+  },
+  {
+   "action": "waitFor",
+   "text": "Example rule: this command is not allowed",
+   "within": "chat.transcript",
+   "timeout": 5
+  },
+  {
+   "action": "screenshot",
+   "name": "hooks-tool-rows",
+   "delay": 2
+  },
+  {
+   "action": "dumpTree",
+   "name": "hooks-tree"
+  }
+ ]
+}

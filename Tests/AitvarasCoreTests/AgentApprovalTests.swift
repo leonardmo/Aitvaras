@@ -5,6 +5,27 @@ import AitvarasStore
 @testable import AitvarasAgents
 
 @Suite(.timeLimit(.minutes(2))) struct AgentApprovalTests {
+    @Test func attentionDismissAllAndUndoLeaveAgentApprovalPending() async throws {
+        let stores = try inMemoryStores()
+        let run = ApprovalRun(provider: .claude)
+        let coordinator = AgentActionCoordinator(run: run, mode: .ask, provenance: .init(chatID: UUID())) {
+            _ = try stores.record($0)
+        }
+        try await coordinator.send(.init(text: "test"), willDeliver: {})
+        let request = await run.offer()
+        try await approvalWait { await coordinator.pendingRequests() == [request] }
+        let receipt = try stores.dismissAllAttention()
+        #expect(await coordinator.pendingRequests() == [request])
+        #expect(await run.responses.isEmpty)
+        _ = try stores.undoAttentionDismissal(receipt)
+        #expect(await coordinator.pendingRequests() == [request])
+        #expect(await run.responses.isEmpty)
+        // The existing explicit deny path remains the only decision here.
+        try await coordinator.respond(to: request, with: .deny)
+        #expect(await run.responses == [.deny])
+        try await coordinator.shutdown()
+    }
+
     @Test func managedApprovalAuditBelongsToDurableActivityAndDeniesOnStop() async throws {
         let stores = try inMemoryStores()
         let chat = try agentStoreChat(stores).0.id
@@ -146,9 +167,17 @@ import AitvarasStore
         await #expect(throws: AgentFailure.invalidRequest) { try await coordinator.respond(to: request, with: .allow(updatedInput: nil)) }
         if reason == "provider-cancel" { #expect(await run.responses.isEmpty) }
         else if reason != "reply-rejected" { try await approvalWait { await run.responses == [.deny] } }
-        try await approvalWait { try stores.recentActivity(limit: 10).count == 2 }
+        let expectedCount = reason == "reply-rejected" ? 3 : 2
+        try await approvalWait { try stores.recentActivity(limit: 10).count == expectedCount }
         let audit = try stores.recentActivity(limit: 10)
-        #expect(audit.count == 2)
+        #expect(audit.count == expectedCount)
+        #expect(audit.filter { $0.kind != .agentFailure }.count == 2)
+        if reason == "reply-rejected" {
+            let failure = try #require(audit.first { $0.kind == .agentFailure })
+            let detail = failure.detailJSON.flatMap(JSONValue.parse)
+            #expect(detail?["errorType"] == .string("AgentFailure"))
+            #expect(detail?["errorCase"] == .string("offline"))
+        }
         #expect(audit.contains { $0.kind == (reason == "reply-rejected" ? .toolExecuted : .confirmationDenied) })
         if reason == "restart" {
             let fresh = AgentActionCoordinator(run: ApprovalRun(provider: .claude), mode: .ask,

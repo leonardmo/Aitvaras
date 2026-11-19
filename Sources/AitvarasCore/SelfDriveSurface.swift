@@ -37,7 +37,11 @@ import AppKit
 
     func nodes(root: NSObject? = nil) throws -> [SelfDriveNode] {
         window.contentView?.layoutSubtreeIfNeeded()
+        window.attachedSheet?.contentView?.layoutSubtreeIfNeeded()
+        // A SwiftUI sheet is a separate attached window; include its tree so a
+        // scenario can drive it. Popped last, so the sheet's nodes win ties.
         var pending: [Any] = [root ?? window]
+        if root == nil, let sheet = window.attachedSheet { pending.append(sheet) }
         var seen = Set<ObjectIdentifier>()
         var found: [SelfDriveNode] = []
         while let next = pending.popLast() {
@@ -66,18 +70,19 @@ import AppKit
         }
         if element.pressAction() { return "accessibilityPerformPress accepted" }
         let frame = element.frame
-        let point = window.convertPoint(fromScreen: NSPoint(x: frame.midX, y: frame.midY))
-        guard frame.width > 0, frame.height > 0,
-              window.frame.contains(NSPoint(x: frame.midX, y: frame.midY)) else {
+        let center = NSPoint(x: frame.midX, y: frame.midY)
+        let target = [window.attachedSheet, window].compactMap { $0 }.first { $0.frame.contains(center) }
+        guard frame.width > 0, frame.height > 0, let target else {
             throw SelfDriveFailure("No in-window press target: \(identifier)")
         }
+        let point = target.convertPoint(fromScreen: center)
         for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
             guard let event = NSEvent.mouseEvent(with: type, location: point, modifierFlags: [],
-                timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
+                timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: target.windowNumber,
                 context: nil, eventNumber: 0, clickCount: 1, pressure: type == .leftMouseDown ? 1 : 0) else {
                 throw SelfDriveFailure("Could not create local mouse event")
             }
-            window.sendEvent(event)
+            target.sendEvent(event)
         }
         return "Dispatched local window mouse events; verify effect with waitFor"
     }
@@ -141,7 +146,9 @@ import AppKit
                     if step.identifier != nil || step.anyOf != nil { return step.matchesIdentifier(node.identifier) }
                     let text = step.text!
                     let frame = node.frame
-                    guard frame.width > 0, frame.height > 0, window.frame.intersects(frame) else { return false }
+                    guard frame.width > 0, frame.height > 0,
+                          window.frame.intersects(frame) || window.attachedSheet?.frame.intersects(frame) == true
+                    else { return false }
                     return [node.label, node.title, node.value]
                         .compactMap { $0 }.contains { SelfDriveText.matches($0, text: text, caseSensitive: step.caseSensitive ?? false) }
                 }
@@ -153,20 +160,12 @@ import AppKit
             throw SelfDriveFailure("Timed out waiting for \(target) (absent: \(step.absent ?? false))")
         case .screenshot:
             guard let content = window.contentView else { throw SelfDriveFailure("Missing content view") }
-            content.layoutSubtreeIfNeeded()
-            // cacheDisplay skips the window's own background, which SwiftUI text assumes.
-            content.wantsLayer = true
-            content.effectiveAppearance.performAsCurrentDrawingAppearance {
-                content.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
+            try Self.cache(content, to: directory.appendingPathComponent(step.name! + ".png"))
+            // An attached sheet is its own window; save it next to the main view.
+            if let sheet = window.attachedSheet?.contentView {
+                try Self.cache(sheet, to: directory.appendingPathComponent(step.name! + "-sheet.png"))
+                return "Cached window and attached sheet content views"
             }
-            guard let bitmap = content.bitmapImageRepForCachingDisplay(in: content.bounds) else {
-                throw SelfDriveFailure("Could not allocate content bitmap")
-            }
-            content.cacheDisplay(in: content.bounds, to: bitmap)
-            guard let png = bitmap.representation(using: .png, properties: [:]) else {
-                throw SelfDriveFailure("Could not encode PNG")
-            }
-            try png.write(to: directory.appendingPathComponent(step.name! + ".png"), options: .atomic)
             return "Cached window content view"
         case .dumpTree:
             let tree = try nodes().enumerated().map { index, node in
@@ -175,6 +174,23 @@ import AppKit
             try Data(tree.utf8).write(to: directory.appendingPathComponent(step.name! + ".txt"), options: .atomic)
             return "Wrote window accessibility tree"
         }
+    }
+
+    private static func cache(_ content: NSView, to url: URL) throws {
+        content.layoutSubtreeIfNeeded()
+        // cacheDisplay skips the window's own background, which SwiftUI text assumes.
+        content.wantsLayer = true
+        content.effectiveAppearance.performAsCurrentDrawingAppearance {
+            content.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
+        }
+        guard let bitmap = content.bitmapImageRepForCachingDisplay(in: content.bounds) else {
+            throw SelfDriveFailure("Could not allocate content bitmap")
+        }
+        content.cacheDisplay(in: content.bounds, to: bitmap)
+        guard let png = bitmap.representation(using: .png, properties: [:]) else {
+            throw SelfDriveFailure("Could not encode PNG")
+        }
+        try png.write(to: url, options: .atomic)
     }
 }
 #endif

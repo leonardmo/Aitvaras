@@ -571,7 +571,8 @@ final class CaptureController: NSObject {
         let id = model.activityReporter?.begin(ActivityRun(referenceID: recordID.uuidString,
             category: .capture, title: "Retry capture summary", stage: "Loading saved transcript",
             executionLocation: "This Mac", dataAccess: "Selected saved capture",
-            dataDestination: "Local capture record; configured summary provider"))
+            dataDestination: "Local capture record; configured summary provider",
+            jobKey: ActivityJobKey.captureSummary(recordID: recordID)))
         do {
             let record = try await ActivityTaskContext.$runID.withValue(id) {
                 try await summarizer.retrySummaryRecord(for: recordID)
@@ -595,7 +596,7 @@ final class CaptureController: NSObject {
             referenceID: recordID.uuidString, category: .capture,
             title: "Summarize saved capture", stage: "Selecting local summary model",
             executionLocation: "This Mac", dataAccess: "Saved transcript and screen text",
-            dataDestination: "Local summary only"))
+            dataDestination: "Local summary only", jobKey: ActivityJobKey.captureSummary(recordID: recordID)))
         summaryTasks[recordID] = Task { [weak self] in
             guard let self else { return }
             defer { self.summaryTasks[recordID] = nil }

@@ -5,6 +5,7 @@ public enum AgentFailure: Error, Sendable, Equatable {
     case authRequired
     case quota(resetsAt: Date?)
     case offline
+    case providerError
     case notInstalled
     case crashed(exitCode: Int32?)
     case unsupported
@@ -15,12 +16,14 @@ public enum AgentFailure: Error, Sendable, Equatable {
 
     /// Fixed, safe composer copy; never display raw provider or filesystem errors.
     public static func sendMessage(for error: any Error, provider: AgentProvider) -> String {
+        if let report = error as? AgentFailureReport { return sendMessage(for: report.failure, provider: provider) }
         let name = provider.rawValue.capitalized
         if let failure = error as? Self {
             switch failure {
             case .authRequired: return "Sign in to \(name)"
             case .quota: return "Usage limit reached. Try again later."
             case .offline: return "You’re offline. Try again when connected."
+            case .providerError: return "\(name) could not complete the response. Try again."
             case .notInstalled: return "\(name) is not installed."
             case .crashed: return "\(name) stopped unexpectedly. Try again."
             case .unsupported: return "This provider configuration is unavailable."

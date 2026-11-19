@@ -34,6 +34,8 @@ extension Stores {
         }
     }
 
+    /// Legacy bounded list for the current monitoring UI. New attention
+    /// consumers share the complete activityAttentionSnapshot() projection.
     public func activityAttentionRuns(limit: Int = 100) throws -> [ActivityRun] {
         try db.queue.read { dbc in
             try ActivityRun.filter(["failed", "interrupted", "outcomeUnknown"].contains(Column("state")))
@@ -130,17 +132,19 @@ extension Stores {
     }
 
     public func backgroundWorkPolicy() throws -> BackgroundWorkPolicy {
-        try db.queue.read { dbc in
-            guard let raw = try String.fetchOne(dbc, sql: "SELECT value FROM kv WHERE key = ?",
-                                                arguments: ["backgroundWorkPolicy.v1"]) else {
-                return BackgroundWorkPolicy()
-            }
-            let policy = try JSONDecoder().decode(BackgroundWorkPolicy.self, from: Data(raw.utf8))
-            guard policy.version == BackgroundWorkPolicy.currentVersion else {
-                throw ActivityMonitoringError.unsupportedPolicyVersion
-            }
-            return policy
+        try db.queue.read { try Self.backgroundWorkPolicy(in: $0) }
+    }
+
+    static func backgroundWorkPolicy(in db: Database) throws -> BackgroundWorkPolicy {
+        guard let raw = try String.fetchOne(db, sql: "SELECT value FROM kv WHERE key = ?",
+                                            arguments: ["backgroundWorkPolicy.v1"]) else {
+            return BackgroundWorkPolicy()
         }
+        let policy = try JSONDecoder().decode(BackgroundWorkPolicy.self, from: Data(raw.utf8))
+        guard policy.version == BackgroundWorkPolicy.currentVersion else {
+            throw ActivityMonitoringError.unsupportedPolicyVersion
+        }
+        return policy
     }
 
     public func saveBackgroundWorkPolicy(_ policy: BackgroundWorkPolicy) throws {
@@ -207,22 +211,26 @@ public final class ActivityReporter: @unchecked Sendable {
     /// Repeated background failures update one unresolved attention item,
     /// including across restarts. Reviewing it allows a later new incident.
     @discardableResult
-    public func problem(title: String, outcome: String) -> UUID {
+    public func problem(code: ActivityProblemCode, subjectID: UUID? = nil,
+                        title: String, outcome: String) -> UUID {
         var result = UUID()
+        let jobKey = ActivityJobKey.problem(code, subjectID: subjectID)
         perform {
             try stores.db.queue.write { dbc in
-                if var run = try ActivityRun.filter(Column("title") == title)
+                if var run = try ActivityRun.filter(Column("jobKey") == jobKey)
                     .filter(Column("category") == ActivityCategory.system.rawValue)
                     .filter(Column("state") == ActivityRunState.failed.rawValue)
                     .filter(Column("acknowledgedAt") == nil).fetchOne(dbc) {
                     result = run.id
                     run.updatedAt = .now
                     run.outcome = outcome
+                    run.occurrenceCount += 1
                     try run.update(dbc)
                 } else {
                     let run = ActivityRun(id: result, parentID: nil, category: .system,
                         trigger: .automatic, state: .failed, title: title,
-                        executionLocation: "This Mac", dataDestination: "Local activity history", outcome: outcome)
+                        executionLocation: "This Mac", dataDestination: "Local activity history", outcome: outcome,
+                        jobKey: jobKey)
                     try run.insert(dbc)
                     try ActivityRunStep(runID: result, stage: outcome, state: .failed).insert(dbc)
                 }

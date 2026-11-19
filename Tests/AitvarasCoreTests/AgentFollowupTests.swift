@@ -5,6 +5,47 @@ import AitvarasStore
 
 @Suite(.timeLimit(.minutes(2)))
 struct AgentFollowupTests {
+    @Test func queuedClaudeInputKeepsEchoIdentityAcrossToolResults() async throws {
+        let fixture = try BackendExecutableFixture(script: #"""
+claude_init()
+first=read()
+emit({'type':'system','subtype':'init','apiKeySource':'none','session_id':'queue-session'})
+emit({'type':'user','uuid':first['uuid'],'message':{'role':'user','content':[{'type':'text','text':first['message']['content']}]}})
+emit({'type':'stream_event','event':{'type':'content_block_delta','delta':{'text':'working'}}})
+second=read()
+for _ in range(2):
+    emit({'type':'user','uuid':second['uuid'],'message':{'role':'user','content':[{'type':'text','text':second['message']['content']}]}})
+for index in range(2):
+    tool='tool-'+str(index)
+    emit({'type':'assistant','uuid':'tool-message-'+str(index),'message':{'role':'assistant','content':[{'type':'tool_use','id':tool,'name':'Read','input':{}}]}})
+    emit({'type':'user','uuid':'result-uuid-'+str(index),'message':{'role':'user','content':[{'type':'tool_result','tool_use_id':tool,'content':'output','is_error':False}]}})
+emit({'type':'assistant','uuid':'answer','message':{'role':'assistant','content':[{'type':'text','text':'combined answer'}]}})
+emit({'type':'result','uuid':'combined-result','is_error':False})
+done()
+"""#)
+        defer { fixture.remove() }
+        let (stores, chat, manager) = try followupManager(fixture, provider: .claude)
+        let first = AgentInput(text: "first"), second = AgentInput(text: "second")
+        try await manager.send(chatID: chat, provider: .claude, input: first)
+        try await waitAgentCondition { try stores.agentTurn(id: first.id)?.delivery == .acknowledged }
+        try await manager.send(chatID: chat, provider: .claude, input: second)
+        try await waitAgentCondition { try await manager.state(chatID: chat).outcome == .completed }
+        for input in [first, second] {
+            #expect(try stores.agentTurn(id: input.id)?.state == .completed)
+            #expect(try stores.agentTurn(id: input.id)?.delivery == .acknowledged)
+        }
+        let entries = try stores.agentEntries(chatID: chat)
+        let users = entries.filter { $0.kind == "user" }
+        #expect(users.map(\.id) == [first.id, second.id])
+        #expect(users.map(\.nativeMessageID) == [first.id.uuidString, second.id.uuidString])
+        #expect(users.map(\.text) == [first.text, second.text])
+        #expect(entries.filter { $0.kind == "tool" }.count == 2)
+        #expect(entries.last?.text == "combined answer")
+        #expect(try await manager.state(chatID: chat).outcome == .completed)
+        try fixture.assertComplete()
+        try await manager.shutdown()
+    }
+
     @Test func claudeOneResultCompletesEveryWrittenInputAndAttributesAnswerToLatest() async throws {
         let fixture = try BackendExecutableFixture(script: #"""
 claude_init()

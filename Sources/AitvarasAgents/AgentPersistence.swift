@@ -77,6 +77,48 @@ public struct AgentTranscriptEntry: Codable, Sendable, Equatable, Identifiable {
     }
 }
 
+/// The cause is durable metadata, independent of a provider's injected prompt.
+public enum AgentAutonomousReason: String, Codable, Sendable, Equatable {
+    case wakeup, backgroundTask, monitor, scheduled, pullRequest, unknown
+    public var markerText: String {
+        switch self {
+        case .wakeup, .scheduled: "Woke up: scheduled check"
+        case .backgroundTask: "Background task finished"
+        case .monitor: "Woke up: monitor update"
+        case .pullRequest: "Pull request update"
+        case .unknown: "Continued on its own"
+        }
+    }
+    public var activityTitle: String {
+        switch self {
+        case .backgroundTask: "Background task finished"
+        case .pullRequest: "Auto-fix: pull request update"
+        default: "Chat woke up"
+        }
+    }
+}
+
+public enum AgentTurnOrigin: Sendable, Equatable, Codable {
+    case user
+    case autonomous(AgentAutonomousReason)
+
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.singleValueContainer()
+        let raw = try c.decode(String.self)
+        if raw == "user" { self = .user }
+        else if raw.hasPrefix("autonomous:"), let reason = AgentAutonomousReason(rawValue: String(raw.dropFirst(11))) {
+            self = .autonomous(reason)
+        } else { throw DecodingError.dataCorruptedError(in: c, debugDescription: "Invalid turn origin") }
+    }
+    public func encode(to encoder: any Encoder) throws {
+        var c = encoder.singleValueContainer()
+        switch self {
+        case .user: try c.encode("user")
+        case .autonomous(let reason): try c.encode("autonomous:" + reason.rawValue)
+        }
+    }
+}
+
 public enum AgentJournalState: String, Codable, Sendable { case running, completed, interrupted, failed }
 
 public struct AgentJournalTurn: Codable, Sendable, Equatable {
@@ -85,7 +127,9 @@ public struct AgentJournalTurn: Codable, Sendable, Equatable {
     public var sessionID: UUID
     /// Follow-ups belong to an existing active input, never a second root turn.
     public var parentInputID: UUID?
-    public var prompt: String
+    public var prompt: String?
+    public var autonomousPrompt: String?
+    public var origin: AgentTurnOrigin
     public var delivery: AgentDeliveryState
     public var state: AgentJournalState
     public var resendCount: Int
@@ -93,8 +137,13 @@ public struct AgentJournalTurn: Codable, Sendable, Equatable {
     public var startedAt: Date
     public var endedAt: Date?
     public init(input: AgentInput, chatID: UUID, sessionID: UUID, parentInputID: UUID? = nil) {
-        self.parentInputID = parentInputID
+        self.parentInputID = parentInputID; origin = .user
         id = input.id; prompt = input.text; self.chatID = chatID; self.sessionID = sessionID
+        delivery = .prepared; state = .running; resendCount = 0; partialOutput = ""; startedAt = .now
+    }
+    public init(autonomousID: UUID, reason: AgentAutonomousReason, chatID: UUID, sessionID: UUID) {
+        id = autonomousID; origin = .autonomous(reason); prompt = nil
+        self.chatID = chatID; self.sessionID = sessionID; parentInputID = nil
         delivery = .prepared; state = .running; resendCount = 0; partialOutput = ""; startedAt = .now
     }
 }
@@ -116,18 +165,21 @@ public protocol AgentSessionPersistence: Sendable {
     func orderAgentEntries(chatID: UUID, ids: [UUID]) throws
     func prepareAgentTurn(_ turn: AgentJournalTurn) throws
     func prepareAgentTurn(_ turn: AgentJournalTurn, context: ChatContextProjection?) throws
-    func recordQuotaStop(_ stop: AgentQuotaStop) throws
     func quotaStops() throws -> [AgentQuotaStop]
     func prepareAutomaticTurn(_ turn: AgentJournalTurn, authorization: AgentAutoContinue) throws
     func beginAutomaticDelivery(id: UUID, authorization: AgentAutoContinue, now: Date) throws
     func automaticInput(id: UUID) throws -> AgentAutomaticInput?
     func bindAutomaticInput(id: UUID, messageID: String?, turnID: String?) throws
-    func finishAutomaticTurn(id: UUID, outcome: AgentTurnOutcome) throws
     func agentTurn(id: UUID) throws -> AgentJournalTurn?
     func latestAgentTurn(chatID: UUID) throws -> AgentJournalTurn?
     func advanceAgentDelivery(id: UUID, to state: AgentDeliveryState) throws
     func saveAgentPartial(id: UUID, text: String) throws
     func finishAgentTurn(id: UUID, state: AgentJournalState) throws
+    @discardableResult func finishAgentTurn(id: UUID, state: AgentJournalState, stop: AgentStopReason?) throws -> AgentTranscriptEntry?
+    func finishAgentTurn(id: UUID, state: AgentJournalState, stop: AgentStopReason?,
+                         quotaContext: AgentStoppedTurn.QuotaContext?) throws -> AgentTranscriptEntry?
+    func prepareAgentRecovery(_ turn: AgentJournalTurn, context: ChatContextProjection?, entry: AgentTranscriptEntry,
+                              stoppedEntryID: UUID, action: AgentRecoveryAction, session: AgentChatSession) throws
     func claimAgentResend(id: UUID) throws -> AgentJournalTurn
     func recoverAgentTurns() throws
     func agentContext(session: AgentChatSession) throws -> ChatContextProjection?
@@ -135,13 +187,22 @@ public protocol AgentSessionPersistence: Sendable {
 }
 
 extension AgentSessionPersistence {
-    public func recordQuotaStop(_ stop: AgentQuotaStop) throws {}
+    public func finishAgentTurn(id: UUID, state: AgentJournalState, stop: AgentStopReason?,
+                                quotaContext: AgentStoppedTurn.QuotaContext?) throws -> AgentTranscriptEntry? {
+        try finishAgentTurn(id: id, state: state, stop: stop)
+    }
+    public func finishAgentTurn(id: UUID, state: AgentJournalState, stop: AgentStopReason?) throws -> AgentTranscriptEntry? {
+        try finishAgentTurn(id: id, state: state); return nil
+    }
+    public func prepareAgentRecovery(_ turn: AgentJournalTurn, context: ChatContextProjection?, entry: AgentTranscriptEntry,
+                                     stoppedEntryID: UUID, action: AgentRecoveryAction, session: AgentChatSession) throws {
+        throw AgentFailure.unsupported
+    }
     public func quotaStops() throws -> [AgentQuotaStop] { [] }
     public func prepareAutomaticTurn(_ turn: AgentJournalTurn, authorization: AgentAutoContinue) throws { throw AgentFailure.unsupported }
     public func beginAutomaticDelivery(id: UUID, authorization: AgentAutoContinue, now: Date) throws { throw AgentFailure.unsupported }
     public func automaticInput(id: UUID) throws -> AgentAutomaticInput? { nil }
     public func bindAutomaticInput(id: UUID, messageID: String?, turnID: String?) throws { throw AgentFailure.unsupported }
-    public func finishAutomaticTurn(id: UUID, outcome: AgentTurnOutcome) throws { throw AgentFailure.unsupported }
 
     public func agentSessions(chatID: UUID) throws -> [AgentChatSession] {
         try [AgentProvider.claude, .codex, .local].compactMap { try agentSession(chatID: chatID, provider: $0) }

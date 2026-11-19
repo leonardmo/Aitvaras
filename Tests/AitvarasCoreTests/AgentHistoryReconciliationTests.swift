@@ -54,12 +54,14 @@ import AitvarasAgents
         for entry in state.entries { _ = try stores.saveAgentEntry(entry) }
         try stores.finishAgentTurn(id: input.id, state: .interrupted)
         let replyID = native.canonicalMessageID("reply", turnID: "turn")
-        #expect(try stores.agentEntries(chatID: chat.id).last?.nativeMessageID == replyID)
+        #expect(try stores.agentEntries(chatID: chat.id).last { $0.kind == "assistant" }?.nativeMessageID == replyID)
         try stores.reconcileAgentHistory(session: session, entries: [historyEntry(session, userID, "user", "question", completed: false, turnID: "turn"),
             historyEntry(session, replyID, "assistant", "persisted partial", completed: false, turnID: "turn")])
         let entries = try stores.agentEntries(chatID: chat.id)
-        #expect(entries.map(\.text) == ["question", "persisted partial"])
-        #expect(entries.last?.id == outputID)
+        #expect(entries.filter { $0.kind != "stopped" }.map(\.text) == ["question", "persisted partial"])
+        #expect(entries.last { $0.kind == "assistant" }?.id == outputID)
+        #expect(entries.filter { $0.kind == "stopped" }.count == 1)
+        #expect(entries.first { $0.kind == "stopped" }?.stoppedTurn?.inputID == input.id)
         #expect(try stores.agentTurn(id: input.id)?.state == .interrupted)
     }
 

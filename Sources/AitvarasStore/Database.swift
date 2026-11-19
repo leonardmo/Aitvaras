@@ -28,7 +28,11 @@ public final class AitvarasDatabase: Sendable {
     }
 
     /// Pass `nil` for an in-memory database (tests).
-    public init(url: URL?) throws {
+    public convenience init(url: URL?) throws {
+        try self.init(url: url, migrateThrough: nil)
+    }
+
+    init(url: URL?, migrateThrough: String?) throws {
         var config = Configuration()
         config.foreignKeysEnabled = true
         if let url {
@@ -36,7 +40,8 @@ public final class AitvarasDatabase: Sendable {
         } else {
             queue = try DatabaseQueue(configuration: config)
         }
-        try migrator.migrate(queue)
+        if let migrateThrough { try migrator.migrate(queue, upTo: migrateThrough) }
+        else { try migrator.migrate(queue) }
     }
 
     private var migrator: DatabaseMigrator {
@@ -1050,7 +1055,141 @@ public final class AitvarasDatabase: Sendable {
                 BEGIN SELECT RAISE(ABORT, 'Turn must belong to its chat session'); END;
                 """)
         }
-        m.registerMigration("v36-agent-auto-continue") { db in
+        m.registerMigration("v36-home-attention") { db in
+            try db.alter(table: "activityRun") { t in
+                t.add(column: "jobKey", .text)
+                t.add(column: "occurrenceCount", .integer).notNull().defaults(to: 1)
+            }
+            try db.create(index: "activityRunJobSuccess", on: "activityRun",
+                          columns: ["jobKey", "state", "startedAt"])
+            try db.alter(table: "heldNotification") { t in
+                t.add(column: "dismissedAt", .datetime)
+            }
+        }
+        m.registerMigration("v37-agent-pull-request") { db in
+            try db.create(table: "agentPullRequest") { t in
+                t.primaryKey("chatID", .text).references("workspaceChat", onDelete: .cascade)
+                t.column("forge", .text).notNull()
+                t.column("host", .text).notNull()
+                t.column("repo", .text).notNull()
+                t.column("number", .integer).notNull().check { $0 > 0 }
+                t.column("url", .text).notNull()
+                t.column("watch", .boolean).notNull().defaults(to: false)
+                t.column("createdAt", .datetime).notNull()
+                t.column("commentWatermark", .text)
+                t.column("checkWatermark", .text)
+            }
+        }
+        m.registerMigration("v38-agent-autonomous-turns") { db in
+            // Rebuild to make prompt nullable; retain IDs, references and guards.
+            try db.execute(sql: """
+                CREATE TABLE agentTurn_origin (
+                    id TEXT PRIMARY KEY NOT NULL,
+                    chatID TEXT NOT NULL REFERENCES workspaceChat(id) ON DELETE RESTRICT,
+                    sessionID TEXT NOT NULL REFERENCES agentChatSession(id) ON DELETE RESTRICT,
+                    prompt TEXT,
+                    origin TEXT NOT NULL DEFAULT 'user',
+                    delivery TEXT NOT NULL CHECK(delivery IN ('prepared','deliveryUnknown','acknowledged')),
+                    state TEXT NOT NULL CHECK(state IN ('running','completed','interrupted','failed')),
+                    resendCount INTEGER NOT NULL CHECK(resendCount BETWEEN 0 AND 1),
+                    partialOutput TEXT NOT NULL, startedAt DATETIME NOT NULL, endedAt DATETIME,
+                    parentInputID TEXT REFERENCES agentTurn(id) ON DELETE RESTRICT,
+                    CHECK ((origin = 'user' AND prompt IS NOT NULL) OR
+                        (origin IN ('autonomous:wakeup','autonomous:backgroundTask','autonomous:monitor',
+                            'autonomous:scheduled','autonomous:unknown') AND prompt IS NULL))
+                );
+                INSERT INTO agentTurn_origin
+                    (id,chatID,sessionID,prompt,delivery,state,resendCount,partialOutput,startedAt,endedAt,parentInputID)
+                    SELECT id,chatID,sessionID,prompt,delivery,state,resendCount,partialOutput,startedAt,endedAt,parentInputID FROM agentTurn;
+                DROP TABLE agentTurn;
+                ALTER TABLE agentTurn_origin RENAME TO agentTurn;
+                CREATE UNIQUE INDEX agentRunningTurn ON agentTurn(chatID)
+                    WHERE state = 'running' AND parentInputID IS NULL;
+                CREATE TRIGGER agentTurnChat BEFORE INSERT ON agentTurn
+                WHEN NOT EXISTS (SELECT 1 FROM agentChatSession WHERE id = NEW.sessionID AND chatID = NEW.chatID)
+                BEGIN SELECT RAISE(ABORT, 'Turn must belong to its chat session'); END;
+                CREATE TRIGGER agentFollowupScope BEFORE INSERT ON agentTurn
+                WHEN NEW.parentInputID IS NOT NULL AND NOT EXISTS (
+                    SELECT 1 FROM agentTurn WHERE id = NEW.parentInputID
+                        AND chatID = NEW.chatID AND sessionID = NEW.sessionID AND state = 'running')
+                BEGIN SELECT RAISE(ABORT, 'Follow-up must belong to an active input'); END;
+                CREATE TRIGGER agentRootTurnExclusive BEFORE INSERT ON agentTurn
+                WHEN NEW.parentInputID IS NULL AND EXISTS (
+                    SELECT 1 FROM agentTurn WHERE chatID = NEW.chatID AND state = 'running')
+                BEGIN SELECT RAISE(ABORT, 'Chat already has an active input'); END;
+                """)
+        }
+        m.registerMigration("v39-repair-claude-user-identities") { db in
+            try Self.repairClaudeUserIdentities(in: db)
+        }
+        m.registerMigration("v40-agent-pending-wake") { db in
+            try db.create(table: "agentPendingWake") { t in
+                t.primaryKey("id", .text)
+                t.column("chatID", .text).notNull().references("workspaceChat", onDelete: .cascade)
+                t.column("sessionID", .text).notNull().references("agentChatSession", onDelete: .cascade)
+                t.column("kind", .text).notNull()
+                t.column("fireAt", .datetime)
+                t.column("cronSpec", .text)
+                t.column("prompt", .text)
+                t.column("nativeToolID", .text).notNull()
+                t.column("createdAt", .datetime).notNull()
+                t.column("claimedAt", .datetime)
+                t.column("firedAt", .datetime)
+                t.column("claimedTurnID", .text)
+                t.column("transportID", .text)
+                t.column("recurring", .boolean).notNull().defaults(to: true)
+                t.uniqueKey(["sessionID", "nativeToolID"])
+            }
+            try db.alter(table: "agentTurn") { t in t.add(column: "autonomousPrompt", .text) }
+            try db.execute(sql: """
+                CREATE TRIGGER agentWakeArchived AFTER UPDATE OF archivedAt ON workspaceChat
+                WHEN NEW.archivedAt IS NOT NULL
+                BEGIN DELETE FROM agentPendingWake WHERE chatID = NEW.id; END;
+                """)
+        }
+        m.registerMigration("v41-agent-pull-request-origin") { db in
+            // v38 enumerated autonomous reasons in a table-level CHECK.
+            // Rebuild with the additional reason and retain the v40 prompt,
+            // follow-up links, handover references and turn guards.
+            try db.execute(sql: """
+                CREATE TABLE agentTurn_new (
+                    id TEXT PRIMARY KEY NOT NULL,
+                    chatID TEXT NOT NULL REFERENCES workspaceChat(id) ON DELETE RESTRICT,
+                    sessionID TEXT NOT NULL REFERENCES agentChatSession(id) ON DELETE RESTRICT,
+                    prompt TEXT,
+                    origin TEXT NOT NULL DEFAULT 'user',
+                    delivery TEXT NOT NULL CHECK(delivery IN ('prepared','deliveryUnknown','acknowledged')),
+                    state TEXT NOT NULL CHECK(state IN ('running','completed','interrupted','failed')),
+                    resendCount INTEGER NOT NULL CHECK(resendCount BETWEEN 0 AND 1),
+                    partialOutput TEXT NOT NULL, startedAt DATETIME NOT NULL, endedAt DATETIME,
+                    parentInputID TEXT REFERENCES agentTurn(id) ON DELETE RESTRICT,
+                    autonomousPrompt TEXT,
+                    CHECK ((origin = 'user' AND prompt IS NOT NULL) OR
+                        (origin IN ('autonomous:wakeup','autonomous:backgroundTask','autonomous:monitor',
+                            'autonomous:scheduled','autonomous:unknown','autonomous:pullRequest') AND prompt IS NULL))
+                );
+                INSERT INTO agentTurn_new
+                    (id,chatID,sessionID,prompt,origin,delivery,state,resendCount,partialOutput,startedAt,endedAt,parentInputID,autonomousPrompt)
+                    SELECT id,chatID,sessionID,prompt,origin,delivery,state,resendCount,partialOutput,startedAt,endedAt,parentInputID,autonomousPrompt FROM agentTurn;
+                DROP TABLE agentTurn;
+                ALTER TABLE agentTurn_new RENAME TO agentTurn;
+                CREATE UNIQUE INDEX agentRunningTurn ON agentTurn(chatID)
+                    WHERE state = 'running' AND parentInputID IS NULL;
+                CREATE TRIGGER agentTurnChat BEFORE INSERT ON agentTurn
+                WHEN NOT EXISTS (SELECT 1 FROM agentChatSession WHERE id = NEW.sessionID AND chatID = NEW.chatID)
+                BEGIN SELECT RAISE(ABORT, 'Turn must belong to its chat session'); END;
+                CREATE TRIGGER agentFollowupScope BEFORE INSERT ON agentTurn
+                WHEN NEW.parentInputID IS NOT NULL AND NOT EXISTS (
+                    SELECT 1 FROM agentTurn WHERE id = NEW.parentInputID
+                        AND chatID = NEW.chatID AND sessionID = NEW.sessionID AND state = 'running')
+                BEGIN SELECT RAISE(ABORT, 'Follow-up must belong to an active input'); END;
+                CREATE TRIGGER agentRootTurnExclusive BEFORE INSERT ON agentTurn
+                WHEN NEW.parentInputID IS NULL AND EXISTS (
+                    SELECT 1 FROM agentTurn WHERE chatID = NEW.chatID AND state = 'running')
+                BEGIN SELECT RAISE(ABORT, 'Chat already has an active input'); END;
+                """)
+        }
+        m.registerMigration("v42-agent-auto-continue") { db in
             try db.create(table: "agentAutoContinue") { t in
                 t.primaryKey("id", .text)
                 t.column("chatID", .text).notNull().references("workspaceChat", onDelete: .restrict)
@@ -1095,18 +1234,7 @@ public final class AitvarasDatabase: Sendable {
                 t.uniqueKey(["provider", "providerProfile", "accountKey", "windowID"])
             }
         }
-        m.registerMigration("v37-agent-automatic-input-receipts") { db in
-            try db.create(table: "agentQuotaStop") { t in
-                t.primaryKey("id", .text).references("agentTurn", onDelete: .restrict)
-                t.column("chatID", .text).notNull().references("workspaceChat", onDelete: .restrict)
-                t.column("sessionID", .text).notNull().references("agentChatSession", onDelete: .restrict)
-                t.column("native", .text).notNull()
-                t.column("providerProfile", .text).notNull()
-                t.column("evidence", .text).notNull()
-                t.column("accountID", .text)
-                t.column("stoppedAt", .datetime).notNull()
-                t.column("inputRevision", .integer).notNull()
-            }
+        m.registerMigration("v43-agent-automatic-input-receipts") { db in
             try db.create(table: "agentAutomaticInput") { t in
                 t.primaryKey("id", .text).references("agentTurn", onDelete: .restrict)
                 t.column("intentID", .text).notNull().references("agentAutoContinue", onDelete: .restrict)
@@ -1114,11 +1242,67 @@ public final class AitvarasDatabase: Sendable {
                 t.column("native", .text).notNull()
                 t.column("nativeMessageID", .text)
                 t.column("nativeTurnID", .text)
-                t.column("outcome", .text)
-                t.column("resetsAt", .datetime)
                 t.uniqueKey(["sessionID", "nativeMessageID"])
             }
         }
         return m
+    }
+
+    /// Only a journal-owned input proves which UUID Claude was sent. Native
+    /// imports and inherited fork rows may legitimately have different IDs.
+    private static func repairClaudeUserIdentities(in db: Database) throws {
+        // Frozen column projections: future record fields must not affect an
+        // upgrade from the schema this migration was written for.
+        let rows = try Row.fetchAll(db, sql: """
+            SELECT id, chatID, sessionID, nativeMessageID, payloadJSON
+            FROM agentTranscriptEntry
+            WHERE provider = 'claude' AND kind = 'user' AND nativeMessageID IS NOT NULL
+            """)
+        func journal(_ id: UUID) throws -> Row? {
+            try Row.fetchOne(db, sql: "SELECT id, chatID, sessionID FROM agentTurn WHERE id = ?", arguments: [id])
+        }
+        for row in rows {
+            let rowID: UUID = row["id"], chatID: UUID = row["chatID"]
+            let nativeText: String? = row["nativeMessageID"], owningSession: UUID? = row["sessionID"]
+            guard let nativeID = nativeText.flatMap(UUID.init(uuidString:)),
+                  let sessionID = owningSession,
+                  let session = try Row.fetchOne(db, sql: "SELECT provider, chatID FROM agentChatSession WHERE id = ?", arguments: [sessionID]),
+                  session["provider"] as String == "claude", session["chatID"] as UUID == chatID else { continue }
+            let payload: [String: JSONValue]
+            if let json: String = row["payloadJSON"] {
+                guard case .object(let object)? = JSONValue.parse(json) else { continue }
+                payload = object
+            } else { payload = [:] }
+            guard payload["forkInheritedForSession"] == nil, payload["forkSourceEntryID"] == nil,
+                  payload["legacyID"] == nil else { continue }
+            let metadataInput: UUID?
+            if let value = payload["journalInputID"] {
+                guard let id = value.stringValue.flatMap(UUID.init(uuidString:)) else { continue }
+                metadataInput = id
+            } else { metadataInput = nil }
+            let historyInput: UUID?
+            if let history = payload["nativeHistory"] {
+                guard case .object = history,
+                      let id = history["itemID"]?.stringValue.flatMap(UUID.init(uuidString:)) else { continue }
+                historyInput = id
+            } else { historyInput = nil }
+            let turn: Row
+            if let own = try journal(rowID) {
+                guard metadataInput == nil || metadataInput == own["id"] as UUID else { continue }
+                turn = own
+            } else {
+                guard let metadataInput, historyInput == metadataInput,
+                      let linked = try journal(metadataInput) else { continue }
+                turn = linked
+            }
+            let turnID: UUID = turn["id"], turnChatID: UUID = turn["chatID"], turnSessionID: UUID = turn["sessionID"]
+            guard turnChatID == chatID, turnSessionID == sessionID,
+                  historyInput == nil || historyInput == turnID,
+                  nativeID != turnID else { continue }
+            // Intentionally bypass saveEntry's immutable-identity guard only in
+            // this migration. Record encoding keeps all UUID columns intact.
+            try Table<Row>("agentTranscriptEntry").filter(Column("id") == rowID)
+                .updateAll(db, Column("nativeMessageID").set(to: nil as String?))
+        }
     }
 }

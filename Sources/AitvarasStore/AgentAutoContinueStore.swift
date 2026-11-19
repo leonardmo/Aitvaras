@@ -171,7 +171,8 @@ public struct AgentAutoContinueStore: AgentAutoContinuePersistence {
     public func retryAutomatic(id: UUID, inputID: UUID, reset: AgentUsageResetResolution?, nextCheckAt: Date, nextPollAt: Date?, now: Date) throws {
         _ = try change(id, at: now, status: "scheduled") { value, dbc in
             guard value.state == .claimed, value.continuationInputID == inputID,
-                  try AgentAutomaticInput.fetchOne(dbc, key: inputID)?.outcome == "quota",
+                  let turn = try AgentJournalTurn.fetchOne(dbc, key: inputID), turn.state == .failed,
+                  try Stores.stoppedRow(for: turn, in: dbc)?.stoppedTurn?.reason.kind == .quota,
                   value.retryCount < Int.max, nextCheckAt > now else { throw AgentFailure.invalidTransition }
             value.state = .pending; value.retryCount += 1; value.delivery = .prepared
             value.nextCheckAt = nextCheckAt; value.nextPollAt = nextPollAt

@@ -51,6 +51,42 @@ public actor ConversationArchiver {
         return await archive(transcript: transcript, label: conversation.title, sourceConversationID: id)
     }
 
+    public enum StoredRetryResult: Sendable, Equatable {
+        case archived
+        /// Attempted, but no archive was saved; the transcript is retained.
+        case notArchived
+        case unavailable(StoredRetryUnavailable)
+    }
+
+    public enum StoredRetryUnavailable: Sendable, Equatable {
+        case active, projectChat, missing, changed, notSubstantial, inProgress, alreadyArchived
+    }
+
+    /// Retry exactly the conversation a failed archive run recorded (D36). The
+    /// run's job key binds the conversation to the transcript version that
+    /// failed; a changed, active, project-owned, already archived or in-flight
+    /// transcript is reported as unavailable and nothing else is archived.
+    public func retryStoredConversation(id: UUID, expectedJobKey: String,
+                                        excluding activeIDs: Set<UUID>) async throws -> StoredRetryResult {
+        guard !activeIDs.contains(id) else { return .unavailable(.active) }
+        guard try stores.workspaceChat(forConversationID: id) == nil else { return .unavailable(.projectChat) }
+        guard let conversation = try stores.conversation(id: id) else { return .unavailable(.missing) }
+        let transcript = Self.transcript(from: try stores.messages(in: id))
+        guard Self.isSubstantial(transcript) else { return .unavailable(.notSubstantial) }
+        let fingerprint = Self.fingerprint(of: transcript)
+        guard ActivityJobKey.archiving(conversationID: id, fingerprint: fingerprint) == expectedJobKey else {
+            return .unavailable(.changed)
+        }
+        guard !inFlightFingerprints.contains(fingerprint) else { return .unavailable(.inProgress) }
+        guard try !stores.hasSeen(connectorID: "archiver", itemID: fingerprint) else {
+            return .unavailable(.alreadyArchived)
+        }
+        let outcome = await ActivityTaskContext.$trigger.withValue(.manual) {
+            await archive(transcript: transcript, label: conversation.title, sourceConversationID: id)
+        }
+        return outcome.archived ? .archived : .notArchived
+    }
+
     /// Retry durable conversations that were rotated out of the UI before a
     /// previous archive pass could finish. Already-consumed fingerprints and
     /// trivial chats are scanned without model work; `maxAttempts` bounds the
@@ -99,9 +135,10 @@ public actor ConversationArchiver {
         let fingerprint = Self.fingerprint(of: transcript)
         guard !inFlightFingerprints.contains(fingerprint),
               (try? stores.hasSeen(connectorID: "archiver", itemID: fingerprint)) != true else { return Self.emptyOutcome }
-        let runID = reporter?.begin(ActivityRun(category: .memory,
+        let runID = reporter?.begin(ActivityRun(referenceID: sourceConversationID?.uuidString, category: .memory,
             title: "Archive conversation", stage: "Preparing transcript",
-            executionLocation: "Local", dataAccess: "Saved conversation", dataDestination: "Local memory"))
+            executionLocation: "Local", dataAccess: "Saved conversation", dataDestination: "Local memory",
+            jobKey: sourceConversationID.map { ActivityJobKey.archiving(conversationID: $0, fingerprint: fingerprint) }))
         return await ActivityTaskContext.$runID.withValue(runID ?? ActivityTaskContext.runID) {
             let outcome = await archiveContent(transcript: transcript, label: label,
                                               runID: runID, sourceConversationID: sourceConversationID)
@@ -291,8 +328,7 @@ public actor ConversationArchiver {
     }
 
     static func fingerprint(of transcript: [ChatMessage]) -> String {
-        let joined = transcript.map { "\($0.role.rawValue):\($0.content)" }.joined(separator: "\u{1F}")
-        return SHA256.hash(data: Data(joined.utf8)).map { String(format: "%02x", $0) }.joined()
+        TranscriptFingerprint.of(transcript)
     }
 
     static func normalize(_ text: String) -> String {

@@ -73,6 +73,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var wakeBriefingTask: Task<Void, Never>?
     private var wakeBriefingPending = false
     private var terminationPending = false
+    private var terminateSignal: DispatchSourceSignal?
 
     func applicationWillFinishLaunching(_ notification: Notification) {
         #if DEBUG
@@ -81,6 +82,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // SIGTERM (e.g. `kill`, logout scripts) would otherwise end the process
+        // without `applicationShouldTerminate`, leaving CLI and opencode
+        // children running. Route it through the normal, cleaning quit.
+        signal(SIGTERM, SIG_IGN)
+        let source = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
+        source.setEventHandler { NSApp.terminate(nil) }
+        source.resume()
+        terminateSignal = source
         #if DEBUG
         if SelfDriver.requested {
             Task { await SelfDriver.run() }
@@ -179,6 +188,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         ) { [weak self] _ in
             MainActor.assumeIsolated {
                 AppModel.shared.noteNightlySchedulingOpportunity()
+                AppModel.shared.refreshSidebandData()
                 AppModel.shared.noteAutoContinueWake()
                 self?.wakeBriefingPending = true
                 // A device wake can be a background maintenance wake. Wait

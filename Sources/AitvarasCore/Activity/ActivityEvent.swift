@@ -16,7 +16,10 @@ public struct ActivityEvent: Sendable, Codable, Identifiable, Equatable {
         case notificationQueued // durable phone delivery is waiting/retrying
         case notificationSent   // e.g. Telegram urgent push
         case notificationFailed // queued delivery expired or was abandoned
+        case attentionChanged   // metadata-only dismissal/Undo, never memory evidence
+        case heldNotificationChanged // metadata-only local hold lifecycle
         case delegationRun      // CLI agent task (D14)
+        case agentFailure       // safe type/case metadata for a failed chat turn
         case voiceTurn          // spoken exchange (user utterance + reply)
         case conversationArchived   // chat summarized into an episode, facts flushed
         case consolidationRun   // nightly memory consolidation (K2) ran/failed

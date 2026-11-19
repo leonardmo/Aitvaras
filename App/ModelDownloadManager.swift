@@ -26,7 +26,8 @@ final class ModelDownloadManager {
         reporter?.begin(ActivityRun(id: operation, referenceID: modelID, category: .model,
             title: "Download local model", stage: "Preparing download",
             executionLocation: "This Mac", dataAccess: "Public model files",
-            dataDestination: "Model download host; no conversation content"))
+            dataDestination: "Model download host; no conversation content",
+            jobKey: ActivityJobKey.modelDownload(modelID: modelID, repository: repository, revision: revision)))
         activeModelID = modelID
         status[modelID] = "Finding a local Python runtime…"
         let destination = AitvarasPaths.modelsDirectory

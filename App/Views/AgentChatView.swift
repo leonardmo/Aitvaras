@@ -45,6 +45,10 @@ struct AgentChatView: View {
             }
         }
         .toolbar {
+            AgentWakeBadge(manager: model.agentSessionManager, chatID: chatID)
+            if !compact, chat.pullRequest != nil || chat.pullRequestBinding != nil {
+                AgentPullRequestBar(chat: chat)
+            }
             if !compact {
                 Button { showingChanges.toggle() } label: {
                     Label("\(chat.changes?.files.count ?? 0)", systemImage: "doc.text")
@@ -66,6 +70,8 @@ struct AgentChatView: View {
             guard model.selectedWorkspaceChatID == chatID else { return }
             chat.select(chatID)
             await chat.refreshNativePreview()
+            await chat.refreshChanges()
+            await chat.refreshPullRequest()
             while !compact, !Task.isCancelled {
                 await chat.refreshChanges()
                 do { try await Task.sleep(for: .seconds(2)) } catch { return }
@@ -84,7 +90,10 @@ struct AgentChatView: View {
             if compact { composerFocused = true }
         }
         .onChange(of: scenePhase) { _, phase in
-            if phase == .active { Task { await chat.refreshNativePreview() } }
+            if phase == .active {
+                chat.markChatOpened(chatID)
+                Task { await chat.refreshNativePreview() }
+            }
         }
         .sheet(item: $agentSetupDestination) { destination in
             WorkspaceBoundaryReviewView(projectID: destination.id, agentDirectory: destination.directory, initialTab: "agent")
@@ -161,7 +170,7 @@ struct AgentChatView: View {
                         .accessibilityIdentifier("chat.sideQuestion.panel")
                 }
                 composer
-                if composerMessage != nil || !canSend || chat.state?.outcome == .interrupted {
+                if composerMessage != nil || !canSend {
                     HStack(spacing: 8) {
                         if let error = composerMessage {
                             Text(error).font(.caption).lineLimit(2)
@@ -189,12 +198,6 @@ struct AgentChatView: View {
                             Spacer(minLength: 0)
                             Button("Restore") { model.setWorkspaceChatArchived(chatID, archived: false) }
                                 .accessibilityIdentifier("chat.restore")
-                        } else if chat.state?.outcome == .interrupted {
-                            Image(systemName: "pause.circle")
-                                .help("Interrupted · Send to continue")
-                                .accessibilityLabel("Interrupted. Send to continue.")
-                                .accessibilityIdentifier("chat.interrupted")
-                            Spacer(minLength: 0)
                         }
                     }
                     .foregroundStyle(composerMessageColor)
@@ -227,7 +230,10 @@ struct AgentChatView: View {
         else { edit = nil }
         return AgentTranscriptView(entry: entry, quote: { chat.replyWithQuote(entry, selection: $0); composerFocused = true },
             fork: fork, forkEnabled: !chat.isBusy && !chat.gitBusy && !chat.conversationBusy && entry.sessionID != nil && entry.nativeMessageID.flatMap(UUID.init(uuidString:)) != nil,
-            edit: edit)
+            edit: edit, recovery: { action in chat.recover(entry, action: action) },
+            recoveryEnabled: !chat.isBusy && !chat.conversationBusy && chat.signingIn == nil && canSend
+                && chat.state?.canRecover(entry) == true,
+            recoveryError: chat.recoveryErrors[entry.id])
     }
 
     private var composer: some View {
@@ -473,6 +479,8 @@ struct AgentChatView: View {
                 Menu { providerMenuEntries } label: { Text("More").font(.caption) }
                     .menuIndicator(.hidden).fixedSize()
             }.padding(2).background(.quaternary, in: RoundedRectangle(cornerRadius: 6)).frame(width: 190)
+                // Keep each segment's own identifier; the container one would replace them.
+                .accessibilityElement(children: .contain)
                 .accessibilityIdentifier("chat.provider").accessibilityValue(chat.title(chat.choice))
                 .disabled(chat.isBusy || chat.creatingChat)
         }
@@ -600,11 +608,13 @@ struct AgentChatView: View {
         colorScheme == .dark ? Color(white: 0.92) : Color(white: 0.12)
     }
     private var composerMessage: String? {
-        if let provider = chat.selectedSignInProvider { return "Sign in to \(provider.rawValue.capitalized)" }
+        let stop = chat.state?.currentStoppedTurn
+        let deliveredStop = stop?.choice == chat.choice && stop?.delivery != .prepared
+        if let provider = chat.selectedSignInProvider, !deliveredStop { return "Sign in to \(provider.rawValue.capitalized)" }
         return chat.error ?? workspaceError ?? outcomeError ?? chat.state?.mcpSetup?.notice
     }
     private var outcomeError: String? {
-        if case .failed(let failure) = chat.state?.outcome {
+        if chat.state?.showsComposerFailure == true, case .failed(let failure) = chat.state?.outcome {
             return AgentFailure.sendMessage(for: failure, provider: chat.state?.entries.last?.provider ?? chat.provider)
         }
         return nil
@@ -800,5 +810,67 @@ private struct ClaudeProfileEditor: View {
                     .disabled(profile.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || profile.name.count > 80 || profile.badge.isEmpty || profile.badge.count > 4 || profile.defaultModel.isEmpty)
             }
         }.padding().frame(width: 400)
+    }
+}
+
+
+private struct AgentWakeBadge: View {
+    let manager: AgentSessionManager?
+    let chatID: UUID
+    @State private var wakes: [AgentPendingWake] = []
+    @State private var error: String?
+
+    var body: some View {
+        Group {
+            if !wakes.isEmpty {
+                Menu {
+                    ForEach(wakes) { wake in
+                        let time = wake.fireAt?.formatted(date: .omitted, time: .shortened) ?? "Running"
+                        if wake.transportID == nil, wake.claimedAt == nil {
+                            Button("Cancel \(wake.kind.title) · \(time)") {
+                                Task {
+                                    do { try await manager?.cancelWake(id: wake.id); await refresh() }
+                                    catch { self.error = "Could not cancel wake-up." }
+                                }
+                            }
+                        } else {
+                            Text("\(wake.kind.title) · \(time) · CLI-owned")
+                        }
+                    }
+                    if let error { Text(error) }
+                } label: {
+                    Label(label, systemImage: "clock").monospacedDigit()
+                }
+                .help(wakes.map { wake in
+                    "\(wake.kind.title) · \(wake.fireAt?.formatted() ?? "Running") · \(wake.transportID == nil ? "Aitvaras" : "CLI-owned")"
+                }.joined(separator: "\n"))
+                .accessibilityIdentifier("chat.wakes")
+            }
+        }
+        .task(id: chatID) {
+            while !Task.isCancelled {
+                await refresh()
+                do { try await Task.sleep(for: .seconds(2)) } catch { return }
+            }
+        }
+    }
+    private var label: String {
+        guard let next = wakes.compactMap(\.fireAt).min() else { return "Wakes" }
+        return "Wakes " + next.formatted(date: .omitted, time: .shortened)
+    }
+    private func refresh() async {
+        do { wakes = try await manager?.pendingWakes(chatID: chatID) ?? [] }
+        catch { self.error = "Could not read pending wake-ups." }
+    }
+}
+
+private extension AgentWakeKind {
+    var title: String {
+        switch self {
+        case .wakeup: "Wake-up"
+        case .cron: "Scheduled check"
+        case .backgroundTask: "Background task"
+        case .monitor: "Monitor"
+        }
     }
 }

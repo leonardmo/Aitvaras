@@ -32,7 +32,7 @@ extension Stores: AgentHistoryPersistence {
         }
         let all = try AgentTranscriptEntry.filter(Column("chatID") == session.chatID).order(Column("position")).fetchAll(dbc)
         let activeIDs = Set(try UUID.fetchAll(dbc, sql: "SELECT id FROM agentTranscriptEntry WHERE chatID = ? AND isActive = 1", arguments: [session.chatID]))
-        let own = all.filter { $0.sessionID == session.id && ["user", "assistant"].contains($0.kind) }
+        let own = all.filter { $0.sessionID == session.id && ["user", "assistant", "continued"].contains($0.kind) }
         var byNative: [String: AgentTranscriptEntry] = [:]
         for entry in own { if let id = entry.nativeMessageID { byNative[id] = entry } }
         let ownByID = Dictionary(uniqueKeysWithValues: own.map { ($0.id, $0) })
@@ -40,6 +40,13 @@ extension Stores: AgentHistoryPersistence {
         var journalInputID: UUID?
         var canonical: [AgentTranscriptEntry] = []
         for incoming in entries {
+            if incoming.kind == "user", let nativeID = incoming.nativeMessageID,
+               let id = UUID(uuidString: nativeID) ?? all.first(where: { $0.kind == "wakeup" && $0.nativeMessageID == nativeID })?.id,
+               let turn = try AgentJournalTurn.fetchOne(dbc, key: id),
+               turn.sessionID == session.id, case .autonomous = turn.origin {
+                journalInputID = turn.id
+                continue
+            }
             var value = incoming
             let metadata = incoming.payloadJSON.flatMap(JSONValue.parse)?["nativeHistory"]
             let nativeTurn = metadata?["turnID"]?.stringValue
@@ -72,7 +79,7 @@ extension Stores: AgentHistoryPersistence {
             }
             if let old {
                 let sameTurn = nativeTurn.map { old.payloadJSON.flatMap(JSONValue.parse)?["nativeTurnID"]?.stringValue == $0 } ?? false
-                guard old.kind == value.kind else { throw AgentNativeHistoryError.identityConflict }
+                guard old.kind == value.kind || (old.kind == "continued" && value.kind == "user") else { throw AgentNativeHistoryError.identityConflict }
                 value.id = old.id
                 // A fork retains the exact acknowledged envelope's digest,
                 // including through later forks, without duplicating prompts.
@@ -93,6 +100,14 @@ extension Stores: AgentHistoryPersistence {
                 if case .object(var payload)? = old.payloadJSON.flatMap(JSONValue.parse) {
                     payload["nativeHistory"] = value.payloadJSON.flatMap(JSONValue.parse)?["nativeHistory"]
                     value.payloadJSON = JSONValue.object(payload).jsonString
+                }
+                if old.kind == "continued", value.text == AgentStoppedTurn.continuationText {
+                    let turn = try AgentJournalTurn.fetchOne(dbc, key: old.id)
+                    let owned = turn?.sessionID == session.id && turn?.prompt == AgentStoppedTurn.continuationText
+                    let inherited = old.payloadJSON.flatMap(JSONValue.parse)
+                    let forked = inherited?["forkInheritedForSession"]?.stringValue == session.id.uuidString
+                        && inherited?["forkWireDigest"]?.stringValue == conversationWireDigest(value.text)
+                    if owned || forked { value.kind = "continued" }
                 }
             }
             if let journalInputID, case .object(var payload)? = value.payloadJSON.flatMap(JSONValue.parse) {
@@ -117,7 +132,7 @@ extension Stores: AgentHistoryPersistence {
         // All active and retired positions stay unique, even during reorder.
         let offset = (all.map(\.position).max() ?? 0) + merged.count + all.count + 1
         try dbc.execute(sql: "UPDATE agentTranscriptEntry SET position = position + ? WHERE chatID = ?", arguments: [offset, session.chatID])
-        try dbc.execute(sql: "UPDATE agentTranscriptEntry SET isActive = 0 WHERE sessionID = ? AND kind IN ('user','assistant') AND nativeMessageID IS NOT NULL", arguments: [session.id])
+        try dbc.execute(sql: "UPDATE agentTranscriptEntry SET isActive = 0 WHERE sessionID = ? AND kind IN ('user','assistant','continued') AND nativeMessageID IS NOT NULL", arguments: [session.id])
         for (position, var entry) in merged.enumerated() {
             entry.position = position
             try entry.save(dbc)

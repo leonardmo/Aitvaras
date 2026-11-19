@@ -142,7 +142,7 @@ done()
         let run = try await backend.start(.init(directory: fixture.directory, model: "test"))
         try await run.send(.init(text: "test"), willDeliver: {})
         let events = try await collectTurn(run)
-        #expect(events.last?.kind == .turnEnded(recovered ? .completed : .failed(.unknown)))
+        #expect(events.last?.kind == .turnEnded(recovered ? .completed : .failed(.providerError)))
         #expect(!String(describing: events).contains("PRIVATE_ERROR_CANARY"))
         try fixture.assertComplete(); try await run.shutdown(); try await backend.shutdown()
     }

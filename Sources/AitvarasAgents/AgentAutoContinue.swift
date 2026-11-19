@@ -14,7 +14,7 @@ public enum AgentUsageResetSource: String, Codable, Sendable { case request, cac
 
 /// One durable intent per stopped input, independent of transcript/UI lifetime.
 public struct AgentAutoContinue: Codable, Sendable, Equatable, Identifiable {
-    public static let prompt = "Continue where you stopped."
+    public static let prompt = AgentStoppedTurn.continuationText
     public enum State: String, Codable, Sendable { case pending, claimed, fired, cancelled, expired }
     public let id: UUID
     public let chatID: UUID
@@ -83,6 +83,7 @@ public struct AgentAutomaticInput: Codable, Sendable, Equatable, Identifiable {
     /// Fixed vocabulary: completed, interrupted, quota, failed.
     public var outcome: String?
     public var resetsAt: Date?
+    private enum CodingKeys: String, CodingKey { case id, intentID, sessionID, native, nativeMessageID, nativeTurnID }
     public init(id: UUID, intentID: UUID, sessionID: UUID, native: AgentSessionID) {
         self.id = id; self.intentID = intentID; self.sessionID = sessionID; self.native = native
         nativeMessageID = native.provider == .claude ? id.uuidString : nil

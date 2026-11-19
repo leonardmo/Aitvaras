@@ -1,5 +1,6 @@
 import Foundation
 import GRDB
+import AitvarasCore
 import AitvarasAgents
 
 // The backend module owns storage-neutral values; this module adds their SQL mapping.
@@ -11,6 +12,18 @@ extension AgentTranscriptEntry: FetchableRecord, PersistableRecord {
 }
 
 public enum AgentStoreError: Error, Sendable { case missingChat, missingSession, missingTurn, identityConflict, invalidValue }
+
+extension AgentStoreError: SafeErrorCategorizing {
+    public var safeErrorCategory: SafeErrorCategory {
+        switch self {
+        case .missingChat: .init(type: "AgentStoreError", errorCase: "missingChat")
+        case .missingSession: .init(type: "AgentStoreError", errorCase: "missingSession")
+        case .missingTurn: .init(type: "AgentStoreError", errorCase: "missingTurn")
+        case .identityConflict: .init(type: "AgentStoreError", errorCase: "identityConflict")
+        case .invalidValue: .init(type: "AgentStoreError", errorCase: "invalidValue")
+        }
+    }
+}
 
 public struct AgentChatStore: Sendable {
     public let db: AitvarasDatabase

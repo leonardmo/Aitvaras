@@ -40,7 +40,7 @@ import AitvarasAgents
                 try db.drop(table: "agentAutoContinue")
                 try db.drop(table: "agentChatInputRevision")
                 try db.drop(table: "agentUsageResetObservation")
-                try db.execute(sql: "DELETE FROM grdb_migrations WHERE identifier = ?", arguments: ["v36-agent-auto-continue"])
+                try db.execute(sql: "DELETE FROM grdb_migrations WHERE identifier = ?", arguments: ["v42-agent-auto-continue"])
             }
         }
         var persisted: AgentAutoContinue
