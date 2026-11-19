@@ -1726,3 +1726,31 @@ Chat wake-ups are on by default, also in a fresh unreviewed profile; switching t
   and no injected prompt appearing after native history refresh.
 - Switch the composer's Claude profile after scheduling. Verify the catch-up
   resumes the creating session/profile without changing the composer selection.
+
+## Pull request Auto-fix (D40 / P1)
+
+Use an isolated profile and a scratch repository with the forge CLI already
+signed in. Use Haiku for live autonomous turns.
+
+- Open an existing draft or open request with a failing check and an old
+  comment. Confirm the switch starts off. Enable Auto-fix and verify that
+  one turn mentions the failure, skips the old comment, and shows a
+  “Pull request update” marker without a user bubble.
+- Add a comment or review. Verify one further turn. If a new failure or
+  conflict appears in the same tick, verify that the turn covers it too.
+  Leave the request quiet for several ticks and verify that no turn or
+  Activity row is added.
+- Keep the chat busy or awaiting approval during an update. Verify it is
+  delivered once after the chat is free. Check the watching indicator's
+  last-check tooltip.
+- With checks remaining failed, trigger a third attempt. Verify Auto-fix
+  switches off and Activity shows “Auto-fix paused after 3 attempts”.
+  With the app inactive and notifications permitted, verify the pause
+  notification carries no request or chat content.
+- Merge or close a watched request on the forge website. Verify watching
+  stops and Activity records the terminal state.
+- Pause or decline Pull request Auto-fix in Activity, then add a comment
+  and sleep/wake. Verify no turn starts until the feature is enabled again.
+- Sign out while watching. Verify the request shows one forge error,
+  retries back off, and the watcher resumes after sign-in.
+- Verify push goes through the existing approval flow in a chat using Ask.

@@ -299,6 +299,7 @@ public actor AgentSessionManager {
                          recovery: RecoveryDelivery? = nil,
                          autonomousReason: AgentAutonomousReason? = nil,
                          autonomousSession: AgentChatSession? = nil,
+                         claimDelivery: (@Sendable (UUID) async throws -> Void)? = nil,
                          onAccepted: @Sendable () async -> Void = {}) async throws {
         guard !closing else { throw AgentSessionManagerError.shuttingDown }
         try persistence.requireAgentChatAvailable(chatID: chatID)
@@ -371,7 +372,9 @@ public actor AgentSessionManager {
                 states[chatID]?.entries = try persistence.agentEntries(chatID: chatID)
             } else if let reason = autonomousReason {
                 var turn = AgentJournalTurn(autonomousID: input.id, reason: reason, chatID: chatID, sessionID: session.id)
-                turn.autonomousPrompt = wireInput.text
+                // PR prompts can contain third-party logs and comments. Their
+                // contents are needed only for this delivery.
+                if reason != .pullRequest { turn.autonomousPrompt = wireInput.text }
                 try persistence.prepareAgentTurn(turn, context: context)
             } else { try persistence.prepareAgentTurn(.init(input: wireInput, chatID: chatID, sessionID: session.id), context: context) }
         } catch { live[chatID] = old; if let old { armIdle(chatID, token: old.token) }; throw error }
@@ -446,7 +449,10 @@ public actor AgentSessionManager {
                 throw AgentSessionManagerError.staleRun
             }
             let persistence = persistence
-            try await coordinator.send(wireInput) { try persistence.advanceAgentDelivery(id: input.id, to: .deliveryUnknown) }
+            try await coordinator.send(wireInput) {
+                if let claimDelivery { try await claimDelivery(input.id) }
+                else { try persistence.advanceAgentDelivery(id: input.id, to: .deliveryUnknown) }
+            }
         } catch {
             await failedSend(chatID, token: token, inputID: input.id, error: error)
             throw error
@@ -1012,22 +1018,45 @@ extension AgentSessionManager {
 extension AgentSessionManager {
     private var wakeStore: (any AgentWakePersistence)? { persistence as? any AgentWakePersistence }
 
-    /// Reusable for scheduler and other app-authored events. No composer/user row.
-    public func startAutonomousTurn(chatID: UUID, reason: AgentAutonomousReason, prompt: String) async throws {
+    private func autonomousSession(chatID: UUID) throws -> AgentChatSession {
         let sessions = try persistence.agentSessions(chatID: chatID)
         let latest = try persistence.latestAgentTurn(chatID: chatID)
         guard let session = live[chatID]?.session ?? sessions.first(where: { $0.id == latest?.sessionID }) ?? sessions.first else {
             throw AgentSessionManagerError.missingSession
         }
-        try await startAutonomousTurn(session: session, reason: reason, input: .init(text: prompt))
+        return session
     }
-    private func startAutonomousTurn(session: AgentChatSession, reason: AgentAutonomousReason, input: AgentInput) async throws {
-        guard live[session.chatID]?.isRunning != true else { throw AgentSessionManagerError.chatBusy }
+    func autonomousTurnDirectory(chatID: UUID) throws -> URL {
+        URL(fileURLWithPath: try autonomousSession(chatID: chatID).cwd, isDirectory: true)
+    }
+    func canStartAutonomousTurn(chatID: UUID) -> Bool {
+        !closing && !refreshing.contains(chatID) && live[chatID]?.isRunning != true
+            && states[chatID]?.pendingCards.isEmpty != false
+            && live.values.filter(\.isRunning).count < Self.maximumRunningChats
+    }
+
+    /// App-authored turns use the ordinary approval path without a composer row.
+    public func startAutonomousTurn(chatID: UUID, reason: AgentAutonomousReason, prompt: String) async throws {
+        try await startAutonomousTurn(session: autonomousSession(chatID: chatID), reason: reason, input: .init(text: prompt))
+    }
+    func startAutonomousTurn(chatID: UUID, reason: AgentAutonomousReason, prompt: String, directory: URL,
+                             claimDelivery: @escaping @Sendable (UUID) async throws -> Void) async throws {
+        let session = try autonomousSession(chatID: chatID)
+        guard URL(fileURLWithPath: session.cwd, isDirectory: true).standardizedFileURL == directory.standardizedFileURL else {
+            throw AgentSessionManagerError.staleRun
+        }
+        try await startAutonomousTurn(session: session, reason: reason, input: .init(text: prompt), claimDelivery: claimDelivery)
+    }
+    private func startAutonomousTurn(session: AgentChatSession, reason: AgentAutonomousReason, input: AgentInput,
+                                     claimDelivery: (@Sendable (UUID) async throws -> Void)? = nil) async throws {
+        guard live[session.chatID]?.isRunning != true, states[session.chatID]?.pendingCards.isEmpty != false else {
+            throw AgentSessionManagerError.chatBusy
+        }
         guard try persistence.agentSessions(chatID: session.chatID).contains(session) else {
             throw AgentSessionManagerError.missingSession
         }
         try await deliver(chatID: session.chatID, provider: session.provider, input: input, retry: false,
-                          autonomousReason: reason, autonomousSession: session)
+                          autonomousReason: reason, autonomousSession: session, claimDelivery: claimDelivery)
     }
     public func pendingWakes(chatID: UUID) throws -> [AgentPendingWake] {
         try wakeStore?.pendingAgentWakes(chatID: chatID) ?? []

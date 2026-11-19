@@ -28,7 +28,11 @@ public final class AitvarasDatabase: Sendable {
     }
 
     /// Pass `nil` for an in-memory database (tests).
-    public init(url: URL?) throws {
+    public convenience init(url: URL?) throws {
+        try self.init(url: url, migrateThrough: nil)
+    }
+
+    init(url: URL?, migrateThrough: String?) throws {
         var config = Configuration()
         config.foreignKeysEnabled = true
         if let url {
@@ -36,7 +40,8 @@ public final class AitvarasDatabase: Sendable {
         } else {
             queue = try DatabaseQueue(configuration: config)
         }
-        try migrator.migrate(queue)
+        if let migrateThrough { try migrator.migrate(queue, upTo: migrateThrough) }
+        else { try migrator.migrate(queue) }
     }
 
     private var migrator: DatabaseMigrator {
@@ -1140,6 +1145,48 @@ public final class AitvarasDatabase: Sendable {
                 CREATE TRIGGER agentWakeArchived AFTER UPDATE OF archivedAt ON workspaceChat
                 WHEN NEW.archivedAt IS NOT NULL
                 BEGIN DELETE FROM agentPendingWake WHERE chatID = NEW.id; END;
+                """)
+        }
+        m.registerMigration("v41-agent-pull-request-origin") { db in
+            // v38 enumerated autonomous reasons in a table-level CHECK.
+            // Rebuild with the additional reason and retain the v40 prompt,
+            // follow-up links, handover references and turn guards.
+            try db.execute(sql: """
+                CREATE TABLE agentTurn_new (
+                    id TEXT PRIMARY KEY NOT NULL,
+                    chatID TEXT NOT NULL REFERENCES workspaceChat(id) ON DELETE RESTRICT,
+                    sessionID TEXT NOT NULL REFERENCES agentChatSession(id) ON DELETE RESTRICT,
+                    prompt TEXT,
+                    origin TEXT NOT NULL DEFAULT 'user',
+                    delivery TEXT NOT NULL CHECK(delivery IN ('prepared','deliveryUnknown','acknowledged')),
+                    state TEXT NOT NULL CHECK(state IN ('running','completed','interrupted','failed')),
+                    resendCount INTEGER NOT NULL CHECK(resendCount BETWEEN 0 AND 1),
+                    partialOutput TEXT NOT NULL, startedAt DATETIME NOT NULL, endedAt DATETIME,
+                    parentInputID TEXT REFERENCES agentTurn(id) ON DELETE RESTRICT,
+                    autonomousPrompt TEXT,
+                    CHECK ((origin = 'user' AND prompt IS NOT NULL) OR
+                        (origin IN ('autonomous:wakeup','autonomous:backgroundTask','autonomous:monitor',
+                            'autonomous:scheduled','autonomous:unknown','autonomous:pullRequest') AND prompt IS NULL))
+                );
+                INSERT INTO agentTurn_new
+                    (id,chatID,sessionID,prompt,origin,delivery,state,resendCount,partialOutput,startedAt,endedAt,parentInputID,autonomousPrompt)
+                    SELECT id,chatID,sessionID,prompt,origin,delivery,state,resendCount,partialOutput,startedAt,endedAt,parentInputID,autonomousPrompt FROM agentTurn;
+                DROP TABLE agentTurn;
+                ALTER TABLE agentTurn_new RENAME TO agentTurn;
+                CREATE UNIQUE INDEX agentRunningTurn ON agentTurn(chatID)
+                    WHERE state = 'running' AND parentInputID IS NULL;
+                CREATE TRIGGER agentTurnChat BEFORE INSERT ON agentTurn
+                WHEN NOT EXISTS (SELECT 1 FROM agentChatSession WHERE id = NEW.sessionID AND chatID = NEW.chatID)
+                BEGIN SELECT RAISE(ABORT, 'Turn must belong to its chat session'); END;
+                CREATE TRIGGER agentFollowupScope BEFORE INSERT ON agentTurn
+                WHEN NEW.parentInputID IS NOT NULL AND NOT EXISTS (
+                    SELECT 1 FROM agentTurn WHERE id = NEW.parentInputID
+                        AND chatID = NEW.chatID AND sessionID = NEW.sessionID AND state = 'running')
+                BEGIN SELECT RAISE(ABORT, 'Follow-up must belong to an active input'); END;
+                CREATE TRIGGER agentRootTurnExclusive BEFORE INSERT ON agentTurn
+                WHEN NEW.parentInputID IS NULL AND EXISTS (
+                    SELECT 1 FROM agentTurn WHERE chatID = NEW.chatID AND state = 'running')
+                BEGIN SELECT RAISE(ABORT, 'Chat already has an active input'); END;
                 """)
         }
         return m

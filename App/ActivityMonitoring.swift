@@ -19,6 +19,7 @@ extension BackgroundFeature {
         case .delivery: "External notification delivery"
         case .focus: "Focus observations"
         case .chatWakeups: "Chat wake-ups"
+        case .pullRequestWatch: "Pull request Auto-fix"
         }
     }
 }
@@ -255,7 +256,7 @@ extension AppModel {
             status.enabled = enabled && configured
             status.paused = !enabled
             if !enabled || !configured {
-                status.stage = !backgroundPolicy.reviewed ? "Waiting for your review"
+                status.stage = !backgroundPolicy.reviewed && !BackgroundWorkPolicy.defaultOn.contains(feature) ? "Waiting for your review"
                     : !configured ? "Not configured"
                     : backgroundPolicy.paused ? "Automatic work paused" : "Off by your choice"
                 status.nextOpportunity = nil
@@ -299,6 +300,9 @@ extension AppModel {
         let wakeTask = chatWakeSchedulerTask
         wakeTask?.cancel()
         chatWakeSchedulerTask = nil
+        let watchTask = pullRequestWatchTask
+        watchTask?.cancel()
+        pullRequestWatchTask = nil
         let routineTask = routineSchedulerTask
         routineTask?.cancel()
         routineSchedulerTask = nil
@@ -308,6 +312,7 @@ extension AppModel {
         await nightlyTask?.value
         await routineTask?.value
         await wakeTask?.value
+        await watchTask?.value
         for task in backgroundTasks { await task.value }
         automaticTasks.removeAll()
     }

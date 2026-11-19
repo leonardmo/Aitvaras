@@ -889,6 +889,7 @@ private extension BackgroundFeature {
         case .delivery: "Send queued updates to the configured phone-notification destination. This transmits notification content outside this Mac."
         case .focus: "Observe configured focus signals only during a focus session you explicitly start."
         case .chatWakeups: "Resume due chat wake-ups after quit, restart or sleep through the selected official CLI. Missed recurring slots collapse to one turn. Native timers in a live CLI continue independently."
+        case .pullRequestWatch: "Start a turn for failing checks, merge conflicts and new comments on pull requests with Auto-fix enabled."
         }
     }
 }

@@ -944,10 +944,9 @@ an unrelated remote. Process output is bounded, commands time out, and failures
 become fixed error kinds without retaining raw diagnostics. Audit includes
 operation, chat provenance, risk and outcome; never titles, bodies or URLs.
 
-One latest request identity is stored per chat. `watch` defaults to false;
-nullable comment/check watermarks reserve the later Auto-fix integration.
+One latest request identity is stored per chat. `watch` defaults to false.
 Comments and checks are read-only, transient snapshots. Opening Chat, pushing
-and manual refresh update request/check status; there is no forge polling.
+and manual refresh update request/check status. D40 covers opt-in forge polling.
 The toolbar opens the request on the forge website. Merging stays there.
 Connections lists installed CLIs and their signed-in hosts with sign-in fallback.
 Offline fixtures establish parsing and policy behavior; live CLI/browser and
@@ -1018,3 +1017,35 @@ Codex can receive app-authored autonomous input but currently produces no timers
 
 Offline tests cover protocol and store behavior. Live Haiku checks and isolated
 app acceptance remain required before marking D39 complete.
+
+## D40 — Pull request Auto-fix 🚧 (2026-11-19)
+
+An open or draft pull request can be watched from its chat's PR bar after
+forge sign-in. The switch is off by default. Enabling it records the newest
+comment time and IDs at that time, along with the initial conflict state.
+An already-failing check can trigger once. The Activity feature is on by
+default and can be declined or paused. The app checks at launch, after
+system wake and on a 60-second loop. Archived chats are skipped. Forge
+errors back off per request and appear in the chat's existing forge error
+line.
+
+The watcher batches newly failing checks, transitions into merge conflict,
+and new discussion or reviews into one autonomous turn in the owning chat.
+Busy chats defer without changing their cursors. The local checkout must
+track the request's source branch on origin. Log excerpts and comments are
+bounded and escaped inside the prompt's untrusted-data fences. Aitvaras
+keeps the marker and turn metadata in its journal. The watcher uses forge
+reads only. The turn uses the ordinary chat approval policy for
+working-tree changes and commands, including push. Merging stays on the
+forge website.
+
+The watermark comparison, watermark advance and delivery-unknown journal
+transition commit in one transaction at the provider write barrier.
+Pre-delivery failures leave events available. Uncertain deliveries are
+consumed. The turn journal accepts the new reason through v41. The watch
+cursors use the existing request columns. Three turns without entering an
+all-passing check state, or six turns in a rolling hour, turn off the
+switch and raise attention. A merged
+or closed request stops watching and records the outcome. Watch transitions
+and the turn's Activity mirror contain metadata only. A new opt-in starts
+a fresh watch and baselines the discussion again.

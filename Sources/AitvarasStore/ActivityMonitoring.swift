@@ -132,17 +132,19 @@ extension Stores {
     }
 
     public func backgroundWorkPolicy() throws -> BackgroundWorkPolicy {
-        try db.queue.read { dbc in
-            guard let raw = try String.fetchOne(dbc, sql: "SELECT value FROM kv WHERE key = ?",
-                                                arguments: ["backgroundWorkPolicy.v1"]) else {
-                return BackgroundWorkPolicy()
-            }
-            let policy = try JSONDecoder().decode(BackgroundWorkPolicy.self, from: Data(raw.utf8))
-            guard policy.version == BackgroundWorkPolicy.currentVersion else {
-                throw ActivityMonitoringError.unsupportedPolicyVersion
-            }
-            return policy
+        try db.queue.read { try Self.backgroundWorkPolicy(in: $0) }
+    }
+
+    static func backgroundWorkPolicy(in db: Database) throws -> BackgroundWorkPolicy {
+        guard let raw = try String.fetchOne(db, sql: "SELECT value FROM kv WHERE key = ?",
+                                            arguments: ["backgroundWorkPolicy.v1"]) else {
+            return BackgroundWorkPolicy()
         }
+        let policy = try JSONDecoder().decode(BackgroundWorkPolicy.self, from: Data(raw.utf8))
+        guard policy.version == BackgroundWorkPolicy.currentVersion else {
+            throw ActivityMonitoringError.unsupportedPolicyVersion
+        }
+        return policy
     }
 
     public func saveBackgroundWorkPolicy(_ policy: BackgroundWorkPolicy) throws {

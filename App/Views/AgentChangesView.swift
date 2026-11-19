@@ -44,6 +44,9 @@ struct AgentChangesView: View {
             if let error = chat.forgeError {
                 Text(error).font(.caption).foregroundStyle(.secondary).help(error)
             }
+            if let status = chat.autoFixStatus {
+                Text(status).font(.caption).foregroundStyle(.secondary).lineLimit(1).help(status)
+            }
             if chat.forgeNeedsSignIn, let kind = chat.forgeKind, let host = chat.branchStatus?.remoteHost {
                 ForgeSignInButton(kind: kind, host: host) { await chat.refreshPullRequest() }
             }

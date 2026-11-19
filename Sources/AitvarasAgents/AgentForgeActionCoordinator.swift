@@ -1,8 +1,7 @@
 import Foundation
 import AitvarasCore
 
-/// Durable identity only. Request content and check/comment snapshots remain
-/// transient. Watermarks are reserved for the later, opt-in watch feature.
+/// Durable request identity and opt-in watch cursors. Forge snapshots are transient.
 public struct AgentPullRequest: Codable, Sendable, Equatable {
     public let chatID: UUID
     public let forge: ForgeKind
@@ -39,6 +38,7 @@ public struct ForgeSnapshot: Sendable {
     public let request: ForgePullRequest?
     public let checks: [ForgeCheck]
     public let checkError: ForgeError?
+    public let signedIn: Bool
 }
 
 public actor AgentForgeActionCoordinator {
@@ -147,8 +147,11 @@ public actor AgentForgeActionCoordinator {
             catch is CancellationError { throw CancellationError() }
             catch { checkError = (error as? ForgeError) ?? .failed }
         }
+        let signedIn = if let request, let auth = try? await forge.authStatus(host: request.host) {
+            auth.isSignedIn(host: request.host)
+        } else { false }
         try await record("status", chatID, .read, checkError == nil ? "completed" : "checksUnavailable")
-        return ForgeSnapshot(forge: forge.kind, request: request, checks: checks, checkError: checkError)
+        return ForgeSnapshot(forge: forge.kind, request: request, checks: checks, checkError: checkError, signedIn: signedIn)
     }
     private func bind(_ request: ForgePullRequest, _ chatID: UUID) async throws {
         if let old = try persistence.agentPullRequest(chatID: chatID), old.forge == request.forge,

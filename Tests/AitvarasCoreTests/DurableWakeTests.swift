@@ -2,7 +2,7 @@ import Foundation
 import Testing
 import GRDB
 import AitvarasCore
-import AitvarasStore
+@testable import AitvarasStore
 @testable import AitvarasAgents
 
 @Suite(.timeLimit(.minutes(2))) struct DurableWakeTests {
@@ -405,15 +405,9 @@ done()
         let url = directory.appendingPathComponent("fixture.sqlite")
         let chatID: UUID, sessionID: UUID
         do {
-            let stores = Stores(db: try AitvarasDatabase(url: url))
+            let stores = Stores(db: try AitvarasDatabase(url: url, migrateThrough: "v39-repair-claude-user-identities"))
             let (chat, session) = try agentStoreChat(stores)
             chatID = chat.id; sessionID = session.id
-            try stores.db.queue.write { db in
-                try db.execute(sql: "DROP TRIGGER agentWakeArchived")
-                try db.drop(table: "agentPendingWake")
-                try db.execute(sql: "ALTER TABLE agentTurn DROP COLUMN autonomousPrompt")
-                try db.execute(sql: "DELETE FROM grdb_migrations WHERE identifier = 'v40-agent-pending-wake'")
-            }
         }
         let wakeID: UUID
         do {
@@ -430,7 +424,7 @@ done()
     }
 }
 
-private actor WakeTestBackend: AgentBackend {
+actor WakeTestBackend: AgentBackend {
     private(set) var runs: [WakeTestRun] = []
     private(set) var configurations: [AgentSessionConfiguration] = []
     private var unavailable = false
@@ -450,7 +444,7 @@ private actor WakeTestBackend: AgentBackend {
     func listSessions(folder: URL, cursor: String?) throws -> AgentPage<AgentSessionSummary> { throw AgentFailure.unsupported }
     func readHistory(session: AgentSessionID, cursor: String?) throws -> AgentPage<AgentEvent> { throw AgentFailure.unsupported }
 }
-private actor WakeTestRun: AgentRun {
+actor WakeTestRun: AgentRun {
     nonisolated let id = UUID()
     nonisolated let events: AsyncThrowingStream<AgentEvent, Error>
     private let continuation: AsyncThrowingStream<AgentEvent, Error>.Continuation
@@ -478,7 +472,7 @@ private actor WakeTestRun: AgentRun {
         emit(.toolFinished(output: output, isError: false), input: turn, item: item)
     }
 }
-private func wakeWait(_ condition: () async throws -> Bool) async throws {
+func wakeWait(_ condition: () async throws -> Bool) async throws {
     for _ in 0..<500 {
         if try await condition() { return }
         try await Task.sleep(for: .milliseconds(10))

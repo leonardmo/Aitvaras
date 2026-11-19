@@ -40,6 +40,14 @@ struct AgentPullRequestSheet: View {
 
 struct AgentPullRequestBar: View {
     @Bindable var chat: ChatModel
+    @ViewBuilder private var watchIndicator: some View {
+        if chat.pullRequestBinding?.watch == true {
+            Image(systemName: "eye")
+                .accessibilityLabel("Watching pull request")
+                .help(chat.pullRequestCheckedAt.map { "Last checked " + $0.formatted(date: .abbreviated, time: .shortened) }
+                    ?? "Waiting for the first Auto-fix check")
+        }
+    }
     static func mergeLabel(_ value: ForgePullRequest.Mergeable) -> String? {
         switch value {
         case .yes: "Mergeable"
@@ -68,6 +76,14 @@ struct AgentPullRequestBar: View {
                 if let label = Self.mergeLabel(pr.mergeable) {
                     Text(label).font(.caption2).lineLimit(1).fixedSize().foregroundStyle(pr.mergeable == .yes ? Color.secondary : Color.orange)
                 }
+                if chat.canToggleAutoFix {
+                    Toggle("Auto-fix", isOn: Binding(get: { chat.pullRequestBinding?.watch == true },
+                        set: { on in Task { await chat.setAutoFix(on) } }))
+                        .toggleStyle(.switch).controlSize(.mini).font(.caption2)
+                        .disabled(chat.autoFixBusy)
+                        .accessibilityIdentifier("chat.pullRequest.autoFix")
+                }
+                watchIndicator
                 Button { Task { await chat.refreshPullRequest() } } label: { Image(systemName: "arrow.clockwise") }
                     .help("Refresh request").accessibilityLabel("Refresh request")
                 Button { if (try? ProviderSignIn.validate(pr.url)) != nil { NSWorkspace.shared.open(pr.url) } } label: { Image(systemName: "arrow.up.right.square") }
@@ -77,6 +93,7 @@ struct AgentPullRequestBar: View {
         } else if let binding = chat.pullRequestBinding {
             HStack(spacing: 7) {
                 Text("#\(binding.number) · status unavailable").font(.caption)
+                watchIndicator
                 Button { Task { await chat.refreshPullRequest() } } label: { Image(systemName: "arrow.clockwise") }
                     .help("Refresh request").accessibilityLabel("Refresh request")
                 Button { if (try? ProviderSignIn.validate(binding.url)) != nil { NSWorkspace.shared.open(binding.url) } } label: { Image(systemName: "arrow.up.right.square") }
