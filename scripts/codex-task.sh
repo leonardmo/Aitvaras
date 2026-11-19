@@ -27,7 +27,29 @@ state_root="$common/aitvaras-codex"
 # Outside the home folder: the sandbox blocks all of home, and the compilers
 # fail unless they can read every parent of their working directory.
 worktree_root="${AITVARAS_CODEX_ROOT:-$(dirname "$HOME")/Shared/aitvaras-codex}"
-model_default="${AITVARAS_CODEX_MODEL:-gpt-6.1-sol}"
+# The newest listed gpt-<version>-sol model in the Codex CLI's model cache,
+# which the CLI refreshes itself, so a new Sol release is used without editing
+# this script. AITVARAS_CODEX_MODEL or --model override it.
+latest_sol() {
+    python3 - "${CODEX_HOME:-$HOME/.codex}/models_cache.json" <<'PY' 2>/dev/null || true
+import json, re, sys
+try:
+    models = json.load(open(sys.argv[1])).get("models", [])
+except Exception:
+    sys.exit(0)
+best = None
+for m in models:
+    found = re.fullmatch(r"gpt-(\d+(?:\.\d+)*)-sol", str(m.get("slug", "")))
+    if found and m.get("visibility") != "hide":
+        version = tuple(int(part) for part in found.group(1).split("."))
+        if best is None or version > best[0]:
+            best = (version, m["slug"])
+if best:
+    print(best[1])
+PY
+}
+model_default="${AITVARAS_CODEX_MODEL:-$(latest_sol)}"
+model_default="${model_default:-gpt-6.2-sol}"
 effort_default="${AITVARAS_CODEX_EFFORT:-high}"
 
 # Codex may read these but never change them: they decide what gets published
@@ -228,7 +250,7 @@ cmd_run() {
     fi
     local pid=$! code=0 quiet
     trap 'kill "$pid" 2>/dev/null || true' EXIT INT TERM
-    echo "Codex running on $branch: pid $pid, log $log"
+    echo "Codex running on $branch ($model, effort $effort): pid $pid, log $log"
 
     # A run that writes no event for this long is stuck, not slow.
     while kill -0 "$pid" 2>/dev/null; do
