@@ -45,6 +45,7 @@ struct AgentChatView: View {
             }
         }
         .toolbar {
+            AgentWakeBadge(manager: model.agentSessionManager, chatID: chatID)
             if !compact, chat.pullRequest != nil || chat.pullRequestBinding != nil {
                 AgentPullRequestBar(chat: chat)
             }
@@ -809,5 +810,67 @@ private struct ClaudeProfileEditor: View {
                     .disabled(profile.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || profile.name.count > 80 || profile.badge.isEmpty || profile.badge.count > 4 || profile.defaultModel.isEmpty)
             }
         }.padding().frame(width: 400)
+    }
+}
+
+
+private struct AgentWakeBadge: View {
+    let manager: AgentSessionManager?
+    let chatID: UUID
+    @State private var wakes: [AgentPendingWake] = []
+    @State private var error: String?
+
+    var body: some View {
+        Group {
+            if !wakes.isEmpty {
+                Menu {
+                    ForEach(wakes) { wake in
+                        let time = wake.fireAt?.formatted(date: .omitted, time: .shortened) ?? "Running"
+                        if wake.transportID == nil, wake.claimedAt == nil {
+                            Button("Cancel \(wake.kind.title) · \(time)") {
+                                Task {
+                                    do { try await manager?.cancelWake(id: wake.id); await refresh() }
+                                    catch { self.error = "Could not cancel wake-up." }
+                                }
+                            }
+                        } else {
+                            Text("\(wake.kind.title) · \(time) · CLI-owned")
+                        }
+                    }
+                    if let error { Text(error) }
+                } label: {
+                    Label(label, systemImage: "clock").monospacedDigit()
+                }
+                .help(wakes.map { wake in
+                    "\(wake.kind.title) · \(wake.fireAt?.formatted() ?? "Running") · \(wake.transportID == nil ? "Aitvaras" : "CLI-owned")"
+                }.joined(separator: "\n"))
+                .accessibilityIdentifier("chat.wakes")
+            }
+        }
+        .task(id: chatID) {
+            while !Task.isCancelled {
+                await refresh()
+                do { try await Task.sleep(for: .seconds(2)) } catch { return }
+            }
+        }
+    }
+    private var label: String {
+        guard let next = wakes.compactMap(\.fireAt).min() else { return "Wakes" }
+        return "Wakes " + next.formatted(date: .omitted, time: .shortened)
+    }
+    private func refresh() async {
+        do { wakes = try await manager?.pendingWakes(chatID: chatID) ?? [] }
+        catch { self.error = "Could not read pending wake-ups." }
+    }
+}
+
+private extension AgentWakeKind {
+    var title: String {
+        switch self {
+        case .wakeup: "Wake-up"
+        case .cron: "Scheduled check"
+        case .backgroundTask: "Background task"
+        case .monitor: "Monitor"
+        }
     }
 }

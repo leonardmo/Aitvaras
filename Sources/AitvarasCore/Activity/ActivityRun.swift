@@ -139,7 +139,7 @@ public struct ServiceStatus: Codable, Sendable, Identifiable, Equatable {
 
 public enum BackgroundFeature: String, Codable, Sendable, CaseIterable {
     case mail, notifications, connectors, indexing, archiving, memory
-    case routineReview, routines, delivery, focus
+    case routineReview, routines, delivery, focus, chatWakeups
 }
 
 /// At most one metadata-only check summary per service and UTC day.
@@ -173,17 +173,46 @@ public struct BackgroundWorkPolicy: Codable, Sendable, Equatable {
     public var reviewed: Bool
     public var paused: Bool
     public var allowed: Set<BackgroundFeature>
+    /// Default-on features the person switched off.
+    public var declined: Set<BackgroundFeature>
+
+    /// Features that only continue work the person already asked for (a chat's
+    /// own wake-ups), so they run without review until switched off or paused.
+    public static let defaultOn: Set<BackgroundFeature> = [.chatWakeups]
 
     public init(version: Int = Self.currentVersion, reviewed: Bool = false,
-                paused: Bool = false, allowed: Set<BackgroundFeature> = []) {
+                paused: Bool = false, allowed: Set<BackgroundFeature> = [],
+                declined: Set<BackgroundFeature> = []) {
         self.version = version
         self.reviewed = reviewed
         self.paused = paused
         self.allowed = allowed
+        self.declined = declined
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        version = try c.decode(Int.self, forKey: .version)
+        reviewed = try c.decode(Bool.self, forKey: .reviewed)
+        paused = try c.decode(Bool.self, forKey: .paused)
+        allowed = try c.decode(Set<BackgroundFeature>.self, forKey: .allowed)
+        declined = try c.decodeIfPresent(Set<BackgroundFeature>.self, forKey: .declined) ?? []
+    }
+
+    public func isEnabled(_ feature: BackgroundFeature) -> Bool {
+        Self.defaultOn.contains(feature) ? !declined.contains(feature) : allowed.contains(feature)
+    }
+
+    public mutating func setEnabled(_ feature: BackgroundFeature, _ enabled: Bool) {
+        if Self.defaultOn.contains(feature) {
+            if enabled { declined.remove(feature) } else { declined.insert(feature) }
+        } else if enabled { allowed.insert(feature) } else { allowed.remove(feature) }
     }
 
     public func permits(_ feature: BackgroundFeature, trigger: ActivityTrigger = .automatic) -> Bool {
-        trigger == .manual || (version == Self.currentVersion && reviewed && !paused && allowed.contains(feature))
+        guard trigger != .manual else { return true }
+        guard version == Self.currentVersion, !paused, isEnabled(feature) else { return false }
+        return reviewed || Self.defaultOn.contains(feature)
     }
 }
 

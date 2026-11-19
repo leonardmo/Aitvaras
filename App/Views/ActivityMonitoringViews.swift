@@ -774,7 +774,7 @@ struct BackgroundReviewView: View {
     var body: some View {
         Form {
             Section("Your choice, once") {
-                Text("Automatic work stays off until you explicitly save your choices here. Existing connection and model settings are preserved. Manual actions remain available.")
+                Text("Automatic work stays off until you explicitly save your choices here, except chat wake-ups, which only continue what a chat already scheduled and stay on until you switch them off or pause. Existing connection and model settings are preserved. Manual actions remain available.")
                 if !model.backgroundPolicy.reviewed {
                     Label("Not reviewed · no automatic work permitted", systemImage: "hand.raised").foregroundStyle(.orange)
                 }
@@ -785,8 +785,8 @@ struct BackgroundReviewView: View {
             }
             Section("Allow these features to run automatically") {
                 ForEach(BackgroundFeature.allCases, id: \.self) { feature in
-                    Toggle(isOn: Binding(get: { draft.allowed.contains(feature) }, set: { enabled in
-                        if enabled { draft.allowed.insert(feature) } else { draft.allowed.remove(feature) }
+                    Toggle(isOn: Binding(get: { draft.isEnabled(feature) }, set: { enabled in
+                        draft.setEnabled(feature, enabled)
                         saved = false
                     })) {
                         VStack(alignment: .leading, spacing: 3) {
@@ -888,6 +888,7 @@ private extension BackgroundFeature {
         case .routines: "Run only separately reviewed, activated routines at their saved schedules. Their fixed tools use the destinations shown in each routine."
         case .delivery: "Send queued updates to the configured phone-notification destination. This transmits notification content outside this Mac."
         case .focus: "Observe configured focus signals only during a focus session you explicitly start."
+        case .chatWakeups: "Resume due chat wake-ups after quit, restart or sleep through the selected official CLI. Missed recurring slots collapse to one turn. Native timers in a live CLI continue independently."
         }
     }
 }

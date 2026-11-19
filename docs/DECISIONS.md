@@ -976,3 +976,45 @@ attention uses the existing generic requested-work notification and respects
 Focus holds; no prompt or output enters a system notification. This batch only
 observes work in a live retained transport. It adds no durable scheduler,
 automatic restart, replay or catch-up after idle eviction or app shutdown.
+
+## D39 — Wake-ups survive quit and restart 🚧 (2026-11-19)
+
+Claude scheduling tool successes are mirrored as provider-neutral pending wakes
+per chat/session and transport generation. Replayed history creates none.
+Wake-ups and five-field numeric cron schedules survive transport eviction,
+quit and restart. Background shell tasks and monitors retain their process but
+cannot be restored: disposal drops their records with a metadata-only Activity
+note. Archiving/deleting a chat clears its pending wakes.
+
+A live creating transport owns its timers. Pending items prevent idle eviction;
+at the eight-transport cap, idle slots with the latest next fire are evicted
+first (slots without timed wakes first, oldest use breaks ties). Disposal
+transfers timers to the app. A wake more than 120 seconds overdue transfers
+only after retiring its idle native owner. Busy chats defer until a later tick.
+The app checks on launch, system wake and every 30 seconds; no daemon or login
+item runs while Aitvaras is closed. Missed cron slots collapse to one check,
+then reschedule strictly after the catch-up time in the device's time zone.
+
+Activity's Chat wake-ups feature controls app catch-ups. Unlike the other
+background features it is on by default, without the one-time review (owner,
+2026-11-19): it only continues work a chat already scheduled. Switching it off
+(stored as a declined feature) or pausing all automatic work stops catch-ups and
+leaves pending work intact; timers inside a live
+CLI continue independently. The clock badge lists all pending items and permits
+cancelling only unclaimed app-owned records, without killing native transports.
+
+Claims are atomic and carry a turn identity. App-authored autonomous inputs use
+the ordinary audited delivery/approval path and native resume, with a fixed
+scheduled-wake prefix and no user bubble. Their prompt is kept in the turn
+record, separate from user prompts; autonomous turns cannot be resent. Activity
+shows “Chat woke up (late)”. Catch-ups use the creating session and profile even
+if the composer has since selected another profile; that selection is unchanged.
+One unavailable chat does not prevent other due chats from waking.
+On crash recovery, claims with no delivery attempt
+are released; delivery-unknown/acknowledged claims are consumed rather than
+resent, because the CLI may already have acted. This chooses no duplicate side
+effects over retrying uncertain delivery. Unsupported cron syntax is not guessed.
+Codex can receive app-authored autonomous input but currently produces no timers.
+
+Offline tests cover protocol and store behavior. Live Haiku checks and isolated
+app acceptance remain required before marking D39 complete.

@@ -168,7 +168,7 @@ public struct AgentTurnStore: Sendable {
         }
         var run = previous ?? ActivityRun(
             id: turn.id, parentID: turn.parentInputID, referenceID: turn.chatID.uuidString, category: .chat,
-            title: { if case .autonomous(let reason) = turn.origin { return reason.activityTitle }; return "Chat response" }(), startedAt: turn.startedAt, provider: session.provider.rawValue,
+            title: { if case .autonomous(let reason) = turn.origin { return turn.autonomousPrompt?.hasPrefix("Scheduled wake-up (") == true ? "Chat woke up (late)" : reason.activityTitle }; return "Chat response" }(), startedAt: turn.startedAt, provider: session.provider.rawValue,
             executionLocation: session.provider == .local ? "This Mac" : "Official CLI",
             dataAccess: "Selected project and this chat", dataDestination: session.provider == .local ? "This Mac" : "Selected provider")
         run.state = state; run.stage = stage; run.updatedAt = turn.endedAt ?? .now

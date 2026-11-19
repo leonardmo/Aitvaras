@@ -288,6 +288,9 @@ done()
                     );
                     INSERT INTO agentTurn_old SELECT id,chatID,sessionID,prompt,delivery,state,resendCount,
                         partialOutput,startedAt,endedAt,parentInputID FROM agentTurn;
+                    DROP TRIGGER agentWakeArchived;
+                    DROP TABLE agentPendingWake;
+                    DELETE FROM grdb_migrations WHERE identifier = 'v40-agent-pending-wake';
                     DROP TABLE agentTurn;
                     ALTER TABLE agentTurn_old RENAME TO agentTurn;
                     DELETE FROM grdb_migrations WHERE identifier = 'v38-agent-autonomous-turns';

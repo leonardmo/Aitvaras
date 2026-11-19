@@ -1700,3 +1700,29 @@ scheduler timing or UI acceptance.
 - Quit during autonomous work and restart. Verify recovery marks its journal
   interrupted and never resends it. Let a completed turn idle out; verify the
   transport closes. Wake-ups after eviction/restart are outside W1's scope.
+
+## Durable chat wake-ups (D39 / W2)
+
+Use an isolated profile and a cheap Claude model (Haiku) for live checks.
+Chat wake-ups are on by default, also in a fresh unreviewed profile; switching the feature off in Activity must stop catch-ups.
+
+- Schedule a wake-up, quit before it is due, restart after its due time: one
+  autonomous marker/answer, no user bubble, Activity “Chat woke up (late)”.
+  Restart again and verify no duplicate. Verify the native session was resumed.
+- Sleep through a due wake; wake the Mac and verify one catch-up. Leave a native
+  transport alive and verify its normal wake clears the badge without app replay.
+- Schedule a recurring cron, quit through at least three slots, restart: one
+  catch-up, then the next future slot. Verify local time and daylight-saving
+  behavior with the system's configured time zone.
+- Pause Chat wake-ups, restart with overdue app-owned work: no turn. Resume and
+  verify one catch-up. Native CLI timers continue while paused; their badge items
+  remain read-only. Review this distinction in the settings disclosure.
+- Keep a chat busy through a due time: defer until it finishes. Test engine-down
+  recovery and an approval during a catch-up; confirm tools retain policy checks.
+- Verify a pending timer survives the ten-minute idle deadline. Open nine chats
+  with timers and check the latest due idle slot is evicted and becomes app-owned.
+- Check clock badge/tooltip, per-item app-owned cancellation, native read-only
+  items, archive clearing, background task/monitor stop notes after restart,
+  and no injected prompt appearing after native history refresh.
+- Switch the composer's Claude profile after scheduling. Verify the catch-up
+  resumes the creating session/profile without changing the composer selection.
