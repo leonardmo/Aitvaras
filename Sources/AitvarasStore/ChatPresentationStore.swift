@@ -39,14 +39,20 @@ extension Stores {
     }
 
     public func chatHasUnseenCompletion(_ id: UUID) throws -> Bool {
-        guard let turn = try latestAgentTurn(chatID: id), turn.state == .completed else { return false }
-        return try value(forKey: "chat.lastSeen.\(id.uuidString)") != turn.id.uuidString
+        guard let turn = try latestAgentTurn(chatID: id) else { return false }
+        guard turn.state == .completed || turn.origin != .user else { return false }
+        return try value(forKey: "chat.lastSeen.\(id.uuidString)") != Self.chatReadReceipt(turn)
     }
 
     public func markChatSeen(_ id: UUID) throws {
-        guard let turn = try latestAgentTurn(chatID: id), turn.state == .completed else { return }
+        guard let turn = try latestAgentTurn(chatID: id) else { return }
+        guard turn.state == .completed || turn.origin != .user else { return }
         let key = "chat.lastSeen.\(id.uuidString)"
-        if try value(forKey: key) != turn.id.uuidString { try setValues([key: turn.id.uuidString]) }
+        let receipt = Self.chatReadReceipt(turn)
+        if try value(forKey: key) != receipt { try setValues([key: receipt]) }
+    }
+    private static func chatReadReceipt(_ turn: AgentJournalTurn) -> String {
+        turn.origin == .user ? turn.id.uuidString : "\(turn.id.uuidString):\(turn.state.rawValue)"
     }
 }
 

@@ -37,6 +37,20 @@ import AitvarasCore
         #expect(try await browser.readSession(id: fixture.id, directory: fixture.root.path, cursor: nil).messages.count == 2)
     }
 
+    @Test func claudeHistoryOmitsPromptsTheCLIInjectsForAutonomousTurns() throws {
+        let fixture = try NativeHistoryFixture()
+        defer { fixture.remove() }
+        var notification = fixture.record("user", text: "<task-notification>\n<status>completed</status>\n</task-notification>", id: "injected")
+        notification = .object(notification.objectValue!.merging([
+            "promptSource": .string("system"),
+            "origin": .object(["kind": .string("task-notification")])]) { $1 })
+        try fixture.write(records: [fixture.record("user", text: "Start the task", id: "asked"),
+            fixture.record("assistant", text: "Started.", id: "started"), notification,
+            fixture.record("assistant", text: "Finished.", id: "finished")])
+        let items = try fixture.reader.history(session: fixture.session, cursor: nil).items
+        #expect(items.map(\.scope.itemID) == ["asked", "started", "finished"])
+    }
+
     @Test func claudePaginationUnknownBlocksAndChangedHistory() throws {
         let fixture = try NativeHistoryFixture()
         defer { fixture.remove() }

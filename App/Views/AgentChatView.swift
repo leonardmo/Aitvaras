@@ -89,7 +89,10 @@ struct AgentChatView: View {
             if compact { composerFocused = true }
         }
         .onChange(of: scenePhase) { _, phase in
-            if phase == .active { Task { await chat.refreshNativePreview() } }
+            if phase == .active {
+                chat.markChatOpened(chatID)
+                Task { await chat.refreshNativePreview() }
+            }
         }
         .sheet(item: $agentSetupDestination) { destination in
             WorkspaceBoundaryReviewView(projectID: destination.id, agentDirectory: destination.directory, initialTab: "agent")

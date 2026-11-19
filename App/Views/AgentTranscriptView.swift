@@ -13,7 +13,10 @@ struct AgentTranscriptView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            if entry.kind == "hook" {
+            if entry.kind == "wakeup" {
+                Label(entry.text, systemImage: "clock.arrow.circlepath")
+                    .font(.caption).foregroundStyle(.secondary)
+            } else if entry.kind == "hook" {
                 hookRow(payload ?? .null)
             } else if entry.kind == "importedHistory" {
                 importedHistory

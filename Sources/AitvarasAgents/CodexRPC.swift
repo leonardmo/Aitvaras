@@ -113,7 +113,7 @@ actor CodexRun: AgentRun {
     func receive(_ method: String, parameters p: JSONValue, requestID: AgentRequestID?) async {
         guard !closed else { return }
         if let requestID {
-            guard input != nil, let nativeTurn = p["turnId"]?.stringValue,
+            guard p["threadId"]?.stringValue == nil || p["threadId"]?.stringValue == session.nativeID, input != nil, let nativeTurn = p["turnId"]?.stringValue,
                   !completedTurns.contains(nativeTurn), turn == nil || nativeTurn == turn, !seenRequests.contains(requestID), seenRequests.count < 100_000,
                   requests.count < 64 else {
                 requests.removeValue(forKey: requestID)
@@ -139,6 +139,16 @@ actor CodexRun: AgentRun {
                                        isBlocking: p["isBlocking"]?.boolValue ?? true)
             requests[requestID] = request; emit(.request(request), item: request.scope.itemID)
             return
+        }
+        if let thread = p["threadId"]?.stringValue, thread != session.nativeID { return }
+        if method == "turn/started", input == nil,
+           let nativeTurn = p["turn"]?["id"]?.stringValue ?? p["turnId"]?.stringValue,
+           !completedTurns.contains(nativeTurn) {
+            input = UUID(); turn = nativeTurn; acknowledged = false; userInputs = []
+            completedItems.removeAll(); items.removeAll(); proposedPlan = nil; planRequestID = nil
+            executingApprovedPlan = false
+            emit(.autonomousTurnStarted(input!, .unknown))
+            emit(.delivery(.deliveryUnknown))
         }
         let nativeTurn = p["turnId"]?.stringValue ?? p["turn"]?["id"]?.stringValue
         if let nativeTurn {

@@ -1587,3 +1587,29 @@ Host checks, using an isolated profile and generic disposable repositories:
 The sandbox package build does not compile App. The supervisor must run
 `make app`, host checks and isolated-profile visual/interaction checks. Real
 agent-assisted checks use a cheap model only; forge commands require no model.
+
+## CLI-started chat turns (D38)
+
+Use an isolated profile and a cheap model (Claude Haiku) for live checks. The
+fake executable fixtures establish routing and journal contracts, not native
+scheduler timing or UI acceptance.
+
+- Send a request that uses ScheduleWakeup. After its first result, leave the
+  transport alive and wait for the wake-up. Verify one compact wake-up marker,
+  streamed response, usage, terminal journal and “Chat woke up” Activity row.
+- Start a background Bash task and let it finish after the original result.
+  Verify “Background task finished”, one response and no synthetic user bubble.
+- Trigger a permission or AskUserQuestion request inside an autonomous turn.
+  Verify the normal card, Allow/Reject or answers, policy/audit provenance and
+  completion. Stop must interrupt this turn too.
+- Send while the autonomous response is running. Verify the existing Claude
+  follow-up queue consumes the input once and leaves no running journal behind.
+- Switch chats or deactivate the app before the wake-up. Verify the sidebar
+  unread dot and generic attention notification when already authorized. Verify
+  Focus holds suppress the notification. Approval cards also need attention.
+- Resume a session with prior tool/reminder/assistant messages. Verify replay
+  creates no autonomous turn or extra marker. Repeat with unsolicited Codex
+  turn/started, items and turn/completed on its bound thread.
+- Quit during autonomous work and restart. Verify recovery marks its journal
+  interrupted and never resends it. Let a completed turn idle out; verify the
+  transport closes. Wake-ups after eviction/restart are outside W1's scope.

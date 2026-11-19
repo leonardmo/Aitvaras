@@ -85,7 +85,7 @@ public struct AgentTurnStore: Sendable {
         }
         var run = previous ?? ActivityRun(
             id: turn.id, parentID: turn.parentInputID, referenceID: turn.chatID.uuidString, category: .chat,
-            title: "Chat response", startedAt: turn.startedAt, provider: session.provider.rawValue,
+            title: { if case .autonomous(let reason) = turn.origin { return reason.activityTitle }; return "Chat response" }(), startedAt: turn.startedAt, provider: session.provider.rawValue,
             executionLocation: session.provider == .local ? "This Mac" : "Official CLI",
             dataAccess: "Selected project and this chat", dataDestination: session.provider == .local ? "This Mac" : "Selected provider")
         run.state = state; run.stage = stage; run.updatedAt = turn.endedAt ?? .now
@@ -109,6 +109,7 @@ public struct AgentTurnStore: Sendable {
     public func claimResend(id: UUID) throws -> AgentJournalTurn {
         let result = try db.queue.write { dbc in
             guard var turn = try AgentJournalTurn.fetchOne(dbc, key: id) else { throw AgentStoreError.missingTurn }
+            guard turn.origin == .user, turn.prompt != nil else { throw AgentFailure.invalidTransition }
             guard try AgentJournalTurn.filter(Column("chatID") == turn.chatID && Column("state") == "running")
                 .fetchCount(dbc) == 0, turn.delivery.canAutomaticallyResend, turn.resendCount == 0, turn.state != .running else {
                 throw AgentFailure.invalidTransition

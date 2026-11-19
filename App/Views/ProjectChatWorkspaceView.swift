@@ -138,7 +138,8 @@ struct WorkspaceRailView: View {
     }
     private func chatRow(_ chat: WorkspaceChat) -> some View {
         SidebarChatRow(chat: chat, selected: model.selectedWorkspaceChatID == chat.id,
-                       status: model.chatModel?.sidebarStatus(chat.id) ?? .idle, open: { model.openWorkspaceChat(chat.id) })
+                       status: model.chatModel?.sidebarStatus(chat.id) ?? .idle,
+                       unseen: model.chatModel?.unseenChats.contains(chat.id) == true, open: { model.openWorkspaceChat(chat.id) })
         .contextMenu {
             Button("Rename") { newTitle = chat.title; renamingChat = chat }
                 .accessibilityIdentifier("chat.rename.\(chat.id)")
@@ -161,6 +162,7 @@ private struct SidebarChatRow: View {
     let chat: WorkspaceChat
     let selected: Bool
     let status: ChatSidebarStatus
+    let unseen: Bool
     let open: () -> Void
     var body: some View {
         Button(action: open) {
@@ -168,6 +170,11 @@ private struct SidebarChatRow: View {
                 statusIcon
                 Text(chat.title).lineLimit(1)
                 Spacer(minLength: 0)
+                if unseen && status != .finishedUnseen {
+                    Image(systemName: "circle.fill").font(.system(size: 7)).foregroundStyle(Color.accentColor)
+                        .accessibilityLabel("Unread")
+                        .accessibilityIdentifier("chat.sidebar.\(chat.id).unread")
+                }
                 if chat.kind == .primary { Image(systemName: "pin.fill").font(.caption2).foregroundStyle(.secondary) }
             }
             .font(.callout).padding(.horizontal, 7).padding(.vertical, 6)
