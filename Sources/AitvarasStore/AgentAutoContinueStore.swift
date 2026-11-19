@@ -20,6 +20,13 @@ public struct AgentAutoContinueStore: AgentAutoContinuePersistence {
     public let db: AitvarasDatabase
     public init(db: AitvarasDatabase) { self.db = db }
 
+    public func validate(_ authorization: AgentAutoContinue) throws {
+        try db.queue.read { dbc in
+            try Self.requireSession(authorization, in: dbc)
+            guard try AgentAutoContinue.fetchOne(dbc, key: authorization.id) == authorization,
+                  authorization.inputRevision == (try Self.revision(authorization.chatID, in: dbc)) else { throw AgentFailure.invalidTransition }
+        }
+    }
     public func pending() throws -> [AgentAutoContinue] {
         try db.queue.read { try AgentAutoContinue.filter(["pending", "claimed"].contains(Column("state")))
             .order(Column("createdAt"), Column("id")).fetchAll($0) }
@@ -27,16 +34,19 @@ public struct AgentAutoContinueStore: AgentAutoContinuePersistence {
     public func continuation(id: UUID) throws -> AgentAutoContinue? {
         try db.queue.read { try AgentAutoContinue.fetchOne($0, key: id) }
     }
+    public func continuation(failedInputID: UUID) throws -> AgentAutoContinue? {
+        try db.queue.read { try AgentAutoContinue.filter(Column("failedInputID") == failedInputID).fetchOne($0) }
+    }
     public func inputRevision(chatID: UUID) throws -> Int {
         try db.queue.read { dbc in
             guard try WorkspaceChat.fetchOne(dbc, key: chatID) != nil else { throw AgentStoreError.missingChat }
             return try Self.revision(chatID, in: dbc)
         }
     }
-    private static func revision(_ chatID: UUID, in dbc: Database) throws -> Int {
+    static func revision(_ chatID: UUID, in dbc: Database) throws -> Int {
         try AgentChatInputRevision.fetchOne(dbc, key: chatID)?.revision ?? 0
     }
-    private static func requireSession(_ value: AgentAutoContinue, in dbc: Database) throws {
+    static func requireSession(_ value: AgentAutoContinue, in dbc: Database) throws {
         guard let session = try AgentChatSession.fetchOne(dbc, key: value.sessionID),
               session.chatID == value.chatID, session.sessionID == value.native,
               session.provider == value.scope.provider, session.providerProfile == value.scope.providerProfile,
@@ -149,8 +159,29 @@ public struct AgentAutoContinueStore: AgentAutoContinuePersistence {
             if state == .cancelled { value.enabled = false }
         }
     }
+    public func releasePrepared(id: UUID, inputID: UUID?, now: Date) throws {
+        _ = try change(id, at: now, status: "scheduled") { value, dbc in
+            guard value.state == .claimed, value.delivery == .prepared, value.continuationInputID == inputID else { throw AgentFailure.invalidTransition }
+            if let inputID, let turn = try AgentJournalTurn.fetchOne(dbc, key: inputID) {
+                guard turn.delivery == .prepared, turn.state != .running else { throw AgentFailure.invalidTransition }
+            }
+            value.state = .pending; value.nextCheckAt = max(now, value.nextCheckAt)
+        }
+    }
+    public func retryAutomatic(id: UUID, inputID: UUID, reset: AgentUsageResetResolution?, nextCheckAt: Date, nextPollAt: Date?, now: Date) throws {
+        _ = try change(id, at: now, status: "scheduled") { value, dbc in
+            guard value.state == .claimed, value.continuationInputID == inputID,
+                  try AgentAutomaticInput.fetchOne(dbc, key: inputID)?.outcome == "quota",
+                  value.retryCount < Int.max, nextCheckAt > now else { throw AgentFailure.invalidTransition }
+            value.state = .pending; value.retryCount += 1; value.delivery = .prepared
+            value.nextCheckAt = nextCheckAt; value.nextPollAt = nextPollAt
+            value.windowID = reset?.windowID; value.resetsAt = reset?.resetsAt; value.resetSource = reset?.source ?? .fallback
+        }
+    }
     public func noteNewInput(chatID: UUID, now: Date) throws {
-        try db.queue.write { dbc in
+        try db.queue.write { try Self.noteNewInput(chatID: chatID, now: now, in: $0) }
+    }
+    static func noteNewInput(chatID: UUID, now: Date, in dbc: Database) throws {
             guard try WorkspaceChat.fetchOne(dbc, key: chatID) != nil else { throw AgentStoreError.missingChat }
             let old = try Self.revision(chatID, in: dbc)
             guard old < Int.max else { throw AgentFailure.invalidTransition }
@@ -162,7 +193,6 @@ public struct AgentAutoContinueStore: AgentAutoContinuePersistence {
                 try Self.audit(&value, status: "cancelled", at: now, in: dbc)
                 try value.update(dbc)
             }
-        }
     }
     public func observations(scope: AgentUsageLimitScope) throws -> [AgentUsageResetObservation] {
         try db.queue.read { try Self.observationQuery(scope).order(Column("observedAt").desc, Column("windowID")).fetchAll($0) }
@@ -183,6 +213,15 @@ public struct AgentAutoContinueStore: AgentAutoContinuePersistence {
             }
             try value.save(dbc)
         }
+    }
+    static func advanceAutomaticDelivery(_ turn: AgentJournalTurn, in dbc: Database) throws {
+        guard let receipt = try AgentAutomaticInput.fetchOne(dbc, key: turn.id),
+              var pending = try AgentAutoContinue.fetchOne(dbc, key: receipt.intentID),
+              pending.state == .claimed, pending.continuationInputID == turn.id else { return }
+        pending.delivery = try pending.delivery.advancing(to: turn.delivery)
+        pending.version += 1
+        try audit(&pending, status: turn.delivery.rawValue, at: pending.updatedAt, in: dbc)
+        try pending.update(dbc)
     }
     private static func audit(_ value: inout AgentAutoContinue, status: String, at now: Date, in dbc: Database) throws {
         let event = ActivityEvent(kind: .automationRun, timestamp: now, connectorID: "agent.autoContinue",

@@ -4,6 +4,29 @@ import Testing
 
 @Suite(.timeLimit(.minutes(2)))
 struct CodexBackendTests {
+    @Test func automaticContinuationSuppliesItsDurableClientMessageIdentity() async throws {
+        let fixture = try BackendExecutableFixture(script: #"""
+codex_init()
+start_thread()
+r=read()
+assert r['method']=='turn/start'
+message=r['params']['clientUserMessageId']
+assert str(uuid.UUID(message)).upper()==message.upper()
+assert r['params']['input']==[{'type':'text','text':'Continue where you stopped.'}]
+emit({'id':r['id'],'result':{'turn':{'id':'auto-turn'}}})
+emit({'method':'turn/completed','params':{'threadId':'thread-test','turn':{'id':'auto-turn','status':'completed','items':[{'type':'userMessage','id':message,'content':[{'type':'text','text':'Continue where you stopped.'}]}]}}})
+done()
+"""#)
+        defer { fixture.remove() }
+        let backend = CodexBackend(executable: fixture.executable, environment: fixture.environment)
+        let run = try await backend.start(.init(directory: fixture.directory, model: "test"))
+        let input = AgentInput(text: AgentAutoContinue.prompt, automaticIntentID: UUID())
+        try await run.send(input, willDeliver: {})
+        let events = try await collectTurn(run)
+        #expect(events.contains { $0.scope.inputID == input.id && $0.kind == .message(id: input.id.uuidString, role: "user", text: input.text) })
+        try fixture.assertComplete(); try await run.shutdown(); try await backend.shutdown()
+    }
+
     @Test(arguments: ["rpc", "rpc-secondary", "terminal", "notification"])
     func usageLimitRetainsResetForTheFailingInput(path: String) async throws {
         let fixture = try BackendExecutableFixture(script: """

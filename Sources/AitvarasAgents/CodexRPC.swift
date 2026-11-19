@@ -2,6 +2,7 @@ import Foundation
 
 actor CodexRun: AgentRun {
     nonisolated let id = UUID()
+    nonisolated let accountID: String?
     nonisolated let events: AsyncThrowingStream<AgentEvent, Error>
     private let continuation: AsyncThrowingStream<AgentEvent, Error>.Continuation
     private let backend: CodexBackend
@@ -10,6 +11,7 @@ actor CodexRun: AgentRun {
     private let configuration: AgentSessionConfiguration
     private var mode: AgentMode
     private var input: UUID?
+    private var automaticInput: UUID?
     private var turn: String?
     private var userInputs: [AgentInput] = []
     private var steering = false
@@ -28,7 +30,8 @@ actor CodexRun: AgentRun {
     private var executingApprovedPlan = false
     private static let toolTypes: Set<String> = ["commandExecution", "fileChange", "mcpToolCall", "dynamicToolCall", "webSearch"]
 
-    init(backend: CodexBackend, wire: AgentWire, session: AgentSessionID, configuration: AgentSessionConfiguration) {
+    init(backend: CodexBackend, wire: AgentWire, session: AgentSessionID, configuration: AgentSessionConfiguration, accountID: String? = nil) {
+        self.accountID = accountID
         self.backend = backend; self.wire = wire; self.session = session; self.configuration = configuration; mode = configuration.mode
         (events, continuation) = AsyncThrowingStream.makeStream(bufferingPolicy: .bufferingOldest(4096))
     }
@@ -52,6 +55,7 @@ actor CodexRun: AgentRun {
     func send(_ value: AgentInput, willDeliver: @escaping @Sendable () async throws -> Void) async throws {
         guard !closed, input == nil else { throw AgentFailure.invalidTransition }
         let content = try contentForDelivery(value)
+        automaticInput = value.automaticIntentID == nil ? nil : value.id
         input = value.id; userInputs = [value]; turn = nil; acknowledged = false; completedItems.removeAll(); items.removeAll()
         proposedPlan = nil; planRequestID = nil; executingApprovedPlan = false; turnFailure = nil
         do { try await willDeliver() } catch { input = nil; throw error }
@@ -105,7 +109,7 @@ actor CodexRun: AgentRun {
             parameters["sandboxPolicy"] = .object(["type": .string("workspaceWrite"),
                 "writableRoots": .array(configuration.additionalDirectories.map { .string($0.path) })])
         }
-        if (content.arrayValue?.count ?? 0) > 1, let input {
+        if automaticInput == input || (content.arrayValue?.count ?? 0) > 1, let input {
             parameters["clientUserMessageId"] = .string(input.uuidString)
         }
         if let effort = configuration.effort { parameters["effort"] = .string(effort) }

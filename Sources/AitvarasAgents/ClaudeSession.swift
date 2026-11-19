@@ -2,6 +2,7 @@ import Foundation
 
 actor ClaudeRun: AgentRun {
     nonisolated let id: UUID
+    nonisolated let accountID: String?
     nonisolated let mcpSetup: AgentMCPLaunchStatus?
     nonisolated let permissionSource: AgentPermissionSource
     private let validateProjectServers: @Sendable (JSONValue) async throws -> Void
@@ -33,9 +34,10 @@ actor ClaudeRun: AgentRun {
     private(set) var availableCommands: [AgentCommand]?
 
     init(executable: URL, environment: [String: String], profile: String, configuration: AgentSessionConfiguration,
-         id: UUID = UUID(), runtimeFile: AgentMCPRuntimeFile? = nil, mcpSetup: AgentMCPLaunchStatus? = nil,
+         id: UUID = UUID(), accountID: String? = nil, runtimeFile: AgentMCPRuntimeFile? = nil, mcpSetup: AgentMCPLaunchStatus? = nil,
          permissionSource: AgentPermissionSource = .repo, metadataReader: AgentProjectMetadataReader? = nil,
          validateProjectServers: @escaping @Sendable (JSONValue) async throws -> Void) {
+        self.accountID = accountID
         self.validateProjectServers = validateProjectServers
         self.id = id; self.runtimeFile = runtimeFile; self.mcpSetup = mcpSetup
         self.permissionSource = permissionSource

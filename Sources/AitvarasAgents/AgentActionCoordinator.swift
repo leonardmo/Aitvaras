@@ -18,6 +18,7 @@ public actor AgentActionCoordinator: AgentRun {
     }
 
     public nonisolated let id: UUID
+    public nonisolated let accountID: String?
     public nonisolated let mcpSetup: AgentMCPLaunchStatus?
     public nonisolated let permissionSource: AgentPermissionSource
     public nonisolated let events: AsyncThrowingStream<AgentEvent, Error>
@@ -29,6 +30,7 @@ public actor AgentActionCoordinator: AgentRun {
     private let projectGrants: @Sendable () throws -> Set<String>
     private var mode: AgentMode
     private var inputID: UUID?
+    private var automaticProvenance: [UUID: Provenance] = [:]
     private var followups: Set<UUID> = []
     private var closed = false
     private var interrupting = false
@@ -46,7 +48,7 @@ public actor AgentActionCoordinator: AgentRun {
     public init(run: any AgentRun, mode: AgentMode, provenance: Provenance,
                 policy: AutonomyPolicy = AutonomyPolicy(), permissionSource: AgentPermissionSource? = nil,
                 projectGrants: @escaping @Sendable () throws -> Set<String> = { [] }, audit: @escaping Audit) {
-        self.run = run; id = run.id; self.mode = mode
+        self.run = run; id = run.id; accountID = run.accountID; self.mode = mode
         mcpSetup = run.mcpSetup
         self.permissionSource = permissionSource ?? run.permissionSource; self.projectGrants = projectGrants
         self.provenance = provenance; self.policy = policy; self.audit = audit
@@ -68,6 +70,111 @@ public actor AgentActionCoordinator: AgentRun {
         inputID = input.id; followups.removeAll(); interrupting = false
         do { try await run.send(input, willDeliver: willDeliver) }
         catch { if inputID == input.id { inputID = nil }; throw error }
+    }
+
+    /// Saved row consent authorizes only this exact prompt/claim, never tools.
+    public func sendAutomatically(_ input: AgentInput, authorization: AgentAutoContinue, session: AgentSessionID,
+                                  persistence: any AgentAutoContinuePersistence, clock: AgentAutoContinueClock = .live,
+                                  willDeliver: @escaping @Sendable () async throws -> Void) async throws {
+        guard authorization.chatID == provenance.chatID, session == authorization.native,
+              input.id == authorization.continuationInputID, input.automaticIntentID == authorization.id, input.text == AgentAutoContinue.prompt,
+              input.attachments.isEmpty, input.mentions.isEmpty, input.command == nil else { throw AgentFailure.invalidRequest }
+        try Self.validateContinuation(authorization, persistence: persistence, clock: clock, claimed: true)
+        let tool = ToolDefinition(name: "continueAfterReset", description: "Continue stopped chat", parametersJSON: "{}", risk: .confirmable)
+        if policy.verdict(for: tool, connectorID: "agent.autoContinue") == .requireConfirmation {
+            // Only this claim's saved row choice supplies confirmation.
+            guard authorization.enabled, authorization.continuationInputID == input.id else { throw AgentFailure.invalidTransition }
+        }
+        let event = Self.continuationAudit(authorization, operation: "authorize", inputID: input.id, clock: clock)
+        try await audit(event)
+        try Self.validateContinuation(authorization, persistence: persistence, clock: clock, claimed: true)
+        automaticProvenance[input.id] = .init(chatID: authorization.chatID, causedBy: event.id,
+                                              sourceID: authorization.failedInputID.uuidString)
+        do {
+            try await send(input) {
+                try Self.validateContinuation(authorization, persistence: persistence, clock: clock, claimed: true)
+                try await willDeliver()
+            }
+        } catch { automaticProvenance.removeValue(forKey: input.id); throw error }
+    }
+
+    /// A provider/account read is audited and revalidated across every await.
+    public static func autoContinueRateLimits(_ authorization: AgentAutoContinue, backend: any AgentBackend,
+                                             persistence: any AgentAutoContinuePersistence,
+                                             clock: AgentAutoContinueClock = .live, policy: AutonomyPolicy = .init(),
+                                             audit: @escaping Audit) async throws -> AgentUsageLimitSnapshot {
+        guard authorization.scope.provider == .codex else { throw AgentFailure.unsupported }
+        try validateContinuation(authorization, persistence: persistence, clock: clock, claimed: false)
+        let tool = ToolDefinition(name: "rateLimits", description: "Read CLI rate limits", parametersJSON: "{}", risk: .read)
+        guard policy.verdict(for: tool, connectorID: "agent.autoContinue") == .allow else { throw AgentFailure.invalidTransition }
+        try await audit(continuationAudit(authorization, operation: "rateLimits", inputID: nil, clock: clock))
+        try validateContinuation(authorization, persistence: persistence, clock: clock, claimed: false)
+        let status = try await backend.status()
+        guard status.authentication == .subscription else { throw AgentFailure.authRequired }
+        guard status.accountID == authorization.scope.accountID else { throw AgentFailure.invalidTransition }
+        try validateContinuation(authorization, persistence: persistence, clock: clock, claimed: false)
+        let windows = try await backend.rateLimits()
+        try validateContinuation(authorization, persistence: persistence, clock: clock, claimed: false)
+        return .init(scope: authorization.scope, windows: windows, observedAt: clock.now())
+    }
+
+    public static func authorizeAutomaticHistoryRead(_ authorization: AgentAutoContinue, persistence: any AgentAutoContinuePersistence,
+                                                     clock: AgentAutoContinueClock, audit: @escaping Audit) async throws {
+        try validateContinuation(authorization, persistence: persistence, clock: clock, claimed: false)
+        let tool = ToolDefinition(name: "history", description: "Read native chat history", parametersJSON: "{}", risk: .read)
+        guard AutonomyPolicy().verdict(for: tool, connectorID: "agent.autoContinue") == .allow else { throw AgentFailure.invalidTransition }
+        try await audit(continuationAudit(authorization, operation: "history", inputID: nil, clock: clock))
+        try validateContinuation(authorization, persistence: persistence, clock: clock, claimed: false)
+    }
+
+    public static func quotaStopStatus(_ stop: AgentQuotaStop, backend: any AgentBackend,
+                                       clock: AgentAutoContinueClock = .live, audit: @escaping Audit) async throws -> AgentStatus {
+        let tool = ToolDefinition(name: "accountStatus", description: "Read CLI account", parametersJSON: "{}", risk: .read)
+        guard AutonomyPolicy().verdict(for: tool, connectorID: "agent.autoContinue") == .allow else { throw AgentFailure.invalidTransition }
+        try await audit(ActivityEvent(kind: .automationRun, timestamp: clock.now(), connectorID: "agent.autoContinue",
+            summary: "Usage-reset continuation: account status",
+            detailJSON: JSONValue.object(["operation": .string("accountStatus"), "chatID": .string(stop.chatID.uuidString),
+                "inputID": .string(stop.id.uuidString), "risk": .string("read")]).jsonString,
+            sourceID: stop.id.uuidString, runID: stop.id))
+        let status = try await backend.status()
+        guard status.authentication == .subscription else { throw AgentFailure.authRequired }
+        return status
+    }
+
+    public static func autoContinueStatus(_ authorization: AgentAutoContinue, backend: any AgentBackend,
+                                          persistence: any AgentAutoContinuePersistence, clock: AgentAutoContinueClock = .live,
+                                          audit: @escaping Audit) async throws {
+        try validateContinuation(authorization, persistence: persistence, clock: clock, claimed: true)
+        let tool = ToolDefinition(name: "accountStatus", description: "Read CLI account", parametersJSON: "{}", risk: .read)
+        guard AutonomyPolicy().verdict(for: tool, connectorID: "agent.autoContinue") == .allow else { throw AgentFailure.invalidTransition }
+        try await audit(continuationAudit(authorization, operation: "status", inputID: authorization.continuationInputID, clock: clock))
+        try validateContinuation(authorization, persistence: persistence, clock: clock, claimed: true)
+        let status = try await backend.status()
+        guard status.authentication == .subscription else { throw AgentFailure.authRequired }
+        guard status.accountID == authorization.scope.accountID else { throw AgentFailure.invalidTransition }
+        try validateContinuation(authorization, persistence: persistence, clock: clock, claimed: true)
+    }
+
+    private static func validateContinuation(_ authorization: AgentAutoContinue, persistence: any AgentAutoContinuePersistence,
+                                             clock: AgentAutoContinueClock, claimed: Bool) throws {
+        try Task.checkCancellation()
+        try persistence.validate(authorization)
+        guard let current = try persistence.continuation(id: authorization.id), current == authorization,
+              current.enabled, current.state == (claimed ? .claimed : .pending),
+              !claimed || current.delivery == .prepared,
+              current.inputRevision == (try persistence.inputRevision(chatID: current.chatID)) else { throw AgentFailure.invalidTransition }
+        var eligible = current; eligible.state = .pending
+        guard AgentAutoContinueSchedule(clock: clock).plan(eligible).state != .expired else { throw AgentFailure.invalidTransition }
+    }
+
+    private static func continuationAudit(_ value: AgentAutoContinue, operation: String, inputID: UUID?,
+                                          clock: AgentAutoContinueClock) -> ActivityEvent {
+        ActivityEvent(kind: .automationRun, timestamp: clock.now(), connectorID: "agent.autoContinue",
+            summary: "Usage-reset continuation: " + operation,
+            detailJSON: JSONValue.object(["operation": .string(operation), "intentID": .string(value.id.uuidString),
+                "chatID": .string(value.chatID.uuidString), "inputID": .string((inputID ?? value.failedInputID).uuidString),
+                "provider": .string(value.scope.provider.rawValue), "risk": .string(operation == "authorize" ? "confirmable" : "read")]).jsonString,
+            causedBy: value.lastActivityID, sourceID: value.failedInputID.uuidString, runID: inputID ?? value.failedInputID)
     }
 
     public func followup(_ input: AgentInput, willDeliver: @escaping @Sendable () async throws -> Void) async throws {
@@ -204,7 +311,9 @@ public actor AgentActionCoordinator: AgentRun {
                 // they may contain secrets. Scope metadata retains provenance.
                 try await record(scope: event.scope, decision: observation(event.kind))
             case .turnEnded:
-                await denyPending(); inputID = nil
+                await denyPending()
+                if let inputID { automaticProvenance.removeValue(forKey: inputID) }
+                inputID = nil
                 followups.subtract(event.scope.completedInputIDs)
             default: break
             }
@@ -326,7 +435,8 @@ public actor AgentActionCoordinator: AgentRun {
 
     private func record(scope: AgentEventScope, decision: String, risk: ActionRisk? = nil,
                         kind: ActivityEvent.Kind = .toolExecuted, request: AgentRequest? = nil) async throws {
-        var detail: [String: JSONValue] = ["chatID": .string(provenance.chatID.uuidString),
+        let origin = scope.inputID.flatMap { automaticProvenance[$0] } ?? provenance
+        var detail: [String: JSONValue] = ["chatID": .string(origin.chatID.uuidString),
             "decision": .string(decision), "mode": .string(mode.rawValue)]
         if let input = scope.inputID { detail["inputID"] = .string(input.uuidString) }
         if let session = scope.session {
@@ -350,8 +460,8 @@ public actor AgentActionCoordinator: AgentRun {
         }
         if let actionRisk { detail["risk"] = .string(actionRisk.rawValue) }
         try await audit(ActivityEvent(kind: kind, connectorID: "agent", summary: "Provider action: \(decision)",
-            detailJSON: JSONValue.object(detail).jsonString, causedBy: provenance.causedBy,
-            sourceID: provenance.sourceID, runID: id))
+            detailJSON: JSONValue.object(detail).jsonString, causedBy: origin.causedBy,
+            sourceID: origin.sourceID, runID: id))
     }
 
     private func observation(_ kind: AgentEvent.Kind) -> String {

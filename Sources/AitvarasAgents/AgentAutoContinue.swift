@@ -14,6 +14,7 @@ public enum AgentUsageResetSource: String, Codable, Sendable { case request, cac
 
 /// One durable intent per stopped input, independent of transcript/UI lifetime.
 public struct AgentAutoContinue: Codable, Sendable, Equatable, Identifiable {
+    public static let prompt = "Continue where you stopped."
     public enum State: String, Codable, Sendable { case pending, claimed, fired, cancelled, expired }
     public let id: UUID
     public let chatID: UUID
@@ -68,5 +69,41 @@ public struct AgentUsageResetObservation: Codable, Sendable, Equatable, Identifi
     public init(id: UUID = UUID(), scope: AgentUsageLimitScope, windowID: String, resetsAt: Date, observedAt: Date) {
         self.id = id; provider = scope.provider; providerProfile = scope.providerProfile
         accountKey = scope.accountID ?? ""; self.windowID = windowID; self.resetsAt = resetsAt; self.observedAt = observedAt
+    }
+}
+
+/// Private delivery evidence, separate from the visible transcript.
+public struct AgentAutomaticInput: Codable, Sendable, Equatable, Identifiable {
+    public let id: UUID
+    public let intentID: UUID
+    public let sessionID: UUID
+    public let native: AgentSessionID
+    public var nativeMessageID: String?
+    public var nativeTurnID: String?
+    /// Fixed vocabulary: completed, interrupted, quota, failed.
+    public var outcome: String?
+    public var resetsAt: Date?
+    public init(id: UUID, intentID: UUID, sessionID: UUID, native: AgentSessionID) {
+        self.id = id; self.intentID = intentID; self.sessionID = sessionID; self.native = native
+        nativeMessageID = native.provider == .claude ? id.uuidString : nil
+    }
+}
+
+/// Persisted only from a verified provider quota outcome; never reconstructed from text.
+public struct AgentQuotaStop: Codable, Sendable, Equatable, Identifiable {
+    public let id: UUID
+    public let chatID: UUID
+    public let sessionID: UUID
+    public let native: AgentSessionID
+    public let providerProfile: String
+    public let evidence: AgentUsageLimit
+    public let accountID: String?
+    public let stoppedAt: Date
+    public let inputRevision: Int
+    public init(id: UUID, chatID: UUID, sessionID: UUID, native: AgentSessionID, providerProfile: String,
+                evidence: AgentUsageLimit, stoppedAt: Date, inputRevision: Int, accountID: String? = nil) {
+        self.accountID = accountID
+        self.id = id; self.chatID = chatID; self.sessionID = sessionID; self.native = native
+        self.providerProfile = providerProfile; self.evidence = evidence; self.stoppedAt = stoppedAt; self.inputRevision = inputRevision
     }
 }

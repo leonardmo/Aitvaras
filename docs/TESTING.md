@@ -1490,7 +1490,19 @@ idle account updates and non-disconnecting polling timeouts.
 choices, claims, delivery evidence, input cancellation and atomic activity audit.
 `AgentUsageResetResolverTests` and `AgentAutoContinueScheduleTests` use a manual
 clock for source precedence, scope isolation, retry intervals and cutoff boundaries.
-These are dormant foundations; provider dispatch and row controls are separate work.
+`AgentAutoContinuePolicyTests`, `AgentAutoContinueDeliveryTests` and
+`AgentAutoContinueSchedulerTests` cover bounded consent without tool grants,
+audit/revocation failures, same-session delivery, atomic delivery barriers,
+identity-based transcript suppression, new-message cancellation, verified quota
+registration, polling, capacity deferral and crash/quit recovery. Timed waits use
+a manually advanced clock; provider activity uses fakes or offline executables.
+The receipt/quota-stop migration is independent of the issue #23 Stopped-row
+migration; take its next free number at rebase. Claude receipts use the submitted
+UUID and do not depend on tool-result user frames. Codex automatic inputs send
+a client message UUID; unbound native identity fails closed rather than becoming
+a person-authored bubble. Unknown delivery is never replayed automatically.
+Production arming is still disabled: row controls, lifecycle and power wiring
+remain separate work.
 
 Later integration acceptance must additionally cover cancellation racing send,
 poll and wake; one dispatch across duplicate triggers; uncertain-delivery

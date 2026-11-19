@@ -30,6 +30,7 @@ public struct ChatState: Sendable, Equatable {
     public private(set) var inputID: UUID?
     public private(set) var acknowledgedMode: AgentMode?
     private var outputID: UUID?
+    private var automaticInputID: UUID?
     private var thinkingIDs: [String: UUID] = [:]
     private var textIDs: [String: UUID] = [:]
     private var toolEntryIDs: [String: UUID] = [:]
@@ -42,13 +43,14 @@ public struct ChatState: Sendable, Equatable {
         self.chatID = chatID; self.entries = entries
     }
     public mutating func begin(_ input: AgentInput, session: AgentChatSession, outputID: UUID,
-                               context: ChatContextProjection? = nil) {
+                               context: ChatContextProjection? = nil, automatic: Bool = false) {
+        automaticInputID = automatic ? input.id : nil
         inputID = input.id; self.outputID = outputID; provider = session.provider; sessionID = session.id
         acknowledgedMode = session.mode
         streamingText = ""; thinking = ""; thinkingIDs = [:]; textIDs = [:]; toolEntryIDs = [:]
         tools = []; pendingCards = []; usage = nil; rateLimits = []; outcome = nil; isRunning = true
         hookEntryIDs = [:]; hooks = [:]
-        if !entries.contains(where: { $0.id == input.id }) {
+        if !automatic, !entries.contains(where: { $0.id == input.id }) {
             if let context {
                 entries.append(.init(chatID: chatID, provider: session.provider, kind: "handover",
                     text: context.text, sessionID: session.id, position: entries.count))
@@ -106,6 +108,7 @@ public struct ChatState: Sendable, Equatable {
             case .thinkingCompleted(let text):
                 putThinking(text, item: event.scope.itemID, complete: true, newEntryID: newEntryID)
             case .message(let nativeID, let role, let text):
+                if role == "user", automaticInputID == inputID, text == AgentAutoContinue.prompt { break }
                 if role == "assistant" { closeEarlierTools() }
                 if let index = entries.firstIndex(where: { $0.sessionID == sessionID && $0.nativeMessageID == nativeID }) {
                     if role != "user" { entries[index].text = text }
@@ -264,6 +267,11 @@ public struct ChatState: Sendable, Equatable {
         } else {
             entries.append(.init(id: id, chatID: chatID, provider: provider, kind: kind, text: text,
                                  sessionID: sessionID, nativeMessageID: nativeID, position: entries.count))
+        }
+        if let automaticInputID, let index = entries.firstIndex(where: { $0.id == id }) {
+            var payload = entries[index].payloadJSON.flatMap(JSONValue.parse)?.objectValue ?? [:]
+            payload["journalInputID"] = .string(automaticInputID.uuidString)
+            entries[index].payloadJSON = JSONValue.object(payload).jsonString
         }
     }
 }

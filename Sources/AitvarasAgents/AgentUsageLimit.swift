@@ -1,7 +1,7 @@
 import Foundation
 
 /// Normalized evidence only; raw provider diagnostics must never be persisted.
-public struct AgentUsageLimit: Sendable, Equatable {
+public struct AgentUsageLimit: Codable, Sendable, Equatable {
     public enum Status: String, Codable, Sendable { case allowed, warning, rejected, unknown }
     public let status: Status
     public let windowID: String?

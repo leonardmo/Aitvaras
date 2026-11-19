@@ -194,7 +194,7 @@ public actor ClaudeBackend: AgentBackend {
         launch.strictMCPConfig = snapshot.resolution.repositoryUnreadable
         launch.includeHookEvents = true
         let run = ClaudeRun(executable: executable, environment: environment, profile: profile, configuration: launch,
-                            id: runID, runtimeFile: file, mcpSetup: snapshot.status, permissionSource: snapshot.permissionSource,
+                            id: runID, accountID: status.accountID, runtimeFile: file, mcpSetup: snapshot.status, permissionSource: snapshot.permissionSource,
                             metadataReader: AgentProjectMetadataReader(projectDirectory: configuration.directory,
                                 userDirectory: environment["CLAUDE_CONFIG_DIR"].map { URL(fileURLWithPath: $0) }
                                     ?? environment["HOME"].map { URL(fileURLWithPath: $0).appendingPathComponent(".claude") },

@@ -35,6 +35,8 @@ extension Stores {
                            byID[id]?.state != .completed { return false }
                         return payload["nativeHistory"]?["completed"]?.boolValue == true
                     }
+                    if let id = payload["journalInputID"]?.stringValue.flatMap(UUID.init(uuidString:)),
+                       (try? AgentAutomaticInput.fetchOne(dbc, key: id)) != nil { return byID[id]?.state == .completed }
                 }
                 return current?.state == .completed && entry.sessionID == current?.sessionID
             }.filter { ["user", "assistant"].contains($0.kind) && !$0.text.isEmpty

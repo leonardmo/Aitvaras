@@ -116,6 +116,13 @@ public protocol AgentSessionPersistence: Sendable {
     func orderAgentEntries(chatID: UUID, ids: [UUID]) throws
     func prepareAgentTurn(_ turn: AgentJournalTurn) throws
     func prepareAgentTurn(_ turn: AgentJournalTurn, context: ChatContextProjection?) throws
+    func recordQuotaStop(_ stop: AgentQuotaStop) throws
+    func quotaStops() throws -> [AgentQuotaStop]
+    func prepareAutomaticTurn(_ turn: AgentJournalTurn, authorization: AgentAutoContinue) throws
+    func beginAutomaticDelivery(id: UUID, authorization: AgentAutoContinue, now: Date) throws
+    func automaticInput(id: UUID) throws -> AgentAutomaticInput?
+    func bindAutomaticInput(id: UUID, messageID: String?, turnID: String?) throws
+    func finishAutomaticTurn(id: UUID, outcome: AgentTurnOutcome) throws
     func agentTurn(id: UUID) throws -> AgentJournalTurn?
     func latestAgentTurn(chatID: UUID) throws -> AgentJournalTurn?
     func advanceAgentDelivery(id: UUID, to state: AgentDeliveryState) throws
@@ -128,6 +135,14 @@ public protocol AgentSessionPersistence: Sendable {
 }
 
 extension AgentSessionPersistence {
+    public func recordQuotaStop(_ stop: AgentQuotaStop) throws {}
+    public func quotaStops() throws -> [AgentQuotaStop] { [] }
+    public func prepareAutomaticTurn(_ turn: AgentJournalTurn, authorization: AgentAutoContinue) throws { throw AgentFailure.unsupported }
+    public func beginAutomaticDelivery(id: UUID, authorization: AgentAutoContinue, now: Date) throws { throw AgentFailure.unsupported }
+    public func automaticInput(id: UUID) throws -> AgentAutomaticInput? { nil }
+    public func bindAutomaticInput(id: UUID, messageID: String?, turnID: String?) throws { throw AgentFailure.unsupported }
+    public func finishAutomaticTurn(id: UUID, outcome: AgentTurnOutcome) throws { throw AgentFailure.unsupported }
+
     public func agentSessions(chatID: UUID) throws -> [AgentChatSession] {
         try [AgentProvider.claude, .codex, .local].compactMap { try agentSession(chatID: chatID, provider: $0) }
     }
@@ -170,8 +185,10 @@ extension AgentTranscriptEntry {
 
 /// Dormant storage seam; scheduling/dispatch is wired only after row controls exist.
 public protocol AgentAutoContinuePersistence: Sendable {
+    func validate(_ authorization: AgentAutoContinue) throws
     func pending() throws -> [AgentAutoContinue]
     func continuation(id: UUID) throws -> AgentAutoContinue?
+    func continuation(failedInputID: UUID) throws -> AgentAutoContinue?
     func inputRevision(chatID: UUID) throws -> Int
     @discardableResult func schedule(_ value: AgentAutoContinue, causedBy: UUID?) throws -> AgentAutoContinue
     @discardableResult func setOptions(id: UUID, enabled: Bool, keepAwake: Bool, now: Date) throws -> AgentAutoContinue
@@ -181,6 +198,8 @@ public protocol AgentAutoContinuePersistence: Sendable {
     @discardableResult func advanceDelivery(id: UUID, inputID: UUID, to: AgentDeliveryState, now: Date) throws -> AgentAutoContinue
     @discardableResult func retryAfterQuota(id: UUID, inputID: UUID, nextCheckAt: Date, now: Date) throws -> AgentAutoContinue
     @discardableResult func finish(id: UUID, state: AgentAutoContinue.State, now: Date) throws -> AgentAutoContinue
+    func releasePrepared(id: UUID, inputID: UUID?, now: Date) throws
+    func retryAutomatic(id: UUID, inputID: UUID, reset: AgentUsageResetResolution?, nextCheckAt: Date, nextPollAt: Date?, now: Date) throws
     func noteNewInput(chatID: UUID, now: Date) throws
     func observe(_ observation: AgentUsageResetObservation) throws
     func observations(scope: AgentUsageLimitScope) throws -> [AgentUsageResetObservation]

@@ -17,11 +17,20 @@ public struct AgentTurnStore: Sendable {
         try db.queue.read { try AgentJournalTurn.filter(Column("chatID") == chatID)
             .order(Column("startedAt").desc, Column("id")).fetchOne($0) }
     }
-    public func prepare(_ turn: AgentJournalTurn, context: ChatContextProjection? = nil) throws {
+    public func prepare(_ turn: AgentJournalTurn, context: ChatContextProjection? = nil, automatic: AgentAutoContinue? = nil) throws {
         guard turn.delivery == .prepared, turn.state == .running, turn.resendCount == 0,
               turn.partialOutput.isEmpty else { throw AgentFailure.invalidTransition }
         try db.queue.write { dbc in
             try turn.insert(dbc)
+            if let automatic {
+                try AgentAutoContinueStore.requireSession(automatic, in: dbc)
+                guard try AgentAutoContinue.fetchOne(dbc, key: automatic.id) == automatic,
+                      automatic.state == .claimed, automatic.delivery == .prepared,
+                      automatic.continuationInputID == turn.id, automatic.sessionID == turn.sessionID,
+                      automatic.chatID == turn.chatID, turn.prompt == AgentAutoContinue.prompt,
+                      automatic.inputRevision == (try AgentAutoContinueStore.revision(turn.chatID, in: dbc)) else { throw AgentFailure.invalidTransition }
+                try AgentAutomaticInput(id: turn.id, intentID: automatic.id, sessionID: turn.sessionID, native: automatic.native).insert(dbc)
+            }
             try Self.monitor(turn, in: dbc)
             if let context { try AgentHandoverRecord(context: context, turnID: turn.id).insert(dbc) }
             try Self.touchChat(turn.chatID, at: turn.startedAt, in: dbc)
@@ -37,11 +46,26 @@ public struct AgentTurnStore: Sendable {
         }
         if monitoring { Self.notifyMonitoring() }
     }
-    public func advanceDelivery(id: UUID, to state: AgentDeliveryState) throws {
-        try change(id, monitoring: true) { turn in
+    public func advanceDelivery(id: UUID, to state: AgentDeliveryState, authorization: AgentAutoContinue? = nil, now: Date? = nil) throws {
+        try db.queue.write { dbc in
+            guard var turn = try AgentJournalTurn.fetchOne(dbc, key: id) else { throw AgentStoreError.missingTurn }
             guard turn.state == .running else { throw AgentFailure.invalidTransition }
+            if let authorization, let now {
+                try AgentAutoContinueStore.requireSession(authorization, in: dbc)
+                guard try AgentAutoContinue.fetchOne(dbc, key: authorization.id) == authorization,
+                      authorization.state == .claimed, authorization.enabled, authorization.delivery == .prepared,
+                      authorization.continuationInputID == id, turn.delivery == .prepared,
+                      authorization.inputRevision == (try AgentAutoContinueStore.revision(turn.chatID, in: dbc)) else { throw AgentFailure.invalidTransition }
+                var eligible = authorization; eligible.state = .pending
+                let clock = AgentAutoContinueClock(now: { now }, sleepUntil: { _ in })
+                guard AgentAutoContinueSchedule(clock: clock).plan(eligible).state == .ready else { throw AgentFailure.invalidTransition }
+            }
             turn.delivery = try turn.delivery.advancing(to: state)
+            try turn.update(dbc)
+            try Self.monitor(turn, in: dbc)
+            try AgentAutoContinueStore.advanceAutomaticDelivery(turn, in: dbc)
         }
+        Self.notifyMonitoring()
     }
     public func savePartial(id: UUID, text: String) throws {
         try change(id) { turn in
@@ -49,7 +73,7 @@ public struct AgentTurnStore: Sendable {
             turn.partialOutput = text
         }
     }
-    public func finish(id: UUID, state: AgentJournalState) throws {
+    public func finish(id: UUID, state: AgentJournalState, outcome: AgentTurnOutcome? = nil) throws {
         guard state != .running else { throw AgentFailure.invalidTransition }
         try db.queue.write { dbc in
             guard var turn = try AgentJournalTurn.fetchOne(dbc, key: id) else { throw AgentStoreError.missingTurn }
@@ -59,6 +83,15 @@ public struct AgentTurnStore: Sendable {
             try turn.update(dbc)
             try Self.touchChat(turn.chatID, at: endedAt, in: dbc)
             try Self.monitor(turn, in: dbc)
+            if let outcome, var receipt = try AgentAutomaticInput.fetchOne(dbc, key: id) {
+                switch outcome {
+                case .completed: receipt.outcome = "completed"
+                case .interrupted: receipt.outcome = "interrupted"
+                case .failed(.quota(let reset)): receipt.outcome = "quota"; receipt.resetsAt = reset
+                case .failed: receipt.outcome = "failed"
+                }
+                try receipt.update(dbc)
+            }
         }
         Self.notifyMonitoring()
     }

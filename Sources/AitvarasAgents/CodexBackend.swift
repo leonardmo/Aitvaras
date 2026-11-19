@@ -270,7 +270,8 @@ public actor CodexBackend: AgentBackend {
     }
     public func start(_ configuration: AgentSessionConfiguration) async throws -> any AgentRun {
         guard !configuration.forkSession, configuration.resumeSessionAt == nil else { throw AgentFailure.unsupported }
-        let authentication = try await status().authentication
+        let status = try await status()
+        let authentication = status.authentication
         guard authentication == .subscription else {
             throw authentication == .signedOut ? AgentFailure.authRequired : AgentFailure.unsupported
         }
@@ -293,7 +294,7 @@ public actor CodexBackend: AgentBackend {
         guard let nativeID = result["thread"]?["id"]?.stringValue, runs[nativeID] == nil else { throw AgentFailure.invalidRequest }
         if let provider = result["thread"]?["modelProvider"]?.stringValue, provider != "openai" { throw AgentFailure.unsupported }
         let session = AgentSessionID(provider: .codex, profile: profile, nativeID: nativeID)
-        let run = CodexRun(backend: self, wire: connection, session: session, configuration: configuration)
+        let run = CodexRun(backend: self, wire: connection, session: session, configuration: configuration, accountID: status.accountID)
         runs[nativeID] = run
         await run.started()
         await run.rateLimits(observedLimits)

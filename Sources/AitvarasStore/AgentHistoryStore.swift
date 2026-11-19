@@ -36,15 +36,37 @@ extension Stores: AgentHistoryPersistence {
         var byNative: [String: AgentTranscriptEntry] = [:]
         for entry in own { if let id = entry.nativeMessageID { byNative[id] = entry } }
         let ownByID = Dictionary(uniqueKeysWithValues: own.map { ($0.id, $0) })
+        let automaticInputs = try AgentAutomaticInput.filter(Column("sessionID") == session.id).fetchAll(dbc)
         var journalInputID: UUID?
         var canonical: [AgentTranscriptEntry] = []
         for incoming in entries {
             var value = incoming
             let metadata = incoming.payloadJSON.flatMap(JSONValue.parse)?["nativeHistory"]
             let nativeTurn = metadata?["turnID"]?.stringValue
+            if incoming.kind == "user", let receipt = automaticInputs.first(where: { receipt in
+                guard receipt.native == native, let messageID = incoming.nativeMessageID else { return false }
+                if native.provider == .claude { return UUID(uuidString: messageID) == receipt.id }
+                return receipt.nativeMessageID == messageID
+                    || (nativeTurn == receipt.nativeTurnID && messageID == native.canonicalMessageID(receipt.id.uuidString, turnID: nativeTurn))
+            }), incoming.text == AgentAutoContinue.prompt {
+                guard try AgentJournalTurn.fetchOne(dbc, key: receipt.id)?.delivery == .acknowledged else { throw AgentNativeHistoryError.identityConflict }
+                journalInputID = receipt.id
+                continue
+            }
+            if incoming.kind == "user", incoming.text == AgentAutoContinue.prompt,
+               automaticInputs.contains(where: { $0.native == native && $0.native.provider == .codex
+                   && $0.nativeMessageID == nil && nativeTurn != nil && $0.nativeTurnID == nativeTurn }) {
+                // Never turn an unbound automatic input into a person-authored bubble.
+                throw AgentNativeHistoryError.identityConflict
+            }
             let oldItem = metadata?["itemID"]?.stringValue.flatMap { byNative[$0] }
             let legacyItem = nativeTurn != nil && oldItem?.payloadJSON.flatMap(JSONValue.parse)?["nativeTurnID"]?.stringValue == nativeTurn ? oldItem : nil
             let old = byNative[value.nativeMessageID!] ?? legacyItem ?? UUID(uuidString: value.nativeMessageID!).flatMap { ownByID[$0] }
+            if value.kind == "user", old == nil,
+               try AgentAutoContinue.filter(Column("chatID") == session.chatID)
+                .filter(["pending", "claimed"].contains(Column("state"))).fetchCount(dbc) > 0 {
+                try AgentAutoContinueStore.noteNewInput(chatID: session.chatID, now: .now, in: dbc)
+            }
             if value.kind == "user" {
                 journalInputID = try old.flatMap { try AgentJournalTurn.fetchOne(dbc, key: $0.id)?.id }
             }

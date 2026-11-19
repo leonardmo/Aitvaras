@@ -86,10 +86,11 @@ public struct AgentInput: Sendable, Equatable {
     public let attachments: [AgentAttachment]
     public let mentions: [AgentFileMention]
     public let command: AgentCommand?
+    public let automaticIntentID: UUID?
     public init(id: UUID = UUID(), text: String, attachments: [AgentAttachment] = [],
-                mentions: [AgentFileMention] = [], command: AgentCommand? = nil) {
+                mentions: [AgentFileMention] = [], command: AgentCommand? = nil, automaticIntentID: UUID? = nil) {
         self.id = id; self.text = text; self.attachments = attachments
-        self.mentions = mentions; self.command = command
+        self.mentions = mentions; self.command = command; self.automaticIntentID = automaticIntentID
     }
 }
 
@@ -159,6 +160,7 @@ extension AgentBackend {
 public protocol AgentRun: Actor {
     /// One live connection generation. Reconnection must allocate a new ID.
     nonisolated var id: UUID { get }
+    nonisolated var accountID: String? { get }
     nonisolated var mcpSetup: AgentMCPLaunchStatus? { get }
     nonisolated var permissionSource: AgentPermissionSource { get }
     /// Subscribe before send. Losing events must fail the run, never drop silently.
@@ -180,6 +182,7 @@ public protocol AgentRun: Actor {
 }
 
 extension AgentRun {
+    public nonisolated var accountID: String? { nil }
     public nonisolated var mcpSetup: AgentMCPLaunchStatus? { nil }
     public nonisolated var permissionSource: AgentPermissionSource { .repo }
     public func followup(_ input: AgentInput, willDeliver: @escaping @Sendable () async throws -> Void) async throws {

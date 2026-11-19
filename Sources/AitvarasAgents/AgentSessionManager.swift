@@ -19,6 +19,9 @@ public actor AgentSessionManager {
         var followups: [AgentInput] = []
         var sendingFollowup = false
         var stopping = false
+        var automatic: UUID?
+        var accountID: String?
+        var usageLimit: AgentUsageLimit?
         var lastUsed = ContinuousClock.now
 
         var isRunning: Bool { inputID != nil || !followups.isEmpty || sendingFollowup || stopping }
@@ -28,11 +31,14 @@ public actor AgentSessionManager {
     private let profileBackend: ProfileBackendFactory?
     private let backend: BackendFactory
     private let audit: AgentActionCoordinator.Audit
+    private let continuationPersistence: (any AgentAutoContinuePersistence)?
+    private let continuationClock: AgentAutoContinueClock
     private let idleTimeout: Duration
     private let mcpPolicy: AgentMCPLaunchPolicy
     private var live: [UUID: Live] = [:]
     private var states: [UUID: ChatState] = [:]
     private var subscribers: [UUID: [UUID: AsyncStream<ChatState>.Continuation]] = [:]
+    private var continuationSubscribers: [UUID: AsyncStream<Void>.Continuation] = [:]
     private var closing = false
     private var refreshing = Set<UUID>()
     private var historyWaiters: [UUID: [CheckedContinuation<Void, any Error>]] = [:]
@@ -42,7 +48,9 @@ public actor AgentSessionManager {
     /// Startup recovery is synchronous and must finish before any backend starts.
     public init(persistence: any AgentSessionPersistence, idleTimeout: Duration = .seconds(600),
                 backend: @escaping BackendFactory, profileBackend: ProfileBackendFactory? = nil, audit: @escaping AgentActionCoordinator.Audit,
-                mcpPolicy: AgentMCPLaunchPolicy = .default) throws {
+                mcpPolicy: AgentMCPLaunchPolicy = .default, autoContinuePersistence: (any AgentAutoContinuePersistence)? = nil,
+                continuationClock: AgentAutoContinueClock = .live) throws {
+        self.continuationPersistence = autoContinuePersistence; self.continuationClock = continuationClock
         self.profileBackend = profileBackend
         self.persistence = persistence; self.idleTimeout = idleTimeout; self.backend = backend; self.audit = audit
         self.mcpPolicy = mcpPolicy
@@ -64,6 +72,23 @@ public actor AgentSessionManager {
         return try backend(choice.provider)
     }
     private func scopedBackend(_ session: AgentChatSession) throws -> any AgentBackend { try scopedBackend(session.choice) }
+
+    public func autoContinueUpdates() -> AsyncStream<Void> {
+        let key = UUID()
+        let (stream, continuation) = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingNewest(1))
+        continuationSubscribers[key] = continuation; continuation.yield(())
+        continuation.onTermination = { [weak self] _ in Task { await self?.detachContinuation(key) } }
+        return stream
+    }
+    private func detachContinuation(_ key: UUID) { continuationSubscribers.removeValue(forKey: key) }
+    private func continuationChanged() { continuationSubscribers.values.forEach { $0.yield(()) } }
+    public func isInputRunning(chatID: UUID, inputID: UUID) -> Bool { live[chatID]?.inputID == inputID }
+    private func rememberQuota(_ outcome: AgentTurnOutcome, chatID: UUID, inputID: UUID, session: AgentChatSession, accountID: String?, evidence: AgentUsageLimit?) throws {
+        guard let continuationPersistence, case .failed(.quota(let reset)) = outcome, let native = session.sessionID else { return }
+        try persistence.recordQuotaStop(.init(id: inputID, chatID: chatID, sessionID: session.id, native: native,
+            providerProfile: session.providerProfile, evidence: .init(status: .rejected, windowID: evidence?.windowID, resetsAt: reset ?? evidence?.resetsAt), stoppedAt: continuationClock.now(),
+            inputRevision: continuationPersistence.inputRevision(chatID: chatID), accountID: accountID))
+    }
 
     public func state(chatID: UUID) throws -> ChatState {
         if let state = states[chatID] { return state }
@@ -162,12 +187,26 @@ public actor AgentSessionManager {
 
     public func send(chatID: UUID, provider: AgentProvider, input: AgentInput,
                      onAccepted: @escaping @Sendable () async -> Void = {}) async throws {
+        if !input.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !input.attachments.isEmpty || input.command != nil {
+            try continuationPersistence?.noteNewInput(chatID: chatID, now: continuationClock.now())
+            continuationChanged()
+        }
         if live[chatID]?.inputID != nil {
             try await followup(chatID: chatID, provider: provider, input: input, onAccepted: onAccepted)
         } else {
             try await deliver(chatID: chatID, provider: provider, input: input, retry: false, onAccepted: onAccepted)
         }
     }
+    /// Only the original stored session/profile is eligible; composer selection is irrelevant.
+    @discardableResult public func continueAutomatically(id: UUID) async throws -> UUID {
+        guard let continuationPersistence, let pending = try continuationPersistence.continuation(id: id),
+              pending.state == .pending, pending.enabled else { throw AgentFailure.invalidTransition }
+        guard AgentAutoContinueSchedule(clock: continuationClock).plan(pending).state == .ready else { throw AgentFailure.invalidTransition }
+        let input = AgentInput(text: AgentAutoContinue.prompt, automaticIntentID: pending.id)
+        try await deliver(chatID: pending.chatID, provider: pending.scope.provider, input: input, retry: false, automatic: pending)
+        return input.id
+    }
+
     private func followup(chatID: UUID, provider: AgentProvider, input: AgentInput,
                           onAccepted: @Sendable () async -> Void) async throws {
         guard !closing else { throw AgentSessionManagerError.shuttingDown }
@@ -214,11 +253,13 @@ public actor AgentSessionManager {
     }
     /// Caller explicitly chooses retry. Never called during startup or reconnect.
     public func resendPrepared(turnID: UUID) async throws {
+        guard try persistence.automaticInput(id: turnID) == nil else { throw AgentFailure.invalidTransition }
         guard let turn = try persistence.agentTurn(id: turnID),
               let session = try persistence.agentSession(chatID: turn.chatID,
                   provider: try providerForTurn(turn)), session.id == turn.sessionID else {
             throw AgentSessionManagerError.missingSession
         }
+        try continuationPersistence?.noteNewInput(chatID: turn.chatID, now: continuationClock.now())
         // Without the durable user entry we cannot prove that selected bytes
         // and skills survived a failed save. Never retry a text-only substitute.
         guard let entry = try persistence.agentEntries(chatID: turn.chatID).first(where: { $0.id == turn.id }) else {
@@ -235,11 +276,15 @@ public actor AgentSessionManager {
     }
 
     private func deliver(chatID: UUID, provider: AgentProvider, input: AgentInput, retry: Bool,
-                         onAccepted: @Sendable () async -> Void = {}) async throws {
+                         onAccepted: @Sendable () async -> Void = {}, automatic: AgentAutoContinue? = nil) async throws {
+        var authorization = automatic
         guard !closing else { throw AgentSessionManagerError.shuttingDown }
         try persistence.requireAgentChatAvailable(chatID: chatID)
         guard !refreshing.contains(chatID) else { throw AgentSessionManagerError.chatBusy }
         if !retry, live[chatID]?.inputID == nil {
+            if let automatic, let continuationPersistence {
+                try await AgentActionCoordinator.authorizeAutomaticHistoryRead(automatic, persistence: continuationPersistence, clock: continuationClock, audit: audit)
+            }
             do { try await refreshNativeHistory(chatID: chatID) }
             catch where Self.historyUnavailable(error) {
                 // The durable transcript remains the context source when the
@@ -251,8 +296,14 @@ public actor AgentSessionManager {
               live[chatID]?.sendingFollowup != true, live[chatID]?.stopping != true else {
             throw AgentSessionManagerError.chatBusy
         }
-        guard var session = try persistence.agentSession(chatID: chatID, provider: provider) else {
+        let selectedSession = try automatic.flatMap { pending in try persistence.agentSessions(chatID: chatID).first { $0.id == pending.sessionID } }
+            ?? persistence.agentSession(chatID: chatID, provider: provider)
+        guard var session = selectedSession else {
             throw AgentSessionManagerError.missingSession
+        }
+        if let automatic {
+            guard session.id == automatic.sessionID, session.sessionID == automatic.native,
+                  try continuationPersistence?.continuation(id: automatic.id) == automatic else { throw AgentFailure.invalidTransition }
         }
         if provider == .local, (try? backend(provider)) is LocalBackend, session.usesThreadContext {
             // A missing opencode installation must not make text-only inference
@@ -261,10 +312,10 @@ public actor AgentSessionManager {
             try persistence.saveAgentSession(session)
         }
         _ = try state(chatID: chatID)
-        let context = try retry ? persistence.agentHandover(turnID: input.id) : persistence.agentContext(session: session)
+        let context = try automatic != nil ? nil : retry ? persistence.agentHandover(turnID: input.id) : persistence.agentContext(session: session)
         let wireText = try retry ? persistence.agentTurn(id: input.id)?.prompt : nil
         let wireInput = AgentInput(id: input.id, text: wireText ?? context?.wire(message: input.text) ?? input.text,
-                                  attachments: input.attachments, mentions: input.mentions, command: input.command)
+                                  attachments: input.attachments, mentions: input.mentions, command: input.command, automaticIntentID: input.automaticIntentID)
         if live.values.filter(\.isRunning).count >= Self.maximumRunningChats {
             throw AgentSessionManagerError.runningChatLimit
         }
@@ -285,10 +336,19 @@ public actor AgentSessionManager {
         // Native Local sessions reuse their transport and acknowledged handover
         // receipts, just like the subscription providers. AgentLoop stays fresh.
         let reusable = canReuse ? old?.coordinator : nil
-        live[chatID] = Live(token: token, session: session, coordinator: reusable, inputID: input.id)
+        live[chatID] = Live(token: token, session: session, coordinator: reusable, inputID: input.id, automatic: automatic?.id, accountID: reusable?.accountID)
         do {
-            if retry { _ = try persistence.claimAgentResend(id: input.id) }
-            else { try persistence.prepareAgentTurn(.init(input: wireInput, chatID: chatID, sessionID: session.id), context: context) }
+            if let automatic, let continuationPersistence {
+                authorization = try continuationPersistence.claim(id: automatic.id, version: automatic.version, inputID: input.id, now: continuationClock.now())
+                var turn = AgentJournalTurn(input: wireInput, chatID: chatID, sessionID: session.id)
+                turn.startedAt = continuationClock.now()
+                try persistence.prepareAutomaticTurn(turn, authorization: authorization!)
+            } else if retry { _ = try persistence.claimAgentResend(id: input.id) }
+            else {
+                var turn = AgentJournalTurn(input: wireInput, chatID: chatID, sessionID: session.id)
+                turn.startedAt = continuationClock.now()
+                try persistence.prepareAgentTurn(turn, context: context)
+            }
         } catch { live[chatID] = old; if let old { armIdle(chatID, token: old.token) }; throw error }
         var evictionCleanup: Task<Void, Never>?
         if let (chat, slot) = eviction {
@@ -299,7 +359,7 @@ public actor AgentSessionManager {
                 if let run = slot.coordinator { await Self.close(run, timeout: .seconds(2)) }
             }
         }
-        states[chatID]?.begin(input, session: session, outputID: UUID(), context: context)
+        states[chatID]?.begin(input, session: session, outputID: UUID(), context: context, automatic: automatic != nil)
         do {
             try persistEntries(chatID)
             publish(chatID)
@@ -307,6 +367,10 @@ public actor AgentSessionManager {
             await evictionCleanup?.value
             guard live[chatID]?.token == token, live[chatID]?.inputID == input.id,
                   live[chatID]?.stopping == false, !closing else { throw AgentSessionManagerError.staleRun }
+            if let authorization, let continuationPersistence {
+                try await AgentActionCoordinator.autoContinueStatus(authorization, backend: scopedBackend(session),
+                    persistence: continuationPersistence, clock: continuationClock, audit: audit)
+            }
             let coordinator: AgentActionCoordinator
             if let reusable {
                 // Acceptance can yield to UI/storage. A revoked setup must not
@@ -342,6 +406,7 @@ public actor AgentSessionManager {
                         try await audit(value)
                     })
                 live[chatID]?.coordinator = coordinator
+                live[chatID]?.accountID = raw.accountID
                 states[chatID]?.mcpSetup = raw.mcpSetup
                 live[chatID]?.reader = Task { [weak self] in
                     do {
@@ -356,7 +421,15 @@ public actor AgentSessionManager {
                 throw AgentSessionManagerError.staleRun
             }
             let persistence = persistence
-            try await coordinator.send(wireInput) { try persistence.advanceAgentDelivery(id: input.id, to: .deliveryUnknown) }
+            if let authorization, let continuationPersistence {
+                try await coordinator.sendAutomatically(wireInput, authorization: authorization, session: authorization.native,
+                    persistence: continuationPersistence, clock: continuationClock) {
+                    guard try persistence.agentSessions(chatID: chatID).contains(where: { $0.id == authorization.sessionID && $0.sessionID == authorization.native }) else { throw AgentFailure.invalidTransition }
+                    try persistence.beginAutomaticDelivery(id: input.id, authorization: authorization, now: self.continuationClock.now())
+                }
+            } else {
+                try await coordinator.send(wireInput) { try persistence.advanceAgentDelivery(id: input.id, to: .deliveryUnknown) }
+            }
         } catch {
             await failedSend(chatID, token: token, inputID: input.id, error: error)
             throw error
@@ -392,7 +465,28 @@ public actor AgentSessionManager {
             }
         }
         do {
+            if slot.automatic != nil, let input = slot.inputID {
+                var messageID: String?
+                if slot.session.provider == .codex, case .message(let id, "user", let text) = event.kind,
+                   text == AgentAutoContinue.prompt { messageID = id }
+                if messageID != nil || event.scope.turnID != nil {
+                    try persistence.bindAutomaticInput(id: input, messageID: messageID, turnID: event.scope.turnID)
+                }
+                if case .sessionStarted(let native) = event.kind,
+                   try persistence.automaticInput(id: input)?.native != native { throw AgentNativeHistoryError.identityConflict }
+            }
             switch event.kind {
+            case .usageLimit(let evidence):
+                if evidence.status == .rejected { live[chatID]?.usageLimit = evidence }
+            case .rateLimits(let windows):
+                if let continuationPersistence, slot.session.provider != .local {
+                    let scope = AgentUsageLimitScope(provider: slot.session.provider, providerProfile: slot.session.providerProfile, accountID: slot.accountID)
+                    for window in windows {
+                        if let reset = window.resetsAt {
+                            try continuationPersistence.observe(.init(scope: scope, windowID: window.id, resetsAt: reset, observedAt: continuationClock.now()))
+                        }
+                    }
+                }
             case .modeChanged(let mode):
                 var session = slot.session; session.mode = mode
                 try persistence.saveAgentSession(session)
@@ -450,8 +544,21 @@ public actor AgentSessionManager {
                 try persistence.orderAgentEntries(chatID: chatID, ids: (states[chatID]?.entries ?? []).filter { !$0.isLegacyProjection }.map(\.id))
                 states[chatID]?.entries = try persistence.agentEntries(chatID: chatID)
                 states[chatID]?.pendingCards = []
+                try rememberQuota(outcome, chatID: chatID, inputID: latest.id, session: slot.session, accountID: slot.accountID, evidence: slot.usageLimit)
+                continuationChanged()
                 armIdle(chatID, token: token); publish(chatID)
                 return
+            }
+            if let intentID = slot.automatic, let continuationPersistence,
+               let pending = try continuationPersistence.continuation(id: intentID), pending.state == .claimed, pending.delivery == .acknowledged {
+                let worked: Bool
+                switch event.kind {
+                case .textDelta(let text), .thinkingDelta(let text): worked = !text.isEmpty
+                case .toolStarted: worked = true
+                case .message(_, "assistant", let text): worked = !text.isEmpty
+                default: worked = false
+                }
+                if worked { try continuationPersistence.finish(id: intentID, state: .fired, now: continuationClock.now()); continuationChanged() }
             }
             let previous = states[chatID]?.entries ?? []
             switch event.kind {
@@ -467,7 +574,8 @@ public actor AgentSessionManager {
             if case .turnEnded(let outcome) = event.kind, let input = slot.inputID, event.scope.inputID == input {
                 let outcome = slot.stopping ? AgentTurnOutcome.interrupted : outcome
                 if slot.stopping { states[chatID]?.end(.interrupted) }
-                try persistence.finishAgentTurn(id: input, state: Self.journalState(outcome))
+                if slot.automatic != nil { try persistence.finishAutomaticTurn(id: input, outcome: outcome) }
+                else { try persistence.finishAgentTurn(id: input, state: Self.journalState(outcome)) }
                 live[chatID]?.inputID = nil
                 if slot.session.provider == .codex {
                     for followup in slot.followups {
@@ -478,6 +586,9 @@ public actor AgentSessionManager {
                         }
                     }
                 }
+                let failedInput = try persistence.latestAgentTurn(chatID: chatID).flatMap { $0.state == .failed ? $0.id : nil } ?? input
+                try rememberQuota(outcome, chatID: chatID, inputID: failedInput, session: slot.session, accountID: slot.accountID, evidence: slot.usageLimit)
+                continuationChanged()
                 if slot.session.provider == .local, !slot.stopping, let next = slot.followups.first {
                     live[chatID]?.inputID = next.id
                     states[chatID]?.awaitingQueuedInput()
@@ -507,9 +618,9 @@ public actor AgentSessionManager {
     }
     private func failedSend(_ chat: UUID, token: UUID, inputID: UUID, error: Error) async {
         guard live[chat]?.token == token, live[chat]?.inputID == inputID else { return }
-        await exited(chat, token: token, failure: (error as? AgentFailure) ?? .unknown)
+        await exited(chat, token: token, failure: (error as? AgentFailure) ?? .unknown, preservePrepared: error is CancellationError)
     }
-    private func exited(_ chat: UUID, token: UUID, failure: AgentFailure) async {
+    private func exited(_ chat: UUID, token: UUID, failure: AgentFailure, preservePrepared: Bool = false) async {
         guard let slot = live[chat], slot.token == token else { return }
         live.removeValue(forKey: chat); slot.reader?.cancel(); slot.idle?.cancel()
         for followup in slot.followups {
@@ -519,12 +630,18 @@ public actor AgentSessionManager {
             states[chat]?.markFollowup(followup.id, status: "interrupted")
         }
         if let input = slot.inputID {
-            do { try persistence.finishAgentTurn(id: input, state: .interrupted) }
+            do {
+                let journal = try persistence.agentTurn(id: input)
+                if slot.automatic != nil, !(preservePrepared && journal?.delivery == .prepared) {
+                    try persistence.finishAutomaticTurn(id: input, outcome: .failed(failure))
+                }
+                else { try persistence.finishAgentTurn(id: input, state: .interrupted) }
+            }
             catch { states[chat]?.end(.failed(.unknown)) }
             states[chat]?.end(slot.stopping ? .interrupted : .failed(failure))
         }
         try? persistEntries(chat)
-        states[chat]?.pendingCards = []; publish(chat)
+        states[chat]?.pendingCards = []; publish(chat); continuationChanged()
         if let run = slot.coordinator { await Self.close(run, timeout: .seconds(2)) }
     }
     private func armIdle(_ chat: UUID, token: UUID) {

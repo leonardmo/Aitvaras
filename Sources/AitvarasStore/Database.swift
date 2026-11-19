@@ -1095,6 +1095,30 @@ public final class AitvarasDatabase: Sendable {
                 t.uniqueKey(["provider", "providerProfile", "accountKey", "windowID"])
             }
         }
+        m.registerMigration("v37-agent-automatic-input-receipts") { db in
+            try db.create(table: "agentQuotaStop") { t in
+                t.primaryKey("id", .text).references("agentTurn", onDelete: .restrict)
+                t.column("chatID", .text).notNull().references("workspaceChat", onDelete: .restrict)
+                t.column("sessionID", .text).notNull().references("agentChatSession", onDelete: .restrict)
+                t.column("native", .text).notNull()
+                t.column("providerProfile", .text).notNull()
+                t.column("evidence", .text).notNull()
+                t.column("accountID", .text)
+                t.column("stoppedAt", .datetime).notNull()
+                t.column("inputRevision", .integer).notNull()
+            }
+            try db.create(table: "agentAutomaticInput") { t in
+                t.primaryKey("id", .text).references("agentTurn", onDelete: .restrict)
+                t.column("intentID", .text).notNull().references("agentAutoContinue", onDelete: .restrict)
+                t.column("sessionID", .text).notNull().references("agentChatSession", onDelete: .restrict)
+                t.column("native", .text).notNull()
+                t.column("nativeMessageID", .text)
+                t.column("nativeTurnID", .text)
+                t.column("outcome", .text)
+                t.column("resetsAt", .datetime)
+                t.uniqueKey(["sessionID", "nativeMessageID"])
+            }
+        }
         return m
     }
 }
