@@ -1866,6 +1866,25 @@ terminate on their own, with a bounded deadline and no spinning. Reap every
 child. If a sandbox denies an operation, record the operation and error and
 rerun that real-kernel check on the host.
 
+For the registry and scope foundation, run the same build and filter tests with
+`GatewayUpstreamStoreTests|GatewayProjectScopeTests|WorkspaceAgentSetupTests|AgentMCPRuntimeFileTests`.
+Run the full `AgentMCPResolverTests` suite on the host. The supervised sandbox
+can report an unreadable ancestor even when the fixture's own MCP file is
+readable, so tests that require a fully readable ancestor chain need that check.
+Upgrade a v44 profile and check that native definitions, secret references,
+approvals and opt-outs are preserved. Gateway accounts require an explicit
+gateway-managed definition. A project account choice overrides the global
+default. The existing project opt-out blocks global accounts, while an
+explicitly assigned account can still be used. Definition changes require a
+fresh account binding. For launch resolution, check nested roots, ready
+worktrees, ambiguous ownership and an existing launch after folders change.
+Verify that tool grants control both discovery and dispatch, that an existing
+launch observes revocation, and that foreign or unknown record IDs are denied.
+Each real tool adapter must also filter its record reads and writes by the
+authorized project. On the host, build the App and verify that Project Settings
+→ Gateway Tools starts with all categories off and that Save, Reload and
+revocation work in an isolated profile.
+
 For the remaining G1 work, use a local fake upstream for MCP discovery,
 dynamic registration, S256 PKCE, token exchange, refresh and protected calls.
 Test against injected HTTP transport and a fake credential store in the

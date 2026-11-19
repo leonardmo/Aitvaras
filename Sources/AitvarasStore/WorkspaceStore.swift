@@ -164,28 +164,8 @@ extension Stores {
     /// registered root and fail rather than borrow an ambiguous project's approvals.
     public func agentMCPLaunchContext(directory: URL, projectID requested: UUID?) throws -> AgentMCPLaunchContext {
         try db.queue.read { dbc in
-            let projectID: UUID?
-            if let requested { projectID = requested }
-            else {
-                let path = directory.standardizedFileURL.path
-                func contains(_ root: String) -> Bool {
-                    let root = URL(fileURLWithPath: root).standardizedFileURL.path
-                    return path == root || path.hasPrefix(root == "/" ? "/" : root + "/")
-                }
-                let worktrees = try AgentWorktree.fetchAll(dbc).filter { contains($0.worktreePath) }
-                if !worktrees.isEmpty {
-                    guard worktrees.count == 1, worktrees[0].state == .ready else { throw AgentStoreError.identityConflict }
-                    projectID = worktrees[0].projectID
-                } else {
-                    let folders = try WorkspaceFolder.fetchAll(dbc).filter { contains($0.path) }
-                    let depth = folders.map { $0.path.count }.max()
-                    let ids = Set(folders.filter { $0.path.count == depth }.map(\.projectID))
-                    guard ids.count <= 1 else { throw AgentStoreError.identityConflict }
-                    projectID = ids.first
-                }
-            }
-            let global = try AgentMCPConfiguration.decodeServers(String.fetchOne(dbc,
-                sql: "SELECT value FROM kv WHERE key = ?", arguments: ["agent.mcp.global"]) ?? "{}")
+            let projectID = try requested ?? Self.projectContainingLaunchDirectory(directory, in: dbc)
+            let global = try Self.globalAgentMCPServers(in: dbc)
             guard let projectID else {
                 return .init(projectID: UUID(uuid: (0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0)), globalServers: global)
             }
@@ -194,6 +174,51 @@ extension Stores {
             return .init(projectID: projectID, setup: try setup.mcpConfiguration(), globalServers: global,
                          permissionSource: setup.permissionSource, alwaysAllowedTools: setup.alwaysAllowedTools)
         }
+    }
+
+    /// Resolve once from the authenticated launcher's starting directory.
+    public func gatewayLaunchContext(client: GatewayLaunchContext.Client, startingDirectory: URL) throws -> GatewayLaunchContext {
+        guard startingDirectory.isFileURL else { throw AgentStoreError.invalidValue }
+        let directory = startingDirectory.resolvingSymlinksInPath().standardizedFileURL
+        return try db.queue.read { dbc in
+            let projectID = try Self.projectContainingLaunchDirectory(directory, preferManagedWorktree: false, in: dbc)
+            if let projectID { try Self.requireGatewayProject(projectID, in: dbc) }
+            return .init(client: client, projectID: projectID)
+        }
+    }
+
+    /// Owning Chat supplies the project even if its execution directory is elsewhere.
+    public func gatewayLaunchContext(client: GatewayLaunchContext.Client, owningChatID: UUID) throws -> GatewayLaunchContext {
+        try db.queue.read { dbc in
+            guard let chat = try WorkspaceChat.fetchOne(dbc, key: owningChatID), chat.archivedAt == nil else {
+                throw AgentStoreError.missingChat
+            }
+            try Self.requireGatewayProject(chat.projectID, in: dbc)
+            return .init(client: client, projectID: chat.projectID)
+        }
+    }
+
+    private static func projectContainingLaunchDirectory(_ directory: URL, preferManagedWorktree: Bool = true,
+                                                         in dbc: Database) throws -> UUID? {
+        let path = directory.standardizedFileURL.path
+        func contains(_ root: String) -> Bool {
+            let root = URL(fileURLWithPath: root).standardizedFileURL.path
+            return path == root || path.hasPrefix(root == "/" ? "/" : root + "/")
+        }
+        // D34 probes still use the owning worktree. External gateway launches
+        // compare all registered roots, including ready managed worktrees.
+        let worktrees = try AgentWorktree.fetchAll(dbc).filter { contains($0.worktreePath) }
+        if preferManagedWorktree, !worktrees.isEmpty {
+            guard worktrees.count == 1, worktrees[0].state == .ready else { throw AgentStoreError.identityConflict }
+            return worktrees[0].projectID
+        }
+        let folders = try WorkspaceFolder.fetchAll(dbc).filter { contains($0.path) }
+        let depth = (folders.map(\.path) + worktrees.map(\.worktreePath)).map(\.count).max()
+        let closestWorktrees = worktrees.filter { $0.worktreePath.count == depth }
+        guard closestWorktrees.allSatisfy({ $0.state == .ready }) else { throw AgentStoreError.identityConflict }
+        let ids = Set(folders.filter { $0.path.count == depth }.map(\.projectID) + closestWorktrees.map(\.projectID))
+        guard ids.count <= 1 else { throw AgentStoreError.identityConflict }
+        return ids.first
     }
 
     public func workspaceAgentSetup(projectID: UUID) throws -> WorkspaceAgentSetup {
@@ -213,7 +238,12 @@ extension Stores {
     }
 
     public func globalAgentMCPServers() throws -> [String: AgentMCPServer] {
-        try AgentMCPConfiguration.decodeServers(value(forKey: "agent.mcp.global") ?? "{}")
+        try db.queue.read { try Self.globalAgentMCPServers(in: $0) }
+    }
+
+    static func globalAgentMCPServers(in dbc: Database) throws -> [String: AgentMCPServer] {
+        try AgentMCPConfiguration.decodeServers(String.fetchOne(dbc,
+            sql: "SELECT value FROM kv WHERE key = ?", arguments: ["agent.mcp.global"]) ?? "{}")
     }
 
     public func saveGlobalAgentMCPServers(_ servers: [String: AgentMCPServer]) throws {
