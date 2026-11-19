@@ -30,6 +30,7 @@ macOS 26+, Swift 6, SwiftUI. Full Xcode required (user installing). Core logic l
 - **Face animation**: blink/expressions/lip sync driven through the ARKit blendshapes — visemes derived from TTS output (phoneme timings where the engine provides them, audio-envelope fallback).
 - Rendered with **SceneKit + GLTFKit2** in v1 (loads the RPM GLB directly, morpher-based blendshape animation is straightforward there); RealityKit remains the target for a later pass — the animation state machine is renderer-independent.
 - **Floating companion window**: small, always-on-top, draggable, global hotkey show/hide. Speaks/listens/reacts with animation states (idle, listening, thinking, speaking).
+- **Minimal overlay is the default (2026-11-19).** With no saved choice, the companion opens as the minimal overlay, which renders no 3D model. The avatar is opt-in under Setup → Companion; a saved choice is kept.
 - **Full main window**: chat with history, activity log, connector settings, RAG index management.
 
 ## D22 — Complete Aitvaras naming ✅ (2026-07-13)
