@@ -179,11 +179,32 @@ import AitvarasStore
         #expect(try stores.activityRuns().isEmpty)
     }
 
+    @Test func chatWakeupsAreOnByDefaultUntilDeclinedOrPaused() throws {
+        let stores = try inMemoryStores()
+        var policy = try stores.backgroundWorkPolicy()
+        #expect(!policy.reviewed)
+        #expect(policy.permits(.chatWakeups))
+        policy.paused = true
+        #expect(!policy.permits(.chatWakeups))
+        policy.paused = false
+        policy.setEnabled(.chatWakeups, false)
+        #expect(!policy.isEnabled(.chatWakeups) && !policy.permits(.chatWakeups))
+        #expect(policy.permits(.chatWakeups, trigger: .manual))
+        try stores.saveBackgroundWorkPolicy(policy)
+        #expect(try stores.backgroundWorkPolicy() == policy)
+        policy.setEnabled(.chatWakeups, true)
+        #expect(policy.permits(.chatWakeups))
+        // A policy saved before `declined` existed still decodes, with wake-ups on.
+        let legacy = #"{"version":1,"reviewed":true,"paused":false,"allowed":["mail"]}"#
+        let decoded = try JSONDecoder().decode(BackgroundWorkPolicy.self, from: Data(legacy.utf8))
+        #expect(decoded.declined.isEmpty && decoded.permits(.chatWakeups) && decoded.permits(.mail))
+    }
+
     @Test func policyDefaultsClosedPersistsAndAlwaysAllowsManualWork() throws {
         let stores = try inMemoryStores()
         var policy = try stores.backgroundWorkPolicy()
         for feature in BackgroundFeature.allCases {
-            #expect(!policy.permits(feature))
+            #expect(policy.permits(feature) == BackgroundWorkPolicy.defaultOn.contains(feature))
             #expect(policy.permits(feature, trigger: .manual))
         }
         policy.reviewed = true

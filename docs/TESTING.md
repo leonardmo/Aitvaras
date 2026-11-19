@@ -1704,7 +1704,7 @@ scheduler timing or UI acceptance.
 ## Durable chat wake-ups (D39 / W2)
 
 Use an isolated profile and a cheap Claude model (Haiku) for live checks.
-Enable Activity → Background features → Chat wake-ups first.
+Chat wake-ups are on by default, also in a fresh unreviewed profile; switching the feature off in Activity must stop catch-ups.
 
 - Schedule a wake-up, quit before it is due, restart after its due time: one
   autonomous marker/answer, no user bubble, Activity “Chat woke up (late)”.

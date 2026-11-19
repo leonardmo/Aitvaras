@@ -1554,7 +1554,10 @@ final class AppModel {
         await bootstrapIfNeeded()
         await runChatWakeups()
         guard let stores, let integrations,
-              BackgroundFeature.allCases.contains(where: { automaticWorkAllowed($0) }) else { return }
+              // Default-on chat wake-ups never open the reviewed connector catch-up.
+              BackgroundFeature.allCases.contains(where: {
+                  !BackgroundWorkPolicy.defaultOn.contains($0) && automaticWorkAllowed($0)
+              }) else { return }
         do {
             guard let window = try stores.pendingWakeBriefingWindow(wokeAt: wokeAt) else {
                 return

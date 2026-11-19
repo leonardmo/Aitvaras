@@ -994,8 +994,11 @@ The app checks on launch, system wake and every 30 seconds; no daemon or login
 item runs while Aitvaras is closed. Missed cron slots collapse to one check,
 then reschedule strictly after the catch-up time in the device's time zone.
 
-Activity's Chat wake-ups feature controls app catch-ups under the existing
-background policy. Pausing it leaves pending work intact; timers inside a live
+Activity's Chat wake-ups feature controls app catch-ups. Unlike the other
+background features it is on by default, without the one-time review (owner,
+2026-11-19): it only continues work a chat already scheduled. Switching it off
+(stored as a declined feature) or pausing all automatic work stops catch-ups and
+leaves pending work intact; timers inside a live
 CLI continue independently. The clock badge lists all pending items and permits
 cancelling only unclaimed app-owned records, without killing native transports.
 
