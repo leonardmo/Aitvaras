@@ -248,7 +248,7 @@ actor ClaudeRun: AgentRun {
             if let error = value["error"]?.stringValue {
                 if error == "authentication_failed" { assistantFailure = .authRequired }
                 else if ["rate_limit", "rate_limit_error", "usage_limit"].contains(error) { assistantFailure = .quota(resetsAt: rateLimitReset) }
-                else { assistantFailure = .unknown }
+                else { assistantFailure = .providerError }
             }
             // Injected reminders are provenance for the marker, never a user bubble.
             if !(autonomous && type == "user" && injectedReason(value) != nil) { await parseMessage(value) }
@@ -272,7 +272,7 @@ actor ClaudeRun: AgentRun {
             let aborted = value["terminal_reason"]?.stringValue == "aborted_streaming"
             let outcome: AgentTurnOutcome = (interrupted || aborted)
                 ? .interrupted : assistantFailure.map { .failed($0) }
-                    ?? (value["is_error"]?.boolValue == false ? .completed : .failed(.unknown))
+                    ?? (value["is_error"]?.boolValue == false ? .completed : .failed(.providerError))
             let completed = [input!] + queue
             continuation.yield(.init(scope: .init(runID: id, session: session, inputID: input,
                 completedInputIDs: completed.count > 1 ? completed : []), kind: .turnEnded(outcome)))

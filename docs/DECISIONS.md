@@ -430,6 +430,9 @@ with only Copy details, which copies the category. Connection failures show
 “Connection lost”; quota failures show “Usage limit reached”, with a local
 24-hour reset time when known. These offer Continue for acknowledged input and
 Retry otherwise. Authentication keeps the existing Sign in flow.
+Provider-reported result/assistant errors use the fixed `providerError` case
+and the Connection lost actions. Internal catches retain `unknown` or their
+safe store/history category; provider error text never becomes composer copy.
 
 Recovery is manual. The manager's recovery API validates the original durable
 session and rejects absent or changed native identities for Continue. Continue
@@ -781,9 +784,12 @@ within each tier.
 Assistant selection views have no intrinsic width and use the proposed
 transcript width on every measurement, including after completion and resize.
 
-Claude launches include hook events. PreToolUse/PostToolUse hooks without a
-tool-use ID match the most recent unfinished tool of the named kind in this
-turn; PostToolUse also falls back to the most recently finished match. The
+Claude launches include hook events. PreToolUse hooks without a tool-use ID
+start on the earliest same-name tool without a real result or a completed Pre
+hook. All starts in that batch stay together. An interleaved next-tool start
+closes the previous Pre batch; sequential configured hooks can stay on the
+current unfinished tool when no next eligible tool waits. PostToolUse matches
+the most recent unfinished tool, then the most recently finished match. The
 first observation pins `hook_id` to that tool, so overlapping same-name tools
 cannot steal responses. Tool payloads persist a `hooks` array in observation
 order with id, name, event, status and an optional short reason. Exit 2 or a
@@ -791,6 +797,8 @@ block/deny decision is blocked; other nonzero exits/errors are failed. Reasons
 use redacted stderr or structured decision reasons, one line capped at 240
 UTF-8 bytes, never full output. Unknown responses and unmatched starts keep
 standalone rows; unknown informational system events are ignored.
+Real successful tool results supersede hook-derived denied/error flags in
+either arrival order, while the hook outcome and reason remain in history.
 
 Matched hooks appear as status icons beside the tool label. Block reasons
 remain visible on the collapsed row; all hook details use the tool's existing

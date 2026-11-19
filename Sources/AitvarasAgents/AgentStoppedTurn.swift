@@ -30,7 +30,7 @@ public struct AgentStopReason: Codable, Sendable, Equatable {
         switch failure {
         case .authRequired: return .init(kind: .signIn, category: category)
         case .quota(let reset): return .init(kind: .quota, category: category, resetsAt: reset)
-        case .offline, .crashed: return .init(kind: .connection, category: category)
+        case .offline, .crashed, .providerError: return .init(kind: .connection, category: category)
         default: return .init(kind: .internalError, category: category)
         }
     }
@@ -111,6 +111,10 @@ extension AgentTranscriptEntry {
 }
 
 extension ChatState {
+    public func canRecover(_ entry: AgentTranscriptEntry) -> Bool {
+        guard let stop = entry.stoppedTurn, let inputID else { return false }
+        return entry.chatID == chatID && stop.inputID == inputID
+    }
     public var currentStoppedTurn: AgentStoppedTurn? {
         entries.reversed().compactMap(\.stoppedTurn).first { $0.inputID == inputID }
     }

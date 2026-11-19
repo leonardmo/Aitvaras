@@ -15,6 +15,7 @@ struct AgentStoppedTurnTests {
         turn.delivery = delivery
         let cases: [(AgentStopReason, String, AgentRecoveryAction?)] = [
             (.failure(.offline), "Connection lost", nil),
+            (.failure(.providerError), "Connection lost", nil),
             (.failure(.crashed(exitCode: 7)), "Connection lost", nil),
             (.failure(.unknown, category: AgentProcessError.writeFailed.safeErrorCategory), "Connection lost", nil),
             (.failure(.quota(resetsAt: nil)), "Usage limit reached", nil),

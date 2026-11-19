@@ -192,7 +192,7 @@ actor CodexRun: AgentRun {
                 failure = .quota(resetsAt: reset)
             } else if info == "httpConnectionFailed" { failure = .offline }
             else if info == "unauthorized" { failure = .authRequired }
-            else { failure = .unknown }
+            else { failure = .providerError }
             let outcome: AgentTurnOutcome = status == "completed" ? .completed : status == "interrupted" ? .interrupted : .failed(failure)
             if let turn { completedTurns.insert(turn) }
             let unfinished = Set(items.filter { Self.toolTypes.contains($0.value["type"]?.stringValue ?? "") }.keys)

@@ -5,6 +5,40 @@ import AitvarasStore
 @testable import AitvarasAgents
 
 @Suite(.timeLimit(.minutes(2))) struct AgentHookFoldingTests {
+    @Test(arguments: [false, true])
+    func realSuccessWinsOverHookDenialInEitherArrivalOrder(resultFirst: Bool) {
+        var fixture = HookStateFixture()
+        fixture.tool("one")
+        fixture.hook("check", phase: .running)
+        if resultFirst { fixture.finish("one") }
+        fixture.hook("check", phase: .blocked, reason: "Hook denied")
+        if !resultFirst { fixture.finish("one") }
+        #expect(fixture.state.tools.first?.isDenied == false)
+        #expect(fixture.state.tools.first?.isError == false)
+        #expect(fixture.hooks("one").first?["status"] == .string("blocked"))
+    }
+
+    @Test(arguments: [false, true])
+    func parallelToolsAssignEachPreBatchToItsEarliestEligibleTool(reverse: Bool) {
+        var fixture = HookStateFixture()
+        fixture.tool("first"); fixture.tool("second")
+        fixture.hook("first-a", phase: .running)
+        fixture.hook("first-b", phase: .running)
+        for id in reverse ? ["first-b", "first-a"] : ["first-a", "first-b"] {
+            fixture.hook(id, phase: id == "first-a" ? .blocked : .success, reason: id == "first-a" ? "Blocked first" : nil)
+        }
+        fixture.hook("second-a", phase: .running)
+        fixture.hook("second-b", phase: .running)
+        fixture.hook("second-b", phase: .success)
+        fixture.hook("second-a", phase: .success)
+        fixture.finish("second")
+        #expect(fixture.hooks("first").map { $0["id"]?.stringValue } == ["first-a", "first-b"])
+        #expect(fixture.hooks("second").map { $0["id"]?.stringValue } == ["second-a", "second-b"])
+        #expect(fixture.state.tools.first { $0.id == "first" }?.isDenied == true)
+        #expect(fixture.state.tools.first { $0.id == "second" }?.isDenied == false)
+        #expect(fixture.state.tools.first { $0.id == "second" }?.isError == false)
+    }
+
     @Test func presentationUsesStatusIconsAndOnlyBlockedReasonsOnCollapsedRows() throws {
         var fixture = HookStateFixture()
         fixture.tool("one")
@@ -79,7 +113,10 @@ import AitvarasStore
         fixture.hook("blocked", phase: .blocked, reason: "Command is blocked.\nHidden long output")
         fixture.finish("one")
         #expect(fixture.hooks("one").first?["reason"] == .string("Command is blocked."))
-        #expect(fixture.state.entries.first { $0.kind == "tool" }?.payloadJSON.flatMap(JSONValue.parse)?["isDenied"] == .bool(true))
+        // The real successful result supersedes inferred denial, while the
+        // blocked hook and its reason remain in the historical hook record.
+        #expect(fixture.state.entries.first { $0.kind == "tool" }?.payloadJSON.flatMap(JSONValue.parse)?["isDenied"] == .bool(false))
+        #expect(fixture.hooks("one").first?["status"] == .string("blocked"))
         fixture.tool("two")
         fixture.hook("failed", phase: .running)
         fixture.hook("failed", phase: .error, reason: String(repeating: "x", count: 1_000))

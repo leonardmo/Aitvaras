@@ -56,6 +56,7 @@ extension AgentFailure: SafeErrorCategorizing {
         case .authRequired: .init(type: "AgentFailure", errorCase: "authRequired")
         case .quota: .init(type: "AgentFailure", errorCase: "quota")
         case .offline: .init(type: "AgentFailure", errorCase: "offline")
+        case .providerError: .init(type: "AgentFailure", errorCase: "providerError")
         case .notInstalled: .init(type: "AgentFailure", errorCase: "notInstalled")
         case .crashed: .init(type: "AgentFailure", errorCase: "crashed")
         case .unsupported: .init(type: "AgentFailure", errorCase: "unsupported")

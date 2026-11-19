@@ -231,7 +231,7 @@ struct AgentChatView: View {
             fork: fork, forkEnabled: !chat.isBusy && !chat.gitBusy && !chat.conversationBusy && entry.sessionID != nil && entry.nativeMessageID.flatMap(UUID.init(uuidString:)) != nil,
             edit: edit, recovery: { action in chat.recover(entry, action: action) },
             recoveryEnabled: !chat.isBusy && !chat.conversationBusy && chat.signingIn == nil && canSend
-                && entry.stoppedTurn?.inputID == chat.displayEntries.last(where: { ["user", "continued"].contains($0.kind) })?.id,
+                && chat.state?.canRecover(entry) == true,
             recoveryError: chat.recoveryErrors[entry.id])
     }
 

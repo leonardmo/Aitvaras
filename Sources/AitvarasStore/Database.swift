@@ -1123,15 +1123,25 @@ public final class AitvarasDatabase: Sendable {
     /// Only a journal-owned input proves which UUID Claude was sent. Native
     /// imports and inherited fork rows may legitimately have different IDs.
     private static func repairClaudeUserIdentities(in db: Database) throws {
-        let rows = try AgentTranscriptEntry.filter(Column("provider") == AgentProvider.claude.rawValue)
-            .filter(Column("kind") == "user").filter(Column("nativeMessageID") != nil).fetchAll(db)
-        for var row in rows {
-            guard let nativeID = row.nativeMessageID.flatMap(UUID.init(uuidString:)),
-                  let sessionID = row.sessionID,
-                  let session = try AgentChatSession.fetchOne(db, key: sessionID),
-                  session.provider == .claude, session.chatID == row.chatID else { continue }
+        // Frozen column projections: future record fields must not affect an
+        // upgrade from the schema this migration was written for.
+        let rows = try Row.fetchAll(db, sql: """
+            SELECT id, chatID, sessionID, nativeMessageID, payloadJSON
+            FROM agentTranscriptEntry
+            WHERE provider = 'claude' AND kind = 'user' AND nativeMessageID IS NOT NULL
+            """)
+        func journal(_ id: UUID) throws -> Row? {
+            try Row.fetchOne(db, sql: "SELECT id, chatID, sessionID FROM agentTurn WHERE id = ?", arguments: [id])
+        }
+        for row in rows {
+            let rowID: UUID = row["id"], chatID: UUID = row["chatID"]
+            let nativeText: String? = row["nativeMessageID"], owningSession: UUID? = row["sessionID"]
+            guard let nativeID = nativeText.flatMap(UUID.init(uuidString:)),
+                  let sessionID = owningSession,
+                  let session = try Row.fetchOne(db, sql: "SELECT provider, chatID FROM agentChatSession WHERE id = ?", arguments: [sessionID]),
+                  session["provider"] as String == "claude", session["chatID"] as UUID == chatID else { continue }
             let payload: [String: JSONValue]
-            if let json = row.payloadJSON {
+            if let json: String = row["payloadJSON"] {
                 guard case .object(let object)? = JSONValue.parse(json) else { continue }
                 payload = object
             } else { payload = [:] }
@@ -1148,22 +1158,23 @@ public final class AitvarasDatabase: Sendable {
                       let id = history["itemID"]?.stringValue.flatMap(UUID.init(uuidString:)) else { continue }
                 historyInput = id
             } else { historyInput = nil }
-            let turn: AgentJournalTurn
-            if let own = try AgentJournalTurn.fetchOne(db, key: row.id) {
-                guard metadataInput == nil || metadataInput == own.id else { continue }
+            let turn: Row
+            if let own = try journal(rowID) {
+                guard metadataInput == nil || metadataInput == own["id"] as UUID else { continue }
                 turn = own
             } else {
                 guard let metadataInput, historyInput == metadataInput,
-                      let linked = try AgentJournalTurn.fetchOne(db, key: metadataInput) else { continue }
+                      let linked = try journal(metadataInput) else { continue }
                 turn = linked
             }
-            guard turn.chatID == row.chatID, turn.sessionID == sessionID,
-                  historyInput == nil || historyInput == turn.id,
-                  nativeID != turn.id else { continue }
+            let turnID: UUID = turn["id"], turnChatID: UUID = turn["chatID"], turnSessionID: UUID = turn["sessionID"]
+            guard turnChatID == chatID, turnSessionID == sessionID,
+                  historyInput == nil || historyInput == turnID,
+                  nativeID != turnID else { continue }
             // Intentionally bypass saveEntry's immutable-identity guard only in
             // this migration. Record encoding keeps all UUID columns intact.
-            row.nativeMessageID = nil
-            try row.update(db, columns: ["nativeMessageID"])
+            try Table<Row>("agentTranscriptEntry").filter(Column("id") == rowID)
+                .updateAll(db, Column("nativeMessageID").set(to: nil as String?))
         }
     }
 }
