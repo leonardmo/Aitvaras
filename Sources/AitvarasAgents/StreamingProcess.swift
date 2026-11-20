@@ -66,19 +66,32 @@ public final class StreamingProcess: @unchecked Sendable {
     }
 
     public func start() throws {
+        _ = try start(suspended: false)
+    }
+
+    func start(suspended: Bool) throws -> pid_t {
         try io.sync {
             guard !started else { throw AgentProcessError.alreadyStarted }
             started = true
-            do { try spawn() }
+            do { try spawn(suspended: suspended) }
             catch {
                 cleanupFailure = .launchFailed
                 finishStream(.launchFailed)
                 throw AgentProcessError.launchFailed
             }
+            return pid
         }
     }
 
-    private func spawn() throws {
+    func resumeAfterRegistration(_ child: pid_t) throws {
+        try io.sync {
+            guard pid == child, child > 0, status == nil, !stopping, kill(child, SIGCONT) == 0 else {
+                throw AgentProcessError.launchFailed
+            }
+        }
+    }
+
+    private func spawn(suspended: Bool) throws {
         guard executable.isFileURL, executable.path.hasPrefix("/"),
               !([executable.path] + arguments + [directory?.path ?? ""]).contains(where: { $0.contains("\0") }),
               environment.allSatisfy({ !$0.key.isEmpty && !$0.key.contains("=") && !$0.key.contains("\0") && !$0.value.contains("\0") })
@@ -99,7 +112,9 @@ public final class StreamingProcess: @unchecked Sendable {
         func check(_ result: Int32) throws {
             guard result == 0 else { throw AgentProcessError.launchFailed }
         }
-        try check(posix_spawnattr_setflags(&attributes, Int16(POSIX_SPAWN_SETPGROUP | POSIX_SPAWN_CLOEXEC_DEFAULT)))
+        var flags = POSIX_SPAWN_SETPGROUP | POSIX_SPAWN_CLOEXEC_DEFAULT
+        if suspended { flags |= POSIX_SPAWN_START_SUSPENDED }
+        try check(posix_spawnattr_setflags(&attributes, Int16(flags)))
         try check(posix_spawnattr_setpgroup(&attributes, 0))
         for (source, target) in [(descriptors[0], STDIN_FILENO), (descriptors[3], STDOUT_FILENO), (descriptors[5], STDERR_FILENO)] {
             try check(posix_spawn_file_actions_adddup2(&actions, source, target))

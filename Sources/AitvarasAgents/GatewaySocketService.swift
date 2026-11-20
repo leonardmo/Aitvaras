@@ -154,7 +154,7 @@ public actor GatewaySocketService {
                 do {
                     try await reply(.ready)
                     let invocation = MCPGatewayInvocation(launchID: connection.launch.id, context: connection.launch.context,
-                                                          presentation: .outside)
+                        presentation: connection.launch.chatID.map { .inline(chatID: $0) } ?? .outside)
                     let gateway = makeSession(invocation) { _ = try await registry.validate(connection) }
                     await bridge(channel, gateway: gateway, connection: connection)
                 } catch {

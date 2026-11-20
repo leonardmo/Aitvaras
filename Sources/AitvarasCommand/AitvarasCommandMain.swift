@@ -6,8 +6,12 @@ import AitvarasAgents
 struct AitvarasCommandMain {
     static func main() async {
         do {
-            let launcher = GatewayLauncher { client in
-                let startup = try GatewayStartup(endpoint: .init(), appBundle: GatewayCodeIdentity.enclosingApp())
+            let bundle = try GatewayCodeIdentity.enclosingApp()
+            let endpoint = GatewayEndpoint()
+            let gateway = GatewayCLIConfiguration(executable: bundle.appendingPathComponent("Contents/MacOS/aitvaras-mcp"),
+                stateDirectory: GatewayEndpoint.hasProfileOverride ? endpoint.stateDirectory : nil)
+            let launcher = GatewayLauncher(gateway: gateway) { client in
+                let startup = try GatewayStartup(endpoint: endpoint, appBundle: bundle)
                 let channel = try await startup.connect(role: .register(client))
                 channel.stop()
             }

@@ -13,6 +13,7 @@ actor ClaudeRun: AgentRun {
     nonisolated let events: AsyncThrowingStream<AgentEvent, Error>
     private let continuation: AsyncThrowingStream<AgentEvent, Error>.Continuation
     private let wire: AgentWire
+    private var hasGateway = false
     private let profile: String
     private var session: AgentSessionID?
     private let forkSource: AgentSessionID?
@@ -74,10 +75,11 @@ actor ClaudeRun: AgentRun {
         (events, continuation) = AsyncThrowingStream.makeStream(bufferingPolicy: .bufferingOldest(4096))
     }
 
-    func initialize() async throws {
+    func initialize(register: AgentWire.RegisterProcess? = nil) async throws {
         availableSetup.metadata = await metadataReader.read()
+        hasGateway = register != nil
         try await wire.open(receive: { [weak self] value, requestID in await self?.receive(value, requestID: requestID) },
-                            disconnected: { [weak self] error in await self?.disconnected(error) })
+                            disconnected: { [weak self] error in await self?.disconnected(error) }, register: register)
         let hook: (String) -> JSONValue = { .array([.object(["matcher": .null, "hookCallbackIds": .array([.string($0)])])]) }
         let value: JSONValue
         do {
@@ -343,7 +345,11 @@ actor ClaudeRun: AgentRun {
             emit(.usageLimit(evidence))
             if input != nil, evidence.status == .rejected { usageFailure = .quota(resetsAt: evidence.resetsAt) }
         case "result":
-            guard input != nil else { return }
+            guard let owner = input else { return }
+            if hasGateway {
+                await wire.cancelGatewayApprovals()
+                guard !closed, input == owner else { return }
+            }
             if modelWorked || localCommand?.id != input || localCommand?.output == nil {
                 let usage = value["usage"] ?? .null
                 emit(.usage(AgentUsage(scope: .turn, inputTokens: usage["input_tokens"]?.int,
@@ -406,8 +412,12 @@ actor ClaudeRun: AgentRun {
         modeState.acknowledge(mode); emit(.modeChanged(mode))
     }
     func interrupt() async throws {
-        guard !closed, input != nil else { throw AgentFailure.invalidTransition }
+        guard !closed, let owner = input else { throw AgentFailure.invalidTransition }
         interrupted = true; requests.removeAll()
+        if hasGateway {
+            await wire.cancelGatewayApprovals()
+            guard !closed, input == owner else { return }
+        }
         _ = try await wire.request("interrupt", timeout: .seconds(1))
     }
     func disconnected(_ error: AgentFailure) async {

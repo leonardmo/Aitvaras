@@ -56,6 +56,7 @@ public struct AgentSessionConfiguration: Sendable {
     public let instructions: String
     /// Ephemeral launch options; AgentChatSession never persists these.
     public var projectID: UUID?
+    var gatewayChatID: UUID?
     public var settingsJSON: String?
     public var mcpConfigPath: URL?
     public var includeHookEvents: Bool

@@ -24,14 +24,16 @@ public struct GatewayLauncher: Sendable {
     private let register: Register
     private let locate: Locate
     private let supervise: Supervise
+    private let gateway: GatewayCLIConfiguration?
 
-    public init(register: @escaping Register) {
-        self.init(register: register, locate: { client, env in
+    public init(gateway: GatewayCLIConfiguration, register: @escaping Register) {
+        self.init(gateway: gateway, register: register, locate: { client, env in
             ProviderLocator.executable(for: client == .claude ? .claude : .codex, environment: env)
         }, supervise: { try GatewayPTY.run(executable: $0, arguments: $1, environment: $2) })
     }
 
-    init(register: @escaping Register, locate: @escaping Locate, supervise: @escaping Supervise) {
+    init(gateway: GatewayCLIConfiguration? = nil, register: @escaping Register, locate: @escaping Locate, supervise: @escaping Supervise) {
+        self.gateway = gateway
         self.register = register
         self.locate = locate
         self.supervise = supervise
@@ -50,6 +52,9 @@ public struct GatewayLauncher: Sendable {
         try Task.checkCancellation()
         try await register(client)
         try Task.checkCancellation()
+        if let gateway {
+            return try gateway.withLaunchArguments(arguments, client: client) { try supervise(cli, $0, environment) }
+        }
         return try supervise(cli, arguments, environment)
     }
 
@@ -62,7 +67,9 @@ public struct GatewayLauncher: Sendable {
             if ["--api-key", "--base-url", "--api-base", "--provider", "--model-provider"].contains(flag) {
                 throw GatewayLauncherError.credentialOverride
             }
-            if client == .claude && flag == "--settings" { throw GatewayLauncherError.unsupportedConfiguration }
+            if client == .claude && ["--settings", "--mcp-config"].contains(flag) {
+                throw GatewayLauncherError.unsupportedConfiguration
+            }
             if client == .codex && (flag == "--config" || arg.hasPrefix("-c")) {
                 let assignment: String
                 if flag == "--config", arg != flag { assignment = String(arg.dropFirst(flag.count + 1)) }

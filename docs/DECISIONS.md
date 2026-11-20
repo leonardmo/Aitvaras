@@ -1116,7 +1116,7 @@ such as Linear. The gateway does not call cloud LLM APIs.
   the relay starts the bundled app in the background with `open -g` for the
   requested profile and waits up to ten seconds. Failure produces a clear MCP
   startup error. The relay never connects to upstreams. D31 in-app sessions keep
-  their provider control pipes and use the same `MCPGateway` core. The older
+  their provider control pipes and also use the relay for gateway MCP. The older
   project-file broker keeps its restricted list/read contract.
 - **Launch ownership.** In-app launches are registered by their app owner.
   Outside Chat, the bundled `aitvaras` launcher registers over the Unix socket
@@ -1130,10 +1130,15 @@ such as Linear. The gateway does not call cloud LLM APIs.
   time. Agent-spawned descendants share that launch's policy and cannot
   register a separate launch under it. There is no
   bearer secret or launch expiry. Exit or revoke invalidates access and
-  pending approvals. Codex app-server processes cannot share authorization
-  across different launch scopes.
+  pending approvals. Chat starts each provider process suspended, registers
+  its root and chat scope, then resumes it before initialization. Each gateway
+  Codex Chat run has its own app-server. Shared Codex account and history
+  operations use the native app-server without gateway authority.
 - **Per-launch injection.** Claude gets `--mcp-config` with a private temporary
-  runtime file. Codex gets `-c mcp_servers.aitvaras.…`. CLI config, auth and
+  runtime file. Interactive Chat adds the entry to its D34 runtime file and
+  retains native repo settings and strict-mode behavior. A conflicting native
+  Claude project or app entry fails visibly. Codex gets a process-local
+  `-c mcp_servers.aitvaras=…` override. CLI config, auth and
   settings files are never written. Ordinary environment variables and
   profile selections pass through, including `CLAUDE_CONFIG_DIR`, while
   API-key and alternate provider endpoint overrides remain forbidden.

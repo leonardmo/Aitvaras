@@ -26,6 +26,7 @@ public enum GatewayTransportError: Error, LocalizedError, Equatable, Sendable {
 }
 
 public struct GatewayEndpoint: Sendable, Equatable {
+    public static var hasProfileOverride: Bool { AitvarasPaths.isIsolated }
     public let stateDirectory: URL
     public let socketURL: URL
     public let profile: String

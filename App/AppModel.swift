@@ -70,6 +70,10 @@ final class AppModel {
     private(set) var captureOllamaModelName: String?
     private(set) var hub: ConnectorHub?
     @ObservationIgnored private var gatewaySocketService: GatewaySocketService?
+    @ObservationIgnored private var gatewayChatLaunch: GatewayChatLaunch?
+    @ObservationIgnored private var gatewayApprovalBroker: GatewayApprovalBroker?
+    @ObservationIgnored private var gatewayApprovalObserver: Task<Void, Never>?
+    private(set) var gatewayInlineApprovals: [GatewayApprovalRequest] = []
     private(set) var agentLoop: AgentLoop?
     private(set) var agentSessionManager: AgentSessionManager?
     private(set) var agentAutoContinueLifecycle: AgentAutoContinueLifecycle?
@@ -462,9 +466,9 @@ final class AppModel {
             ? ["CLAUDE_CONFIG_DIR": AitvarasPaths.stateDirectory.appendingPathComponent("FakeProviders/claude").path] : [:]
         let claude = ClaudeBackend(executable: AgentProviderLaunchPolicy.executable(.claude,
             environment: inherited, isolated: isolated), environment: environment,
-            overrides: claudeOverrides, mcpPolicy: mcpPolicy)
+            overrides: claudeOverrides, mcpPolicy: mcpPolicy, gateway: gatewayChatLaunch)
         let codex = CodexBackend(executable: AgentProviderLaunchPolicy.executable(.codex,
-            environment: inherited, isolated: isolated), environment: environment)
+            environment: inherited, isolated: isolated), environment: environment, gateway: gatewayChatLaunch)
         let local = LocalChatBackendFactory.make(environment: environment, mcpPolicy: mcpPolicy) { [weak self] configuration, input in
             guard let self else { throw AgentFailure.offline }
             return try await self.localAgentReply(agentLoop: agentLoop, configuration: configuration, input: input)
@@ -475,6 +479,7 @@ final class AppModel {
             if demo { return $0.key == .local }
             return AgentProviderLaunchPolicy.allows($0.key, environment: inherited, isolated: isolated)
         }
+        let gateway = gatewayChatLaunch
         let profileBackends = AgentProfileBackends { choice in
             guard let fallback = available[choice.provider] else { throw AgentFailure.offline }
             guard choice.provider == .claude, choice.profile != "default" else { return fallback }
@@ -482,7 +487,7 @@ final class AppModel {
                   let directory = profile.configDirectory else { throw AgentFailure.invalidRequest }
             return ClaudeBackend(executable: AgentProviderLaunchPolicy.executable(.claude,
                 environment: inherited, isolated: isolated), environment: environment, profile: choice.profile,
-                overrides: ["CLAUDE_CONFIG_DIR": directory], mcpPolicy: mcpPolicy)
+                overrides: ["CLAUDE_CONFIG_DIR": directory], mcpPolicy: mcpPolicy, gateway: gateway)
         }
         let metadataUserDirectory = available[.claude] == nil ? nil
             : (claudeOverrides["CLAUDE_CONFIG_DIR"] ?? environment["CLAUDE_CONFIG_DIR"]).map { URL(fileURLWithPath: $0) }
@@ -561,9 +566,12 @@ final class AppModel {
             _ = try GatewayCodeIdentity(executable: app, signingLocation: bundle.bundleURL)
             let binary = bundle.bundleURL.appendingPathComponent("Contents/Helpers/aitvaras")
             let identity = try GatewayCodeIdentity(executable: binary)
-            let tools = GatewayToolService(stores: stores, hub: hub, approvals: GatewayApprovalBroker(),
+            let endpoint = GatewayEndpoint()
+            let registry = GatewayLaunchRegistry()
+            let approvals = GatewayApprovalBroker()
+            let tools = GatewayToolService(stores: stores, hub: hub, approvals: approvals,
                                            knowledgeEmbedder: OllamaEmbedder())
-            let service = GatewaySocketService(endpoint: .init(),
+            let service = GatewaySocketService(endpoint: endpoint, registry: registry,
                 verifyLauncher: { identity.matches($0) },
                 resolveContext: { peer, client in
                     try stores.gatewayLaunchContext(client: client, startingDirectory: peer.startingDirectory())
@@ -571,6 +579,18 @@ final class AppModel {
                 makeSession: { invocation, authorize in tools.connect(invocation: invocation, authorize: authorize) })
             try await service.start()
             gatewaySocketService = service
+            gatewayChatLaunch = GatewayChatLaunch(configuration: .init(
+                executable: bundle.bundleURL.appendingPathComponent("Contents/MacOS/aitvaras-mcp"),
+                stateDirectory: AitvarasPaths.isIsolated ? endpoint.stateDirectory : nil),
+                registry: registry, cancelApprovals: { await approvals.cancel(launchID: $0) })
+            gatewayApprovalBroker = approvals
+            gatewayApprovalObserver = Task { [weak self] in
+                for await _ in approvals.changes {
+                    let pending = await approvals.requests().filter { $0.invocation.presentation != .outside }
+                    guard !Task.isCancelled, let self else { return }
+                    gatewayInlineApprovals = pending
+                }
+            }
         } catch {
             try? stores.record(ActivityEvent(kind: .agentFailure, connectorID: "agent.gateway",
                                              summary: "The gateway socket could not start."))
@@ -580,6 +600,17 @@ final class AppModel {
     func stopGatewaySocket() async {
         await gatewaySocketService?.stop()
         gatewaySocketService = nil
+        gatewayChatLaunch = nil
+        gatewayApprovalObserver?.cancel()
+        gatewayApprovalObserver = nil
+        gatewayApprovalBroker = nil
+        gatewayInlineApprovals = []
+    }
+
+    func decideGatewayApproval(_ request: GatewayApprovalRequest, allow: Bool) async {
+        if await gatewayApprovalBroker?.decide(id: request.id, allow: allow) == true {
+            gatewayInlineApprovals.removeAll { $0.id == request.id }
+        }
     }
 
     func shutdownAgentChats() async throws {

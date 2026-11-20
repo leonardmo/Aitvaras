@@ -7,6 +7,7 @@ actor CodexRun: AgentRun {
     private let continuation: AsyncThrowingStream<AgentEvent, Error>.Continuation
     private let backend: CodexBackend
     private let wire: AgentWire
+    private let hasGateway: Bool
     private let session: AgentSessionID
     private let configuration: AgentSessionConfiguration
     private var mode: AgentMode
@@ -31,8 +32,9 @@ actor CodexRun: AgentRun {
     private static let toolTypes: Set<String> = ["commandExecution", "fileChange", "mcpToolCall", "dynamicToolCall", "webSearch"]
 
     init(backend: CodexBackend, wire: AgentWire, session: AgentSessionID, configuration: AgentSessionConfiguration, accountID: String? = nil,
-         initialLimitWindows: [AgentRateLimitWindow] = []) {
+         initialLimitWindows: [AgentRateLimitWindow] = [], hasGateway: Bool = false) {
         self.accountID = accountID; limitWindows = initialLimitWindows
+        self.hasGateway = hasGateway
         self.backend = backend; self.wire = wire; self.session = session; self.configuration = configuration; mode = configuration.mode
         (events, continuation) = AsyncThrowingStream.makeStream(bufferingPolicy: .bufferingOldest(4096))
     }
@@ -201,6 +203,10 @@ actor CodexRun: AgentRun {
             }
         case "turn/completed":
             guard let owner = input else { return }
+            if hasGateway {
+                await wire.cancelGatewayApprovals()
+                guard !closed, input == owner else { return }
+            }
             acknowledge()
             for item in p["turn"]?["items"]?.arrayValue ?? [] { complete(item) }
             let status = p["turn"]?["status"]?.stringValue
@@ -347,7 +353,11 @@ actor CodexRun: AgentRun {
         self.mode = mode
     }
     func interrupt() async throws {
-        guard !closed, input != nil, let turn else { throw AgentFailure.invalidTransition }
+        guard !closed, let owner = input, let turn else { throw AgentFailure.invalidTransition }
+        if hasGateway {
+            await wire.cancelGatewayApprovals()
+            guard !closed, input == owner, self.turn == turn else { return }
+        }
         if planRequestID != nil {
             requests.removeAll(); planRequestID = nil
             emit(.turnEnded(.interrupted)); input = nil
@@ -395,7 +405,8 @@ actor CodexRun: AgentRun {
             do { try await interrupt() } catch { failure = error }
         }
         closed = true; input = nil; requests.removeAll(); continuation.finish()
-        await backend.release(session, runID: id)
+        do { try await backend.release(session, runID: id) }
+        catch { failure = failure ?? error }
         if let failure { throw failure }
     }
 }

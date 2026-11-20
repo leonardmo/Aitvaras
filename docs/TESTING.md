@@ -1935,9 +1935,18 @@ Xcode's development targets sign the commands ad hoc and embed them before
 signing the App. An unsigned local build can use the same path by signing the
 launcher with `codesign --force --options runtime --sign -` before embedding
 it, then signing the enclosing build. Restart the app after replacing the
-binary so it pins the new hash. There is no unsigned opt-out. When testing
-registration before adapter integration, use a finite dummy CLI on PATH
-and verify the launcher waits for the app's reply before spawning it.
+binary so it pins the new hash. There is no unsigned opt-out.
+
+`GatewayCLIConfigurationTests` checks the arguments against small synthetic
+help excerpts. `GatewayChatLaunchTests` uses finite provider fixtures to verify
+Claude's D34 settings and separate Codex process roots for different projects.
+On the host, compare `claude --help` and `codex --help` with the excerpts. Use
+Claude `--model haiku` and the smallest available Codex model for live runs.
+Check that the launcher and interactive Chat both discover `aitvaras`, that
+two Codex projects see only their own granted tools, and that an inline
+gateway approval is cleared on Stop or provider cancellation. Check that
+native repo/user MCP policy still applies and that side questions and
+restricted non-chat jobs have no gateway.
 
 For the remaining G1 work, use a local fake upstream for MCP discovery,
 dynamic registration, S256 PKCE, token exchange, refresh and protected calls.

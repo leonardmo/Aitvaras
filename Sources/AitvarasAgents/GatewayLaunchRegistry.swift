@@ -18,6 +18,7 @@ public struct GatewayLaunch: Identifiable, Equatable, Sendable {
     public let id: UUID
     public let root: GatewayProcessIdentity
     public let context: GatewayLaunchContext
+    let chatID: UUID?
 }
 
 public enum GatewayLaunchRegistryError: Error, Equatable, Sendable {
@@ -100,15 +101,15 @@ public actor GatewayLaunchRegistry {
 
     /// Called by the app for a process it spawned. PID and context are supplied
     /// by the app's owner, never by an untrusted wire request.
-    public func registerOwnedProcess(pid: pid_t, context: GatewayLaunchContext) throws -> GatewayLaunch {
+    public func registerOwnedProcess(pid: pid_t, context: GatewayLaunchContext, chatID: UUID? = nil) throws -> GatewayLaunch {
         let process = try inspector.snapshot(pid)
         guard process.parentPID == getpid(), process.effectiveUID == geteuid() else {
             throw GatewayLaunchRegistryError.unauthorized
         }
-        return try register(root: process.identity, context: context)
+        return try register(root: process.identity, context: context, chatID: chatID)
     }
 
-    private func register(root: GatewayProcessIdentity, context: GatewayLaunchContext) throws -> GatewayLaunch {
+    private func register(root: GatewayProcessIdentity, context: GatewayLaunchContext, chatID: UUID? = nil) throws -> GatewayLaunch {
         guard !closed else { throw GatewayLaunchRegistryError.closed }
         guard entries[root] == nil else { throw GatewayLaunchRegistryError.alreadyRegistered }
         // Descendants belong to their existing launch. Starting another
@@ -120,7 +121,7 @@ public actor GatewayLaunchRegistry {
         guard try inspector.snapshot(root.pid).identity == root else {
             throw GatewayLaunchRegistryError.unauthorized
         }
-        let launch = GatewayLaunch(id: UUID(), root: root, context: context)
+        let launch = GatewayLaunch(id: UUID(), root: root, context: context, chatID: chatID)
         let stopWatching = watchExit(root.pid) { [weak self] in
             Task { await self?.finish(launch, reason: .launchExited) }
         }
