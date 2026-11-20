@@ -190,7 +190,7 @@ private struct OwnToolFixture {
     }
 }
 
-private actor GatewayMemoryEmbedder: EmbeddingEngine {
+actor GatewayMemoryEmbedder: EmbeddingEngine {
     nonisolated let identifier = "gateway-fixture"
     nonisolated let dimensions = 1
     func embed(texts: [String]) async throws -> [[Float]] { [] }

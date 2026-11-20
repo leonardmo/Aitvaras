@@ -22,18 +22,18 @@ yet meet the new capture/session-continuity requirements.
 
 ## Agent MCP gateway (D42)
 
-### G1 — Gateway core 🚧
+### G1 — Gateway core
 
-Prove Unix-socket peer identity and launch ancestry, then build the shared
-gateway for in-app threads and the bundled stdio relay. Add a supervising
-launcher with Claude and Codex adapters, scoped Aitvaras tools, and one
-profile Keychain OAuth session per upstream server/account. Linear is the
-first upstream. Complete the approval and audit path, Connections with
-revoke, and Settings command installation.
+- ✅ Implemented the shared gateway, Claude and Codex launch adapters, scoped
+  tools, shared OAuth, approvals and audit, Connections and command installation.
+- ✅ Package acceptance covers shared sign-in and memory, distinct project
+  catalogs, untrusted writes and catalog updates with a fake upstream.
+- ⏳ Host acceptance remains open for the launcher-to-socket fixture, signed
+  app and helper pins, and live Linear sign-in shared by Claude Haiku and the
+  smallest available Codex model. The host checklist also covers plain-launch
+  rejection, live revoke and Settings presentation.
 
-Acceptance: `CLAUDE_CONFIG_DIR=… aitvaras claude` and `aitvaras codex` in
-the same project both use Linear and scoped memory after one sign-in.
-Plain CLI launches get no gateway. See the [G1 checks](TESTING.md#agent-mcp-gateway-d42).
+See the [G1 checks](TESTING.md#agent-mcp-gateway-d42).
 
 ### G2 — Gateway breadth 💡
 

@@ -1932,10 +1932,28 @@ for MCP frames. A state path too long for Darwin's Unix socket address must
 be shortened. The gateway never falls back to another profile or port.
 
 Xcode's development targets sign the commands ad hoc and embed them before
-signing the App. An unsigned local build can use the same path by signing the
-launcher with `codesign --force --options runtime --sign -` before embedding
-it, then signing the enclosing build. Restart the app after replacing the
-binary so it pins the new hash. There is no unsigned opt-out.
+signing the App. Embedding verifies both copied signatures. An unsigned local
+build can use the same path by signing each command with
+`codesign --force --options runtime --sign -` before embedding it, then signing
+the enclosing build. Restart the app after replacing a binary so it pins the
+new hash. There is no unsigned opt-out.
+
+`GatewayG1CoreAcceptanceTests` connects two clients to one project while a
+third uses a different project. It checks a single fake OAuth registration
+and upstream initialization, the shared memory scope, an approval on each
+untrusted write, and the catalog update in both connected clients.
+`GatewayG1HostAcceptanceTests` drives fake Claude and Codex through
+`GatewayLauncher` and its supervisor. A finite stdio test relay exercises the
+Unix gateway, including an unregistered client and EOF after revocation.
+That test uses an in-process launcher registration and a fake verifier.
+The separate built-App test checks the actual helper paths, static pins and
+the signed bundle seal. Run both checks with the built App on the host.
+
+```sh
+make app
+app="$PWD/.build-xcode/Build/Products/Debug/Aitvaras.app"
+AITVARAS_GATEWAY_TEST_APP="$app" swift test --filter GatewayG1
+```
 
 `GatewayCLIConfigurationTests` checks the arguments against small synthetic
 help excerpts. `GatewayChatLaunchTests` uses finite provider fixtures to verify
@@ -1978,15 +1996,30 @@ and PATH detection. For the App check, use a disposable macOS user or an
 empty command path. Install and uninstall through Settings, and verify that
 the App leaves an unrelated command or dangling foreign link intact.
 
-On the host, run `make check` and `make app`. In an isolated state profile,
-verify the bundled helpers, real `open -g` startup and socket isolation,
-TTY/signals, Settings installation, Connections and revoke, and approval
-and re-auth presentation. Keep external integrations disabled for offline
-checks. Enable only the integrations needed for the explicitly live checks.
-Compare adapter flags with the installed CLIs' help. Use disposable projects
-and accounts as appropriate. Verify real Linear browser sign-in once, then
-use Linear and scoped memory from both `aitvaras claude --model haiku` (also
-with `CLAUDE_CONFIG_DIR`) and `aitvaras codex` with the smallest available
-Codex model. Verify plain launches lack the gateway and two projects cannot
-borrow each other's access. The package tests do not establish these host
-and browser behaviors.
+### Pending host and live acceptance
+
+1. With the host-built App, make a short isolated state directory and disable
+   external integrations for offline checks. Start from a terminal whose
+   working directory belongs to a disposable project that grants Memory.
+   Set `AITVARAS_STATE_DIR` to that profile for the App and both CLI launches.
+   Leave the profile's App stopped for the first launch to exercise
+   `open -g -n` and background startup.
+2. Compare the loaded adapter flags with `claude --help` and `codex --help`.
+   Launch from the bundle with `"$app/Contents/Helpers/aitvaras" claude --model haiku`
+   and `"$app/Contents/Helpers/aitvaras" codex --model "$smallest_codex_model"`.
+   Set `smallest_codex_model` to the smallest available subscription model.
+   Repeat Claude with an existing disposable `CLAUDE_CONFIG_DIR`. Verify both
+   clients discover `aitvaras` and appear in Connections. Successful discovery
+   through those actual bundled binaries exercises the live app and launcher pins.
+3. Enable only the integrations required for the live check. Add one managed
+   Linear account, sign in once through Connections, and list tools again
+   in the connected CLIs. From each CLI, read one issue and search for the same
+   synthetic project-authorized memory fact. Check that the two clients share
+   the login and that project opt-out or account choice changes the second
+   project's catalog.
+4. Launch a CLI directly and verify it lacks `aitvaras`. Starting
+   `"$app/Contents/MacOS/aitvaras-mcp"` directly should fail admission.
+   Deny a request for a disposable untrusted upstream write. Revoke a live
+   launch from Connections and verify its relay and pending cards close.
+   Check Settings installation, TTY and signal handling, and approval and
+   re-auth presentation on the host. Run `make check` before shipping.

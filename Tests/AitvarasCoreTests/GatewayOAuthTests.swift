@@ -153,12 +153,17 @@ import AitvarasStore
     }
 }
 
-private actor OAuthUpstreamFixture {
+actor OAuthUpstreamFixture {
     let fault: String
+    let includesWriteTool: Bool
+    private(set) var registrations = 0
     private var challenge: String?
     private var registeredRedirect: String?
     private var refreshes = 0, initialized = 0, calls = 0
-    init(fault: String = "") { self.fault = fault }
+    init(fault: String = "", includesWriteTool: Bool = false) {
+        self.fault = fault
+        self.includesWriteTool = includesWriteTool
+    }
 
     func counts() -> (refresh: Int, initialize: Int, calls: Int) { (refreshes, initialized, calls) }
 
@@ -192,6 +197,7 @@ private actor OAuthUpstreamFixture {
             guard data?["token_endpoint_auth_method"] == .string("none"),
                   let redirect = data?["redirect_uris"]?.arrayValue?.first?.stringValue else { throw FixtureError.request }
             registeredRedirect = redirect
+            registrations += 1
             return reply(201, .object(["client_id": .string("test-client")]))
         case "/tenant/token", "/token":
             var form = URLComponents()
@@ -229,9 +235,11 @@ private actor OAuthUpstreamFixture {
                   request.value(forHTTPHeaderField: "MCP-Protocol-Version") == "2025-06-18" else { throw FixtureError.request }
             switch method {
             case "notifications/initialized": return reply(202)
-            case "tools/list": return rpc(id, ["tools": .array([.object(["name": .string("list_issues"),
-                "inputSchema": .object(["type": .string("object")]),
-                "annotations": .object(["readOnlyHint": .bool(true)])])])])
+            case "tools/list":
+                let names = includesWriteTool ? ["list_issues", "update_issue"] : ["list_issues"]
+                return rpc(id, ["tools": .array(names.map { .object(["name": .string($0),
+                    "inputSchema": .object(["type": .string("object")]),
+                    "annotations": .object(["readOnlyHint": .bool(true)])]) })])
             case "tools/call":
                 calls += 1
                 if fault == "unauthorized", calls == 1 { return reply(401) }

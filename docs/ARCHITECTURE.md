@@ -50,6 +50,20 @@ Package.swift              — AitvarasKit: everything testable without the app
 
 ## Key mechanics
 
+- **Agent MCP gateway (D42)** exposes one `aitvaras` MCP server to launched
+  Claude and Codex sessions. `Contents/Helpers/aitvaras` registers over the
+  profile Unix socket and supervises the CLI. The CLI's stdio server is
+  `Contents/MacOS/aitvaras-mcp`, which relays to `GatewaySocketService`.
+  The app and launcher authenticate with code-signing pins. The registry
+  checks kernel process ancestry and binds each launch to its starting
+  project. Chat uses the same gateway, with a separate Codex app-server
+  per gateway Chat run. `AitvarasAgent` provides tool dispatch, approvals
+  and the shared upstream sessions. `AitvarasStore` resolves project grants
+  and upstream account choices, while OAuth credentials stay in the profile
+  Keychain. Connections manages revocation, trust and command installation.
+  The [gateway acceptance checklist](TESTING.md#agent-mcp-gateway-d42) covers
+  the host bundle and live CLI paths.
+
 - **Chat UI**: `MainWindow` opens `ProjectChatWorkspaceView`, whose
   `AgentChatView` and `ChatModel` share one composer/transcript across Local,
   Codex and Claude. New Chat is an unsaved composer; first Send creates a

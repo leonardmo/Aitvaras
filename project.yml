@@ -48,6 +48,7 @@ targets:
         PRODUCT_NAME: aitvaras-mcp
         SWIFT_VERSION: "6.0"
         CODE_SIGN_IDENTITY: "-"
+        ENABLE_HARDENED_RUNTIME: YES
 
   Aitvaras:
     type: application
@@ -106,9 +107,12 @@ targets:
         outputFiles:
           - $(BUILT_PRODUCTS_DIR)/$(EXECUTABLE_FOLDER_PATH)/notify-reader
       - script: |
+          set -eu
           mkdir -p "$TARGET_BUILD_DIR/$CONTENTS_FOLDER_PATH/Helpers"
           cp "$BUILT_PRODUCTS_DIR/aitvaras" "$TARGET_BUILD_DIR/$CONTENTS_FOLDER_PATH/Helpers/aitvaras"
           cp "$BUILT_PRODUCTS_DIR/aitvaras-mcp" "$TARGET_BUILD_DIR/$EXECUTABLE_FOLDER_PATH/aitvaras-mcp"
+          /usr/bin/codesign --verify --strict "$TARGET_BUILD_DIR/$CONTENTS_FOLDER_PATH/Helpers/aitvaras"
+          /usr/bin/codesign --verify --strict "$TARGET_BUILD_DIR/$EXECUTABLE_FOLDER_PATH/aitvaras-mcp"
         name: Embed signed gateway commands
         inputFiles:
           - $(BUILT_PRODUCTS_DIR)/aitvaras
