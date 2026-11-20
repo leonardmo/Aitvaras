@@ -71,6 +71,8 @@ final class AppModel {
     private(set) var hub: ConnectorHub?
     @ObservationIgnored private var gatewaySocketService: GatewaySocketService?
     @ObservationIgnored private var gatewayChatLaunch: GatewayChatLaunch?
+    @ObservationIgnored private var gatewayRegistry: GatewayLaunchRegistry?
+    @ObservationIgnored private var gatewayLoginPATH: String?
     @ObservationIgnored private var gatewayApprovalBroker: GatewayApprovalBroker?
     @ObservationIgnored private var gatewayApprovalObserver: Task<Void, Never>?
     private(set) var gatewayInlineApprovals: [GatewayApprovalRequest] = []
@@ -461,6 +463,7 @@ final class AppModel {
         let environment = try await Task.detached {
             try await ProviderEnvironment.resolve(inherited: inherited)
         }.value
+        gatewayLoginPATH = environment["PATH"]
         let isolated = AitvarasPaths.isIsolated
         let keychain = self.keychain
         let mcpPolicy = AgentMCPLaunchPolicy(load: { directory, projectID in
@@ -590,6 +593,7 @@ final class AppModel {
                 makeSession: { invocation, authorize in tools.connect(invocation: invocation, authorize: authorize) })
             try await service.start()
             gatewaySocketService = service
+            gatewayRegistry = registry
             gatewayUpstreamSessions = upstreams
             await refreshGatewaySignInRequests()
             gatewayChatLaunch = GatewayChatLaunch(configuration: .init(
@@ -623,6 +627,8 @@ final class AppModel {
         gatewaySignInRequests = []
         await gatewaySocketService?.stop()
         gatewaySocketService = nil
+        await gatewayRegistry?.shutdown()
+        gatewayRegistry = nil
         gatewayChatLaunch = nil
         gatewayApprovalObserver?.cancel()
         gatewayApprovalObserver = nil
@@ -647,8 +653,8 @@ final class AppModel {
         gatewaySignInTask = Task {
             defer { gatewaySigningIn = nil; gatewaySignInTask = nil }
             do {
-                try stores.record(ActivityEvent(kind: .toolExecuted, connectorID: "agent.gateway",
-                                                summary: "Upstream sign-in requested in Aitvaras"))
+                let route = try stores.gatewayUpstream(id: id)
+                try stores.recordGatewayAdministration("Upstream sign-in requested in Aitvaras", projectID: route.account.definitionProjectID)
                 try await gatewayUpstreamSessions.signIn(id, currentRoute: { try stores.gatewayUpstream(id: id) },
                     openBrowser: { url in
                         try ProviderSignIn.validate(url)
@@ -661,6 +667,46 @@ final class AppModel {
     }
 
     func cancelGatewaySignIn() { gatewaySignInTask?.cancel() }
+
+    func gatewayLiveLaunches() async -> [GatewayLaunch] {
+        await gatewayRegistry?.activeLaunches() ?? []
+    }
+
+    func revokeGatewayLaunch(_ launch: GatewayLaunch) async throws {
+        guard let stores, let gatewayRegistry else { throw GatewayTransportError.rejected }
+        try stores.recordGatewayAdministration("Revoke gateway launch", projectID: launch.context.projectID)
+        if await gatewayRegistry.revoke(id: launch.id) { await gatewayApprovalBroker?.cancel(launchID: launch.id) }
+    }
+
+    func gatewayAccountSignedIn(_ id: UUID) async throws -> Bool {
+        guard let stores, let gatewayUpstreamSessions else { throw GatewayTransportError.rejected }
+        return try await gatewayUpstreamSessions.signedIn(stores.gatewayUpstream(id: id))
+    }
+
+    func signOutGatewayAccount(_ id: UUID) async throws {
+        guard let stores, let gatewayUpstreamSessions else { throw GatewayTransportError.rejected }
+        let route = try stores.gatewayUpstream(id: id)
+        try stores.recordGatewayAdministration("Sign out of upstream in Aitvaras", projectID: route.account.definitionProjectID)
+        try await gatewayUpstreamSessions.signOut(route)
+    }
+
+    func refreshGatewayRouting() async { await gatewayUpstreamSessions?.routingChanged() }
+
+    var gatewayCommandInstaller: GatewayCommandInstaller {
+        .init(home: FileManager.default.homeDirectoryForCurrentUser,
+              launcher: Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/aitvaras"))
+    }
+
+    var gatewayCommandOnPath: Bool {
+        gatewayCommandInstaller.onPath(gatewayLoginPATH ?? ProcessInfo.processInfo.environment["PATH"] ?? "")
+    }
+
+    func changeGatewayCommand(install: Bool) throws {
+        guard let stores else { throw GatewayTransportError.rejected }
+        try stores.recordGatewayAdministration(install ? "Install gateway command" : "Uninstall gateway command")
+        if install { try gatewayCommandInstaller.install() }
+        else { try gatewayCommandInstaller.uninstall() }
+    }
 
     func decideGatewayApproval(_ request: GatewayApprovalRequest, allow: Bool) async {
         if await gatewayApprovalBroker?.decide(id: request.id, allow: allow) == true {

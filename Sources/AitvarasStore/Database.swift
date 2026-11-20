@@ -1320,6 +1320,12 @@ public final class AitvarasDatabase: Sendable {
                 t.column("projectID", .blob).notNull().indexed().references("workspaceProject", onDelete: .cascade)
             }
         }
+        m.registerMigration("v48-gateway-account-trust") { db in
+            try db.alter(table: "gatewayUpstreamAccount") { t in
+                t.add(column: "trusted", .boolean).notNull().defaults(to: false)
+                t.add(column: "label", .text)
+            }
+        }
         return m
     }
 

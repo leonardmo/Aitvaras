@@ -1968,6 +1968,16 @@ verify the old card cannot dispatch. Re-auth appears on the same surfaces
 and in Settings → Connections. With Aitvaras inactive and notifications
 enabled, verify the notification contains no tool arguments or credentials.
 
+In Settings → Connections, add a managed account, sign in and sign out,
+switch the global default, and verify a project's account choice and global
+opt-out against two running launches. Revoke one launch and verify that its
+pending approvals and relay access end. Trust and untrust one account and
+verify that eligible annotations affect decisions only while it is trusted.
+`GatewayCommandInstallerTests` uses a temporary home to check link ownership
+and PATH detection. For the App check, use a disposable macOS user or an
+empty command path. Install and uninstall through Settings, and verify that
+the App leaves an unrelated command or dangling foreign link intact.
+
 On the host, run `make check` and `make app`. In an isolated state profile,
 verify the bundled helpers, real `open -g` startup and socket isolation,
 TTY/signals, Settings installation, Connections and revoke, and approval

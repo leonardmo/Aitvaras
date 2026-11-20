@@ -1176,7 +1176,9 @@ such as Linear. The gateway does not call cloud LLM APIs.
   and existing outbound approval requirements take precedence. Otherwise use
   an explicit per-tool override, then annotations for a trusted upstream
   (`readOnlyHint` gives `read`, and non-destructive and idempotent gives
-  `reversibleWrite`), then `confirmable`. Exact grants may relax eligible
+  `reversibleWrite`), then `confirmable`. Trust defaults off and an explicit
+  Connections setting binds it to an account and its definition fingerprint.
+  Exact grants may relax eligible
   decisions and bind to the current upstream/account and definition. Outside
   approvals appear on the companion and suggestion bar and go through
   NotificationRouter. Unanswered requests are denied after five minutes.
@@ -1185,8 +1187,10 @@ such as Linear. The gateway does not call cloud LLM APIs.
   tool, risk decision, approval outcome, duration, success or error, and
   shortened, redacted arguments. Full arguments and results stay out of
   gateway activity records. Connections lists live launches and can revoke
-  them. Settings installs the launcher with a symlink in a user bin directory
-  without administrator access.
+  them. Settings installs the launcher at `~/.local/bin/aitvaras` without
+  administrator access and reports when the folder is missing from PATH.
+  Installation preserves existing files and foreign links. Uninstall removes
+  only a symlink to the bundled launcher.
 - **Milestones.** G1 ships Claude, Codex and Linear. G2 adds opencode via
   `OPENCODE_CONFIG_CONTENT`, bearer/header upstreams, user-registered OAuth
   clients such as Slack, and the per-tool risk UI. Desktop apps and Cursor

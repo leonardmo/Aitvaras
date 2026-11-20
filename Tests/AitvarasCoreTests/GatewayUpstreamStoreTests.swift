@@ -7,6 +7,48 @@ import AitvarasAgents
 @Suite(.timeLimit(.minutes(1))) struct GatewayUpstreamStoreTests {
     private let linear = AgentMCPServer(transport: .http, url: "https://mcp.example.invalid/stream", management: .gatewayOAuth)
 
+    @Test func existingAccountsMigrateUntrusted() throws {
+        struct LegacyAccount: Encodable, PersistableRecord {
+            static let databaseTableName = "gatewayUpstreamAccount"
+            let id: UUID
+            let serverName = "example"
+            let definitionFingerprint: String
+            let globallyAvailable = true
+            let isGlobalDefault = true
+        }
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("state.sqlite")
+        let legacy = LegacyAccount(id: UUID(), definitionFingerprint: try linear.fingerprint())
+        do {
+            let old = Stores(db: try AitvarasDatabase(url: url, migrateThrough: "v47-gateway-project-links"))
+            try old.saveGlobalAgentMCPServers([legacy.serverName: linear])
+            try old.db.queue.write { try legacy.insert($0) }
+        }
+        let stores = Stores(db: try AitvarasDatabase(url: url))
+        let account = try stores.gatewayUpstream(id: legacy.id).account
+        #expect(!account.trusted)
+        #expect(account.isGlobalDefault && account.label == nil)
+    }
+
+    @Test func addAccountProvisionsDefinitionAndAssignmentTogether() throws {
+        let stores = try inMemoryStores()
+        let project = try stores.createWorkspaceProject(title: "Example")
+        let endpoint = "https://mcp.example.invalid/mcp"
+        try stores.addGatewayUpstream(serverName: "example", label: "Shared", endpoint: endpoint, projectID: nil)
+        try stores.addGatewayUpstream(serverName: "example", label: "Project", endpoint: endpoint, projectID: project.id)
+        let rows = try stores.allGatewayUpstreamAccounts()
+        let shared = try #require(rows.first { $0.isGlobalDefault })
+        let local = try #require(rows.first { $0.definitionProjectID == project.id })
+        #expect(shared.displayName == "Shared" && !shared.trusted)
+        #expect(try stores.gatewayProjectAssignments(projectID: project.id).selected["example"] == local.id)
+        #expect(throws: AgentMCPError.nameCollision) {
+            try stores.addGatewayUpstream(serverName: "example", label: "Different", endpoint: "https://other.example.invalid/mcp", projectID: nil)
+        }
+        #expect(try stores.allGatewayUpstreamAccounts() == rows)
+    }
+
     @Test func v44UpgradePreservesLegacyDefinitionsAndPermissions() throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)

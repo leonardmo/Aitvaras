@@ -98,10 +98,35 @@ import AitvarasStore
         #expect(await sessions.signInRequests().isEmpty)
     }
 
-    private func make(_ fake: OAuthUpstreamFixture, endpoint: String = "https://mcp.example.invalid/mcp") throws -> (
+    @Test func explicitTrustUpdatesCachedToolsAndSignOutPreventsPendingDispatch() async throws {
+        let stores = try inMemoryStores(), fake = OAuthUpstreamFixture()
+        let (sessions, route, vault, _) = try make(fake, stores: stores)
+        #expect(try await !sessions.signedIn(route))
+        try await login(sessions, route, fake)
+        #expect(try await sessions.signedIn(route))
+        let original = try #require(try await sessions.catalog(route).first)
+        #expect(!original.trusted && original.annotations.readOnly == true)
+        try stores.setGatewayUpstreamTrust(id: route.account.id, trusted: true)
+        let trustedRoute = try stores.gatewayUpstream(id: route.account.id)
+        let trusted = try #require(try await sessions.catalog(trustedRoute).first)
+        #expect(trusted.trusted && trusted.revision != original.revision)
+        await #expect(throws: MCPGatewayCallError.stale) {
+            try await sessions.call(trustedRoute, tool: original, arguments: .object([:]))
+        }
+        await #expect(throws: MCPGatewayCallError.needsSignIn) {
+            try await sessions.call(trustedRoute, tool: trusted, arguments: .object([:])) {
+                try await sessions.signOut(trustedRoute)
+            }
+        }
+        #expect(try await !sessions.signedIn(trustedRoute))
+        #expect(await fake.counts().calls == 0)
+        #expect(vault.value.withLock { $0.isEmpty })
+    }
+
+    private func make(_ fake: OAuthUpstreamFixture, endpoint: String = "https://mcp.example.invalid/mcp", stores supplied: Stores? = nil) throws -> (
         GatewayUpstreamSessions, GatewayUpstream, Locked<[String: String]>, Locked<Int>
     ) {
-        let stores = try inMemoryStores()
+        let stores = try supplied ?? inMemoryStores()
         try stores.saveGlobalAgentMCPServers(["issues": .init(transport: .http,
             url: endpoint, management: .gatewayOAuth)])
         let account = try stores.registerGatewayUpstreamAccount(serverName: "issues", globallyAvailable: true, makeGlobalDefault: true)
@@ -205,7 +230,8 @@ private actor OAuthUpstreamFixture {
             switch method {
             case "notifications/initialized": return reply(202)
             case "tools/list": return rpc(id, ["tools": .array([.object(["name": .string("list_issues"),
-                "inputSchema": .object(["type": .string("object")])])])])
+                "inputSchema": .object(["type": .string("object")]),
+                "annotations": .object(["readOnlyHint": .bool(true)])])])])
             case "tools/call":
                 calls += 1
                 if fault == "unauthorized", calls == 1 { return reply(401) }

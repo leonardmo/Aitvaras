@@ -62,7 +62,25 @@ public actor GatewayUpstreamSessions {
     }
 
     public func catalog(_ route: GatewayUpstream) async throws -> [MCPGatewayTool] {
-        try await session(route).catalog()
+        try await session(route).catalog(trusted: route.account.trusted)
+    }
+
+    public func signedIn(_ route: GatewayUpstream) async throws -> Bool {
+        try await session(route).signedIn()
+    }
+
+    public func signOut(_ route: GatewayUpstream) async throws {
+        let id = route.account.id
+        guard authorizing.insert(id).inserted else { throw GatewayOAuthError.busy }
+        defer { authorizing.remove(id) }
+        try await session(route).signOut()
+        requested.removeValue(forKey: id)
+        await routingChanged()
+        await needsAttention()
+    }
+
+    public func routingChanged() async {
+        for connection in observers.compactMap(\.session) { await connection.catalogChanged() }
     }
 
     public func requireSignInIfNeeded(_ route: GatewayUpstream) async throws {
@@ -75,7 +93,7 @@ public actor GatewayUpstreamSessions {
 
     public func call(_ route: GatewayUpstream, tool: MCPGatewayTool, arguments: JSONValue,
                      revalidate: MCPGateway.Authorize = {}) async throws -> MCPGatewayToolResult {
-        do { return try await session(route).call(tool, arguments: arguments, revalidate: revalidate) }
+        do { return try await session(route).call(tool, trusted: route.account.trusted, arguments: arguments, revalidate: revalidate) }
         catch MCPGatewayCallError.needsSignIn {
             await noteSignIn(route)
             throw MCPGatewayCallError.needsSignIn
@@ -96,7 +114,8 @@ public actor GatewayUpstreamSessions {
 
     func signIn(_ id: UUID, currentRoute: @Sendable () throws -> GatewayUpstream, redirect: URL,
                 receive: @Sendable (URL) async throws -> URL) async throws {
-        guard let route = requested[id], try currentRoute() == route else { throw MCPGatewayCallError.stale }
+        let route = try currentRoute()
+        guard route.account.id == id else { throw MCPGatewayCallError.stale }
         guard authorizing.insert(id).inserted else { throw GatewayOAuthError.busy }
         defer { authorizing.remove(id) }
         let remote = try session(route)
@@ -105,8 +124,7 @@ public actor GatewayUpstreamSessions {
         })
         try await remote.discoverTools()
         requested.removeValue(forKey: id)
-        let live = observers.compactMap(\.session)
-        for connection in live { await connection.catalogChanged() }
+        await routingChanged()
         await needsAttention()
     }
 }
@@ -139,13 +157,31 @@ actor GatewayRemoteSession {
         key = "gateway.oauth.\(route.account.id.uuidString).\(route.account.definitionFingerprint)"
     }
 
-    func access() async throws -> String {
+    private func loadCredentials() throws {
         if !loaded {
             if let saved = try secrets.load(key) {
                 credentials = try JSONDecoder().decode(GatewayOAuth.Credentials.self, from: Data(saved.utf8))
             }
             loaded = true
         }
+    }
+
+    func signedIn() throws -> Bool {
+        try loadCredentials()
+        return credentials.map { $0.expires > .now || $0.refresh != nil } ?? false
+    }
+
+    func signOut() throws {
+        try secrets.delete(key)
+        refresh?.cancel()
+        connecting?.cancel()
+        credentials = nil
+        loaded = true
+        remote = nil
+    }
+
+    func access() async throws -> String {
+        try loadCredentials()
         if let refresh { return try await refresh.value.access }
         guard let credentials else { throw MCPGatewayCallError.needsSignIn }
         if credentials.expires.timeIntervalSinceNow > 30 { return credentials.access }
@@ -154,12 +190,13 @@ actor GatewayRemoteSession {
             do {
                 let updated = try await oauth.exchange(credentials.discovery, client: credentials.client,
                     fields: ["grant_type": "refresh_token", "refresh_token": token], previousRefresh: token)
+                try Task.checkCancellation()
                 try save(updated)
                 return updated
             } catch {
                 // A lost response could already have rotated the refresh token.
                 // Require a new login instead of replaying the old token.
-                clearCredentials()
+                if !Task.isCancelled { clearCredentials() }
                 throw MCPGatewayCallError.needsSignIn
             }
         }
@@ -201,12 +238,12 @@ actor GatewayRemoteSession {
         try? secrets.delete(key)
     }
 
-    func catalog() async throws -> [MCPGatewayTool] {
+    func catalog(trusted: Bool) async throws -> [MCPGatewayTool] {
         if remote == nil {
             do { _ = try await connect() }
             catch { try Task.checkCancellation() }
         }
-        if !tools.isEmpty || remote != nil { return tools }
+        if !tools.isEmpty || remote != nil { return try catalogTools(trusted: trusted) }
         // A first launch has no remote schemas yet. These entries can only
         // lead to app sign-in and are replaced by discovery before dispatch.
         return [try MCPGatewayTool(origin: origin, definition: .init(name: "sign_in", description: "Sign in to use this upstream.",
@@ -270,14 +307,21 @@ actor GatewayRemoteSession {
         return try .init(origin: origin, definition: .init(name: name, description: entry["description"]?.stringValue ?? "",
             parametersJSON: schema.jsonString, risk: .confirmable), annotations: .init(readOnly: hints?["readOnlyHint"]?.boolValue,
             destructive: hints?["destructiveHint"]?.boolValue, idempotent: hints?["idempotentHint"]?.boolValue),
-            trusted: oauth.endpoint.absoluteString == "https://mcp.linear.app/mcp")
+            trusted: false)
     }
 
-    func call(_ tool: MCPGatewayTool, arguments: JSONValue, revalidate: MCPGateway.Authorize) async throws -> MCPGatewayToolResult {
+    private func catalogTools(trusted: Bool) throws -> [MCPGatewayTool] {
+        guard trusted else { return tools }
+        return try tools.map { try MCPGatewayTool(origin: $0.origin, definition: $0.definition,
+                                                   annotations: $0.annotations, trusted: true) }
+    }
+
+    func call(_ tool: MCPGatewayTool, trusted: Bool, arguments: JSONValue, revalidate: MCPGateway.Authorize) async throws -> MCPGatewayToolResult {
         let session = try await connect()
-        let token = try await access()
+        _ = try await access()
         try await revalidate()
-        guard tools.contains(tool) else { throw MCPGatewayCallError.stale }
+        guard let token = credentials?.access else { throw MCPGatewayCallError.needsSignIn }
+        guard try catalogTools(trusted: trusted).contains(tool) else { throw MCPGatewayCallError.stale }
         guard remote == session else { throw MCPGatewayCallError.stale }
         try Task.checkCancellation()
         let result = try await request("tools/call", id: .string(UUID().uuidString), params: .object([

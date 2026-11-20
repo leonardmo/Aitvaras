@@ -12,6 +12,10 @@ public struct GatewayUpstreamAccount: Codable, Sendable, Equatable, Identifiable
     public let definitionFingerprint: String
     public let globallyAvailable: Bool
     public fileprivate(set) var isGlobalDefault: Bool
+    public fileprivate(set) var trusted: Bool = false
+    public fileprivate(set) var label: String? = nil
+
+    public var displayName: String { label ?? "\(serverName) · \(id.uuidString.prefix(8))" }
 }
 
 public struct GatewayUpstream: Sendable, Equatable {
@@ -43,6 +47,78 @@ private struct GatewayProjectUpstreamSelection: Codable, FetchableRecord, Persis
 }
 
 extension Stores {
+    public func recordGatewayAdministration(_ summary: String, projectID: UUID? = nil) throws {
+        try db.queue.write { try Self.recordGatewaySetting(summary, projectID: projectID, in: $0) }
+    }
+
+    public func allGatewayUpstreamAccounts() throws -> [GatewayUpstreamAccount] {
+        try db.queue.read { try GatewayUpstreamAccount.order(Column("serverName"), Column("id")).fetchAll($0) }
+    }
+
+    public func gatewayProjectAssignments(projectID: UUID) throws -> (disabled: Set<String>, selected: [String: UUID]) {
+        try db.queue.read { dbc in
+            try Self.requireGatewayProject(projectID, in: dbc)
+            let setup = try WorkspaceAgentSetup.fetchOne(dbc, key: projectID)
+            let rows = try GatewayProjectUpstreamSelection.filter(Column("projectID") == projectID).fetchAll(dbc)
+            return (Set(setup?.disabledGlobalServers ?? []), Dictionary(uniqueKeysWithValues: rows.map { ($0.serverName, $0.accountID) }))
+        }
+    }
+
+    public func setGatewayUpstreamTrust(id: UUID, trusted: Bool) throws {
+        try db.queue.write { dbc in
+            guard var account = try GatewayUpstreamAccount.fetchOne(dbc, key: id) else { throw GatewayUpstreamError.invalidAccount }
+            if trusted { _ = try Self.resolveGatewayAccount(account, in: dbc) }
+            guard account.trusted != trusted else { return }
+            account.trusted = trusted
+            try account.update(dbc)
+            try Self.recordGatewaySetting(trusted ? "Trust upstream annotations" : "Stop trusting upstream annotations",
+                                          projectID: account.definitionProjectID, in: dbc)
+        }
+    }
+
+    /// Provision a managed definition and its account in one transaction.
+    /// Another account may reuse the exact definition, including its endpoint.
+    public func addGatewayUpstream(serverName: String, label: String, endpoint: String, projectID: UUID?) throws {
+        try Self.validateGatewayServerName(serverName)
+        let label = label.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !label.isEmpty, label.utf8.count <= 80, !label.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains),
+              let url = URL(string: endpoint), url.fragment == nil else { throw AgentMCPError.invalidConfiguration }
+        try ProviderSignIn.validate(url)
+        let definition = AgentMCPServer(transport: .http, url: url.absoluteString, management: .gatewayOAuth)
+        try definition.validate()
+        try db.queue.write { dbc in
+            if let projectID { try Self.requireGatewayProject(projectID, in: dbc) }
+            let setup = try projectID.map {
+                try WorkspaceAgentSetup.fetchOne(dbc, key: $0) ?? .init(projectID: $0)
+            }
+            var definitions: [String: AgentMCPServer]
+            if let setup { definitions = try AgentMCPConfiguration.decodeServers(setup.extraServersJSON) }
+            else { definitions = try Self.globalAgentMCPServers(in: dbc) }
+            guard definitions[serverName] == nil || definitions[serverName] == definition else {
+                throw AgentMCPError.nameCollision
+            }
+            definitions[serverName] = definition
+            let encoded = try AgentMCPConfiguration.encode(definitions)
+            if var value = setup {
+                value.extraServersJSON = encoded
+                try value.save(dbc)
+            } else {
+                try dbc.execute(sql: "INSERT INTO kv(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                                arguments: ["agent.mcp.global", encoded])
+            }
+            let makeDefault = try projectID == nil && Self.gatewayDefault(serverName, in: dbc) == nil
+            let account = GatewayUpstreamAccount(id: UUID(), serverName: serverName, definitionProjectID: projectID,
+                definitionFingerprint: try definition.fingerprint(), globallyAvailable: projectID == nil,
+                isGlobalDefault: makeDefault, label: label)
+            try account.insert(dbc)
+            if let projectID, try GatewayProjectUpstreamSelection
+                .filter(Column("projectID") == projectID && Column("serverName") == serverName).fetchOne(dbc) == nil {
+                try GatewayProjectUpstreamSelection(projectID: projectID, serverName: serverName, accountID: account.id).insert(dbc)
+            }
+            try Self.recordGatewaySetting("Add managed upstream account", projectID: projectID, in: dbc)
+        }
+    }
+
     public func gatewayUpstream(id: UUID) throws -> GatewayUpstream {
         try db.queue.read { dbc in
             guard let account = try GatewayUpstreamAccount.fetchOne(dbc, key: id) else { throw GatewayUpstreamError.invalidAccount }
