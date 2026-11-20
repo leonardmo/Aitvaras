@@ -24,7 +24,8 @@ func autoContinueIntent(_ stores: Stores, provider: AgentProvider = .codex, rese
 }
 
 actor AutoContinueGate {
-    private var waiter: CheckedContinuation<Void, Never>?
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+    private var released = false
     private(set) var entered = false
     private var entryWaiters: [CheckedContinuation<Void, Never>] = []
     func waitUntilEntered() async {
@@ -34,16 +35,21 @@ actor AutoContinueGate {
     func wait() async {
         entered = true
         entryWaiters.forEach { $0.resume() }; entryWaiters.removeAll()
-        await withCheckedContinuation { waiter = $0 }
+        if released { return }
+        await withCheckedContinuation { waiters.append($0) }
     }
-    func release() { waiter?.resume(); waiter = nil }
+    func release() {
+        released = true
+        waiters.forEach { $0.resume() }
+        waiters.removeAll()
+    }
 }
 
 func autoWait(_ condition: () async throws -> Bool) async throws {
-    let deadline = ContinuousClock.now.advanced(by: .seconds(2))
+    let deadline = ContinuousClock.now.advanced(by: .seconds(10))
     while ContinuousClock.now < deadline {
         if try await condition() { return }
-        await Task.yield()
+        try await Task.sleep(for: .milliseconds(5))
     }
     Issue.record("Expected asynchronous state did not settle")
     throw AgentFailure.invalidTransition

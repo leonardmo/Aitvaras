@@ -74,6 +74,8 @@ final class AppModel {
     @ObservationIgnored private var gatewayApprovalBroker: GatewayApprovalBroker?
     @ObservationIgnored private var gatewayApprovalObserver: Task<Void, Never>?
     private(set) var gatewayInlineApprovals: [GatewayApprovalRequest] = []
+    private(set) var gatewayOutsideApprovals: [GatewayApprovalRequest] = []
+    var gatewayAttentionCount: Int { gatewayOutsideApprovals.count + gatewaySignInRequests.count }
     @ObservationIgnored private var gatewayUpstreamSessions: GatewayUpstreamSessions?
     @ObservationIgnored private var gatewaySignInTask: Task<Void, Never>?
     private(set) var gatewaySignInRequests: [GatewayUpstreamSessions.SignIn] = []
@@ -597,9 +599,15 @@ final class AppModel {
             gatewayApprovalBroker = approvals
             gatewayApprovalObserver = Task { [weak self] in
                 for await _ in approvals.changes {
-                    let pending = await approvals.requests().filter { $0.invocation.presentation != .outside }
+                    let pending = await approvals.requests()
                     guard !Task.isCancelled, let self else { return }
-                    gatewayInlineApprovals = pending
+                    gatewayInlineApprovals = pending.filter { $0.invocation.presentation != .outside }
+                    let outside = pending.filter { $0.invocation.presentation == .outside }
+                    let known = Set(gatewayOutsideApprovals.map(\.id))
+                    gatewayOutsideApprovals = outside
+                    if outside.contains(where: { !known.contains($0.id) }) {
+                        NotificationRouter.requestedWorkNeedsAttention(message: "An agent tool needs approval. Review it in Aitvaras.")
+                    }
                 }
             }
         } catch {
@@ -620,6 +628,7 @@ final class AppModel {
         gatewayApprovalObserver = nil
         gatewayApprovalBroker = nil
         gatewayInlineApprovals = []
+        gatewayOutsideApprovals = []
     }
 
     private func refreshGatewaySignInRequests() async {
@@ -656,6 +665,7 @@ final class AppModel {
     func decideGatewayApproval(_ request: GatewayApprovalRequest, allow: Bool) async {
         if await gatewayApprovalBroker?.decide(id: request.id, allow: allow) == true {
             gatewayInlineApprovals.removeAll { $0.id == request.id }
+            gatewayOutsideApprovals.removeAll { $0.id == request.id }
         }
     }
 

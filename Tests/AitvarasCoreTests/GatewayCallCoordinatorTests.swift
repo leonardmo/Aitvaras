@@ -1,5 +1,6 @@
 import Foundation
 import GRDB
+import Synchronization
 import Testing
 import AitvarasAgents
 import AitvarasCore
@@ -7,6 +8,41 @@ import AitvarasStore
 @testable import AitvarasAgent
 
 @Suite(.timeLimit(.minutes(1))) struct GatewayCallCoordinatorTests {
+    @Test func fakeClockTimeoutAndDisconnectRejectLateResponses() async throws {
+        let clock = Mutex(ContinuousClock.now)
+        let approvals = GatewayApprovalBroker(outsideTimeout: .seconds(300), now: { clock.withLock { $0 } },
+            sleepUntil: { deadline in
+                while clock.withLock({ $0 < deadline }) { try await Task.sleep(for: .milliseconds(2)) }
+            })
+        let stores = try inMemoryStores()
+        let hub = ConnectorHub(stores: stores)
+        let tool = try gatewayFixtureTool(risk: .confirmable)
+        let effects = Mutex(0)
+        for disconnect in [false, true] {
+            let invocation = gatewayFixtureInvocation(projectID: nil)
+            let call = Task {
+                try await hub.executeGateway(invocation, tool: tool, arguments: .object([:]), approvals: approvals,
+                    rules: { .init() }, revalidate: {}) {
+                        effects.withLock { $0 += 1 }
+                        return .init(text: "Unexpected")
+                    }
+            }
+            defer { call.cancel() }
+            let pending = try await nextGatewayApproval(approvals)
+            if disconnect {
+                call.cancel()
+            } else {
+                clock.withLock { $0 += .seconds(299) }
+                #expect(await approvals.requests().map(\.id) == [pending.id])
+                clock.withLock { $0 += .seconds(1) }
+            }
+            await #expect(throws: disconnect ? MCPGatewayCallError.denied : .timedOut) { try await call.value }
+            #expect(!(await approvals.decide(id: pending.id, allow: true)))
+            #expect(!(await approvals.decide(id: pending.id, allow: false)))
+        }
+        #expect(effects.withLock { $0 } == 0)
+    }
+
     @Test func precedenceAndExactGrantsCannotOverrideHardRules() throws {
         let invocation = gatewayFixtureInvocation()
         let origin = MCPGatewayTool.Origin.upstream(server: "linear", accountID: UUID(), definitionFingerprint: String(repeating: "a", count: 64))

@@ -31,9 +31,10 @@ private final class BlockingSpeechSynthesizer: SpeechSynthesizing, @unchecked Se
     }
 
     func waitUntilSpeaking() async -> Bool {
-        for _ in 0..<200 {
+        let deadline = ContinuousClock.now + .seconds(10)
+        while ContinuousClock.now < deadline, !Task.isCancelled {
             if state.withLock({ !$0.spoken.isEmpty }) { return true }
-            try? await Task.sleep(for: .milliseconds(1))
+            try? await Task.sleep(for: .milliseconds(5))
         }
         return false
     }
@@ -253,31 +254,36 @@ private final class RecordingSpeechSynthesizer: SpeechSynthesizing, @unchecked S
     }
 
     @Test func deterministicVoiceReplyNeverPresentsModelThinking() async {
-        let tts = RecordingSpeechSynthesizer()
+        let tts = BlockingSpeechSynthesizer()
+        let replies = AsyncStream<VoiceReply>.makeStream()
         let controller = ConversationController(
             locale: { Locale(identifier: "en-US") },
             tts: tts,
-            respond: { _, _ in
-                AsyncStream { continuation in
-                    continuation.yield(.delta("Shortcut used."))
-                    continuation.yield(.done)
-                    continuation.finish()
-                }
-            })
+            respond: { _, _ in replies.stream })
         let states = await controller.states()
         let observed = Mutex<[VoicePhase]>([])
         let observer = Task {
             for await snapshot in states {
                 observed.withLock { $0.append(snapshot.phase) }
-                if snapshot.phase == .idle,
-                   observed.withLock({ $0.contains(.speaking) }) { break }
             }
         }
 
+        defer { replies.continuation.finish(); observer.cancel(); tts.stop() }
+        func saw(_ phase: VoicePhase) async -> Bool {
+            let deadline = ContinuousClock.now + .seconds(10)
+            while ContinuousClock.now < deadline, !Task.isCancelled {
+                if observed.withLock({ $0.contains(phase) }) { return true }
+                try? await Task.sleep(for: .milliseconds(5))
+            }
+            return false
+        }
         await controller.submitTyped("Stop, Licht aus")
-        #expect(await tts.waitForCount(1))
-        _ = await observer.value
-
+        #expect(await saw(.routing))
+        replies.continuation.yield(.delta("Shortcut used."))
+        replies.continuation.yield(.done)
+        replies.continuation.finish()
+        #expect(await saw(.speaking))
+        #expect(await tts.waitUntilSpeaking())
         #expect(!observed.withLock { $0.contains(.thinking) })
         #expect(observed.withLock { $0.contains(.routing) })
         #expect(observed.withLock { $0.contains(.speaking) })

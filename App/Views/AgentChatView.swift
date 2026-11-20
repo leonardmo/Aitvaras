@@ -49,6 +49,9 @@ struct AgentChatView: View {
                 AgentChangesView(chat: chat, owner: chatID, changes: changes).id(chatID)
             }
         }
+        .safeAreaInset(edge: .top, spacing: 0) {
+            if !compact { GatewaySuggestionBar() }
+        }
         .toolbar {
             AgentWakeBadge(manager: model.agentSessionManager, chatID: chatID)
             if !compact, chat.pullRequest != nil || chat.pullRequestBinding != nil {

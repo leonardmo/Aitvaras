@@ -1,4 +1,5 @@
 import SwiftUI
+import AitvarasAgent
 import AitvarasAgents
 
 struct AgentApprovalCard: View {
@@ -71,6 +72,65 @@ struct AgentApprovalSuggestionsView: View {
                     await chat.respond(chatID: suggestion.chatID, to: suggestion.request, with: response)
                 }
             default: EmptyView()
+            }
+        }
+    }
+}
+
+/// Both surfaces render the same one-shot request IDs from the app's broker.
+struct GatewayAttentionCards: View {
+    @Environment(AppModel.self) private var model
+
+    var body: some View {
+        ForEach(model.gatewayOutsideApprovals) { request in
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Allow \(request.toolName)?").font(.callout.weight(.semibold))
+                Text(request.invocation.context.client.rawValue.capitalized + " outside Chat")
+                    .font(.caption).foregroundStyle(.secondary)
+                DisclosureGroup("Arguments") {
+                    ScrollView {
+                        Text(verbatim: request.arguments.jsonString).font(.caption.monospaced())
+                            .textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
+                    }.frame(maxHeight: 100)
+                }
+                HStack {
+                    Button("Allow") { Task { await model.decideGatewayApproval(request, allow: true) } }
+                        .buttonStyle(.borderedProminent)
+                    Button("Deny") { Task { await model.decideGatewayApproval(request, allow: false) } }
+                }
+            }
+            .padding(12).frame(width: 308, alignment: .leading)
+            .background(.quaternary, in: RoundedRectangle(cornerRadius: 10))
+            .accessibilityIdentifier("gateway.outside.approval.\(request.id)")
+        }
+        ForEach(model.gatewaySignInRequests) { request in
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Sign in to \(request.server) in Aitvaras").font(.callout.weight(.semibold))
+                if model.gatewaySigningIn == request.id {
+                    Button("Cancel") { model.cancelGatewaySignIn() }
+                } else {
+                    Button("Sign in") { model.startGatewaySignIn(request.id) }
+                        .disabled(model.gatewaySigningIn != nil)
+                }
+                if let error = model.gatewaySignInError {
+                    Text(error).font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            .padding(12).frame(width: 308, alignment: .leading)
+            .background(.quaternary, in: RoundedRectangle(cornerRadius: 10))
+            .accessibilityIdentifier("gateway.outside.signin.\(request.id)")
+        }
+    }
+}
+
+struct GatewaySuggestionBar: View {
+    @Environment(AppModel.self) private var model
+
+    var body: some View {
+        if model.gatewayAttentionCount > 0 {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(alignment: .top, spacing: 10) { GatewayAttentionCards() }
+                    .padding(8)
             }
         }
     }

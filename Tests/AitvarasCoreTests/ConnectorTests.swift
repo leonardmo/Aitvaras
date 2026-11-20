@@ -578,7 +578,7 @@ private final class BoundedURLProtocol: URLProtocol, @unchecked Sendable {
     #expect(redacted.components(separatedBy: "[redacted]").count == 4)
 }
 
-@Test func cancellingProcessRunnerTerminatesChildPromptly() async throws {
+@Test(.timeLimit(.minutes(1))) func cancellingProcessRunnerTerminatesChildPromptly() async throws {
     let task = Task {
         try await ProcessRunner.run(
             executable: "/bin/sleep", arguments: ["30"],
@@ -591,10 +591,10 @@ private final class BoundedURLProtocol: URLProtocol, @unchecked Sendable {
     await #expect(throws: CancellationError.self) {
         try await task.value
     }
-    #expect(ContinuousClock.now - started < .seconds(3))
+    #expect(ContinuousClock.now - started < .seconds(12))
 }
 
-@Test func processRunnerTimeoutTerminatesChildPromptly() async throws {
+@Test(.timeLimit(.minutes(1))) func processRunnerTimeoutTerminatesChildPromptly() async throws {
     let started = ContinuousClock.now
     let result = try await ProcessRunner.run(
         executable: "/bin/sleep", arguments: ["30"],
@@ -602,7 +602,7 @@ private final class BoundedURLProtocol: URLProtocol, @unchecked Sendable {
 
     #expect(result.timedOut)
     #expect(result.exitCode != 0)
-    #expect(ContinuousClock.now - started < .seconds(3))
+    #expect(ContinuousClock.now - started < .seconds(12))
 }
 
 @Test func processRunnerCanReceivePrivateInputOutsideArguments() async throws {

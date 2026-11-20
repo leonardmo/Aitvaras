@@ -53,7 +53,7 @@ static void child_setup_failed(int report) {
 
 static pid_t start_pty(const char *path, char *const argv[], char *const envp[],
                        int *master, struct termios *terminal, int input,
-                       const sigset_t *original_mask) {
+                       const sigset_t *child_mask) {
     struct winsize window = {0};
     ioctl(input, TIOCGWINSZ, &window);
     int slave;
@@ -84,9 +84,12 @@ static pid_t start_pty(const char *path, char *const argv[], char *const envp[],
         }
         if (slave > STDERR_FILENO) close(slave);
         if (input > STDERR_FILENO) close(input);
-        for (size_t i = 0; i < SIGNAL_COUNT; ++i) sigaction(signals[i], &defaults, NULL);
-        sigaction(SIGPIPE, &defaults, NULL);
-        sigprocmask(SIG_SETMASK, original_mask, NULL);
+        for (int signum = 1; signum < NSIG; ++signum) {
+            if (signum != SIGKILL && signum != SIGSTOP &&
+                sigaction(signum, &defaults, NULL) < 0 && errno != EINVAL)
+                child_setup_failed(report[1]);
+        }
+        if (sigprocmask(SIG_SETMASK, child_mask, NULL) < 0) child_setup_failed(report[1]);
         execve(path, argv, envp);
         child_setup_failed(report[1]);
     }
@@ -112,16 +115,16 @@ static pid_t start_pty(const char *path, char *const argv[], char *const envp[],
 
 static pid_t start_child(const char *path, char *const argv[], char *const envp[],
                          int interactive, int *master, struct termios *terminal, int input,
-                         const sigset_t *original_mask) {
-    if (interactive) return start_pty(path, argv, envp, master, terminal, input, original_mask);
+                         const sigset_t *child_mask) {
+    if (interactive) return start_pty(path, argv, envp, master, terminal, input, child_mask);
 
     posix_spawnattr_t attributes;
     int rc = posix_spawnattr_init(&attributes);
     if (rc) { errno = rc; return -1; }
     sigset_t defaults;
-    sigemptyset(&defaults);
-    for (size_t i = 0; i < SIGNAL_COUNT; ++i) sigaddset(&defaults, signals[i]);
-    sigaddset(&defaults, SIGPIPE);
+    sigfillset(&defaults);
+    sigdelset(&defaults, SIGKILL);
+    sigdelset(&defaults, SIGSTOP);
     // A redirection can leave one real terminal behind. Let that child
     // stay in the foreground group so terminal reads do not get SIGTTIN.
     int shared_terminal = isatty(STDIN_FILENO) || isatty(STDOUT_FILENO) || isatty(STDERR_FILENO);
@@ -129,7 +132,7 @@ static pid_t start_child(const char *path, char *const argv[], char *const envp[
     if (!shared_terminal) flags |= POSIX_SPAWN_SETPGROUP;
     rc = posix_spawnattr_setflags(&attributes, flags);
     if (!rc && !shared_terminal) rc = posix_spawnattr_setpgroup(&attributes, 0);
-    if (!rc) rc = posix_spawnattr_setsigmask(&attributes, original_mask);
+    if (!rc) rc = posix_spawnattr_setsigmask(&attributes, child_mask);
     if (!rc) rc = posix_spawnattr_setsigdefault(&attributes, &defaults);
     pid_t child = -1;
     posix_spawn_file_actions_t actions;
@@ -198,7 +201,9 @@ int aitvaras_supervise(const char *path, char *const argv[], char *const envp[],
     ignore.sa_handler = SIG_IGN;
     sigemptyset(&ignore.sa_mask);
     int pipe_installed = sigaction(SIGPIPE, &ignore, &old_pipe) == 0;
-    child = start_child(path, argv, envp, interactive, &master, &saved, input, &active_mask);
+    sigset_t child_mask;
+    sigemptyset(&child_mask);
+    child = start_child(path, argv, envp, interactive, &master, &saved, input, &child_mask);
     if (child < 0) { error = errno; goto restore_pipe; }
     if (interactive) {
         if (fcntl(master, F_SETFD, FD_CLOEXEC) < 0 || fcntl(master, F_SETFL, O_NONBLOCK) < 0 ||

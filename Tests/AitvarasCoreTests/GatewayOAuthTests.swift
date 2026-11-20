@@ -7,6 +7,15 @@ import AitvarasStore
 @testable import AitvarasAgent
 
 @Suite(.timeLimit(.minutes(1))) struct GatewayOAuthTests {
+    @Test func undiscoveredCatalogUsesTheSameSignInToolForEveryVendor() async throws {
+        for endpoint in ["https://mcp.example.invalid/mcp", "https://mcp.linear.app/mcp"] {
+            let fake = OAuthUpstreamFixture()
+            let (sessions, route, _, _) = try make(fake, endpoint: endpoint)
+            #expect(try await sessions.catalog(route).map(\.name) == ["issues_sign_in"])
+            #expect(await fake.counts().initialize == 0)
+        }
+    }
+
     @Test func discoveryPKCEAndRotationShareOneSession() async throws {
         let fake = OAuthUpstreamFixture()
         let (sessions, route, vault, notices) = try make(fake)
@@ -89,12 +98,12 @@ import AitvarasStore
         #expect(await sessions.signInRequests().isEmpty)
     }
 
-    private func make(_ fake: OAuthUpstreamFixture) throws -> (
+    private func make(_ fake: OAuthUpstreamFixture, endpoint: String = "https://mcp.example.invalid/mcp") throws -> (
         GatewayUpstreamSessions, GatewayUpstream, Locked<[String: String]>, Locked<Int>
     ) {
         let stores = try inMemoryStores()
         try stores.saveGlobalAgentMCPServers(["issues": .init(transport: .http,
-            url: "https://mcp.example.invalid/mcp", management: .gatewayOAuth)])
+            url: endpoint, management: .gatewayOAuth)])
         let account = try stores.registerGatewayUpstreamAccount(serverName: "issues", globallyAvailable: true, makeGlobalDefault: true)
         let vault = Locked<[String: String]>([:]), notices = Locked(0)
         let sessions = GatewayUpstreamSessions(secrets: .init(load: { key in vault.value.withLock { $0[key] } },

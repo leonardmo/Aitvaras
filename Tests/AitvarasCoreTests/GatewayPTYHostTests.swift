@@ -5,6 +5,20 @@ import XCTest
 
 final class GatewayPTYHostTests: XCTestCase {
     @MainActor
+    func testPipeChildAlarmResetsParentMaskAndDisposition() async throws {
+        let status = try await Task.detached {
+            try Self.withBlockedAlarm {
+                let disposition = signal(SIGALRM, SIG_IGN)
+                defer { _ = signal(SIGALRM, disposition) }
+                return try GatewayPTY.run(executable: URL(fileURLWithPath: "/usr/bin/python3"),
+                    arguments: ["-I", "-c", "import signal; signal.alarm(1); signal.pause()"],
+                    environment: [:], interactive: false, testTimeoutMS: 5_000)
+            }
+        }.value
+        XCTAssertEqual(status, 128 + SIGALRM)
+    }
+
+    @MainActor
     func testInputResizeAndInterruptReachFinitePTYChild() async throws {
         var master: Int32 = -1, slave: Int32 = -1
         var window = winsize(ws_row: 23, ws_col: 70, ws_xpixel: 0, ws_ypixel: 0)
@@ -21,9 +35,11 @@ final class GatewayPTYHostTests: XCTestCase {
         let tty = slave
         let before = try settings(tty)
         let child = Task.detached {
-            try GatewayPTY.run(executable: URL(fileURLWithPath: "/usr/bin/python3"),
-                arguments: ["-I", "-c", Self.fixture], environment: ProcessInfo.processInfo.environment,
-                interactive: true, input: tty, output: tty, testTimeoutMS: 10_000)
+            try Self.withBlockedAlarm {
+                try GatewayPTY.run(executable: URL(fileURLWithPath: "/usr/bin/python3"),
+                    arguments: ["-I", "-c", Self.fixture], environment: ProcessInfo.processInfo.environment,
+                    interactive: true, input: tty, output: tty, testTimeoutMS: 10_000)
+            }
         }
         do {
             try read(master, contains: "READY:70", seconds: 2)
@@ -95,9 +111,20 @@ final class GatewayPTYHostTests: XCTestCase {
         guard count == bytes.count else { throw GatewayTransportError.system("write fixture PTY", errno) }
     }
 
+    private static func withBlockedAlarm<T>(_ run: () throws -> T) throws -> T {
+        var blocked = sigset_t(), previous = sigset_t()
+        sigemptyset(&blocked)
+        sigaddset(&blocked, SIGALRM)
+        let result = pthread_sigmask(SIG_BLOCK, &blocked, &previous)
+        guard result == 0 else { throw GatewayTransportError.system("block fixture alarm", result) }
+        defer { _ = pthread_sigmask(SIG_SETMASK, &previous, nil) }
+        return try run()
+    }
+
     private static let fixture = #"""
 import os, signal, sys
-signal.pthread_sigmask(signal.SIG_UNBLOCK, {signal.SIGALRM})
+assert signal.SIGALRM not in signal.pthread_sigmask(signal.SIG_BLOCK, set())
+assert signal.getsignal(signal.SIGALRM) == signal.SIG_DFL
 signal.alarm(7)
 signal.signal(signal.SIGWINCH, lambda *_: print("RESIZED:" + str(os.get_terminal_size().columns), flush=True))
 signal.signal(signal.SIGINT, lambda *_: sys.exit(42))

@@ -26,6 +26,7 @@ public final class StreamingProcess: @unchecked Sendable {
     private var pid: pid_t = 0
     private var started = false
     private var status: Int32?
+    private var reapSource: DispatchSourceTimer?
     private var cleanupFailure: AgentProcessError?
     private var stopping = false
     private var groupCleaned = false
@@ -141,14 +142,25 @@ public final class StreamingProcess: @unchecked Sendable {
         stderrSource = reader(descriptors[4], stderr: true)
         // Dispatch sources own the read ends; this queue owns the write end.
         for index in [1, 2, 4] { descriptors[index] = -1 }
-        let child = pid
-        DispatchQueue.global(qos: .utility).async { [self] in
-            var raw: Int32 = 0
-            var result: pid_t
-            repeat { result = waitpid(child, &raw, 0) } while result == -1 && errno == EINTR
-            let code = result == child ? ((raw & 0x7f) == 0 ? (raw >> 8) & 0xff : 128 + (raw & 0x7f)) : -1
-            io.async { [self] in didExit(code) }
-        }
+        // A blocking waitpid on a global queue consumes one worker for
+        // every live child. Those workers also deliver its pipe events.
+        // Poll on the I/O queue so even a child that exited during spawn
+        // can be reaped without relying on a newly registered exit event.
+        let reaper = DispatchSource.makeTimerSource(queue: io)
+        reaper.schedule(deadline: .now(), repeating: .milliseconds(25), leeway: .milliseconds(10))
+        reaper.setEventHandler { [self] in reap() }
+        reapSource = reaper
+        reaper.activate()
+    }
+
+    private func reap() {
+        var raw: Int32 = 0
+        let result = waitpid(pid, &raw, WNOHANG)
+        if result == 0 || (result == -1 && errno == EINTR) { return }
+        reapSource?.cancel()
+        reapSource = nil
+        let code = result == pid ? ((raw & 0x7f) == 0 ? (raw >> 8) & 0xff : 128 + (raw & 0x7f)) : -1
+        didExit(code)
     }
 
     private func reader(_ fd: Int32, stderr: Bool) -> DispatchSourceRead {
@@ -298,7 +310,8 @@ public final class StreamingProcess: @unchecked Sendable {
         // A grandchild can retain pipes even after the root exits normally.
         // It is still ours: signal only the isolated group, never process names.
         if kill(-pid, 0) == -1 && errno == ESRCH { groupCleaned = true }
-        else { stop(grace: .zero) }
+        // Keep the bounded drain even when the process group already exited.
+        stop(grace: .zero)
     }
 
     private func stop(grace: Duration) {

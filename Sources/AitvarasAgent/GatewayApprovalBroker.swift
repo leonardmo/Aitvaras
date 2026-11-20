@@ -23,14 +23,22 @@ public actor GatewayApprovalBroker {
     }
 
     private let outsideTimeout: Duration
+    private let now: @Sendable () -> ContinuousClock.Instant
+    private let sleepUntil: @Sendable (ContinuousClock.Instant) async throws -> Void
     private var pending: [UUID: Pending] = [:]
     public nonisolated let changes: AsyncStream<Void>
     private let changesContinuation: AsyncStream<Void>.Continuation
 
     public init() { self.init(outsideTimeout: .seconds(300)) }
 
-    init(outsideTimeout: Duration) {
+    init(outsideTimeout: Duration,
+         now: @escaping @Sendable () -> ContinuousClock.Instant = { .now },
+         sleepUntil: @escaping @Sendable (ContinuousClock.Instant) async throws -> Void = {
+             try await ContinuousClock().sleep(until: $0)
+         }) {
         self.outsideTimeout = outsideTimeout
+        self.now = now
+        self.sleepUntil = sleepUntil
         (changes, changesContinuation) = AsyncStream.makeStream(bufferingPolicy: .bufferingNewest(1))
     }
 
@@ -54,10 +62,11 @@ public actor GatewayApprovalBroker {
                     return
                 }
                 let deadline = request.invocation.presentation == .outside
-                    ? ContinuousClock.now.advanced(by: outsideTimeout) : nil
+                    ? now().advanced(by: outsideTimeout) : nil
+                let sleep = sleepUntil
                 let timer = deadline.map { deadline in
                     Task { [weak self] in
-                        do { try await ContinuousClock().sleep(until: deadline) }
+                        do { try await sleep(deadline) }
                         catch { return }
                         await self?.resolve(request.id, as: .timedOut)
                     }
@@ -73,7 +82,7 @@ public actor GatewayApprovalBroker {
     @discardableResult
     public func decide(id: UUID, allow: Bool) -> Bool {
         guard let entry = pending[id] else { return false }
-        if let deadline = entry.deadline, ContinuousClock.now >= deadline {
+        if let deadline = entry.deadline, now() >= deadline {
             resolve(id, as: .timedOut)
             return false
         }

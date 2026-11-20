@@ -209,11 +209,8 @@ actor GatewayRemoteSession {
         if !tools.isEmpty || remote != nil { return tools }
         // A first launch has no remote schemas yet. These entries can only
         // lead to app sign-in and are replaced by discovery before dispatch.
-        let names = oauth.endpoint.host == "mcp.linear.app" ? ["list_issues"] : ["sign_in"]
-        return try names.map {
-            try MCPGatewayTool(origin: origin, definition: .init(name: $0, description: "Sign in to use this upstream.",
-                parametersJSON: "{\"type\":\"object\"}", risk: .confirmable))
-        }
+        return [try MCPGatewayTool(origin: origin, definition: .init(name: "sign_in", description: "Sign in to use this upstream.",
+            parametersJSON: "{\"type\":\"object\"}", risk: .confirmable))]
     }
 
     func discoverTools() async throws {

@@ -126,6 +126,7 @@ struct CompanionView: View {
     @Bindable var presentation: CompanionOverlayState
     @State private var languageRefresh = false
     @State private var volume = Double(VoiceVolume.gain)
+    @State private var showingGatewayAttention = false
     @FocusState private var promptFocused: Bool
 
     var body: some View {
@@ -135,6 +136,9 @@ struct CompanionView: View {
         .onChange(of: model.companionFocusRequest) {
             presentation.chatExpanded = true
             promptFocused = true
+        }
+        .onChange(of: model.gatewayAttentionCount) {
+            if model.gatewayAttentionCount == 0 { showingGatewayAttention = false }
         }
     }
 
@@ -155,6 +159,16 @@ struct CompanionView: View {
             .help("Drag here to move the companion")
 
             CompactActivityStatusView()
+            if model.gatewayAttentionCount > 0 {
+                Button("Agent requests (\(model.gatewayAttentionCount))", systemImage: "bell.badge") {
+                    showingGatewayAttention = true
+                }
+                .popover(isPresented: $showingGatewayAttention) {
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 8) { GatewayAttentionCards() }.padding(10)
+                    }.frame(width: 360).frame(maxHeight: 360)
+                }
+            }
 
             // Neither minimal mode nor expanded chat mounts a 3D renderer.
             if model.companionPresentation.usesAvatar && !presentation.chatExpanded {

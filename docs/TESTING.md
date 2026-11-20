@@ -1956,8 +1956,17 @@ refresh failure, shared sessions and deduplicated re-auth. On the host,
 and Streamable HTTP parsing. For a registered managed Linear account at
 `https://mcp.linear.app/mcp`, call its listed tool to surface the sign-in card
 in Settings → Connections. Sign in there, then list tools again in the same
-CLI connection. An expired or rejected grant must keep the last discovered
+CLI connection. Before discovery, every upstream exposes the same
+`sign_in` entry. An expired or rejected grant must keep the last discovered
 catalog visible for the current app run and surface a fresh sign-in request.
+
+For external approvals, make a confirmable call from a terminal-launched
+agent. The same request should appear in the companion's Agent requests
+popover and the Chat suggestion bar. Allow or deny from either surface and
+verify both clear. Repeat with a disconnected CLI and a revoked launch and
+verify the old card cannot dispatch. Re-auth appears on the same surfaces
+and in Settings → Connections. With Aitvaras inactive and notifications
+enabled, verify the notification contains no tool arguments or credentials.
 
 On the host, run `make check` and `make app`. In an isolated state profile,
 verify the bundled helpers, real `open -g` startup and socket isolation,
