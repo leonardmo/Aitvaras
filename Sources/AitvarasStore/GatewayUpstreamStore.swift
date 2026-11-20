@@ -43,6 +43,13 @@ private struct GatewayProjectUpstreamSelection: Codable, FetchableRecord, Persis
 }
 
 extension Stores {
+    public func gatewayUpstream(id: UUID) throws -> GatewayUpstream {
+        try db.queue.read { dbc in
+            guard let account = try GatewayUpstreamAccount.fetchOne(dbc, key: id) else { throw GatewayUpstreamError.invalidAccount }
+            return try Self.resolveGatewayAccount(account, in: dbc)
+        }
+    }
+
     /// Management view for the account picker. It includes accounts that are
     /// eligible for explicit selection but are not part of a launch's catalog.
     public func gatewayUpstreamAccounts(projectID: UUID?) throws -> [GatewayUpstreamAccount] {

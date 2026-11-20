@@ -1,5 +1,6 @@
 import SwiftUI
 import AitvarasCore
+import AitvarasAgent
 import AitvarasConnectors
 import AitvarasStore
 
@@ -49,6 +50,24 @@ struct ConnectorsView: View {
             }
 
             ForgeConnectionsSection()
+
+            if !model.gatewaySignInRequests.isEmpty {
+                Section("Agent connection sign-in") {
+                    ForEach(model.gatewaySignInRequests) { request in
+                        HStack {
+                            Text("Sign in to \(request.server) in Aitvaras")
+                            Spacer()
+                            if model.gatewaySigningIn == request.id {
+                                Button("Cancel") { model.cancelGatewaySignIn() }
+                            } else {
+                                Button("Sign in") { model.startGatewaySignIn(request.id) }
+                                    .disabled(model.gatewaySigningIn != nil)
+                            }
+                        }
+                    }
+                    if let error = model.gatewaySignInError { Text(error).foregroundStyle(.secondary) }
+                }
+            }
 
             Section("Connections") {
                 let active = activeConnections

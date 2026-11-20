@@ -18,34 +18,40 @@ public struct GatewayToolService: Sendable {
     private let knowledgeEmbedder: (any EmbeddingEngine)?
     private let upstreamCatalog: UpstreamCatalog
     private let upstreamCall: UpstreamCall
+    private let upstreams: GatewayUpstreamSessions?
     private let rules: Rules
 
     public init(stores: Stores, hub: ConnectorHub, approvals: GatewayApprovalBroker,
                 knowledgeEmbedder: (any EmbeddingEngine)? = nil,
                 upstreamCatalog: @escaping UpstreamCatalog = { _ in [] },
                 upstreamCall: @escaping UpstreamCall = { _, _, _ in throw MCPGatewayCallError.unavailable },
-                rules: @escaping Rules = { _, _ in .init() }) {
+                rules: @escaping Rules = { _, _ in .init() }, upstreams: GatewayUpstreamSessions? = nil) {
         self.stores = stores
         self.hub = hub
         self.approvals = approvals
         self.knowledgeEmbedder = knowledgeEmbedder
         self.upstreamCatalog = upstreamCatalog
         self.upstreamCall = upstreamCall
+        self.upstreams = upstreams
         self.rules = rules
     }
 
     public func connect(invocation: MCPGatewayInvocation, authorize: @escaping MCPGateway.Authorize) -> MCPGateway {
-        MCPGateway(invocation: invocation, authorize: authorize, catalog: { try await catalog(for: $0.context) },
+        let session = MCPGateway(invocation: invocation, authorize: authorize, catalog: { try await catalog(for: $0.context) },
             dispatch: { invocation, tool, arguments, revalidate in
                 try await execute(invocation, tool: tool, arguments: arguments, revalidate: revalidate)
             })
+        if let upstreams { Task { await upstreams.observe(session) } }
+        return session
     }
 
     private func catalog(for launch: GatewayLaunchContext) async throws -> [MCPGatewayTool] {
         let own = try await ownTools(for: launch)
         var tools = try own.map { try MCPGatewayTool(origin: .aitvaras($0.scope), definition: $0.definition) }
         for route in try stores.gatewayUpstreams(for: launch) {
-            let upstream = try await upstreamCatalog(route)
+            let upstream: [MCPGatewayTool]
+            if let upstreams { upstream = try await upstreams.catalog(route) }
+            else { upstream = try await upstreamCatalog(route) }
             guard upstream.count <= 256 - tools.count, upstream.allSatisfy({ $0.origin == Self.origin(for: route) }) else {
                 throw MCPGatewayCallError.unavailable
             }
@@ -75,11 +81,24 @@ public struct GatewayToolService: Sendable {
                          revalidate: MCPGateway.Authorize) async throws -> MCPGatewayToolResult {
         switch tool.origin {
         case .upstream:
+            let resolve: @Sendable () throws -> GatewayUpstream = {
+                let current = try stores.gatewayUpstreams(for: invocation.context)
+                guard let route = current.first(where: { Self.origin(for: $0) == tool.origin }) else {
+                    throw MCPGatewayCallError.stale
+                }
+                return route
+            }
             return try await hub.executeGateway(invocation, tool: tool, arguments: arguments, approvals: approvals,
-                rules: { try await rules(invocation, tool) }, revalidate: revalidate) {
-                    let current = try stores.gatewayUpstreams(for: invocation.context)
-                    guard let route = current.first(where: { Self.origin(for: $0) == tool.origin }) else {
-                        throw MCPGatewayCallError.stale
+                rules: { try await rules(invocation, tool) }, revalidate: {
+                    try await revalidate()
+                    if let upstreams { try await upstreams.requireSignInIfNeeded(resolve()) }
+                }) {
+                    let route = try resolve()
+                    if let upstreams {
+                        return try await upstreams.call(route, tool: tool, arguments: arguments) {
+                            try await revalidate()
+                            _ = try resolve()
+                        }
                     }
                     return try await upstreamCall(route, tool, arguments)
                 }

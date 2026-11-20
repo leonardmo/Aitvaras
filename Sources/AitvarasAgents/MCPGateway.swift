@@ -295,6 +295,7 @@ public actor MCPGateway {
     }
 
     private func toolRequest(_ method: String, params: JSONValue?, id: RequestID) async -> JSONValue {
+        var upstreamName: String?
         do {
             let current = try await currentCatalog()
             if method == "tools/list" {
@@ -320,12 +321,17 @@ public actor MCPGateway {
             guard let tool = current.tools.first(where: { $0.name == name }) else {
                 return Self.errorValue(-32602, "Unknown tool.", id: id.json)
             }
+            if case .upstream(let server, _, _) = tool.origin { upstreamName = server }
             let result = try await dispatch(invocation, tool, args) { try await self.verify(tool) }
             return Self.replyValue(try result.validated(), id: id)
         } catch {
             guard method == "tools/call" else { return Self.errorValue(-32603, "Tool catalog is unavailable.", id: id.json) }
             let error = error as? MCPGatewayCallError ?? .failed
-            let result: JSONValue = .object(["content": .array([.object(["type": .string("text"), "text": .string(error.message)])]),
+            let detail: String
+            if error == .needsSignIn, let server = upstreamName {
+                detail = "Sign in to \(server) in Aitvaras."
+            } else { detail = error.message }
+            let result: JSONValue = .object(["content": .array([.object(["type": .string("text"), "text": .string(detail)])]),
                                              "isError": .bool(true)])
             return Self.replyValue(result, id: id)
         }

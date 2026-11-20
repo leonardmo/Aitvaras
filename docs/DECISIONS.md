@@ -1164,7 +1164,9 @@ such as Linear. The gateway does not call cloud LLM APIs.
   dynamic client registration and PKCE in G1, and stores credentials only in
   the profile Keychain. Refresh is central. Failed refresh leaves tools listed
   with a clear sign-in error and raises an in-app re-auth card and notification.
-  Sign-in takes place in the app. This supersedes CLI-owned MCP OAuth only
+  Sign-in starts in Settings → Connections. The app opens a validated HTTPS
+  authorization URL and receives its one-time callback on IPv4 loopback.
+  The callback listener expires after five minutes. This supersedes CLI-owned MCP OAuth only
   for gateway-managed upstreams. D34 repo and user/account MCP login and
   provider subscription login remain native. Existing native tokens are
   never imported. Names are prefixed, such as `linear_list_issues` and

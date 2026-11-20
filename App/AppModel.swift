@@ -74,6 +74,11 @@ final class AppModel {
     @ObservationIgnored private var gatewayApprovalBroker: GatewayApprovalBroker?
     @ObservationIgnored private var gatewayApprovalObserver: Task<Void, Never>?
     private(set) var gatewayInlineApprovals: [GatewayApprovalRequest] = []
+    @ObservationIgnored private var gatewayUpstreamSessions: GatewayUpstreamSessions?
+    @ObservationIgnored private var gatewaySignInTask: Task<Void, Never>?
+    private(set) var gatewaySignInRequests: [GatewayUpstreamSessions.SignIn] = []
+    private(set) var gatewaySigningIn: UUID?
+    private(set) var gatewaySignInError: String?
     private(set) var agentLoop: AgentLoop?
     private(set) var agentSessionManager: AgentSessionManager?
     private(set) var agentAutoContinueLifecycle: AgentAutoContinueLifecycle?
@@ -569,8 +574,12 @@ final class AppModel {
             let endpoint = GatewayEndpoint()
             let registry = GatewayLaunchRegistry()
             let approvals = GatewayApprovalBroker()
+            let storage = keychain
+            let upstreams = GatewayUpstreamSessions(secrets: .init(load: { try storage.get($0) },
+                save: { key, value in try storage.set(value, forKey: key) }, delete: { try storage.delete($0) }),
+                needsAttention: { [weak self] in await self?.refreshGatewaySignInRequests() })
             let tools = GatewayToolService(stores: stores, hub: hub, approvals: approvals,
-                                           knowledgeEmbedder: OllamaEmbedder())
+                                           knowledgeEmbedder: OllamaEmbedder(), upstreams: upstreams)
             let service = GatewaySocketService(endpoint: endpoint, registry: registry,
                 verifyLauncher: { identity.matches($0) },
                 resolveContext: { peer, client in
@@ -579,6 +588,8 @@ final class AppModel {
                 makeSession: { invocation, authorize in tools.connect(invocation: invocation, authorize: authorize) })
             try await service.start()
             gatewaySocketService = service
+            gatewayUpstreamSessions = upstreams
+            await refreshGatewaySignInRequests()
             gatewayChatLaunch = GatewayChatLaunch(configuration: .init(
                 executable: bundle.bundleURL.appendingPathComponent("Contents/MacOS/aitvaras-mcp"),
                 stateDirectory: AitvarasPaths.isIsolated ? endpoint.stateDirectory : nil),
@@ -598,6 +609,10 @@ final class AppModel {
     }
 
     func stopGatewaySocket() async {
+        gatewaySignInTask?.cancel()
+        await gatewaySignInTask?.value
+        gatewayUpstreamSessions = nil
+        gatewaySignInRequests = []
         await gatewaySocketService?.stop()
         gatewaySocketService = nil
         gatewayChatLaunch = nil
@@ -606,6 +621,37 @@ final class AppModel {
         gatewayApprovalBroker = nil
         gatewayInlineApprovals = []
     }
+
+    private func refreshGatewaySignInRequests() async {
+        let requests = await gatewayUpstreamSessions?.signInRequests() ?? []
+        let known = Set(gatewaySignInRequests.map(\.id))
+        gatewaySignInRequests = requests
+        if requests.contains(where: { !known.contains($0.id) }) {
+            NotificationRouter.requestedWorkNeedsAttention(message: "An agent connection needs sign-in. Open Aitvaras Settings → Connections.")
+        }
+    }
+
+    func startGatewaySignIn(_ id: UUID) {
+        guard gatewaySigningIn == nil, let stores, let gatewayUpstreamSessions else { return }
+        gatewaySigningIn = id
+        gatewaySignInError = nil
+        gatewaySignInTask = Task {
+            defer { gatewaySigningIn = nil; gatewaySignInTask = nil }
+            do {
+                try stores.record(ActivityEvent(kind: .toolExecuted, connectorID: "agent.gateway",
+                                                summary: "Upstream sign-in requested in Aitvaras"))
+                try await gatewayUpstreamSessions.signIn(id, currentRoute: { try stores.gatewayUpstream(id: id) },
+                    openBrowser: { url in
+                        try ProviderSignIn.validate(url)
+                        let opened = await MainActor.run { NSWorkspace.shared.open(url) }
+                        guard opened else { throw GatewayOAuthError.invalidCallback }
+                    })
+            } catch is CancellationError { }
+            catch { if !Task.isCancelled { gatewaySignInError = "Could not finish sign-in. Try again." } }
+        }
+    }
+
+    func cancelGatewaySignIn() { gatewaySignInTask?.cancel() }
 
     func decideGatewayApproval(_ request: GatewayApprovalRequest, allow: Bool) async {
         if await gatewayApprovalBroker?.decide(id: request.id, allow: allow) == true {

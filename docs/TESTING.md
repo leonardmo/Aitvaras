@@ -1948,14 +1948,16 @@ gateway approval is cleared on Stop or provider cancellation. Check that
 native repo/user MCP policy still applies and that side questions and
 restricted non-chat jobs have no gateway.
 
-For the remaining G1 work, use a local fake upstream for MCP discovery,
-dynamic registration, S256 PKCE, token exchange, refresh and protected calls.
-Test against injected HTTP transport and a fake credential store in the
-sandbox. Use a bounded loopback server on the host to verify the callback.
-Cover bad state/verifier, refresh failure and rotation, cancellation, shared
-account sessions, project selection and opt-out, and re-auth. Test catalog
-changes, scope denial, approval timeout/revoke, and redaction without using
-live credentials.
+`GatewayOAuthTests` runs discovery, dynamic registration, S256 PKCE, token
+exchange, refresh rotation and protected MCP calls with injected HTTP and
+an in-memory credential store. It covers invalid state/verifier, cancellation,
+refresh failure, shared sessions and deduplicated re-auth. On the host,
+`GatewayOAuthHostTests` checks the bounded IPv4 loopback browser callback
+and Streamable HTTP parsing. For a registered managed Linear account at
+`https://mcp.linear.app/mcp`, call its listed tool to surface the sign-in card
+in Settings → Connections. Sign in there, then list tools again in the same
+CLI connection. An expired or rejected grant must keep the last discovered
+catalog visible for the current app run and surface a fresh sign-in request.
 
 On the host, run `make check` and `make app`. In an isolated state profile,
 verify the bundled helpers, real `open -g` startup and socket isolation,
