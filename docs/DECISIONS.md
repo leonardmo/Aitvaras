@@ -861,21 +861,39 @@ in `ChatThirdPartyNotices.txt` and the dependency's resource bundle.
 
 CommonMark/GFM becomes native attributed text and tables, with LaTeX as inline
 baseline-aligned or display attachments. Invalid, incomplete, excessively deep
-or oversized math remains literal monospace source. HTML stays visible text;
-images become browser links and never load. HTTP/HTTPS/mailto links open only
-on an explicit click. Native system colors follow appearance changes.
+or oversized math remains literal monospace source. HTML stays visible text.
+Markdown links, bare URLs and URL-only inline code support HTTP, HTTPS and
+mailto. They open on an explicit click. Labeled links show the destination
+host when it differs from the label. Local references are resolved within
+the chat's working directory and registered project folders and revealed in
+Finder on click. Native system colors follow appearance changes.
+
+Markdown images referencing project-local PNG or JPEG files appear inline
+after the response finishes. Image reads and bounded thumbnail decoding run
+off the main actor. Automatic reads use local file descriptors, reject
+symlinks during the read, and verify the actual raster format. Remote images
+appear as links and are fetched only by the browser after a click.
+
+A fenced `chart` block accepts a JSON object with a `title` and up to 16
+`values`. Each value has a unique `label` and a finite numeric `value`. Swift
+Charts draws a horizontal bar chart locally. Unfinished or invalid chart
+blocks preserve the readable source. The figure menu supports preview, image
+copy, PNG export and source copy. A profile-scoped formatting toggle controls
+a short instruction in Chat turns describing these formats and when to use
+them.
 
 A single text storage per message keeps selection continuous across formatting,
 code, tables and math without a web process per message. Source spans recover
 Markdown for Copy and Reply with quote; Fork retains its existing anchor and
 eligibility. Code stays in that text storage, with native copy controls and
-horizontal scrollers rather than nested editors. The proposed transcript width
-always controls prose and table layout. Complete top-level blocks and their math
+horizontal scrollers rather than nested editors. Prose wraps at 620 points or the available transcript width. Tables, code
+and figures use the available transcript width. Complete top-level blocks and their math
 attachments survive appends; only the open tail is parsed and replaced. Edits,
 appearance changes and reference definitions invalidate the necessary prefix.
 Host profiling and native interaction checks remain required for long chats.
 
-The existing vertical composer keeps its selection binding and draft-edit path.
+The vertical composer observes draft changes independently of transcript
+layout. Typing clears a persisted sign-in retry intent only if it exists.
 Shift/Option-Return replace the selection with a newline; plain Return accepts
 an open completion or sends. Marked text defers Return to the input method.
 

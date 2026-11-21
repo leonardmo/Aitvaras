@@ -223,6 +223,90 @@ import Testing
         #expect(attributes(value, containing: "image label")[.attachment] == nil)
     }
 
+    @Test func linksIncludeBareAutolinksAndInlineCodeAndRejectOtherSchemes() {
+        let source = """
+        [Open docs](https://example.invalid/docs), https://example.invalid/plain, <https://example.invalid/angle>,
+        `https://example.invalid/code`, <mailto:person@example.invalid>,
+        [blocked](javascript:alert%281%29), [read](file:///example.txt), [app](example-app://open).
+        """
+        let value = renderer(source)
+        #expect(value.text.string.contains("Open docs (example.invalid)"))
+        for suffix in ["docs", "plain", "angle", "code"] {
+            let label = suffix == "docs" ? "Open docs" : "https://example.invalid/\(suffix)"
+            #expect(attributes(value, containing: label)[.link] as? URL == URL(string: "https://example.invalid/\(suffix)"))
+        }
+        #expect(attributes(value, containing: "person@example.invalid")[.link] as? URL == URL(string: "mailto:person@example.invalid"))
+        for label in ["blocked", "read", "app"] {
+            #expect(attributes(value, containing: label)[.link] == nil)
+        }
+    }
+
+    @Test func projectReferencesCannotEscapeAndOnlyLocalRasterImagesBecomeAttachments() throws {
+        let manager = FileManager.default
+        let temporary = manager.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? manager.removeItem(at: temporary) }
+        let root = temporary.appendingPathComponent("project", isDirectory: true)
+        try manager.createDirectory(at: root, withIntermediateDirectories: true)
+        let file = root.appendingPathComponent("Example.swift")
+        try Data().write(to: file)
+        let image = try #require(Data(base64Encoded:
+            "iVBORw0KGgoAAAANSUhEUgAAAAQAAAADCAIAAAA7ljmRAAAAEElEQVR4nGMQrrwLRww4OQBAuBDtANwBaQAAAABJRU5ErkJggg=="))
+        try image.write(to: root.appendingPathComponent("plot.png"))
+        try image.write(to: temporary.appendingPathComponent("private.png"))
+        try manager.createSymbolicLink(at: root.appendingPathComponent("escape.png"),
+                                      withDestinationURL: temporary.appendingPathComponent("private.png"))
+        try Data("not an image".utf8).write(to: root.appendingPathComponent("broken.png"))
+        let scope = ChatResourceScope(directories: [root])
+        #expect(scope.fileURL("../private.png") == nil)
+        #expect(scope.fileURL("escape.png") == nil)
+        #expect(scope.fileURL(file.absoluteString) == nil)
+        let source = """
+        See `Example.swift:42` or [the source](Example.swift).
+
+        ![Local plot](plot.png)
+
+        ![Escaped image](escape.png)
+
+        ![Broken image](broken.png)
+
+        ![Remote image](https://example.invalid/plot.png)
+        """
+        let resolvedFile = try #require(scope.fileURL("Example.swift"))
+        let images = scope.localImages(in: source)
+        #expect(Set(images.keys) == ["plot.png"])
+        let value = ChatRichTextRenderer()
+        value.update(source, resourceScope: scope, images: images)
+        #expect(attributes(value, containing: "Example.swift:42")[.link] as? URL == resolvedFile)
+        #expect(attributes(value, containing: "the source")[.link] as? URL == resolvedFile)
+        #expect(attributes(value, containing: "Escaped image")[.link] == nil)
+        #expect(attributes(value, containing: "Broken image")[.attachment] == nil)
+        #expect(attributes(value, containing: "Remote image")[.attachment] == nil)
+        let range = (value.text.string as NSString).range(of: "\u{fffc}")
+        #expect(range.location != NSNotFound)
+        if range.location != NSNotFound {
+            #expect(value.markdown(for: range) == "![Local plot](plot.png)")
+        }
+    }
+
+    @Test func chartsRenderAfterStreamingAndMalformedChartsStayReadable() {
+        let spec = #"{"title":"Count","values":[{"label":"A","value":2},{"label":"B","value":-1}]}"#
+        let source = "```chart\n" + spec + "\n```"
+        let value = ChatRichTextRenderer()
+        value.update(source, figuresEnabled: false)
+        #expect(value.text.string.contains(spec))
+        value.update(source)
+        let range = (value.text.string as NSString).range(of: "\u{fffc}")
+        #expect(range.location != NSNotFound)
+        if range.location != NSNotFound {
+            #expect(value.markdown(for: range) == source)
+        }
+        value.update("```chart\n{}\n```")
+        #expect(value.text.string.contains("{}"))
+        #expect(value.codeBlocks.count == 1)
+        value.update("```chart\n" + spec)
+        #expect(value.text.string.contains("```chart"))
+    }
+
     @Test func tablesAndFencesAreStructuredAndHTMLCannotLoadResources() throws {
         let value = renderer("| Left | Right |\n| :--- | ---: |\n| one | two |\n\n```swift\nlet x = \"$literal$\"\n```\n\n<img src=\"https://example.invalid/a.png\">")
         let paragraph = try #require(attributes(value, containing: "one")[.paragraphStyle] as? NSParagraphStyle)

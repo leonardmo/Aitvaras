@@ -26,14 +26,24 @@ public struct ChatCodeBlock {
     private var parser = ChatMarkdownStream()
     private var stableRenderedLength = 0
     private var appearance: NSAppearance.Name?
+    private var resourceScope = ChatResourceScope()
+    private var images: [String: CGImage] = [:]
+    private var figuresEnabled = true
 
     public init() {}
 
     /// Completed top-level blocks stay in storage, with the same attachments.
     /// Keep the last block open: lists, setext headings and tables can extend
     /// on the next line. Non-append edits and appearance changes rebuild once.
-    @discardableResult public func update(_ value: String, appearance: NSAppearance.Name? = nil) -> Bool {
-        guard let update = parser.update(value, reset: self.appearance != appearance) else { return false }
+    @discardableResult public func update(_ value: String, appearance: NSAppearance.Name? = nil,
+                                          resourceScope: ChatResourceScope = .init(),
+                                          images: [String: CGImage] = [:], figuresEnabled: Bool = true) -> Bool {
+        let changedImages = self.images.count != images.count || images.contains { self.images[$0.key] !== $0.value }
+        let changedContext = self.resourceScope != resourceScope || changedImages || self.figuresEnabled != figuresEnabled
+        guard let update = parser.update(value, reset: self.appearance != appearance || changedContext) else { return false }
+        self.resourceScope = resourceScope
+        self.images = images
+        self.figuresEnabled = figuresEnabled
         if update.sourceRange.location == 0 { stableRenderedLength = 0 }
         source = value; self.appearance = appearance
         // The retained prefix may already end in a line break; the builder must
@@ -41,7 +51,9 @@ public struct ChatCodeBlock {
         let precededByNewline = stableRenderedLength > 0 && stableRenderedLength <= text.length
             && (text.string as NSString).character(at: stableRenderedLength - 1) == 10
         let builder = ChatRichTextBuilder(parsed: update.document, sourceBase: update.sourceRange.location,
-                                          renderedBase: stableRenderedLength, precededByNewline: precededByNewline)
+                                          renderedBase: stableRenderedLength, precededByNewline: precededByNewline,
+                                          resourceScope: resourceScope, images: images,
+                                          figuresEnabled: figuresEnabled, appearance: appearance)
         builder.build()
         reparsedSourceRange = update.sourceRange
         replacedRenderedRange = NSRange(location: stableRenderedLength, length: text.length - stableRenderedLength)
@@ -70,6 +82,10 @@ public struct ChatCodeBlock {
     let math: [ChatMathSpan]
     let document: Document
     let stableBoundary: Int
+    let resourceScope: ChatResourceScope
+    let images: [String: CGImage]
+    let figuresEnabled: Bool
+    let appearance: NSAppearance.Name?
     var output = NSMutableAttributedString(string: "")
     var mappings: [ChatSourceSpan] = []
     var codeBlocks: [ChatCodeBlock] = []
@@ -83,12 +99,17 @@ public struct ChatCodeBlock {
         var strike = false
         var code = false
         var link: URL?
+        var detectLinks = true
         var paragraph: NSParagraphStyle?
         var kind = "paragraph"
         var attributes: [NSAttributedString.Key: Any] {
             let p = (paragraph?.mutableCopy() as? NSMutableParagraphStyle) ?? NSMutableParagraphStyle()
             p.headIndent = indent; p.firstLineHeadIndent = indent
-            p.paragraphSpacing = 6
+            p.lineSpacing = kind == "code" ? 0 : 2
+            p.paragraphSpacing = kind == "heading" ? 10 : 8
+            if kind == "heading" { p.paragraphSpacingBefore = 4 }
+            if kind == "list" { p.paragraphSpacing = 4 }
+            if kind == "figure" { p.paragraphSpacingBefore = 6 }
             var result: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: color,
                 .paragraphStyle: p, .chatBlockKind: kind]
             if strike { result[.strikethroughStyle] = NSUnderlineStyle.single.rawValue }
@@ -99,7 +120,11 @@ public struct ChatCodeBlock {
     }
 
     let precededByNewline: Bool
-    init(parsed: ChatMarkdownDocument, sourceBase: Int, renderedBase: Int, precededByNewline: Bool = false) {
+    init(parsed: ChatMarkdownDocument, sourceBase: Int, renderedBase: Int, precededByNewline: Bool,
+         resourceScope: ChatResourceScope, images: [String: CGImage], figuresEnabled: Bool,
+         appearance: NSAppearance.Name?) {
+        self.resourceScope = resourceScope; self.images = images
+        self.figuresEnabled = figuresEnabled; self.appearance = appearance
         source = parsed.source; self.sourceBase = sourceBase; self.renderedBase = renderedBase
         self.precededByNewline = precededByNewline
         coordinates = parsed.coordinates; math = parsed.math; document = parsed.document
@@ -165,6 +190,7 @@ public struct ChatCodeBlock {
             style.strike = true; children(node, style)
         case let value as InlineCode:
             style.font = .monospacedSystemFont(ofSize: style.font.pointSize, weight: .regular); style.code = true
+            if style.link == nil, style.detectLinks { style.link = destination(value.code) }
             append(value.code, style)
             // Map the contents too, for a partial selection inside a code span.
             let raw = raw(node), ticks = raw.prefix(while: { $0 == "`" }).count
@@ -187,12 +213,27 @@ public struct ChatCodeBlock {
         case is LineBreak:
             append("\n", style)
         case let value as Link:
-            style.link = Self.browserURL(value.destination)
+            style.link = destination(value.destination)
+            // Prevent a disallowed Markdown target from turning its label into
+            // a different link, while retaining the label's formatting.
+            style.detectLinks = false
             children(node, style)
+            if let url = style.link, let host = url.host(), let target = value.destination,
+               ChatResourceScope.webURL(value.plainText) != url, value.plainText != target,
+               value.plainText.caseInsensitiveCompare(host) != .orderedSame {
+                map(value, from: start)
+                append(" (" + host + ")", style)
+            }
         case let value as Markdown.Image:
-            style.link = Self.browserURL(value.source)
+            let label = value.plainText.isEmpty ? (value.source ?? "Image") : value.plainText
+            if figuresEnabled, let path = value.source, let image = images[path] {
+                renderFigure(NSImage(cgImage: image, size: NSSize(width: image.width, height: image.height)),
+                             node: node, caption: label, style: style)
+                return
+            }
+            style.link = destination(value.source)
             style.kind = "imageLink"
-            append(value.plainText.isEmpty ? (value.source ?? "Image") : value.plainText, style)
+            append(label, style)
         case let table as Markdown.Table:
             renderTable(table, style)
         case is ThematicBreak:
@@ -209,16 +250,68 @@ public struct ChatCodeBlock {
         map(node, from: start)
     }
 
-    static func browserURL(_ value: String?) -> URL? {
-        guard let value, let url = URL(string: value), ["https", "http", "mailto"].contains(url.scheme?.lowercased() ?? "") else { return nil }
-        return url
+    private func destination(_ value: String?) -> URL? {
+        guard let value else { return nil }
+        if let web = ChatResourceScope.webURL(value) { return web }
+        guard !resourceScope.directories.isEmpty else { return nil }
+        let path = value.replacingOccurrences(of: #":\d+(?::\d+)?$"#, with: "", options: .regularExpression)
+        return resourceScope.fileURL(path)
+    }
+
+    private static let linkDetector = try? NSDataDetector(types: NSTextCheckingResult.CheckingType.link.rawValue)
+    private static let pathPattern = try? NSRegularExpression(
+        pattern: #"(?<![\w/@:])(?:/?[\w.~+-]+/)*[\w~+-][\w.+-]*\.[\w+-]+(?::\d+(?::\d+)?)?(?![\w/-])"#)
+
+    private func appendDetectingLinks(_ value: String, _ style: Style) {
+        guard style.link == nil, style.detectLinks else { append(value, style); return }
+        let range = NSRange(value.startIndex..., in: value)
+        let text = value as NSString
+        var links: [(NSRange, URL)] = []
+        // NSDataDetector handles balanced punctuation in bare URLs and leaves
+        // their trailing sentence punctuation outside the clickable range.
+        if value.contains("://") || value.contains("@") || value.contains("mailto:") {
+            for match in Self.linkDetector?.matches(in: value, range: range) ?? [] {
+                let label = text.substring(with: match.range)
+                if let url = ChatResourceScope.webURL(label) { links.append((match.range, url)) }
+            }
+        }
+        if !resourceScope.directories.isEmpty, value.contains(".") {
+            for match in Self.pathPattern?.matches(in: value, range: range) ?? [] where
+                !links.contains(where: { NSIntersectionRange($0.0, match.range).length > 0 }) {
+                if let url = destination(text.substring(with: match.range)), url.isFileURL {
+                    links.append((match.range, url))
+                }
+            }
+        }
+        var cursor = 0
+        for (match, url) in links.sorted(by: { $0.0.location < $1.0.location }) {
+            append(text.substring(with: NSRange(location: cursor, length: match.location - cursor)), style)
+            var linked = style; linked.link = url
+            append(text.substring(with: match), linked)
+            cursor = NSMaxRange(match)
+        }
+        append(text.substring(from: cursor), style)
+    }
+
+    private func renderFigure(_ image: NSImage, node: any Markup, caption: String, style initial: Style) {
+        var style = initial
+        style.kind = "figure"
+        if output.length > 0 && !output.string.hasSuffix("\n") { append("\n", style) }
+        let start = output.length
+        let attachment = NSTextAttachment()
+        attachment.attachmentCell = ChatFigureCell(image: image, sourceText: raw(node), caption: caption)
+        let value = NSMutableAttributedString(attachment: attachment)
+        value.addAttributes(style.attributes, range: NSRange(location: 0, length: value.length))
+        output.append(value)
+        map(node, from: start)
+        append("\n", style)
     }
 
     func renderText(_ node: Markdown.Text, _ style: Style) {
         guard let range = coordinates.range(node.range) else { append(node.string, style); return }
         let matches = math.filter { NSIntersectionRange($0.range, range).length > 0 }
         if matches.isEmpty {
-            let start = output.length; append(node.string, style)
+            let start = output.length; appendDetectingLinks(node.string, style)
             mappings.append(contentsOf: ChatSourceSelection.inlineSpans(source: (source as NSString).substring(with: range),
                 rendered: node.string, sourceOffset: sourceBase + range.location, renderedOffset: renderedBase + start))
             return
@@ -318,6 +411,11 @@ public struct ChatCodeBlock {
         }
         let start = output.length
         let language = block.language ?? "Code"
+        if figuresEnabled, language.lowercased() == "chart", let chart = ChatChart(source: block.code),
+           let image = chart.image(appearance: appearance) {
+            renderFigure(image, node: block, caption: chart.title, style: initial)
+            return
+        }
         append(language + "\n", style)
         let contentStart = output.length
         append(block.code, style); newline(style)
