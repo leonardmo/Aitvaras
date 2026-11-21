@@ -257,6 +257,9 @@ terminate on their own and are reaped during cleanup. Coverage includes:
 - `AgentMCPLoginTests`, `AgentSetupCoordinatorTests`, `AgentSetupFormTests`:
   managed sign-in success/failure/timeout/cancellation, transient URL handling,
   refresh races, fingerprint-bound approval and atomic secret-reference saves.
+  The Claude fixture requires a wide controlling terminal and waits for a
+  local signal from the URL callback. It checks ANSI-decorated output and
+  child reaping after cancellation or timeout.
 - `AgentReviewRegressionTests`: prompt-free MCP status and secret-field
   projection, healthy-transport refresh, revocation, composer caret ranges,
   command groups/envelopes, name-first search ranking, metadata-only source

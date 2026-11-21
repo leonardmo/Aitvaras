@@ -5,6 +5,7 @@ import Foundation
 enum AgentMCPLogin {
     static func run(executable: URL, name: String, directory: URL, environment: [String: String],
                     timeout: Duration, onBrowserURL: @escaping @Sendable (URL) async -> Void) async throws {
+        try Task.checkCancellation()
         try AgentMCPConfiguration.validateName(name)
         // `mcp login` refuses a `.mcp.json` server the CLI itself has not
         // approved. Aitvaras keeps its approvals out of the CLI's files, and the
@@ -13,36 +14,30 @@ enum AgentMCPLogin {
         let approval = String(decoding: try JSONSerialization.data(withJSONObject: ["enabledMcpjsonServers": [name]]), as: UTF8.self)
         let process = StreamingProcess(executable: executable, arguments: ["--settings", approval, "mcp", "login", "--", name],
             currentDirectory: directory, environment: environment)
-        let urls = AgentMCPLoginURLs()
-        try process.start()
+        // Claude requires a terminal to keep its loopback listener active.
+        // Give it enough columns to print the authorization URL on one line.
+        try process.startInPTY(columns: 16_384)
         do {
-            try await withThrowingTaskGroup(of: Bool.self) { group in
+            try await withThrowingTaskGroup(of: Void.self) { group in
                 group.addTask {
                     try await withTaskCancellationHandler {
+                        var delivered = false
                         for try await line in process.lines {
-                            await urls.deliver(in: line, callback: onBrowserURL)
+                            try Task.checkCancellation()
+                            if !delivered, let url = browserURL(in: line) {
+                                delivered = true
+                                await onBrowserURL(url)
+                            }
                         }
                         guard try await process.waitForExit() == 0 else { throw AgentFailure.authRequired }
-                        return true
                     } onCancel: { process.terminate() }
-                }
-                group.addTask {
-                    while !Task.isCancelled {
-                        await urls.deliver(in: process.stderrText, callback: onBrowserURL)
-                        if !process.isRunning { return false }
-                        try await Task.sleep(for: .milliseconds(50))
-                    }
-                    return false
                 }
                 group.addTask {
                     try await Task.sleep(for: min(timeout, .seconds(300)))
                     throw ProviderSignInError.timedOut
                 }
                 defer { group.cancelAll() }
-                // The stderr observer finishing does not establish login success.
-                while let completed = try await group.next() {
-                    if completed { return }
-                }
+                _ = try await group.next()
             }
             try Task.checkCancellation()
             try await process.shutdown(grace: .zero)
@@ -53,18 +48,17 @@ enum AgentMCPLogin {
             throw AgentFailure.authRequired
         }
     }
-}
+    // Remove control strings (including OSC hyperlinks), CSI sequences, and
+    // other ESC commands before looking for the URL in the displayed text.
+    private static let terminalEscapes = #"\x1B\][^\x07\x1B]*(?:\x07|\x1B\\|$)|\x1B[PX^_][^\x1B]*(?:\x1B\\|$)|\x1B\[[0-?]*[ -/]*[@-~]|\x1B[ -/]*[0-~]"#
 
-private actor AgentMCPLoginURLs {
-    private var delivered = false
-    func deliver(in text: String, callback: @Sendable (URL) async -> Void) async {
-        guard !delivered else { return }
-        for word in text.split(whereSeparator: \.isWhitespace) {
+    private static func browserURL(in text: String) -> URL? {
+        let visible = text.replacingOccurrences(of: terminalEscapes, with: "", options: .regularExpression)
+        for word in visible.split(whereSeparator: \.isWhitespace) {
             let candidate = word.trimmingCharacters(in: CharacterSet(charactersIn: "\"'<>(),"))
             guard let url = URL(string: candidate), (try? ProviderSignIn.validate(url)) != nil else { continue }
-            delivered = true
-            await callback(url)
-            return
+            return url
         }
+        return nil
     }
 }
