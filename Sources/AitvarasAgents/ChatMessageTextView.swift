@@ -19,6 +19,9 @@ import UniformTypeIdentifiers
     private var offsets: [Int: CGFloat] = [:]
     private var codeWidths: [Int: CGFloat] = [:]
     private var controls: [Int: (NSButton, NSScroller)] = [:]
+    /// Heights measured off-screen for widths other than the live one, so
+    /// SwiftUI's repeated proposals are answered without relayout.
+    private var measuredHeights: [CGFloat: CGFloat] = [:]
 
     /// `NSTextView(frame:textContainer: nil)` creates no text system at all,
     /// so build a TextKit 1 stack here. The view must own the storage: layout
@@ -41,7 +44,8 @@ import UniformTypeIdentifiers
         drawsBackground = false; textContainerInset = .zero
         clipsToBounds = true
         textContainer?.lineFragmentPadding = 0; textContainer?.widthTracksTextView = false
-        isVerticallyResizable = true; isHorizontallyResizable = false
+        // SwiftUI owns the frame. A self-resizing text view fights it.
+        isVerticallyResizable = false; isHorizontallyResizable = false
         setContentHuggingPriority(.defaultLow, for: .horizontal)
         setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         delegate = self
@@ -74,8 +78,8 @@ import UniformTypeIdentifiers
                     ($0 as NSString).size(withAttributes: [.font: font]).width + 20
                 }.max() ?? 0
             }
+            measuredHeights.removeAll()
             constrainParagraphs(in: NSRange(location: replacement.location, length: storage.length - replacement.location))
-            invalidateIntrinsicContentSize()
         }
     }
 
@@ -99,14 +103,37 @@ import UniformTypeIdentifiers
         super.draw(dirtyRect)
     }
 
+    /// Must leave the displayed view untouched: SwiftUI calls this during its
+    /// layout pass, often with widths that differ from the frame it then
+    /// applies. Reflowing the live storage here re-dirties the window's layout
+    /// on every pass, which AppKit ends by crashing the app.
     public func measuredSize(width: CGFloat) -> NSSize {
-        if viewportWidth != width {
+        guard let storage = textStorage, let layout = layoutManager, let container = textContainer else {
+            return NSSize(width: width, height: 20)
+        }
+        if viewportWidth == 0 {
+            // Not on screen yet; adopting the first proposal is free.
             viewportWidth = width
             constrainParagraphs()
         }
-        guard let layout = layoutManager, let container = textContainer else { return NSSize(width: width, height: 20) }
-        layout.ensureLayout(for: container)
-        return NSSize(width: width, height: max(20, ceil(layout.usedRect(for: container).maxY)))
+        if width == viewportWidth {
+            layout.ensureLayout(for: container)
+            return NSSize(width: width, height: max(20, ceil(layout.usedRect(for: container).maxY)))
+        }
+        if let height = measuredHeights[width] { return NSSize(width: width, height: height) }
+        let scratchStorage = NSTextStorage(attributedString: storage)
+        let scratchLayout = NSLayoutManager()
+        scratchStorage.addLayoutManager(scratchLayout)
+        let scratchContainer = NSTextContainer(size: NSSize(width: 0, height: CGFloat.greatestFiniteMagnitude))
+        scratchContainer.lineFragmentPadding = 0
+        scratchLayout.addTextContainer(scratchContainer)
+        // Tables are shared with the live storage; restore their widths after.
+        let tables = applyParagraphStyles(width: width, to: scratchStorage, container: scratchContainer, layout: scratchLayout)
+        scratchLayout.ensureLayout(for: scratchContainer)
+        let height = max(20, ceil(scratchLayout.usedRect(for: scratchContainer).maxY))
+        for (table, value, type) in tables { table.setValue(value, type: type, for: .width) }
+        measuredHeights[width] = height
+        return NSSize(width: width, height: height)
     }
 
     public override func setFrameSize(_ newSize: NSSize) {
@@ -119,11 +146,28 @@ import UniformTypeIdentifiers
     }
 
     private func codeWidth(_ block: ChatCodeBlock) -> CGFloat {
-        max(viewportWidth, codeWidths[block.range.location] ?? 0)
+        codeWidth(block, viewport: viewportWidth)
+    }
+
+    private func codeWidth(_ block: ChatCodeBlock, viewport: CGFloat) -> CGFloat {
+        max(viewport, codeWidths[block.range.location] ?? 0)
     }
 
     private func constrainParagraphs(in requested: NSRange? = nil) {
-        guard viewportWidth > 0, let storage = textStorage, let container = textContainer else { return }
+        guard viewportWidth > 0, let storage = textStorage, let container = textContainer,
+              let layout = layoutManager else { return }
+        _ = applyParagraphStyles(width: viewportWidth, to: storage, container: container, layout: layout, in: requested)
+        positionCodeControls()
+    }
+
+    /// Fits `storage` to `width` and returns each table's previous width.
+    @discardableResult
+    private func applyParagraphStyles(width viewportWidth: CGFloat, to storage: NSTextStorage,
+                                      container: NSTextContainer, layout: NSLayoutManager,
+                                      in requested: NSRange? = nil) -> [(NSTextTable, CGFloat, NSTextBlock.ValueType)] {
+        func codeWidth(_ block: ChatCodeBlock) -> CGFloat { self.codeWidth(block, viewport: viewportWidth) }
+        var tables: [(NSTextTable, CGFloat, NSTextBlock.ValueType)] = []
+        var seen = Set<ObjectIdentifier>()
         let maxWidth = renderer.codeBlocks.map(codeWidth).max() ?? viewportWidth
         container.containerSize = NSSize(width: max(viewportWidth, maxWidth), height: .greatestFiniteMagnitude)
         storage.beginEditing()
@@ -139,6 +183,9 @@ import UniformTypeIdentifiers
             // another code block widens the underlying text container.
             for block in style.textBlocks {
                 if let cell = block as? NSTextTableBlock {
+                    if seen.insert(ObjectIdentifier(cell.table)).inserted {
+                        tables.append((cell.table, cell.table.value(for: .width), cell.table.valueType(for: .width)))
+                    }
                     cell.table.setValue(viewportWidth, type: .absoluteValueType, for: .width)
                 }
             }
@@ -149,8 +196,7 @@ import UniformTypeIdentifiers
                 // Keep TextKit's regular line fragments for multiline code.
                 // The container is widened for the code; the view clips the viewport.
                 style.lineBreakMode = .byCharWrapping
-                if let font = storage.attribute(.font, at: range.location, effectiveRange: nil) as? NSFont,
-                   let layout = layoutManager {
+                if let font = storage.attribute(.font, at: range.location, effectiveRange: nil) as? NSFont {
                     style.minimumLineHeight = ceil(layout.defaultLineHeight(for: font))
                 }
                 // Header and footer must not move with the code contents.
@@ -165,7 +211,7 @@ import UniformTypeIdentifiers
             storage.addAttribute(.paragraphStyle, value: style, range: range)
         }
         storage.endEditing()
-        positionCodeControls()
+        return tables
     }
 
     private func positionCodeControls() {
