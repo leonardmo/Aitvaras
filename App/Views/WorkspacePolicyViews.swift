@@ -256,6 +256,7 @@ struct WorkspaceBoundaryReviewView: View {
                 allowCodexFileRead: allowCodex && allowCodexFileRead,
                 allowClaudeFileRead: allowClaude && allowClaudeFileRead)
             if let id { model.activityReporter?.finish(id: id, state: .succeeded, outcome: "Project provider and read-only file settings saved") }
+            model.chatModel?.refreshResourceScope(projectID: projectID)
             model.refreshWorkspaces()
             NotificationCenter.default.post(name: .init("aitvaras.projectSettingsSaved"), object: projectID)
             finish()

@@ -80,8 +80,9 @@ public struct AgentComposerTrigger: Sendable, Equatable {
         if text.hasPrefix("/"), !text.contains(where: \.isWhitespace) {
             return .init(kind: .command, token: text)
         }
-        guard let token = text.split(whereSeparator: \.isWhitespace).last,
-              token.hasPrefix("@"), !token.contains("\""), text.hasSuffix(token) else { return nil }
+        let start = text.lastIndex(where: \.isWhitespace).map { text.index(after: $0) } ?? text.startIndex
+        let token = text[start...]
+        guard token.hasPrefix("@"), !token.contains("\"") else { return nil }
         return .init(kind: .file, token: String(token))
     }
     public func selecting(_ insertion: String, in text: String) -> String? {

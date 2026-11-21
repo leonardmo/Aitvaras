@@ -1,4 +1,5 @@
 import AppKit
+import UniformTypeIdentifiers
 
 /// A single selectable TextKit surface. Code stays in the same text storage;
 /// horizontal scrolling changes its paragraph indents, not its characters or
@@ -10,6 +11,11 @@ import AppKit
     public var forkEnabled = false
     public var edit: (() -> Void)?
     private var viewportWidth: CGFloat = 0
+    private var scope = ChatResourceScope()
+    private var images: [String: CGImage] = [:]
+    private var figuresEnabled = true
+    private var pointerTracking: NSTrackingArea?
+    private var figurePreview: NSPopover?
     private var offsets: [Int: CGFloat] = [:]
     private var codeWidths: [Int: CGFloat] = [:]
     private var controls: [Int: (NSButton, NSScroller)] = [:]
@@ -43,10 +49,19 @@ import AppKit
     public required init?(coder: NSCoder) { fatalError("Use init(frame:textContainer:)") }
     public override var intrinsicContentSize: NSSize { NSSize(width: NSView.noIntrinsicMetric, height: NSView.noIntrinsicMetric) }
 
-    public func update(_ source: String) {
+    public func update(_ source: String, resourceScope: ChatResourceScope = .init(),
+                       images: [String: CGImage] = [:], figuresEnabled: Bool = true) {
+        scope = resourceScope
+        self.images = images
+        self.figuresEnabled = figuresEnabled
+        refresh(source)
+    }
+
+    private func refresh(_ source: String) {
         let name = effectiveAppearance.bestMatch(from: [.darkAqua, .aqua])
         effectiveAppearance.performAsCurrentDrawingAppearance {
-            guard renderer.update(source, appearance: name), let storage = textStorage else { return }
+            guard renderer.update(source, appearance: name, resourceScope: scope, images: images,
+                                  figuresEnabled: figuresEnabled), let storage = textStorage else { return }
             let replacement = renderer.replacedRenderedRange
             let selection = selectedRange()
             storage.replaceCharacters(in: replacement, with: renderer.text.attributedSubstring(
@@ -66,7 +81,7 @@ import AppKit
 
     public override func viewDidChangeEffectiveAppearance() {
         super.viewDidChangeEffectiveAppearance()
-        update(renderer.source)
+        refresh(renderer.source)
     }
 
     public override func draw(_ dirtyRect: NSRect) {
@@ -142,7 +157,11 @@ import AppKit
                 if NSIntersectionRange(block.contentRange, range).length == 0 {
                     style.headIndent = 8; style.firstLineHeadIndent = 8; style.tailIndent = viewportWidth
                 }
-            } else { style.tailIndent = max(style.headIndent + 1, viewportWidth) }
+            } else {
+                let kind = storage.attribute(.chatBlockKind, at: range.location, effectiveRange: nil) as? String
+                let wide = !style.textBlocks.isEmpty || kind == "figure"
+                style.tailIndent = max(style.headIndent + 1, wide ? viewportWidth : min(620, viewportWidth))
+            }
             storage.addAttribute(.paragraphStyle, value: style, range: range)
         }
         storage.endEditing()
@@ -215,11 +234,75 @@ import AppKit
         super.scrollWheel(with: event)
     }
 
+    public override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+    public override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let pointerTracking { removeTrackingArea(pointerTracking) }
+        let area = NSTrackingArea(rect: .zero, options: [.inVisibleRect, .activeInKeyWindow, .mouseMoved, .mouseEnteredAndExited],
+                                  owner: self, userInfo: nil)
+        addTrackingArea(area)
+        pointerTracking = area
+    }
+
+    private func character(at event: NSEvent) -> Int? {
+        guard let textStorage, textStorage.length > 0, let layoutManager, let textContainer else { return nil }
+        let point = convert(event.locationInWindow, from: nil)
+        let origin = textContainerOrigin
+        let location = NSPoint(x: point.x - origin.x, y: point.y - origin.y)
+        let glyph = layoutManager.glyphIndex(for: location, in: textContainer)
+        guard glyph < layoutManager.numberOfGlyphs,
+              layoutManager.boundingRect(forGlyphRange: NSRange(location: glyph, length: 1), in: textContainer).contains(location)
+        else { return nil }
+        return layoutManager.characterIndexForGlyph(at: glyph)
+    }
+
+    private func link(at event: NSEvent) -> URL? {
+        guard let index = character(at: event) else { return nil }
+        return textStorage?.attribute(.link, at: index, effectiveRange: nil) as? URL
+    }
+
+    private func figure(at event: NSEvent) -> ChatFigureCell? {
+        guard let index = character(at: event),
+              let attachment = textStorage?.attribute(.attachment, at: index, effectiveRange: nil) as? NSTextAttachment
+        else { return nil }
+        return attachment.attachmentCell as? ChatFigureCell
+    }
+
+    public override func mouseMoved(with event: NSEvent) {
+        if let url = link(at: event) {
+            let destination = url.isFileURL ? url.path : url.absoluteString
+            if toolTip != destination { toolTip = destination }
+            NSCursor.pointingHand.set()
+        } else {
+            let caption = figure(at: event)?.caption
+            if toolTip != caption { toolTip = caption }
+            super.mouseMoved(with: event)
+        }
+    }
+
+    public override func mouseExited(with event: NSEvent) {
+        toolTip = nil
+        super.mouseExited(with: event)
+    }
+
     public override func menu(for event: NSEvent) -> NSMenu? {
         let menu = NSMenu(); menu.autoenablesItems = false
-        func item(_ title: String, _ action: Selector, enabled: Bool = true) {
+        func item(_ title: String, _ action: Selector, object: Any? = nil, enabled: Bool = true) {
             let value = NSMenuItem(title: title, action: action, keyEquivalent: "")
-            value.target = self; value.isEnabled = enabled; menu.addItem(value)
+            value.target = self; value.isEnabled = enabled; value.representedObject = object; menu.addItem(value)
+        }
+        if let url = link(at: event) {
+            item(url.isFileURL ? "Show in Finder" : "Open Link", #selector(openLink(_:)), object: url)
+            item("Copy Link", #selector(copyLink(_:)), object: url)
+            menu.addItem(.separator())
+        }
+        if let figure = figure(at: event) {
+            item("View Figure", #selector(viewFigure(_:)), object: figure)
+            item("Copy Image", #selector(copyFigure(_:)), object: figure)
+            item("Save as PNG…", #selector(saveFigure(_:)), object: figure)
+            item("Copy Source", #selector(copyFigureSource(_:)), object: figure)
+            menu.addItem(.separator())
         }
         item("Copy", #selector(copy(_:)))
         if quote != nil { item("Reply with quote", #selector(replyWithQuote(_:))) }
@@ -227,6 +310,56 @@ import AppKit
         if edit != nil { item("Edit & resend", #selector(editMessage(_:))) }
         return menu
     }
+
+    @objc private func openLink(_ sender: NSMenuItem) {
+        if let url = sender.representedObject as? URL { activateLink(url) }
+    }
+
+    @objc private func copyLink(_ sender: NSMenuItem) {
+        if let url = sender.representedObject as? URL { copyString(url.isFileURL ? url.path : url.absoluteString) }
+    }
+
+    @objc private func viewFigure(_ sender: NSMenuItem) {
+        guard let figure = sender.representedObject as? ChatFigureCell, let image = figure.image else { return }
+        let preview = NSPopover()
+        let view = NSImageView(image: image)
+        view.imageScaling = .scaleProportionallyUpOrDown
+        view.setAccessibilityLabel(figure.caption)
+        let controller = NSViewController()
+        controller.view = view
+        let limit = window?.contentView?.bounds.size ?? NSSize(width: 700, height: 500)
+        preview.contentSize = NSSize(width: min(720, limit.width * 0.9), height: min(540, limit.height * 0.8))
+        preview.contentViewController = controller
+        preview.behavior = .transient
+        figurePreview = preview
+        let position = convert(window?.mouseLocationOutsideOfEventStream ?? .zero, from: nil)
+        preview.show(relativeTo: NSRect(origin: position, size: .zero), of: self, preferredEdge: .maxY)
+    }
+
+    @objc private func copyFigure(_ sender: NSMenuItem) {
+        guard let figure = sender.representedObject as? ChatFigureCell, let image = figure.image else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.writeObjects([image])
+    }
+
+    @objc private func saveFigure(_ sender: NSMenuItem) {
+        guard let figure = sender.representedObject as? ChatFigureCell, let image = figure.image,
+              let tiff = image.tiffRepresentation, let png = NSBitmapImageRep(data: tiff)?.representation(using: .png, properties: [:]),
+              let window else { return }
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.png]
+        panel.nameFieldStringValue = "Figure.png"
+        panel.beginSheetModal(for: window) { response in
+            guard response == .OK, let url = panel.url else { return }
+            do { try png.write(to: url, options: .atomic) }
+            catch { NSApp.presentError(error) }
+        }
+    }
+
+    @objc private func copyFigureSource(_ sender: NSMenuItem) {
+        if let figure = sender.representedObject as? ChatFigureCell { copyString(figure.sourceText) }
+    }
+
     private func copyString(_ value: String) {
         NSPasteboard.general.clearContents(); NSPasteboard.general.setString(value, forType: .string)
     }
@@ -234,8 +367,19 @@ import AppKit
     @objc private func replyWithQuote(_ sender: Any?) { quote?(renderer.markdown(for: selectedRange())) }
     @objc private func forkFromHere(_ sender: Any?) { if forkEnabled { fork?() } }
     @objc private func editMessage(_ sender: Any?) { edit?() }
+    private func activateLink(_ url: URL) {
+        if url.isFileURL {
+            if let file = scope.fileURL(url.path(percentEncoded: true)) {
+                NSWorkspace.shared.activateFileViewerSelecting([file])
+            }
+        } else if let web = ChatResourceScope.webURL(url.absoluteString) {
+            NSWorkspace.shared.open(web)
+        }
+    }
+
     public func textView(_ textView: NSTextView, clickedOnLink link: Any, at charIndex: Int) -> Bool {
-        guard let url = link as? URL, ["https", "http", "mailto"].contains(url.scheme?.lowercased() ?? "") else { return true }
-        NSWorkspace.shared.open(url); return true
+        if let url = link as? URL { activateLink(url) }
+        else if let string = link as? String, let url = ChatResourceScope.webURL(string) { activateLink(url) }
+        return true
     }
 }

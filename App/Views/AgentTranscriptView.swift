@@ -5,6 +5,7 @@ import AitvarasAgents
 /// Each row keeps its identity as deltas arrive; details start collapsed.
 struct AgentTranscriptView: View {
     let entry: AgentTranscriptEntry
+    var streaming = false
     var quote: ((String?) -> Void)? = nil
     var fork: (() -> Void)? = nil
     var forkEnabled = false
@@ -154,11 +155,11 @@ struct AgentTranscriptView: View {
                 }
             } else {
                 if entry.kind == "assistant", let quote {
-                    ChatMarkdown(text: entry.text, quote: quote, fork: fork, forkEnabled: forkEnabled)
+                    ChatMarkdown(text: entry.text, quote: quote, fork: fork, forkEnabled: forkEnabled, streaming: streaming)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .accessibilityLabel(entry.text)
                 } else {
-                    ChatMarkdown(text: entry.text).frame(maxWidth: .infinity, alignment: .leading)
+                    ChatMarkdown(text: entry.text, streaming: streaming).frame(maxWidth: .infinity, alignment: .leading)
                         .accessibilityElement(children: .combine)
                         .accessibilityLabel(entry.text)
                 }

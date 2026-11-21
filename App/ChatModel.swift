@@ -124,7 +124,12 @@ final class ChatModel {
     private var sideQuestionTask: Task<Void, Never>?
     private var sideQuestionToken = UUID()
     private let signInCoordinator: ProviderSignIn
-    private var selection = ChatSelectionState()
+    @ObservationIgnored private var selection = ChatSelectionState()
+    private var selectionRevision = 0
+    private var draftRevision = 0
+    private(set) var resourceScope = ChatResourceScope()
+    private var selectedProjectID: UUID?
+    @ObservationIgnored private var hasPendingSend = false
     private(set) var newChatID = UUID()
     var newProjectID: UUID? { didSet { if newProjectID != oldValue { useWorktree = false; invalidateCommandCatalog() } } }
     var useWorktree = false
@@ -195,13 +200,13 @@ final class ChatModel {
         select(nil)
         for provider in [AgentProvider.local, .claude, .codex] { composerSelections[newChatID, provider] = .init() }
         newChatID = UUID(); newProjectID = projectID; useWorktree = false
-        selection.draft = ""
+        setVisibleDraft("")
         reloadProfiles()
         let savedChoice = (try? stores.value(forKey: "agent.lastProfile")).flatMap(AgentProviderChoice.init(id:))
         let saved = savedChoice?.provider ?? (try? stores.value(forKey: "agent.lastProvider")).flatMap(AgentProvider.init(rawValue:))
         if let savedChoice, savedChoice.provider == .claude, allChoices.contains(savedChoice) { claudeProfile = savedChoice.profile }
         else { claudeProfile = "default" }
-        selection.select(nil, provider: ChatSettings.newProvider(lastUsed: saved, localAvailable: localAvailable, statuses: statuses))
+        selectComposer(nil, provider: ChatSettings.newProvider(lastUsed: saved, localAvailable: localAvailable, statuses: statuses))
         snapshotInlineChoices(); syncSelectedStatus()
         error = nil; authProvider = nil
         try? loadSettings()
@@ -303,6 +308,7 @@ final class ChatModel {
         self.agentSetup = agentSetup
         self.autoContinue = autoContinue
         signInCoordinator = ProviderSignIn(persistence: stores)
+        hasPendingSend = (try? stores.pendingSend()) != nil
         gitActions = AgentGitActionCoordinator(persistence: stores, audit: { _ = try stores.record($0) })
         let registry = ForgeRegistry(environment: forgeEnvironment)
         forgeActions = AgentForgeActionCoordinator(persistence: stores, registry: registry, audit: { _ = try stores.record($0) })
@@ -331,26 +337,38 @@ final class ChatModel {
             }
         }
     }
-    var chatID: UUID? { selection.chatID }
-    var provider: AgentProvider { selection.provider }
-    private(set) var composerInsertionRevision = UUID()
-    func editDraft(_ value: String) {
-        if value != selection.draft { invalidatePending() }
-        selection.draft = value
+    var chatID: UUID? { _ = selectionRevision; return selection.chatID }
+    var provider: AgentProvider { _ = selectionRevision; return selection.provider }
+
+    private func selectComposer(_ id: UUID?, provider: AgentProvider) {
+        let previousDraft = selection.draft
+        selection.select(id, provider: provider)
+        selectionRevision &+= 1
+        if selection.draft != previousDraft { draftRevision &+= 1 }
     }
+
+    private(set) var composerInsertionRevision = UUID()
+    private func setVisibleDraft(_ value: String) {
+        guard value != selection.draft else { return }
+        selection.draft = value
+        draftRevision &+= 1
+    }
+
+    func editDraft(_ value: String) {
+        guard value != selection.draft else { return }
+        invalidatePending()
+        setVisibleDraft(value)
+    }
+
     var draft: String {
-        get { selection.draft }
+        get { _ = draftRevision; return selection.draft }
         set {
-            if newValue != selection.draft { invalidatePending() }
-            selection.draft = newValue
+            editDraft(newValue)
             composerInsertionRevision = UUID()
         }
     }
     var composerOwnerID: UUID { chatID ?? newChatID }
-    var currentProjectID: UUID? {
-        if let chatID { return try? stores.agentProjectID(chatID: chatID) }
-        return newProjectID
-    }
+    var currentProjectID: UUID? { chatID == nil ? newProjectID : selectedProjectID }
     var canAskSideQuestion: Bool {
         guard provider == .claude, !isBusy, let chatID,
               let session = try? stores.agentSession(chatID: chatID, provider: .claude) else { return false }
@@ -582,12 +600,14 @@ final class ChatModel {
         // View changes cancel a browser flow and invalidate its automatic send.
         if loginToken != nil { cancelSignIn() }
         if let pending = try? stores.pendingSend(), pending.session.chatID != id { invalidatePending() }
+        resourceScope = ChatResourceScope()
+        selectedProjectID = nil
         state = id.flatMap { sidebarStates[$0] }; error = nil; authProvider = nil; changes = nil; canDiscardChanges = false; branchStatus = nil; pushDisabledReason = "Refresh branch status first."; gitError = nil
         pullRequest = nil; pullRequestBinding = id.flatMap { try? stores.agentPullRequest(chatID: $0) }; pullRequestChecks = []; forgeError = nil; forgeDraft = nil; forgeKind = nil; forgeNeedsSignIn = false; forgeRefreshID = nil
         pullRequestCheckedAt = nil; pullRequestSignedIn = false
         do {
             let saved = try stores.value(forKey: id.map { "agent.provider.\($0.uuidString)" } ?? "agent.lastProvider")
-            selection.select(id, provider: saved.flatMap(AgentProvider.init(rawValue:)) ?? .local)
+            selectComposer(id, provider: saved.flatMap(AgentProvider.init(rawValue:)) ?? .local)
             claudeProfile = try id.map { try stores.selectedClaudeProfile(chatID: $0) } ?? "default"
             snapshotInlineChoices(); syncSelectedStatus()
             try loadSettings()
@@ -596,7 +616,7 @@ final class ChatModel {
                 if pending.expiresAt > .now, pending.session.choice == choice {
                     authProvider = provider; error = "Sign in to \(provider.rawValue.capitalized)"
                     armPendingExpiry(pending)
-                } else { try stores.savePendingSend(nil) }
+                } else { try clearPendingSend() }
             }
             guard let id else { return }
             subscription = Task { [weak self, manager] in
@@ -618,7 +638,7 @@ final class ChatModel {
         guard !isBusy, !creatingChat, signingIn == nil, value != choice, allChoices.contains(value) else { return }
         do {
             try stores.selectAgentChoice(value, chatID: chatID)
-            selection.select(chatID, provider: value.provider)
+            selectComposer(chatID, provider: value.provider)
             if value.provider == .claude { claudeProfile = value.profile }
             invalidatePending(); invalidateCommandCatalog(); dismissSideQuestion()
             try loadSettings(); error = nil; authProvider = nil
@@ -627,8 +647,21 @@ final class ChatModel {
         } catch { self.error = "Provider selection could not be saved." }
     }
 
+    func refreshResourceScope(projectID: UUID) {
+        guard let id = chatID, selectedProjectID == projectID else { return }
+        do {
+            let folders = try stores.workspaceFolders(projectID: projectID).map { URL(fileURLWithPath: $0.path) }
+            let worktree = try stores.agentWorktree(chatID: id)
+            let cwd = worktree?.cwdPath ?? folders.first?.path ?? fallbackDirectory(id).path
+            resourceScope = ChatResourceScope(directories: [URL(fileURLWithPath: cwd, isDirectory: true)] + folders)
+        } catch {
+            resourceScope = ChatResourceScope()
+        }
+    }
+
     private func loadSettings() throws {
         guard let id = chatID, let chat = try stores.workspaceChat(id: id) else {
+            resourceScope = ChatResourceScope()
             if settings[settingsKey] == nil {
                 settings[settingsKey] = AgentChatSession(chatID: newChatID, provider: provider, cwd: "/tmp",
                                                        model: newSessionModel, effort: provider == .claude ? claudeProfiles.first { $0.nativeProfile == claudeProfile }?.defaultEffort ?? "medium" : nil, providerProfile: choice.profile)
@@ -636,10 +669,12 @@ final class ChatModel {
             restoreModelSelection()
             return
         }
+        selectedProjectID = chat.projectID
         let folders = try stores.workspaceFolders(projectID: chat.projectID).map { URL(fileURLWithPath: $0.path) }
         let owned = try stores.agentWorktree(chatID: id)
         if try stores.requiresAgentWorktree(chatID: id), owned == nil { throw AgentGitError.creationFailed }
         let cwd = owned?.cwdPath ?? folders.first?.path ?? fallbackDirectory(id).path
+        resourceScope = ChatResourceScope(directories: [URL(fileURLWithPath: cwd, isDirectory: true)] + folders)
         // Refresh identities while retaining unsent choices (which are saved immediately).
         settings[settingsKey] = try stores.agentSession(chatID: id, choice: choice)
             ?? AgentChatSession(chatID: id, provider: provider, cwd: cwd,
@@ -885,7 +920,7 @@ final class ChatModel {
         }
         if chatID == nil, (try? stores.value(forKey: "agent.lastProvider")) == nil {
             let value = ChatSettings.newProvider(lastUsed: nil, localAvailable: localAvailable, statuses: statuses)
-            selection.select(nil, provider: value); try? loadSettings()
+            selectComposer(nil, provider: value); try? loadSettings()
         }
     }
     func loadModels() async {
@@ -987,7 +1022,7 @@ final class ChatModel {
                     session.model = chosenSettings.model; session.effort = chosenSettings.effort; session.mode = chosenSettings.mode
                     saveSettings(session)
                 }
-                selection.draft = text
+                setVisibleDraft(text)
                 composerSelections[created.id, chosenProvider] = composition
                 didCreateChat?(created.id)
             } catch {
@@ -995,7 +1030,7 @@ final class ChatModel {
                     // First Send owns this record even if git preparation failed.
                     // Keep its failed ownership evidence and never use the checkout.
                     select(created.id)
-                    selection.draft = text
+                    setVisibleDraft(text)
                     composerSelections[created.id, chosenProvider] = composition
                     didCreateChat?(created.id)
                 }
@@ -1034,7 +1069,11 @@ final class ChatModel {
             guard !stoppedSends.contains(input.id) else { return }
             // Verification also rejects failed/incomplete creation after restart.
             _ = try await gitActions.mapping(chatID: id)
-            session.instructions = try stores.workspaceContextPacket(chatID: id).promptText
+            let projectContext = try stores.workspaceContextPacket(chatID: id).promptText
+            let guidanceEnabled = AitvarasPreferences.current.object(forKey: ChatPresentation.preferenceKey) as? Bool ?? true
+            session.instructions = guidanceEnabled
+                ? [projectContext, ChatPresentation.instructions].filter { !$0.isEmpty }.joined(separator: "\n\n")
+                : projectContext
             session.sessionID = try stores.agentSession(chatID: id, choice: sentChoice)?.sessionID
             session.forkOrigin = try stores.agentSession(chatID: id, choice: sentChoice)?.forkOrigin
             guard !stoppedSends.contains(input.id) else { return }
@@ -1076,7 +1115,10 @@ final class ChatModel {
         // user entry owns the accepted text; a later draft is independent.
         let visibleDraft = selection.draft
         selection.clearDraft(chatID: chatID, ifUnchanged: input.text)
-        if selection.draft != visibleDraft { composerInsertionRevision = UUID() }
+        if selection.draft != visibleDraft {
+            draftRevision &+= 1
+            composerInsertionRevision = UUID()
+        }
         clearComposer(chatID: chatID, provider: provider, sent: input)
     }
     private func observe(_ state: ChatState) {
@@ -1116,6 +1158,7 @@ final class ChatModel {
             let pending = try PendingSend(inputID: inputID, text: attempt.input.text, session: session, accountID: attempt.accountID,
                                           hasAttachments: !attempt.input.attachments.isEmpty)
             try stores.savePendingSend(pending)
+            hasPendingSend = true
             armPendingExpiry(pending)
         } catch {
             self.error = showsComposerFailure(inputID: inputID) ? "Sign in to \(provider.rawValue.capitalized)" : nil
@@ -1209,10 +1252,17 @@ final class ChatModel {
             }
         }
     }
+    private func clearPendingSend() throws {
+        guard hasPendingSend else { return }
+        try stores.savePendingSend(nil)
+        hasPendingSend = false
+    }
+
     private func invalidatePending() {
+        guard hasPendingSend || loginToken != nil else { return }
+        if loginToken != nil { cancelSignIn(); return }
         pendingExpiry?.cancel(); pendingExpiry = nil
-        if loginToken != nil { cancelSignIn() }
-        do { try stores.savePendingSend(nil) }
+        do { try clearPendingSend() }
         catch { self.error = "The waiting message could not be cleared." }
     }
     func signIn(_ provider: AgentProvider) {
@@ -1250,6 +1300,7 @@ final class ChatModel {
                    let chat = try self.stores.workspaceChat(id: pending.session.chatID), chat.archivedAt == nil,
                    try self.stores.workspaceProject(id: chat.projectID)?.isVisible == true {
                     _ = try await self.signInCoordinator.consume(inputID: pending.inputID, turn: turn, session: session, accountID: self.statuses[provider]?.accountID)
+                    self.hasPendingSend = (try? self.stores.pendingSend()) != nil
                     try Task.checkCancellation()
                     guard self.loginToken == token, self.chatID == selectedChat, self.provider == provider else { return }
                     self.pendingExpiry?.cancel(); self.pendingExpiry = nil
@@ -1273,7 +1324,7 @@ final class ChatModel {
                     // Retry shares the original ID; manager atomically claims it once.
                     try await self.manager.resendPrepared(turnID: pending.inputID)
                     if self.handledFailures.contains(pending.inputID) { return }
-                } else { try self.stores.savePendingSend(nil) }
+                } else { try self.clearPendingSend() }
                 guard self.chatID == selectedChat else { return }
                 self.error = nil; self.authProvider = nil
             } catch {
@@ -1282,7 +1333,7 @@ final class ChatModel {
                 } else {
                     guard self.loginToken == token else { return }
                 }
-                try? self.stores.savePendingSend(nil)
+                try? self.clearPendingSend()
                 if (error as? ProviderSignInError) == .staleIntent {
                     self.error = nil; self.authProvider = nil
                 } else if let retriedInput {
@@ -1306,7 +1357,7 @@ final class ChatModel {
     func cancelSignIn() {
         pendingExpiry?.cancel(); pendingExpiry = nil
         loginToken = nil; loginTask?.cancel(); loginTask = nil; signingIn = nil; signingInChoice = nil
-        do { try stores.savePendingSend(nil); error = nil; authProvider = nil }
+        do { try clearPendingSend(); error = nil; authProvider = nil }
         catch { self.error = "The waiting message could not be cleared." }
     }
     func stop() async {

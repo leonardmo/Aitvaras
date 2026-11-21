@@ -97,6 +97,10 @@ public struct ChatState: Sendable, Equatable {
         tools = []; pendingCards = []; usage = nil; rateLimits = []; outcome = nil; isRunning = true
         hookEntryIDs = [:]; hooks = [:]; hookOrder = []; hookTools = [:]; finishedToolOrder = []; closedPreHookBatches = []; hookInferredDenials = []
     }
+    public func isStreaming(entryID: UUID) -> Bool {
+        isRunning && textIDs.values.contains(entryID)
+    }
+
     var partialOutput: String {
         entries.filter { textIDs.values.contains($0.id) }.map(\.text).joined(separator: "\n")
     }
