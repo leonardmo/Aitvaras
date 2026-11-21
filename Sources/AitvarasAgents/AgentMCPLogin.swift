@@ -1,11 +1,18 @@
 import Foundation
 
+public enum AgentMCPLoginError: LocalizedError, Sendable, Equatable {
+    case claudeAccountConnector
+
+    public var errorDescription: String? { "Manage this connector on claude.ai." }
+}
+
 /// Login output is transient. Only a validated browser URL crosses this boundary;
 /// raw output, URLs and provider-owned credentials never enter setup or audits.
 enum AgentMCPLogin {
     static func run(executable: URL, name: String, directory: URL, environment: [String: String],
                     timeout: Duration, onBrowserURL: @escaping @Sendable (URL) async -> Void) async throws {
         try Task.checkCancellation()
+        guard !AgentSetupServer.hasClaudeAccountName(name) else { throw AgentMCPLoginError.claudeAccountConnector }
         try AgentMCPConfiguration.validateName(name)
         // `mcp login` refuses a `.mcp.json` server the CLI itself has not
         // approved. Aitvaras keeps its approvals out of the CLI's files, and the

@@ -714,8 +714,10 @@ only for gateway-managed upstreams. Claude sign-in runs a managed
 pseudo-terminal keeps the CLI's loopback listener active, with cancellation
 and a five-minute limit. Only the validated browser URL is passed to the app.
 That command cannot receive the run's injected settings/config,
-so sign-in is offered for eligible repo and user/account servers; runtime-only
-app servers show a fixed unavailable reason. There is no Terminal fallback.
+so sign-in is offered for eligible repo and user servers. Runtime-only app
+servers show a fixed unavailable reason. Claude reports account connectors as
+`source: "claudeai"`. Those rows open the validated claude.ai connector settings
+page, where users connect and manage them. There is no Terminal fallback.
 Codex reports paginated `mcpServerStatus/list` and threadless startup updates,
 and uses `mcpServer/oauth/login` plus `mcpServer/oauthLogin/completed` for
 sign-in. Setup refreshes after sign-in. Per-project Codex MCP configuration,
@@ -1168,8 +1170,9 @@ such as Linear. The gateway does not call cloud LLM APIs.
   Sign-in starts in Settings → Connections. The app opens a validated HTTPS
   authorization URL and receives its one-time callback on IPv4 loopback.
   The callback listener expires after five minutes. This supersedes CLI-owned MCP OAuth only
-  for gateway-managed upstreams. D34 repo and user/account MCP login and
-  provider subscription login remain native. Existing native tokens are
+  for gateway-managed upstreams. D34 repo and user MCP login and provider
+  subscription login remain native. Claude account connectors are managed on
+  claude.ai. Existing native tokens are
   never imported. Names are prefixed, such as `linear_list_issues` and
   `memory_search`. Each connection sees its own catalog and receives MCP
   `notifications/tools/list_changed` when that catalog changes.

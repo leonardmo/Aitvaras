@@ -2,6 +2,7 @@ import Foundation
 import Darwin
 import Testing
 import GRDB
+import Synchronization
 import AitvarasCore
 import AitvarasStore
 @testable import AitvarasAgents
@@ -126,7 +127,14 @@ import AitvarasStore
         await setup.report(snapshot, projectID: chat.projectID, directory: fixture.directory.resolvingSymlinksInPath())
         let state = try await setup.state(projectID: chat.projectID, provider: .claude)
         #expect(state.servers.first { $0.name == "helper" }?.canSignIn == false)
-        #expect(state.servers.first { $0.name == "account-docs" }?.canSignIn == true)
+        let account = try #require(state.servers.first { $0.name == "account-docs" })
+        #expect(account.canManageOnClaudeAI)
+        #expect(!account.canSignIn)
+        await #expect(throws: AgentMCPLoginError.claudeAccountConnector) {
+            try await setup.signIn(projectID: chat.projectID, provider: .claude, rowID: account.id) { _ in
+                Issue.record("An account connector must never start native sign-in")
+            }
+        }
         await #expect(throws: AgentFailure.unsupported) {
             try await setup.signIn(projectID: chat.projectID, provider: .claude, rowID: "global.helper") { _ in }
         }
@@ -134,6 +142,74 @@ import AitvarasStore
         #expect(refreshed.servers.first { $0.name == "docs" }?.indicator == .connected)
         #expect(await backend.logins == ["docs"])
         #expect(try stores.activity(since: .distantPast).allSatisfy { !($0.detailJSON ?? "").contains("synthetic-browser-value") })
+    }
+
+    @Test func claudeStatusRoutesAccountConnectorsToBrowserSettings() async throws {
+        let fixture = try BackendExecutableFixture(timeoutSeconds: 12, script: #"""
+if sys.argv[3:5] == ['mcp', 'login']:
+    open('login-started', 'w').close()
+    sys.exit(9)
+claude_init()
+request = read()
+assert request['request']['subtype'] == 'mcp_status'
+servers = [
+    {'name': 'claude.ai Example Docs', 'status': 'needs-auth', 'source': 'claudeai'},
+    {'name': 'claude.ai Example Search', 'status': 'connected', 'source': 'claudeai'},
+    {'name': 'claude.ai Example Archive', 'status': 'needs-auth'},
+    {'name': 'claude.ai Example Plugin', 'status': 'needs-auth', 'source': 'plugin'},
+    {'name': 'example-native', 'status': 'needs-auth', 'source': 'user'},
+]
+emit({'type': 'control_response', 'response': {'subtype': 'success',
+      'request_id': request['request_id'], 'response': {'mcpServers': servers}}})
+open('done', 'w').close()
+assert sys.stdin.readline() == ''
+"""#)
+        defer { fixture.remove() }
+        let directory = fixture.directory.resolvingSymlinksInPath()
+        let stores = try inMemoryStores()
+        let chat = try setupProjectChat(stores, directory: directory)
+        let backend = ClaudeBackend(executable: fixture.executable, environment: fixture.environment)
+        let setup = coordinator(stores, SetupVault(), backend: backend)
+        let state = try await setup.refresh(projectID: chat.projectID, provider: .claude)
+        try fixture.assertComplete()
+
+        let docs = try #require(state.servers.first { $0.name == "claude.ai Example Docs" })
+        #expect(docs.source == .account && docs.sourceLabel == "Account")
+        #expect(docs.canManageOnClaudeAI && !docs.canSignIn)
+        #expect(docs.detail == "Connect on claude.ai")
+        let search = try #require(state.servers.first { $0.name == "claude.ai Example Search" })
+        #expect(search.indicator == .connected && search.canManageOnClaudeAI && !search.canSignIn)
+        #expect(search.detail == nil)
+        #expect(state.servers.first { $0.name == "claude.ai Example Archive" }?.source == .account)
+        #expect(state.servers.first { $0.name == "claude.ai Example Plugin" }?.source == .plugin)
+        let native = try #require(state.servers.first { $0.name == "example-native" })
+        #expect(native.canSignIn && !native.canManageOnClaudeAI)
+
+        let urls = Mutex<[URL]>([])
+        try await setup.manageClaudeAccountConnector(projectID: chat.projectID, rowID: docs.id) { url in
+            urls.withLock { $0.append(url) }
+        }
+        #expect(urls.withLock { $0.map(\.absoluteString) } == ["https://claude.ai/settings/connectors"])
+        let browserEvent = try #require(try stores.activity(since: .distantPast).first {
+            $0.summary == "Open Claude account connector settings"
+        })
+        #expect(!(browserEvent.detailJSON ?? "").contains("https://"))
+        await #expect(throws: AgentFailure.unsupported) {
+            try await setup.manageClaudeAccountConnector(projectID: chat.projectID, rowID: native.id) { _ in
+                Issue.record("A native MCP server must not open Claude account settings")
+            }
+        }
+        await #expect(throws: AgentMCPLoginError.claudeAccountConnector) {
+            try await backend.signInMCP(name: docs.name, directory: directory) { _ in
+                Issue.record("An account connector must never start native sign-in")
+            }
+        }
+        await #expect(throws: AgentMCPError.invalidName) {
+            try await backend.signInMCP(name: "example native", directory: directory) { _ in
+                Issue.record("An invalid server name must never start native sign-in")
+            }
+        }
+        #expect(!FileManager.default.fileExists(atPath: directory.appendingPathComponent("login-started").path))
     }
 
     @Test func setupEditAuditFailureRollsBackAndConcurrentIndependentEditsPreserveEachOther() async throws {
