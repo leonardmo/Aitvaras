@@ -94,8 +94,9 @@ public struct AgentSetupServerRow: Sendable, Equatable, Identifiable {
         }
     }
     public var canSignIn: Bool {
-        signInUnavailable == nil && [.needsSignIn, .approved, .unknown, .failed].contains(indicator)
+        !canManageOnClaudeAI && signInUnavailable == nil && [.needsSignIn, .approved, .unknown, .failed].contains(indicator)
     }
+    public var canManageOnClaudeAI: Bool { source == .account }
 }
 
 public struct AgentSetupState: Sendable, Equatable {
@@ -203,7 +204,7 @@ public actor AgentSetupCoordinator {
         }
         let names = Set(state.servers.map(\.name))
         for server in snapshot?.servers ?? [] where !names.contains(server.name) {
-            let source: AgentSetupServerRow.Source = server.source == "claudeai" ? .account : server.source == "plugin" ? .plugin : .user
+            let source: AgentSetupServerRow.Source = provider == .claude && server.isClaudeAccountConnector ? .account : server.source == "plugin" ? .plugin : .user
             state.servers.append(row(name: server.name, source: source, server: nil, snapshot: server, provider: provider))
         }
         do { _ = try AgentMCPResolver.prepare(directory: project.directory, setup: setup, globalServers: globals) }
@@ -234,8 +235,16 @@ public actor AgentSetupCoordinator {
             transport: server?.transport, fingerprint: fingerprint, canApprove: source == .repository && supported && !approved,
             canDeny: source == .repository, canRemove: source == .global || source == .project,
             isOffInProject: off, signInUnavailable: signInReason,
-            detail: remoteLocal ? "Local: stdio servers only" : detail ?? (status == .approved ? "Approved — starts with the next chat" : nil),
+            detail: remoteLocal ? "Local: stdio servers only" : detail ?? rowStatusDetail(source: source, status: status),
             repositorySource: repositorySource, isApproved: approved)
+    }
+
+    private func rowStatusDetail(source: AgentSetupServerRow.Source, status: AgentSetupServerRow.Indicator) -> String? {
+        switch (source, status) {
+        case (.account, .needsSignIn): "Connect on claude.ai"
+        case (_, .approved): "Approved — starts with the next chat"
+        default: nil
+        }
     }
 
     public func refresh(projectID: UUID, directory: URL? = nil, provider: AgentProvider, profile: String = "default") async throws -> AgentSetupState {
@@ -328,7 +337,9 @@ public actor AgentSetupCoordinator {
                        timeout: Duration = .seconds(300), onBrowserURL: @escaping @Sendable (URL) async -> Void) async throws -> AgentSetupState {
         let current = try await state(projectID: projectID, directory: directory, provider: provider, profile: profile)
         guard !closing else { throw AgentFailure.invalidTransition }
-        guard let row = current.servers.first(where: { $0.id == rowID }), row.canSignIn else { throw AgentFailure.unsupported }
+        guard let row = current.servers.first(where: { $0.id == rowID }) else { throw AgentFailure.unsupported }
+        guard !row.canManageOnClaudeAI else { throw AgentMCPLoginError.claudeAccountConnector }
+        guard row.canSignIn else { throw AgentFailure.unsupported }
         let backend = try scopedBackend(provider: provider, profile: profile)
         let project = try location(projectID: projectID, directory: directory)
         try await record("Sign in to MCP server", projectID: projectID, risk: .reversibleWrite)
@@ -355,6 +366,19 @@ public actor AgentSetupCoordinator {
             throw error
         }
         return try await refresh(projectID: projectID, directory: project.directory, provider: provider, profile: profile)
+    }
+
+    public func manageClaudeAccountConnector(projectID: UUID, directory: URL? = nil, profile: String = "default", rowID: String,
+                                             onBrowserURL: @escaping @Sendable (URL) async -> Void) async throws {
+        let current = try await state(projectID: projectID, directory: directory, provider: .claude, profile: profile)
+        guard !closing else { throw AgentFailure.invalidTransition }
+        guard current.servers.contains(where: { $0.id == rowID && $0.canManageOnClaudeAI }) else { throw AgentFailure.unsupported }
+        let url = URL(string: "https://claude.ai/settings/connectors")!
+        try ProviderSignIn.validate(url)
+        try await record("Open Claude account connector settings", projectID: projectID, risk: .read)
+        try Task.checkCancellation()
+        guard !closing else { throw AgentFailure.invalidTransition }
+        await onBrowserURL(url)
     }
 
     /// App shutdown awaits process cleanup, even if the settings view is open.

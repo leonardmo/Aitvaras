@@ -74,12 +74,20 @@ final class AgentSetupModel {
         signingIn = true
         perform {
             self.state = try await self.coordinator.signIn(projectID: projectID, directory: self.directory,
-                provider: self.provider, profile: self.claudeProfile, rowID: row.id) { url in
-                    guard !Task.isCancelled else { return }
-                    _ = await MainActor.run { NSWorkspace.shared.open(url) }
-                }
+                provider: self.provider, profile: self.claudeProfile, rowID: row.id, onBrowserURL: Self.openBrowserURL)
             self.didChange?()
         }
+    }
+    func manageOnClaudeAI(_ row: AgentSetupServerRow) {
+        guard provider == .claude, let projectID else { return }
+        perform {
+            try await self.coordinator.manageClaudeAccountConnector(projectID: projectID, directory: self.directory,
+                profile: self.claudeProfile, rowID: row.id, onBrowserURL: Self.openBrowserURL)
+        }
+    }
+    private nonisolated static func openBrowserURL(_ url: URL) async {
+        guard !Task.isCancelled else { return }
+        _ = await MainActor.run { NSWorkspace.shared.open(url) }
     }
     func cancel() {
         token = UUID(); loadToken = UUID(); operation?.cancel(); operation = nil
@@ -100,6 +108,7 @@ final class AgentSetupModel {
         case AgentMCPError.nameCollision: "An app server and a repo server have the same name. Choose a different name."
         case AgentMCPError.invalidApproval: "The repo server changed. Check now and approve the current definition."
         case AgentMCPError.invalidName: "Choose a unique server name using letters, numbers, dots, underscores or hyphens."
+        case let error as AgentMCPLoginError: error.localizedDescription
         case ProviderSignInError.timedOut: "Sign-in timed out. Try again."
         case AgentFailure.unsupported: "This provider does not report setup status here."
         case AgentFailure.notInstalled: "Install this provider to check its agent setup."

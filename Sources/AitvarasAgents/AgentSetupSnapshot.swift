@@ -7,6 +7,12 @@ public struct AgentSetupServer: Sendable, Equatable, Identifiable {
     public let source: String?
     public let authentication: String?
     public var id: String { name }
+    var isClaudeAccountConnector: Bool {
+        source == "claudeai" || (source == nil && Self.hasClaudeAccountName(name))
+    }
+    static func hasClaudeAccountName(_ name: String) -> Bool {
+        name.hasPrefix("claude.ai ")
+    }
     public init(name: String, status: Status, source: String? = nil, authentication: String? = nil) {
         self.name = name; self.status = status; self.source = source; self.authentication = authentication
     }

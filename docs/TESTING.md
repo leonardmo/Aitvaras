@@ -371,6 +371,8 @@ the native sessions created by this check.
 12. Check now must obtain MCP status through `mcp_status` without adding any
     prompt or message. Verify an approved unknown-status repo row has the
     approved explanation and Revoke approval; revoking must not create a denial.
+    Verify a Claude account connector awaiting auth shows Connect on claude.ai.
+    Manage on claude.ai opens the Claude connector settings in the browser.
     Confirm raw status `config` (which can contain secrets) never reaches the
     snapshot, transcript, store or audit. Check refresh during a running chat.
 13. While Claude waits on an approval, send a follow-up, then answer the card.

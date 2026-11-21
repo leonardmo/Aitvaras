@@ -87,29 +87,34 @@ private struct AgentSetupContent: View {
                     Text(reason).font(.caption).foregroundStyle(.secondary)
                 }
             }.frame(maxWidth: .infinity, alignment: .leading)
-            // A server waiting for OAuth gets a visible action, not only a menu item.
-            if row.indicator == .needsSignIn, row.canSignIn {
-                Button("Sign in") { setup.signIn(row) }
+            if row.canManageOnClaudeAI {
+                Button("Manage on claude.ai") { setup.manageOnClaudeAI(row) }
                     .disabled(setup.busy)
-                    .accessibilityIdentifier("agentSetup.signIn.\(row.name)")
-            }
-            Menu {
-                if row.isApproved { Button("Revoke approval") { setup.edit(.revoke(name: row.name)) } }
-                if row.canApprove, let fingerprint = row.fingerprint {
-                    Button("Approve") { setup.edit(.approve(name: row.name, fingerprint: fingerprint)) }
+                    .accessibilityIdentifier("agentSetup.manageOnClaudeAI.\(row.name)")
+            } else {
+                if row.indicator == .needsSignIn, row.canSignIn {
+                    Button("Sign in") { setup.signIn(row) }
+                        .disabled(setup.busy)
+                        .accessibilityIdentifier("agentSetup.signIn.\(row.name)")
                 }
-                if row.canDeny { Button("Deny") { setup.edit(.deny(name: row.name)) } }
-                Button("Sign in") { setup.signIn(row) }.disabled(!row.canSignIn)
-                    .help(row.signInUnavailable ?? "Sign in using the provider CLI")
-                if row.source == .global, setup.projectID != nil {
-                    Button(row.isOffInProject ? "On in this project" : "Off in this project") {
-                        setup.edit(.globalEnabled(name: row.name, enabled: row.isOffInProject))
+                Menu {
+                    if row.isApproved { Button("Revoke approval") { setup.edit(.revoke(name: row.name)) } }
+                    if row.canApprove, let fingerprint = row.fingerprint {
+                        Button("Approve") { setup.edit(.approve(name: row.name, fingerprint: fingerprint)) }
                     }
-                }
-                if row.canRemove { Button("Remove", role: .destructive) { setup.remove(row) } }
-            } label: { Image(systemName: "ellipsis.circle").accessibilityLabel("Actions for \(row.name)") }
-                .menuStyle(.borderlessButton).fixedSize().disabled(setup.busy)
-                .accessibilityIdentifier("agent.setup.server.\(row.id).actions")
+                    if row.canDeny { Button("Deny") { setup.edit(.deny(name: row.name)) } }
+                    Button("Sign in") { setup.signIn(row) }.disabled(!row.canSignIn)
+                        .help(row.signInUnavailable ?? "Sign in using the provider CLI")
+                    if row.source == .global, setup.projectID != nil {
+                        Button(row.isOffInProject ? "On in this project" : "Off in this project") {
+                            setup.edit(.globalEnabled(name: row.name, enabled: row.isOffInProject))
+                        }
+                    }
+                    if row.canRemove { Button("Remove", role: .destructive) { setup.remove(row) } }
+                } label: { Image(systemName: "ellipsis.circle").accessibilityLabel("Actions for \(row.name)") }
+                    .menuStyle(.borderlessButton).fixedSize().disabled(setup.busy)
+                    .accessibilityIdentifier("agent.setup.server.\(row.id).actions")
+            }
         }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("agent.setup.server.\(row.id)")
