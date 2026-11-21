@@ -1,5 +1,6 @@
 import Darwin
 import Foundation
+import CGatewayPTY
 
 public enum AgentProcessError: Error, Sendable, Equatable {
     case alreadyStarted, notStarted, launchFailed, closed, writeFailed
@@ -7,7 +8,7 @@ public enum AgentProcessError: Error, Sendable, Equatable {
 }
 
 /// One owned POSIX process group. A serial queue confines descriptors, framing,
-/// writes and lifecycle state; no pipe I/O blocks a cooperative executor.
+/// writes and lifecycle state; no descriptor I/O blocks a cooperative executor.
 public final class StreamingProcess: @unchecked Sendable {
     static let maximumLineBytes = 1_048_576
     static let maximumQueuedLines = 64
@@ -70,11 +71,16 @@ public final class StreamingProcess: @unchecked Sendable {
         _ = try start(suspended: false)
     }
 
-    func start(suspended: Bool) throws -> pid_t {
+    /// A terminal with merged output and no input forwarding.
+    func startInPTY(columns: UInt16) throws {
+        _ = try start(suspended: false, terminalColumns: columns)
+    }
+
+    func start(suspended: Bool, terminalColumns: UInt16? = nil) throws -> pid_t {
         try io.sync {
             guard !started else { throw AgentProcessError.alreadyStarted }
             started = true
-            do { try spawn(suspended: suspended) }
+            do { try spawn(suspended: suspended, terminalColumns: terminalColumns) }
             catch {
                 cleanupFailure = .launchFailed
                 finishStream(.launchFailed)
@@ -92,11 +98,43 @@ public final class StreamingProcess: @unchecked Sendable {
         }
     }
 
-    private func spawn(suspended: Bool) throws {
+    private func spawn(suspended: Bool, terminalColumns: UInt16?) throws {
         guard executable.isFileURL, executable.path.hasPrefix("/"),
               !([executable.path] + arguments + [directory?.path ?? ""]).contains(where: { $0.contains("\0") }),
               environment.allSatisfy({ !$0.key.isEmpty && !$0.key.contains("=") && !$0.key.contains("\0") && !$0.value.contains("\0") })
         else { throw AgentProcessError.launchFailed }
+        let argv = ([executable.path] + arguments).map { strdup($0) } + [nil]
+        let env = environment.sorted { $0.key < $1.key }.map { strdup("\($0.key)=\($0.value)") } + [nil]
+        defer { for pointer in argv + env { free(pointer) } }
+        guard argv.dropLast().allSatisfy({ $0 != nil }), env.dropLast().allSatisfy({ $0 != nil }) else {
+            throw AgentProcessError.launchFailed
+        }
+        try argv.withUnsafeBufferPointer { args in
+            try env.withUnsafeBufferPointer { variables in
+                if let terminalColumns {
+                    var master: Int32 = -1
+                    pid = aitvaras_spawn_pty(executable.path, args.baseAddress!, variables.baseAddress!,
+                        directory?.path, terminalColumns, &master)
+                    guard pid > 0 else { throw AgentProcessError.launchFailed }
+                    stdoutSource = reader(master, stderr: false, terminal: true)
+                } else {
+                    try spawnWithPipes(suspended: suspended, args: args.baseAddress!, environment: variables.baseAddress!)
+                }
+            }
+        }
+        // A blocking waitpid on a global queue consumes one worker for
+        // every live child. Those workers also deliver its output events.
+        // Poll on the I/O queue so even a child that exited during spawn
+        // can be reaped without relying on a newly registered exit event.
+        let reaper = DispatchSource.makeTimerSource(queue: io)
+        reaper.schedule(deadline: .now(), repeating: .milliseconds(25), leeway: .milliseconds(10))
+        reaper.setEventHandler { [self] in reap() }
+        reapSource = reaper
+        reaper.activate()
+    }
+
+    private func spawnWithPipes(suspended: Bool, args: UnsafePointer<UnsafeMutablePointer<CChar>?>,
+                                environment: UnsafePointer<UnsafeMutablePointer<CChar>?>) throws {
         var descriptors: [Int32] = []
         defer { for fd in descriptors where fd >= 0 { Darwin.close(fd) } }
         for _ in 0..<3 {
@@ -128,29 +166,12 @@ public final class StreamingProcess: @unchecked Sendable {
             guard fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK) != -1 else { throw AgentProcessError.launchFailed }
         }
         guard fcntl(descriptors[1], F_SETNOSIGPIPE, 1) != -1 else { throw AgentProcessError.launchFailed }
-        let argv = ([executable.path] + arguments).map { strdup($0) } + [nil]
-        let env = environment.sorted { $0.key < $1.key }.map { strdup("\($0.key)=\($0.value)") } + [nil]
-        defer { for pointer in argv + env { free(pointer) } }
-        let result = argv.withUnsafeBufferPointer { args in
-            env.withUnsafeBufferPointer { variables in
-                posix_spawn(&pid, executable.path, &actions, &attributes, args.baseAddress!, variables.baseAddress!)
-            }
-        }
-        try check(result)
+        try check(posix_spawn(&pid, executable.path, &actions, &attributes, args, environment))
         input = descriptors[1]
         stdoutSource = reader(descriptors[2], stderr: false)
         stderrSource = reader(descriptors[4], stderr: true)
         // Dispatch sources own the read ends; this queue owns the write end.
         for index in [1, 2, 4] { descriptors[index] = -1 }
-        // A blocking waitpid on a global queue consumes one worker for
-        // every live child. Those workers also deliver its pipe events.
-        // Poll on the I/O queue so even a child that exited during spawn
-        // can be reaped without relying on a newly registered exit event.
-        let reaper = DispatchSource.makeTimerSource(queue: io)
-        reaper.schedule(deadline: .now(), repeating: .milliseconds(25), leeway: .milliseconds(10))
-        reaper.setEventHandler { [self] in reap() }
-        reapSource = reaper
-        reaper.activate()
     }
 
     private func reap() {
@@ -163,19 +184,21 @@ public final class StreamingProcess: @unchecked Sendable {
         didExit(code)
     }
 
-    private func reader(_ fd: Int32, stderr: Bool) -> DispatchSourceRead {
+    private func reader(_ fd: Int32, stderr: Bool, terminal: Bool = false) -> DispatchSourceRead {
         let source = DispatchSource.makeReadSource(fileDescriptor: fd, queue: io)
-        source.setEventHandler { [weak self] in self?.read(fd, stderr: stderr) }
+        source.setEventHandler { [weak self] in self?.read(fd, stderr: stderr, terminal: terminal) }
         source.setCancelHandler { Darwin.close(fd) }
         source.resume()
         return source
     }
 
-    private func read(_ fd: Int32, stderr: Bool) {
+    private func read(_ fd: Int32, stderr: Bool, terminal: Bool) {
         var bytes = [UInt8](repeating: 0, count: 16_384)
         // Yield the queue under continuous output so writes/Stop cannot starve.
         for _ in 0..<32 {
-            let count = bytes.withUnsafeMutableBytes { Darwin.read(fd, $0.baseAddress, $0.count) }
+            var count = bytes.withUnsafeMutableBytes { Darwin.read(fd, $0.baseAddress, $0.count) }
+            // macOS can report PTY hangup as EIO.
+            if terminal && count == -1 && errno == EIO { count = 0 }
             if count < 0 {
                 if errno == EINTR { continue }
                 if errno == EAGAIN { return }

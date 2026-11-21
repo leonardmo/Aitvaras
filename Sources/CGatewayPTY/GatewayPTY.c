@@ -52,12 +52,14 @@ static void child_setup_failed(int report) {
 }
 
 static pid_t start_pty(const char *path, char *const argv[], char *const envp[],
-                       int *master, struct termios *terminal, int input,
+                       int *master, struct termios *terminal, struct winsize *window,
+                       int input, const char *directory, int descriptor_limit,
                        const sigset_t *child_mask) {
-    struct winsize window = {0};
-    ioctl(input, TIOCGWINSZ, &window);
     int slave;
-    if (openpty(master, &slave, NULL, terminal, &window) < 0) return -1;
+    if (openpty(master, &slave, NULL, terminal, window) < 0) return -1;
+    if (fcntl(*master, F_SETFD, FD_CLOEXEC) < 0 || fcntl(*master, F_SETFL, O_NONBLOCK) < 0) {
+        int code = errno; close(slave); errno = code; return -1;
+    }
     int report[2];
     if (pipe(report) < 0) {
         int code = errno; close(slave); errno = code; return -1;
@@ -84,12 +86,18 @@ static pid_t start_pty(const char *path, char *const argv[], char *const envp[],
         }
         if (slave > STDERR_FILENO) close(slave);
         if (input > STDERR_FILENO) close(input);
+        // The app can have unrelated live transports. Keep their descriptors
+        // out of the login child even if they were opened without CLOEXEC.
+        for (int fd = STDERR_FILENO + 1; fd < descriptor_limit; ++fd) {
+            if (fd != report[1]) close(fd);
+        }
         for (int signum = 1; signum < NSIG; ++signum) {
             if (signum != SIGKILL && signum != SIGSTOP &&
                 sigaction(signum, &defaults, NULL) < 0 && errno != EINVAL)
                 child_setup_failed(report[1]);
         }
         if (sigprocmask(SIG_SETMASK, child_mask, NULL) < 0) child_setup_failed(report[1]);
+        if (directory && chdir(directory) < 0) child_setup_failed(report[1]);
         execve(path, argv, envp);
         child_setup_failed(report[1]);
     }
@@ -113,10 +121,31 @@ static pid_t start_pty(const char *path, char *const argv[], char *const envp[],
     return child;
 }
 
+pid_t aitvaras_spawn_pty(const char *path, char *const argv[], char *const envp[],
+                         const char *directory, unsigned short columns, int *master) {
+    struct winsize window = {.ws_row = 24, .ws_col = columns};
+    sigset_t child_mask;
+    sigemptyset(&child_mask);
+    *master = -1;
+    pid_t child = start_pty(path, argv, envp, master, NULL, &window, -1,
+                            directory, getdtablesize(), &child_mask);
+    if (child < 0 && *master >= 0) {
+        int code = errno;
+        close(*master);
+        *master = -1;
+        errno = code;
+    }
+    return child;
+}
+
 static pid_t start_child(const char *path, char *const argv[], char *const envp[],
                          int interactive, int *master, struct termios *terminal, int input,
                          const sigset_t *child_mask) {
-    if (interactive) return start_pty(path, argv, envp, master, terminal, input, child_mask);
+    if (interactive) {
+        struct winsize window = {0};
+        ioctl(input, TIOCGWINSZ, &window);
+        return start_pty(path, argv, envp, master, terminal, &window, input, NULL, 0, child_mask);
+    }
 
     posix_spawnattr_t attributes;
     int rc = posix_spawnattr_init(&attributes);
@@ -206,8 +235,7 @@ int aitvaras_supervise(const char *path, char *const argv[], char *const envp[],
     child = start_child(path, argv, envp, interactive, &master, &saved, input, &child_mask);
     if (child < 0) { error = errno; goto restore_pipe; }
     if (interactive) {
-        if (fcntl(master, F_SETFD, FD_CLOEXEC) < 0 || fcntl(master, F_SETFL, O_NONBLOCK) < 0 ||
-            tcsetattr(input, TCSANOW, &raw) < 0) { error = errno; goto restore_pipe; }
+        if (tcsetattr(input, TCSANOW, &raw) < 0) { error = errno; goto restore_pipe; }
         was_raw = 1;
     }
     sigprocmask(SIG_SETMASK, &active_mask, NULL);

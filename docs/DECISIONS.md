@@ -710,9 +710,10 @@ For native MCP, OAuth credentials remain in the provider CLI's credential store,
 like its account login. Aitvaras never reads or stores those tokens.
 [D42](#d42--one-mcp-gateway-for-agent-clis--2026-11-19) supersedes this
 only for gateway-managed upstreams. Claude sign-in runs a managed
-`claude mcp login -- <name>` in the project directory,
-with cancellation and a five-minute limit. Its validated browser URL is
-transient. That command cannot receive the run's injected settings/config,
+`claude mcp login -- <name>` in the project directory. A managed
+pseudo-terminal keeps the CLI's loopback listener active, with cancellation
+and a five-minute limit. Only the validated browser URL is passed to the app.
+That command cannot receive the run's injected settings/config,
 so sign-in is offered for eligible repo and user/account servers; runtime-only
 app servers show a fixed unavailable reason. There is no Terminal fallback.
 Codex reports paginated `mcpServerStatus/list` and threadless startup updates,

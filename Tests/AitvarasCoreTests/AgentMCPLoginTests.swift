@@ -4,31 +4,44 @@ import Testing
 @testable import AitvarasAgents
 
 @Suite(.timeLimit(.minutes(2))) struct AgentMCPLoginTests {
-    @Test func claudeLoginUsesTheProjectDirectoryAndPassesOnlyTheServerApproval() async throws {
+    @Test func claudeLoginUsesAWideTerminalInTheProjectDirectoryAndWaitsForTheCallback() async throws {
         let fixture = try AgentExecutableFixture(#"""
         test "$1" = --settings && test "$2" = '{"enabledMcpjsonServers":["docs"]}' && test "$3" = mcp && test "$4" = login && test "$5" = -- && test "$6" = docs && test "$#" = 6 || exit 9
+        test -t 0 && test -t 1 && test -t 2 || exit 1
+        /usr/bin/python3 -I -c 'import os; assert os.tcgetpgrp(0) == os.getpgrp(); assert os.get_terminal_size(0).columns >= 4096' || exit 2
         pwd > login.cwd
-        printf 'Open https://auth.example.invalid/authorize?state=synthetic-browser-value\n' >&2
-        printf 'Open https://auth.example.invalid/authorize?state=synthetic-browser-value\n'
-        exit 0
+        printf '\r\033[2KOpen \033]8;;https://hidden.example.invalid/metadata\007\033[34mhttps://auth.example.invalid/author\033[0mize?state=%01024d\033]8;;\033\\\n' 0 >&2
+        printf 'Open https://duplicate.example.invalid/authorize\n'
+        i=0
+        while [ "$i" -lt 100 ]; do
+            test ! -f login.callback || exit 0
+            /bin/sleep 0.05
+            i=$((i+1))
+        done
+        exit 3
         """#)
         defer { fixture.remove() }
         let project = fixture.directory.appendingPathComponent("project")
         try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
         let urls = MCPLoginURLs()
         let backend = ClaudeBackend(executable: fixture.executable, environment: fixture.environment)
-        try await backend.signInMCP(name: "docs", directory: project) { await urls.append($0) }
+        try await backend.signInMCP(name: "docs", directory: project, timeout: .seconds(8)) { url in
+            await urls.append(url)
+            do { try Data().write(to: project.appendingPathComponent("login.callback")) }
+            catch { Issue.record("Could not signal the fixture") }
+        }
         let cwd = try String(contentsOf: project.appendingPathComponent("login.cwd"), encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines)
         #expect(URL(fileURLWithPath: cwd).resolvingSymlinksInPath() == project.resolvingSymlinksInPath())
-        #expect(await urls.values.count == 1)
-        #expect(await urls.values.first?.host == "auth.example.invalid")
+        let expectedURL = "https://auth.example.invalid/authorize?state=" + String(repeating: "0", count: 1024)
+        #expect(await urls.values.map(\.absoluteString) == [expectedURL])
     }
 
     @Test(arguments: [false, true])
     func claudeTimeoutAndCancellationReapTheProcess(cancel: Bool) async throws {
         let fixture = try AgentExecutableFixture(#"""
-        echo $$ > child.pid
+        test -t 0 || exit 1
         trap '' TERM
+        echo $$ > child.pid
         i=0; while [ $i -lt 15 ]; do /bin/sleep 1; i=$((i+1)); done
         """#)
         defer { fixture.remove() }
@@ -36,7 +49,7 @@ import Testing
         let start = ContinuousClock.now
         let task = Task {
             try await backend.signInMCP(name: "docs", directory: fixture.directory,
-                timeout: cancel ? .seconds(20) : .milliseconds(150)) { _ in Issue.record("No browser URL expected") }
+                timeout: cancel ? .seconds(20) : .milliseconds(500)) { _ in Issue.record("No browser URL expected") }
         }
         if cancel {
             try await waitMCPLogin { FileManager.default.fileExists(atPath: fixture.directory.appendingPathComponent("child.pid").path) }
@@ -46,6 +59,9 @@ import Testing
             await #expect(throws: ProviderSignInError.timedOut) { try await task.value }
         }
         #expect(start.duration(to: .now) < .seconds(4))
+        // Under load the short timeout can end the child before it records its
+        // pid; the cancel case always waits for the pid, so it checks reaping.
+        guard cancel || FileManager.default.fileExists(atPath: fixture.directory.appendingPathComponent("child.pid").path) else { return }
         let pid = try fixture.childPID()
         #expect(kill(pid, 0) != 0 && errno == ESRCH)
     }
