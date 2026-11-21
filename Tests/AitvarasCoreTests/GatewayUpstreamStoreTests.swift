@@ -30,6 +30,7 @@ import AitvarasAgents
         let account = try stores.gatewayUpstream(id: legacy.id).account
         #expect(!account.trusted)
         #expect(account.isGlobalDefault && account.label == nil)
+        #expect(account.authKind == .oauth && account.headerName == nil)
     }
 
     @Test func addAccountProvisionsDefinitionAndAssignmentTogether() throws {
@@ -143,8 +144,10 @@ import AitvarasAgents
     @Test func gatewayDefinitionIsExcludedFromNativeConfigAndCannotHoldStaticCredentials() throws {
         let directory = FileManager.default.temporaryDirectory
         let legacy = AgentMCPServer(command: "echo")
-        let resolution = try AgentMCPResolver.prepare(directory: directory, setup: .init(localMayUseMCP: true),
-                                                     globalServers: ["linear": linear, "legacy": legacy])
+        let fixed = AgentMCPServer(transport: .http, url: linear.url, management: .gatewayStaticHeader)
+        let resolution = try AgentMCPResolver.prepare(directory: directory,
+            setup: .init(projectServers: ["legacy": fixed], localMayUseMCP: true),
+            globalServers: ["linear": linear, "fixed": fixed, "legacy": legacy])
         #expect(resolution.claudeServers == ["legacy": legacy])
         #expect(resolution.localServers == ["legacy": legacy])
         let invalid = AgentMCPServer(transport: .http, url: linear.url, headers: [

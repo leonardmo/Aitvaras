@@ -37,9 +37,10 @@ See the [G1 checks](TESTING.md#agent-mcp-gateway-d42).
 
 ### G2 — Gateway breadth 💡
 
-Add opencode, bearer/header upstreams, user-registered OAuth clients such
-as Slack, and per-tool risk controls. Desktop apps and Cursor stay out of
-scope.
+- ✅ Fixed-token upstreams (#51) support Bearer or custom headers, account
+  routing, trust and replacement from Settings → Connections.
+- 💡 Add opencode, user-registered OAuth clients such as Slack, and
+  per-tool risk controls. Desktop apps and Cursor stay out of scope.
 
 ## Historical roadmap and implementation record
 

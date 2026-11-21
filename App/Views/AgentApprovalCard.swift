@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 import AitvarasAgent
 import AitvarasAgents
 
@@ -79,6 +80,7 @@ struct AgentApprovalSuggestionsView: View {
 
 /// Both surfaces render the same one-shot request IDs from the app's broker.
 struct GatewayAttentionCards: View {
+    @Environment(\.openWindow) private var openWindow
     @Environment(AppModel.self) private var model
 
     var body: some View {
@@ -105,15 +107,25 @@ struct GatewayAttentionCards: View {
         }
         ForEach(model.gatewaySignInRequests) { request in
             VStack(alignment: .leading, spacing: 8) {
-                Text("Sign in to \(request.server) in Aitvaras").font(.callout.weight(.semibold))
-                if model.gatewaySigningIn == request.id {
-                    Button("Cancel") { model.cancelGatewaySignIn() }
+                if request.authKind == .staticHeader {
+                    Text(request.tokenRejected ? "Token rejected by \(request.server)" : "\(request.server) needs a token")
+                        .font(.callout.weight(.semibold))
+                    Button(request.tokenRejected ? "Replace token in Settings" : "Add token in Settings") {
+                        model.gatewayTokenAccountToEdit = request.id
+                        openWindow(id: "main")
+                        NSApp.activate(ignoringOtherApps: true)
+                    }
                 } else {
-                    Button("Sign in") { model.startGatewaySignIn(request.id) }
-                        .disabled(model.gatewaySigningIn != nil)
-                }
-                if let error = model.gatewaySignInError {
-                    Text(error).font(.caption).foregroundStyle(.secondary)
+                    Text("Sign in to \(request.server) in Aitvaras").font(.callout.weight(.semibold))
+                    if model.gatewaySigningIn == request.id {
+                        Button("Cancel") { model.cancelGatewaySignIn() }
+                    } else {
+                        Button("Sign in") { model.startGatewaySignIn(request.id) }
+                            .disabled(model.gatewaySigningIn != nil)
+                    }
+                    if let error = model.gatewaySignInError {
+                        Text(error).font(.caption).foregroundStyle(.secondary)
+                    }
                 }
             }
             .padding(12).frame(width: 308, alignment: .leading)

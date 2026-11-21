@@ -2,6 +2,7 @@ import Darwin
 import Foundation
 import XCTest
 import AitvarasAgents
+import AitvarasStore
 @testable import AitvarasAgent
 
 final class GatewayOAuthHostTests: XCTestCase {
@@ -47,6 +48,58 @@ final class GatewayOAuthHostTests: XCTestCase {
             let exit = try await process.waitForExit()
             XCTAssertEqual(exit, 0)
         } catch {
+            try? await process.shutdown(grace: .zero)
+            throw error
+        }
+    }
+
+    @MainActor
+    func testLoopbackStaticHeaderUpstreams() async throws {
+        try Self.requireLoopback()
+        let token = UUID().uuidString
+        let process = StreamingProcess(executable: URL(fileURLWithPath: "/usr/bin/python3"),
+            arguments: ["-I", "-c", Self.staticServer], currentDirectory: nil)
+        try process.start()
+        do {
+            try await process.write(line: token)
+            process.closeInput()
+            var lines = process.lines.makeAsyncIterator()
+            let first = try await lines.next()
+            let port = try XCTUnwrap(first.flatMap(Int.init))
+            let http = GatewayHTTPClient.make()
+            let sessions = GatewayUpstreamSessions(secrets: StaticTestVault().adapter, send: { request, id in
+                // Keep production HTTPS validation and inject only the fixture's transport destination.
+                var local = request
+                local.url = URL(string: "http://127.0.0.1:\(port)" + (request.url?.path ?? ""))
+                return try await http(local, id)
+            })
+            let stores = try inMemoryStores()
+            for (name, path, header, valid) in [
+                ("default", "/mcp", nil as String?, true),
+                ("wrong", "/mcp", nil, false),
+                ("custom", "/custom", "X-API-Key", true)
+            ] {
+                let account = try await sessions.addStaticUpstream(stores: stores, serverName: name, label: "Example",
+                    endpoint: "https://mcp.example.invalid" + path, projectID: nil, headerName: header,
+                    token: valid ? token : UUID().uuidString)
+                let route = try stores.gatewayUpstream(id: account.id)
+                let tools = try await sessions.catalog(route)
+                let tool = try XCTUnwrap(tools.first)
+                if valid {
+                    let result = try await sessions.call(route, tool: tool, arguments: .object([:]))
+                    let matches = result.content.first?["text"] == .string("Loopback issue")
+                    XCTAssertTrue(matches)
+                } else {
+                    do {
+                        _ = try await sessions.call(route, tool: tool, arguments: .object([:]))
+                        XCTFail("Expected a rejected token.")
+                    } catch MCPGatewayCallError.tokenRejected {}
+                }
+            }
+            let exit = try await process.waitForExit()
+            XCTAssertEqual(exit, 0)
+        } catch {
+            process.closeInput()
             try? await process.shutdown(grace: .zero)
             throw error
         }
@@ -102,5 +155,54 @@ with http.server.HTTPServer(('127.0.0.1', 0), Upstream) as server:
     server.timeout = 5
     print(server.server_port, flush=True)
     server.handle_request()
+"""#
+
+    private static let staticServer = #"""
+import http.server, json, signal, sys
+signal.signal(signal.SIGALRM, signal.SIG_DFL)
+signal.pthread_sigmask(signal.SIG_UNBLOCK, {signal.SIGALRM})
+signal.alarm(15)
+token = sys.stdin.readline().rstrip('\n')
+
+class Upstream(http.server.BaseHTTPRequestHandler):
+    def log_message(self, *_):
+        pass
+
+    def do_POST(self):
+        if self.path == '/custom':
+            authorized = self.headers.get('X-API-Key') == token and 'Authorization' not in self.headers
+        else:
+            authorized = self.path == '/mcp' and self.headers.get('Authorization') == 'Bearer ' + token
+        if not authorized:
+            self.send_response(401)
+            self.send_header('WWW-Authenticate', 'Bearer')
+            self.end_headers()
+            return
+        request = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
+        method = request['method']
+        if method == 'initialize':
+            result = {'protocolVersion': '2025-06-18', 'capabilities': {'tools': {}}}
+        elif method == 'notifications/initialized':
+            self.send_response(202)
+            self.end_headers()
+            return
+        elif method == 'tools/list':
+            result = {'tools': [{'name': 'list_issues', 'inputSchema': {'type': 'object'}}]}
+        elif method == 'tools/call':
+            result = {'content': [{'type': 'text', 'text': 'Loopback issue'}]}
+        else:
+            self.send_error(400)
+            return
+        body = json.dumps({'jsonrpc': '2.0', 'id': request['id'], 'result': result}).encode()
+        self.send_response(200)
+        self.send_header('Content-Type', 'application/json')
+        self.send_header('Content-Length', str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+with http.server.HTTPServer(('127.0.0.1', 0), Upstream) as server:
+    print(server.server_port, flush=True)
+    for _ in range(9):
+        server.handle_request()
 """#
 }

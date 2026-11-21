@@ -124,6 +124,7 @@ public struct MCPGatewayToolResult: Sendable, Equatable {
 
 public enum MCPGatewayCallError: Error, Sendable, Equatable {
     case invalidArguments, invalidResult, denied, timedOut, unavailable, stale, needsSignIn
+    case needsToken, tokenRejected
     case failed, outcomeUnknown, auditUnavailable, completedWithoutAudit
 
     var message: String {
@@ -135,6 +136,8 @@ public enum MCPGatewayCallError: Error, Sendable, Equatable {
         case .unavailable: "This tool is unavailable."
         case .stale: "The tool or launch changed. List tools again."
         case .needsSignIn: "This upstream needs sign-in in Aitvaras."
+        case .needsToken: "Add a token in Settings → Connections."
+        case .tokenRejected: "Token rejected, update it in Settings → Connections."
         case .failed: "The tool failed."
         case .outcomeUnknown: "The write outcome is unknown. Do not retry automatically."
         case .auditUnavailable: "Aitvaras could not record the action. The tool was not run."
