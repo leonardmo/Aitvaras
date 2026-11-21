@@ -36,6 +36,9 @@ enum GatewayHTTPClient {
                 let headers = response.allHeaderFields.reduce(into: [String: String]()) { fields, pair in
                     if let name = pair.key as? String, let value = pair.value as? String { fields[name.lowercased()] = value }
                 }
+                if [401, 403].contains(response.statusCode) {
+                    return .init(status: response.statusCode, headers: headers, body: Data())
+                }
                 var body = Data(), event = Data()
                 let sse = headers["content-type"]?.lowercased().hasPrefix("text/event-stream") == true
                 // A notification can return a streaming acknowledgement. No reply ID is expected.
@@ -250,14 +253,18 @@ struct GatewayOAuth: Sendable {
     }
 
     static func rpc(_ endpoint: URL, method: String, id: JSONValue?, params: JSONValue?,
-                    authorization: String?, sessionID: String? = nil, version: String? = nil) -> URLRequest {
+                    authorization: String?, headerName: String? = nil,
+                    sessionID: String? = nil, version: String? = nil) -> URLRequest {
         var body: [String: JSONValue] = ["jsonrpc": .string("2.0"), "method": .string(method)]
         body["id"] = id; body["params"] = params
         var request = URLRequest(url: endpoint)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("application/json, text/event-stream", forHTTPHeaderField: "Accept")
-        if let authorization { request.setValue("Bearer " + authorization, forHTTPHeaderField: "Authorization") }
+        if let authorization {
+            if let headerName { request.setValue(authorization, forHTTPHeaderField: headerName) }
+            else { request.setValue("Bearer " + authorization, forHTTPHeaderField: "Authorization") }
+        }
         if let sessionID { request.setValue(sessionID, forHTTPHeaderField: "Mcp-Session-Id") }
         if let version { request.setValue(version, forHTTPHeaderField: "MCP-Protocol-Version") }
         request.httpBody = Data(JSONValue.object(body).jsonString.utf8)

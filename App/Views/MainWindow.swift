@@ -242,6 +242,12 @@ struct MainWindow: View {
             settingsBackgroundRequested = true
             selection = .setup
         }
+        .onChange(of: model.gatewayTokenAccountToEdit, initial: true) { _, accountID in
+            if accountID != nil {
+                settingsBackgroundRequested = false
+                selection = .connectors
+            }
+        }
     }
     @ViewBuilder private var destination: some View {
         switch selection {
@@ -274,7 +280,9 @@ private struct LibraryWorkspaceView: View {
 struct SettingsWorkspaceView: View {
     @Environment(AppModel.self) private var model
     @State private var tab: String
+    private let handlesGatewayTokenLinks: Bool
     init(initialRoute: SidebarItem, initialBackground: Bool = false) {
+        handlesGatewayTokenLinks = initialRoute == .connectors
         _tab = State(initialValue: initialBackground ? "background" : initialRoute == .connectors ? "connections" : initialRoute == .shortcuts ? "routines" : AitvarasPreferences.current.string(forKey: "settings.lastPane") ?? "setup")
     }
     var body: some View {
@@ -283,11 +291,15 @@ struct SettingsWorkspaceView: View {
                 AgentProviderSettingsView(chat: chat).tabItem { Label("Providers", systemImage: "cpu") }.tag("providers").accessibilityIdentifier("settings.providers.page")
             }
             OnboardingView(openProviders: { tab = "providers" }).tabItem { Label("Setup", systemImage: "checklist") }.tag("setup")
-            ConnectorsView().tabItem { Label("Connections", systemImage: "point.3.connected.trianglepath.dotted") }.tag("connections")
+            ConnectorsView(handlesGatewayTokenLinks: handlesGatewayTokenLinks)
+                .tabItem { Label("Connections", systemImage: "point.3.connected.trianglepath.dotted") }.tag("connections")
             CommandRoutinesView(model: model).tabItem { Label("Routines", systemImage: "command") }.tag("routines")
             BackgroundReviewView().tabItem { Label("Automatic Work", systemImage: "clock") }.tag("background")
         }.navigationTitle("Settings")
         .onChange(of: tab) { AitvarasPreferences.current.set(tab, forKey: "settings.lastPane") }
+        .onChange(of: model.gatewayTokenAccountToEdit) { _, accountID in
+            if handlesGatewayTokenLinks, accountID != nil { tab = "connections" }
+        }
     }
 }
 

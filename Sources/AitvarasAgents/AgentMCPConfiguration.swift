@@ -42,7 +42,7 @@ public enum AgentPermissionSource: String, Sendable, Codable { case repo, aitvar
 
 public struct AgentMCPServer: Sendable, Equatable, Codable {
     public enum Transport: String, Sendable, Codable { case stdio, http, sse }
-    public enum Management: String, Sendable, Codable { case gatewayOAuth }
+    public enum Management: String, Sendable, Codable { case gatewayOAuth, gatewayStaticHeader }
     public let transport: Transport
     public let command: String?
     public let args: [String]
@@ -80,10 +80,10 @@ public struct AgentMCPServer: Sendable, Equatable, Codable {
                 throw AgentMCPError.invalidConfiguration
             }
         }
-        if management == .gatewayOAuth {
+        if management != nil {
             guard transport == .http, headers.isEmpty, let url,
                   let endpoint = URLComponents(string: url), endpoint.scheme == "https",
-                  endpoint.query == nil else { throw AgentMCPError.invalidConfiguration }
+                  endpoint.query == nil, url.utf8.count <= 4096 else { throw AgentMCPError.invalidConfiguration }
         }
     }
 

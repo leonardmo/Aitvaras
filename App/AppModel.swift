@@ -81,6 +81,7 @@ final class AppModel {
     @ObservationIgnored private var gatewayUpstreamSessions: GatewayUpstreamSessions?
     @ObservationIgnored private var gatewaySignInTask: Task<Void, Never>?
     private(set) var gatewaySignInRequests: [GatewayUpstreamSessions.SignIn] = []
+    var gatewayTokenAccountToEdit: UUID?
     private(set) var gatewaySigningIn: UUID?
     private(set) var gatewaySignInError: String?
     private(set) var agentLoop: AgentLoop?
@@ -641,8 +642,11 @@ final class AppModel {
         let requests = await gatewayUpstreamSessions?.signInRequests() ?? []
         let known = Set(gatewaySignInRequests.map(\.id))
         gatewaySignInRequests = requests
-        if requests.contains(where: { !known.contains($0.id) }) {
-            NotificationRouter.requestedWorkNeedsAttention(message: "An agent connection needs sign-in. Open Aitvaras Settings → Connections.")
+        if let request = requests.first(where: { !known.contains($0.id) }) {
+            let message = request.authKind == .staticHeader
+                ? "An agent connection needs a token. Open Aitvaras Settings → Connections."
+                : "An agent connection needs sign-in. Open Aitvaras Settings → Connections."
+            NotificationRouter.requestedWorkNeedsAttention(message: message)
         }
     }
 
@@ -683,9 +687,25 @@ final class AppModel {
         return try await gatewayUpstreamSessions.signedIn(stores.gatewayUpstream(id: id))
     }
 
+    func addGatewayStaticUpstream(serverName: String, label: String, endpoint: String, projectID: UUID?,
+                                  headerName: String?, token: String) async throws {
+        guard let stores, let gatewayUpstreamSessions else { throw GatewayTransportError.rejected }
+        _ = try await gatewayUpstreamSessions.addStaticUpstream(stores: stores, serverName: serverName, label: label,
+            endpoint: endpoint, projectID: projectID, headerName: headerName, token: token)
+    }
+
+    func replaceGatewayToken(_ id: UUID, token: String) async throws {
+        guard let stores, let gatewayUpstreamSessions else { throw GatewayTransportError.rejected }
+        try await gatewayUpstreamSessions.replaceStaticToken(stores: stores, id: id, token: token)
+    }
+
     func signOutGatewayAccount(_ id: UUID) async throws {
         guard let stores, let gatewayUpstreamSessions else { throw GatewayTransportError.rejected }
         let route = try stores.gatewayUpstream(id: id)
+        if route.account.authKind == .staticHeader {
+            try await gatewayUpstreamSessions.removeStaticToken(stores: stores, id: id)
+            return
+        }
         try stores.recordGatewayAdministration("Sign out of upstream in Aitvaras", projectID: route.account.definitionProjectID)
         try await gatewayUpstreamSessions.signOut(route)
     }

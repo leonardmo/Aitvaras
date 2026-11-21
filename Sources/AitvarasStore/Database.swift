@@ -1326,6 +1326,12 @@ public final class AitvarasDatabase: Sendable {
                 t.add(column: "label", .text)
             }
         }
+        m.registerMigration("v49-gateway-account-authentication") { db in
+            try db.alter(table: "gatewayUpstreamAccount") { t in
+                t.add(column: "authKind", .text).notNull().defaults(to: "oauth")
+                t.add(column: "headerName", .text)
+            }
+        }
         return m
     }
 

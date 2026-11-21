@@ -1979,9 +1979,32 @@ refresh failure, shared sessions and deduplicated re-auth. On the host,
 and Streamable HTTP parsing. For a registered managed Linear account at
 `https://mcp.linear.app/mcp`, call its listed tool to surface the sign-in card
 in Settings → Connections. Sign in there, then list tools again in the same
-CLI connection. Before discovery, every upstream exposes the same
+CLI connection. Before discovery, OAuth upstreams expose a
 `sign_in` entry. An expired or rejected grant must keep the last discovered
 catalog visible for the current app run and surface a fresh sign-in request.
+
+`GatewayStaticTokenTests` uses injected HTTP to check the shared Claude and
+Codex catalog for a project-only account, global opt-outs, project account
+choice, trusted reads, and approval for writes. It covers default and custom
+headers, 401 during discovery, 403 during a call, replacement, and removal.
+The credentials are created in memory and checked against the test profile's
+files, activity log, and generated CLI launch overrides.
+`GatewayOAuthHostTests.testLoopbackStaticHeaderUpstreams`
+also sends the requests through URLSession to an IPv4 fixture with a 15-second
+deadline. The fixture receives its token through stdin.
+
+With a host-built App in an isolated profile, add a fixed-token HTTPS
+connection to one disposable project. Launch `aitvaras claude` and
+`aitvaras codex` in that project and verify each can use its tools. Repeat
+outside the project and check that discovery and calls omit the upstream.
+Verify that a disposable CLI's existing native MCP entry still works. Trust
+the account and verify the effect on reads and writes. Rotate the fixture's
+token and call a discovered tool. Confirm the CLI reports the rejection,
+the card opens Settings → Connections at the empty replacement field, and
+replacing the token restores access for both clients. Remove the token and
+verify that the account remains configured and the profile Keychain item is
+gone. Inspect activity and the isolated profile and CLI config files for
+absence of the disposable credential.
 
 For external approvals, make a confirmable call from a terminal-launched
 agent. The same request should appear in the companion's Agent requests

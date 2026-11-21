@@ -19,12 +19,14 @@ public actor GatewayUpstreamSessions {
     public struct SignIn: Identifiable, Equatable, Sendable {
         public let id: UUID
         public let server: String
+        public let authKind: GatewayUpstreamAuthKind
+        public let tokenRejected: Bool
     }
 
     private struct Observer { weak var session: MCPGateway? }
     private var observers: [Observer] = []
     private var sessions: [UUID: GatewayRemoteSession] = [:]
-    private var requested: [UUID: GatewayUpstream] = [:]
+    private var requested: [UUID: SignIn] = [:]
     private var authorizing: Set<UUID> = []
     private let secrets: GatewayOAuthSecrets
     private let send: GatewayHTTP
@@ -44,25 +46,37 @@ public actor GatewayUpstreamSessions {
     }
 
     public func signInRequests() -> [SignIn] {
-        requested.values.map { .init(id: $0.account.id, server: $0.account.serverName) }
-            .sorted { ($0.server, $0.id.uuidString) < ($1.server, $1.id.uuidString) }
+        requested.values.sorted { ($0.server, $0.id.uuidString) < ($1.server, $1.id.uuidString) }
     }
 
-    private func noteSignIn(_ route: GatewayUpstream) async {
-        guard requested.updateValue(route, forKey: route.account.id) == nil else { return }
+    private func noteSignIn(_ route: GatewayUpstream, error: MCPGatewayCallError) async {
+        guard error == .needsSignIn || error == .needsToken || error == .tokenRejected else { return }
+        let request = SignIn(id: route.account.id, server: route.account.serverName,
+                             authKind: route.account.authKind, tokenRejected: error == .tokenRejected)
+        guard requested.updateValue(request, forKey: request.id) != request else { return }
         await needsAttention()
     }
 
     private func session(_ route: GatewayUpstream) throws -> GatewayRemoteSession {
         if let current = sessions[route.account.id] { return current }
-        let endpoint = try GatewayOAuth.validated(route.definition.url.flatMap(URL.init(string:)))
+        let endpoint: URL
+        if route.account.authKind == .staticHeader {
+            try route.definition.validate()
+            guard let url = route.definition.url.flatMap(URL.init(string:)) else { throw GatewayOAuthError.invalidMetadata }
+            endpoint = url
+        } else {
+            endpoint = try GatewayOAuth.validated(route.definition.url.flatMap(URL.init(string:)))
+        }
         let session = GatewayRemoteSession(route: route, oauth: .init(send: send, endpoint: endpoint), secrets: secrets)
         sessions[route.account.id] = session
         return session
     }
 
     public func catalog(_ route: GatewayUpstream) async throws -> [MCPGatewayTool] {
-        try await session(route).catalog(trusted: route.account.trusted)
+        let remote = try session(route)
+        let catalog = try await remote.catalog(trusted: route.account.trusted)
+        if await remote.tokenRejected { await noteSignIn(route, error: .tokenRejected) }
+        return catalog
     }
 
     public func signedIn(_ route: GatewayUpstream) async throws -> Bool {
@@ -70,13 +84,60 @@ public actor GatewayUpstreamSessions {
     }
 
     public func signOut(_ route: GatewayUpstream) async throws {
+        guard route.account.authKind == .oauth else { throw GatewayUpstreamError.invalidAccount }
+        try await clearCredentials(route)
+    }
+
+    public func removeStaticToken(stores: Stores, id: UUID) async throws {
+        let route = try stores.gatewayUpstream(id: id)
+        guard route.account.authKind == .staticHeader else { throw GatewayUpstreamError.invalidAccount }
+        try stores.recordGatewayAdministration("Remove upstream token", projectID: route.account.definitionProjectID)
+        try await clearCredentials(route)
+    }
+
+    private func clearCredentials(_ route: GatewayUpstream) async throws {
         let id = route.account.id
         guard authorizing.insert(id).inserted else { throw GatewayOAuthError.busy }
         defer { authorizing.remove(id) }
         try await session(route).signOut()
         requested.removeValue(forKey: id)
+        await credentialsChanged()
+    }
+
+    public func addStaticUpstream(stores: Stores, serverName: String, label: String, endpoint: String,
+                                  projectID: UUID?, headerName: String?, token: String) async throws -> GatewayUpstreamAccount {
+        try GatewayRemoteSession.validateToken(token)
+        let id = UUID()
+        let key = GatewayRemoteSession.staticKey(id)
+        try secrets.save(key, token)
+        let account: GatewayUpstreamAccount
+        do {
+            account = try stores.addGatewayUpstream(serverName: serverName, label: label, endpoint: endpoint,
+                projectID: projectID, id: id, authKind: .staticHeader, headerName: headerName)
+        } catch {
+            try secrets.delete(key)
+            throw error
+        }
         await routingChanged()
+        return account
+    }
+
+    public func replaceStaticToken(stores: Stores, id: UUID, token: String) async throws {
+        try GatewayRemoteSession.validateToken(token)
+        let route = try stores.gatewayUpstream(id: id)
+        guard route.account.authKind == .staticHeader else { throw GatewayUpstreamError.invalidAccount }
+        guard authorizing.insert(id).inserted else { throw GatewayOAuthError.busy }
+        defer { authorizing.remove(id) }
+        let remote = try session(route)
+        try stores.recordGatewayAdministration("Replace upstream token", projectID: route.account.definitionProjectID)
+        try await remote.replaceStaticToken(token)
+        requested.removeValue(forKey: id)
+        await credentialsChanged()
+    }
+
+    private func credentialsChanged() async {
         await needsAttention()
+        await routingChanged()
     }
 
     public func routingChanged() async {
@@ -85,18 +146,18 @@ public actor GatewayUpstreamSessions {
 
     public func requireSignInIfNeeded(_ route: GatewayUpstream) async throws {
         do { _ = try await session(route).access() }
-        catch MCPGatewayCallError.needsSignIn {
-            await noteSignIn(route)
-            throw MCPGatewayCallError.needsSignIn
+        catch let error as MCPGatewayCallError {
+            await noteSignIn(route, error: error)
+            throw error
         }
     }
 
     public func call(_ route: GatewayUpstream, tool: MCPGatewayTool, arguments: JSONValue,
                      revalidate: MCPGateway.Authorize = {}) async throws -> MCPGatewayToolResult {
         do { return try await session(route).call(tool, trusted: route.account.trusted, arguments: arguments, revalidate: revalidate) }
-        catch MCPGatewayCallError.needsSignIn {
-            await noteSignIn(route)
-            throw MCPGatewayCallError.needsSignIn
+        catch let error as MCPGatewayCallError {
+            await noteSignIn(route, error: error)
+            throw error
         }
     }
 
@@ -104,6 +165,7 @@ public actor GatewayUpstreamSessions {
     /// open a browser or give the gateway a callback.
     public func signIn(_ id: UUID, currentRoute: @Sendable () throws -> GatewayUpstream,
                        openBrowser: @Sendable (URL) async throws -> Void) async throws {
+        guard try currentRoute().account.authKind == .oauth else { throw GatewayUpstreamError.invalidAccount }
         let callback = try await GatewayOAuthCallback.start()
         defer { callback.stop() }
         try await signIn(id, currentRoute: currentRoute, redirect: callback.redirect, receive: { url in
@@ -115,6 +177,7 @@ public actor GatewayUpstreamSessions {
     func signIn(_ id: UUID, currentRoute: @Sendable () throws -> GatewayUpstream, redirect: URL,
                 receive: @Sendable (URL) async throws -> URL) async throws {
         let route = try currentRoute()
+        guard route.account.authKind == .oauth else { throw GatewayUpstreamError.invalidAccount }
         guard route.account.id == id else { throw MCPGatewayCallError.stale }
         guard authorizing.insert(id).inserted else { throw GatewayOAuthError.busy }
         defer { authorizing.remove(id) }
@@ -144,6 +207,9 @@ actor GatewayRemoteSession {
     private let secrets: GatewayOAuthSecrets
     private let key: String
     private var credentials: GatewayOAuth.Credentials?
+    private var staticToken: String?
+    private(set) var tokenRejected = false
+    private var credentialGeneration = UUID()
     private var loaded = false
     private var signingIn = false
     private var attemptedUnauthorizedRefresh = false
@@ -154,13 +220,25 @@ actor GatewayRemoteSession {
 
     init(route: GatewayUpstream, oauth: GatewayOAuth, secrets: GatewayOAuthSecrets) {
         self.route = route; self.oauth = oauth; self.secrets = secrets
-        key = "gateway.oauth.\(route.account.id.uuidString).\(route.account.definitionFingerprint)"
+        key = route.account.authKind == .staticHeader ? Self.staticKey(route.account.id)
+            : "gateway.oauth.\(route.account.id.uuidString).\(route.account.definitionFingerprint)"
+    }
+
+    static func staticKey(_ id: UUID) -> String { "gateway.static.\(id.uuidString)" }
+
+    static func validateToken(_ token: String) throws {
+        guard GatewayOAuth.credential(.string(token)) != nil else { throw GatewayUpstreamError.invalidToken }
     }
 
     private func loadCredentials() throws {
         if !loaded {
             if let saved = try secrets.load(key) {
-                credentials = try JSONDecoder().decode(GatewayOAuth.Credentials.self, from: Data(saved.utf8))
+                if route.account.authKind == .staticHeader {
+                    try Self.validateToken(saved)
+                    staticToken = saved
+                } else {
+                    credentials = try JSONDecoder().decode(GatewayOAuth.Credentials.self, from: Data(saved.utf8))
+                }
             }
             loaded = true
         }
@@ -168,11 +246,16 @@ actor GatewayRemoteSession {
 
     func signedIn() throws -> Bool {
         try loadCredentials()
+        if route.account.authKind == .staticHeader { return staticToken != nil && !tokenRejected }
         return credentials.map { $0.expires > .now || $0.refresh != nil } ?? false
     }
 
     func signOut() throws {
         try secrets.delete(key)
+        if route.account.authKind == .staticHeader {
+            changeStaticToken(nil)
+            return
+        }
         refresh?.cancel()
         connecting?.cancel()
         credentials = nil
@@ -180,8 +263,28 @@ actor GatewayRemoteSession {
         remote = nil
     }
 
+    func replaceStaticToken(_ token: String) throws {
+        try secrets.save(key, token)
+        changeStaticToken(token)
+    }
+
+    private func changeStaticToken(_ token: String?) {
+        staticToken = token
+        loaded = true
+        tokenRejected = false
+        credentialGeneration = UUID()
+        connecting?.cancel()
+        connecting = nil
+        remote = nil
+    }
+
     func access() async throws -> String {
         try loadCredentials()
+        if route.account.authKind == .staticHeader {
+            if tokenRejected { throw MCPGatewayCallError.tokenRejected }
+            guard let staticToken else { throw MCPGatewayCallError.needsToken }
+            return staticToken
+        }
         if let refresh { return try await refresh.value.access }
         guard let credentials else { throw MCPGatewayCallError.needsSignIn }
         if credentials.expires.timeIntervalSinceNow > 30 { return credentials.access }
@@ -244,9 +347,11 @@ actor GatewayRemoteSession {
             catch { try Task.checkCancellation() }
         }
         if !tools.isEmpty || remote != nil { return try catalogTools(trusted: trusted) }
-        // A first launch has no remote schemas yet. These entries can only
-        // lead to app sign-in and are replaced by discovery before dispatch.
-        return [try MCPGatewayTool(origin: origin, definition: .init(name: "sign_in", description: "Sign in to use this upstream.",
+        // A first launch has no schemas yet. The placeholder points to
+        // credential setup and is replaced by discovery before dispatch.
+        let isStatic = route.account.authKind == .staticHeader
+        return [try MCPGatewayTool(origin: origin, definition: .init(name: isStatic ? "set_token" : "sign_in",
+            description: isStatic ? "Manage this upstream token in Settings → Connections." : "Sign in to use this upstream.",
             parametersJSON: "{\"type\":\"object\"}", risk: .confirmable))]
     }
 
@@ -262,22 +367,27 @@ actor GatewayRemoteSession {
     private func connect() async throws -> Remote {
         if let remote { return remote }
         if let connecting { return try await connecting.value.0 }
+        let generation = credentialGeneration
         let job = Task { () throws -> (Remote, [MCPGatewayTool]) in
             let token = try await access()
+            try checkGeneration(generation)
             let id = JSONValue.string(UUID().uuidString)
             let response = try await oauth.send(GatewayOAuth.rpc(oauth.endpoint, method: "initialize", id: id,
-                params: Self.initialize, authorization: token), id)
+                params: Self.initialize, authorization: token, headerName: route.account.headerName), id)
+            try checkGeneration(generation)
             let result = try await check(response, id: id, token: token)
             guard let version = result?["protocolVersion"]?.stringValue, Self.versions.contains(version),
                   case .object? = result?["capabilities"]?["tools"] else { throw GatewayOAuthError.invalidResponse }
             let sessionID = GatewayOAuth.credential(response["mcp-session-id"].map(JSONValue.string), maximum: 1024)
             guard response["mcp-session-id"] == nil || sessionID != nil else { throw GatewayOAuthError.invalidResponse }
             let connection = Remote(id: sessionID, version: version)
-            _ = try await request("notifications/initialized", id: nil, params: nil, token: token, remote: connection)
+            _ = try await request("notifications/initialized", id: nil, params: nil, token: token, remote: connection,
+                                  generation: generation)
             var cursor: String?, seen: Set<String> = [], discovered: [MCPGatewayTool] = []
             for _ in 0..<16 {
                 let params = cursor.map { JSONValue.object(["cursor": .string($0)]) }
-                let page = try await request("tools/list", id: .string(UUID().uuidString), params: params, token: token, remote: connection)
+                let page = try await request("tools/list", id: .string(UUID().uuidString), params: params, token: token,
+                                             remote: connection, generation: generation)
                 guard let entries = page?["tools"]?.arrayValue, entries.count + discovered.count <= 256 else {
                     throw GatewayOAuthError.invalidResponse
                 }
@@ -285,6 +395,7 @@ actor GatewayRemoteSession {
                 guard let next = page?["nextCursor"]?.stringValue else {
                     guard Set(discovered.map(\.name)).count == discovered.count else { throw GatewayOAuthError.invalidResponse }
                     try Task.checkCancellation()
+                    try checkGeneration(generation)
                     tools = discovered
                     remote = connection
                     return (connection, discovered)
@@ -295,7 +406,7 @@ actor GatewayRemoteSession {
             throw GatewayOAuthError.invalidResponse
         }
         connecting = job
-        defer { connecting = nil }
+        defer { if credentialGeneration == generation { connecting = nil } }
         return try await job.value.0
     }
 
@@ -306,7 +417,8 @@ actor GatewayRemoteSession {
         let hints = entry["annotations"]
         return try .init(origin: origin, definition: .init(name: name, description: entry["description"]?.stringValue ?? "",
             parametersJSON: schema.jsonString, risk: .confirmable), annotations: .init(readOnly: hints?["readOnlyHint"]?.boolValue,
-            destructive: hints?["destructiveHint"]?.boolValue, idempotent: hints?["idempotentHint"]?.boolValue),
+            destructive: hints?["destructiveHint"]?.boolValue,
+            idempotent: route.account.authKind == .oauth ? hints?["idempotentHint"]?.boolValue : nil),
             trusted: false)
     }
 
@@ -317,15 +429,18 @@ actor GatewayRemoteSession {
     }
 
     func call(_ tool: MCPGatewayTool, trusted: Bool, arguments: JSONValue, revalidate: MCPGateway.Authorize) async throws -> MCPGatewayToolResult {
+        let generation = credentialGeneration
         let session = try await connect()
         _ = try await access()
         try await revalidate()
-        guard let token = credentials?.access else { throw MCPGatewayCallError.needsSignIn }
+        try checkGeneration(generation)
+        guard let token = staticToken ?? credentials?.access else { throw MCPGatewayCallError.needsSignIn }
         guard try catalogTools(trusted: trusted).contains(tool) else { throw MCPGatewayCallError.stale }
         guard remote == session else { throw MCPGatewayCallError.stale }
         try Task.checkCancellation()
         let result = try await request("tools/call", id: .string(UUID().uuidString), params: .object([
-            "name": .string(tool.definition.name), "arguments": arguments]), token: token, remote: session)
+            "name": .string(tool.definition.name), "arguments": arguments]), token: token, remote: session,
+            generation: generation)
         guard let content = result?["content"]?.arrayValue else { throw MCPGatewayCallError.invalidResult }
         let structured: [String: JSONValue]?
         if case .object(let fields)? = result?["structuredContent"] { structured = fields }
@@ -334,15 +449,30 @@ actor GatewayRemoteSession {
                      isError: result?["isError"]?.boolValue ?? false)
     }
 
-    private func request(_ method: String, id: JSONValue?, params: JSONValue?, token: String, remote: Remote) async throws -> JSONValue? {
+    private func checkGeneration(_ generation: UUID) throws {
+        guard generation == credentialGeneration else { throw MCPGatewayCallError.stale }
+        if tokenRejected { throw MCPGatewayCallError.tokenRejected }
+    }
+
+    private func request(_ method: String, id: JSONValue?, params: JSONValue?, token: String, remote: Remote,
+                         generation: UUID) async throws -> JSONValue? {
+        try checkGeneration(generation)
         let response = try await oauth.send(GatewayOAuth.rpc(oauth.endpoint, method: method, id: id, params: params,
-            authorization: token, sessionID: remote.id, version: remote.version), id)
+            authorization: token, headerName: route.account.headerName, sessionID: remote.id, version: remote.version), id)
+        // A credential change after dispatch cannot establish whether a write ran.
+        guard generation == credentialGeneration else { throw MCPGatewayCallError.invalidResult }
         if response.status == 404, self.remote == remote { self.remote = nil }
         return try await check(response, id: id, token: token)
     }
 
     private func check(_ response: GatewayHTTPResponse, id: JSONValue?, token: String) async throws -> JSONValue? {
-        if response.status == 401 {
+        if route.account.authKind == .staticHeader {
+            if [401, 403].contains(response.status) {
+                tokenRejected = true
+                remote = nil
+                throw MCPGatewayCallError.tokenRejected
+            }
+        } else if response.status == 401 {
             guard let current = credentials else { throw MCPGatewayCallError.needsSignIn }
             guard current.access == token, refresh == nil else { throw MCPGatewayCallError.unavailable }
             if !signingIn, !attemptedUnauthorizedRefresh, current.refresh != nil {
@@ -361,6 +491,22 @@ actor GatewayRemoteSession {
         guard let id else { return nil }
         guard let message = response.json, message["jsonrpc"] == .string("2.0"), message["id"] == id,
               let result = message["result"], case .object = result else { throw GatewayOAuthError.invalidResponse }
+        if route.account.authKind == .staticHeader, Self.reflectsCredential(result, token: token) {
+            throw MCPGatewayCallError.invalidResult
+        }
         return result
+    }
+
+    /// Prevent a reflected authorization header from reaching catalogs, tool
+    /// results, or the tool names saved by the activity log.
+    private static func reflectsCredential(_ value: JSONValue, token: String) -> Bool {
+        func matches(_ text: String) -> Bool { text == token || text.contains("Bearer " + token) }
+        switch value {
+        case .string(let text): return matches(text)
+        case .array(let values): return values.contains { reflectsCredential($0, token: token) }
+        case .object(let fields):
+            return fields.contains { matches($0.key) || reflectsCredential($0.value, token: token) }
+        default: return false
+        }
     }
 }

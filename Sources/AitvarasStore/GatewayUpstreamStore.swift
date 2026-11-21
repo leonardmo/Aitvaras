@@ -3,6 +3,17 @@ import GRDB
 import AitvarasAgents
 import AitvarasCore
 
+public enum GatewayUpstreamAuthKind: String, Codable, Sendable {
+    case oauth, staticHeader
+
+    fileprivate var management: AgentMCPServer.Management {
+        switch self {
+        case .oauth: .gatewayOAuth
+        case .staticHeader: .gatewayStaticHeader
+        }
+    }
+}
+
 /// The UUID is app-owned. Provider account IDs and credentials are not part of this record.
 public struct GatewayUpstreamAccount: Codable, Sendable, Equatable, Identifiable, FetchableRecord, PersistableRecord {
     public static let databaseTableName = "gatewayUpstreamAccount"
@@ -14,6 +25,8 @@ public struct GatewayUpstreamAccount: Codable, Sendable, Equatable, Identifiable
     public fileprivate(set) var isGlobalDefault: Bool
     public fileprivate(set) var trusted: Bool = false
     public fileprivate(set) var label: String? = nil
+    public let authKind: GatewayUpstreamAuthKind
+    public let headerName: String?
 
     public var displayName: String { label ?? "\(serverName) · \(id.uuidString.prefix(8))" }
 }
@@ -25,7 +38,7 @@ public struct GatewayUpstream: Sendable, Equatable {
 
 public enum GatewayUpstreamError: LocalizedError, Equatable, Sendable {
     case invalidServerName, definitionUnavailable, definitionChanged
-    case invalidAccount, defaultAlreadySet, accountInUse
+    case invalidAccount, defaultAlreadySet, accountInUse, invalidHeader, invalidToken
 
     public var errorDescription: String? {
         switch self {
@@ -35,6 +48,8 @@ public enum GatewayUpstreamError: LocalizedError, Equatable, Sendable {
         case .invalidAccount: "This account is unavailable for the selected server or project."
         case .defaultAlreadySet: "This server already has a default account."
         case .accountInUse: "Remove the project selections for this account before removing it."
+        case .invalidHeader: "Enter a valid custom authentication header name."
+        case .invalidToken: "Enter a valid fixed token."
         }
     }
 }
@@ -78,15 +93,22 @@ extension Stores {
 
     /// Provision a managed definition and its account in one transaction.
     /// Another account may reuse the exact definition, including its endpoint.
-    public func addGatewayUpstream(serverName: String, label: String, endpoint: String, projectID: UUID?) throws {
+    @discardableResult
+    public func addGatewayUpstream(serverName: String, label: String, endpoint: String, projectID: UUID?,
+                                   id: UUID = UUID(), authKind: GatewayUpstreamAuthKind = .oauth,
+                                   headerName: String? = nil) throws -> GatewayUpstreamAccount {
         try Self.validateGatewayServerName(serverName)
         let label = label.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !label.isEmpty, label.utf8.count <= 80, !label.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains),
               let url = URL(string: endpoint), url.fragment == nil else { throw AgentMCPError.invalidConfiguration }
-        try ProviderSignIn.validate(url)
-        let definition = AgentMCPServer(transport: .http, url: url.absoluteString, management: .gatewayOAuth)
+        if authKind == .oauth {
+            guard headerName == nil else { throw GatewayUpstreamError.invalidHeader }
+            try ProviderSignIn.validate(url)
+        }
+        let header = try Self.gatewayHeaderName(headerName)
+        let definition = AgentMCPServer(transport: .http, url: url.absoluteString, management: authKind.management)
         try definition.validate()
-        try db.queue.write { dbc in
+        return try db.queue.write { dbc in
             if let projectID { try Self.requireGatewayProject(projectID, in: dbc) }
             let setup = try projectID.map {
                 try WorkspaceAgentSetup.fetchOne(dbc, key: $0) ?? .init(projectID: $0)
@@ -107,16 +129,31 @@ extension Stores {
                                 arguments: ["agent.mcp.global", encoded])
             }
             let makeDefault = try projectID == nil && Self.gatewayDefault(serverName, in: dbc) == nil
-            let account = GatewayUpstreamAccount(id: UUID(), serverName: serverName, definitionProjectID: projectID,
+            let account = GatewayUpstreamAccount(id: id, serverName: serverName, definitionProjectID: projectID,
                 definitionFingerprint: try definition.fingerprint(), globallyAvailable: projectID == nil,
-                isGlobalDefault: makeDefault, label: label)
+                isGlobalDefault: makeDefault, label: label, authKind: authKind, headerName: header)
             try account.insert(dbc)
             if let projectID, try GatewayProjectUpstreamSelection
                 .filter(Column("projectID") == projectID && Column("serverName") == serverName).fetchOne(dbc) == nil {
                 try GatewayProjectUpstreamSelection(projectID: projectID, serverName: serverName, accountID: account.id).insert(dbc)
             }
             try Self.recordGatewaySetting("Add managed upstream account", projectID: projectID, in: dbc)
+            return account
         }
+    }
+
+    private static func gatewayHeaderName(_ name: String?) throws -> String? {
+        guard let name else { return nil }
+        let field = name.lowercased()
+        let punctuation = Set("!#$%&'*+-.^_`|~".utf8)
+        guard !name.isEmpty, name.utf8.count <= 128, name.utf8.allSatisfy({
+            (48...57).contains($0) || (65...90).contains($0) || (97...122).contains($0) || punctuation.contains($0)
+        }), !["accept", "accept-encoding", "connection", "cookie", "expect", "host", "keep-alive", "origin",
+               "referer", "te", "trailer", "transfer-encoding", "upgrade", "user-agent"].contains(field),
+           !field.hasPrefix("content-"), !field.hasPrefix("mcp-"), !field.hasPrefix("proxy-") else {
+            throw GatewayUpstreamError.invalidHeader
+        }
+        return name
     }
 
     public func gatewayUpstream(id: UUID) throws -> GatewayUpstream {
@@ -154,7 +191,7 @@ extension Stores {
             }
             let account = GatewayUpstreamAccount(id: UUID(), serverName: serverName, definitionProjectID: definitionProjectID,
                 definitionFingerprint: try definition.fingerprint(), globallyAvailable: globallyAvailable,
-                isGlobalDefault: makeGlobalDefault)
+                isGlobalDefault: makeGlobalDefault, authKind: .oauth, headerName: nil)
             try account.insert(dbc)
             try Self.recordGatewaySetting("Register upstream account", projectID: definitionProjectID, in: dbc)
             return account
@@ -260,7 +297,8 @@ extension Stores {
         return account
     }
 
-    private static func gatewayDefinition(_ name: String, projectID: UUID?, in dbc: Database) throws -> AgentMCPServer {
+    private static func gatewayDefinition(_ name: String, projectID: UUID?, authKind: GatewayUpstreamAuthKind = .oauth,
+                                          in dbc: Database) throws -> AgentMCPServer {
         let definitions: [String: AgentMCPServer]
         if let projectID {
             try requireGatewayProject(projectID, in: dbc)
@@ -269,14 +307,15 @@ extension Stores {
         } else {
             definitions = try globalAgentMCPServers(in: dbc)
         }
-        guard let definition = definitions[name], definition.management == .gatewayOAuth else {
+        guard let definition = definitions[name], definition.management == authKind.management else {
             throw GatewayUpstreamError.definitionUnavailable
         }
         return definition
     }
 
     private static func resolveGatewayAccount(_ account: GatewayUpstreamAccount, in dbc: Database) throws -> GatewayUpstream {
-        let definition = try gatewayDefinition(account.serverName, projectID: account.definitionProjectID, in: dbc)
+        let definition = try gatewayDefinition(account.serverName, projectID: account.definitionProjectID,
+                                               authKind: account.authKind, in: dbc)
         guard try definition.fingerprint() == account.definitionFingerprint else { throw GatewayUpstreamError.definitionChanged }
         return .init(account: account, definition: definition)
     }

@@ -9,6 +9,7 @@ import AitvarasStore
 /// "Add Connection" flow (user decision 2026-07-06). Custom APIs are
 /// first-class — paste a manifest, or let Claude draft one from docs.
 struct ConnectorsView: View {
+    var handlesGatewayTokenLinks = false
     @Environment(AppModel.self) private var model
     @State private var showCatalog = false
     @State private var configuringKind: ConnectionKind?
@@ -52,7 +53,7 @@ struct ConnectorsView: View {
 
             ForgeConnectionsSection()
 
-            GatewayConnectionsSection()
+            GatewayConnectionsSection(handlesGatewayTokenLinks: handlesGatewayTokenLinks)
 
             Section("Connections") {
                 let active = activeConnections
@@ -681,6 +682,7 @@ struct WhitelistEditor: View {
 }
 
 private struct GatewayConnectionsSection: View {
+    let handlesGatewayTokenLinks: Bool
     @Environment(AppModel.self) private var model
     @State private var launches: [GatewayLaunch] = []
     @State private var accounts: [GatewayUpstreamAccount] = []
@@ -691,9 +693,15 @@ private struct GatewayConnectionsSection: View {
     @State private var projectID: UUID?
     @State private var accountProjectID: UUID?
     @State private var adding = false
+    @State private var accountsExpanded = false
     @State private var name = ""
     @State private var label = ""
     @State private var endpoint = ""
+    @State private var authKind: GatewayUpstreamAuthKind = .oauth
+    @State private var headerName = ""
+    @State private var token = ""
+    @State private var saving = false
+    @State private var tokenEditor: GatewayUpstreamAccount?
     @State private var command: GatewayCommandInstaller.Status?
     @State private var error: String?
 
@@ -716,23 +724,31 @@ private struct GatewayConnectionsSection: View {
                 }
             }
 
-            DisclosureGroup("Upstream accounts (\(accounts.count))") {
+            DisclosureGroup("Upstream accounts (\(accounts.count))", isExpanded: $accountsExpanded) {
                 ForEach(accounts) { account in accountRow(account) }
                 DisclosureGroup("Add upstream account", isExpanded: $adding) {
                     TextField("Server name", text: $name)
                     TextField("Account label", text: $label)
                     TextField("MCP HTTPS URL", text: $endpoint)
+                    Picker("Authentication", selection: $authKind) {
+                        Text("OAuth").tag(GatewayUpstreamAuthKind.oauth)
+                        Text("Fixed token").tag(GatewayUpstreamAuthKind.staticHeader)
+                    }
+                    .onChange(of: authKind) { token = "" }
+                    if authKind == .staticHeader {
+                        SecureField("Token", text: $token)
+                        TextField("Custom header name (optional)", text: $headerName)
+                            .help("Leave blank to send Authorization with the Bearer scheme.")
+                    }
                     Picker("Availability", selection: $accountProjectID) {
                         Text("Global").tag(nil as UUID?)
                         ForEach(projects) { Text($0.title).tag(Optional($0.id)) }
                     }
-                    Button("Add account") {
-                        changeRouting {
-                            try $0.addGatewayUpstream(serverName: name, label: label, endpoint: endpoint, projectID: accountProjectID)
-                            name = ""; label = ""; endpoint = ""; adding = false
-                        }
-                    }.disabled(name.isEmpty || label.isEmpty || endpoint.isEmpty)
+                    Button("Add account", action: addAccount)
+                        .disabled(name.isEmpty || label.isEmpty || endpoint.isEmpty || (authKind == .staticHeader && token.isEmpty))
                 }
+                .disabled(saving)
+                .onChange(of: adding) { if !adding { token = "" } }
             }
 
             if !projects.isEmpty, !accounts.isEmpty {
@@ -748,6 +764,17 @@ private struct GatewayConnectionsSection: View {
                 }
             }
             if let message = error ?? model.gatewaySignInError { Text(message).font(.caption).foregroundStyle(.secondary) }
+        }
+        .onChange(of: model.gatewayTokenAccountToEdit, initial: true) { _, accountID in
+            guard handlesGatewayTokenLinks, let accountID else { return }
+            model.gatewayTokenAccountToEdit = nil
+            if let account = try? model.stores?.gatewayUpstream(id: accountID).account, account.authKind == .staticHeader {
+                accountsExpanded = true
+                tokenEditor = account
+            }
+        }
+        .sheet(item: $tokenEditor) { account in
+            GatewayTokenEditor(account: account)
         }
         .task {
             command = try? model.gatewayCommandInstaller.status()
@@ -783,12 +810,19 @@ private struct GatewayConnectionsSection: View {
             HStack {
                 VStack(alignment: .leading) {
                     Text(account.displayName)
-                    let status = states[account.id].map { $0 ? "Signed in" : "Signed out" } ?? "Sign-in status unavailable"
+                    let status = accountStatus(account)
                     Text("\(account.serverName) · \(availability(account)) · \(status)")
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 Spacer()
-                if model.gatewaySigningIn == account.id {
+                if account.authKind == .staticHeader {
+                    let hasToken = states[account.id] == true || tokenWasRejected(account)
+                    Button(hasToken ? "Replace token" : "Set token") { tokenEditor = account }
+                        .buttonStyle(.bordered)
+                    if hasToken {
+                        Button("Remove token") { Task { await signOut(account.id) } }.buttonStyle(.bordered)
+                    }
+                } else if model.gatewaySigningIn == account.id {
                     Button("Cancel") { model.cancelGatewaySignIn() }.buttonStyle(.bordered)
                 } else if states[account.id] == true {
                     Button("Sign out") { Task { await signOut(account.id) } }.buttonStyle(.bordered)
@@ -801,13 +835,58 @@ private struct GatewayConnectionsSection: View {
             Toggle("Trust MCP tool annotations", isOn: Binding(get: { account.trusted }, set: { trusted in
                 changeRouting { try $0.setGatewayUpstreamTrust(id: account.id, trusted: trusted) }
             }))
-            .help("Trust can let eligible upstream tools run without confirmation.")
+            .help(account.authKind == .staticHeader
+                ? "Trust allows eligible read-only tools to run without confirmation."
+                : "Trust can let eligible upstream tools run without confirmation.")
             if account.globallyAvailable {
                 Toggle("Global default", isOn: Binding(get: { account.isGlobalDefault }, set: { global in
                     changeRouting { try $0.setGatewayGlobalDefault(serverName: account.serverName, accountID: global ? account.id : nil) }
                 }))
             }
         }
+    }
+
+    private func tokenWasRejected(_ account: GatewayUpstreamAccount) -> Bool {
+        model.gatewaySignInRequests.contains { $0.id == account.id && $0.tokenRejected }
+    }
+
+    private func accountStatus(_ account: GatewayUpstreamAccount) -> String {
+        guard let active = states[account.id] else { return "Credential status unavailable" }
+        if account.authKind == .oauth { return active ? "Signed in" : "Signed out" }
+        if tokenWasRejected(account) { return "Token rejected" }
+        return active ? "Token stored" : "Token required"
+    }
+
+    private func addAccount() {
+        if authKind == .oauth {
+            changeRouting {
+                try $0.addGatewayUpstream(serverName: name, label: label, endpoint: endpoint, projectID: accountProjectID)
+                resetEntry()
+            }
+            return
+        }
+        let submitted = token
+        token = ""
+        let header = headerName.trimmingCharacters(in: .whitespaces)
+        saving = true
+        Task {
+            defer { saving = false }
+            do {
+                try await model.addGatewayStaticUpstream(serverName: name, label: label, endpoint: endpoint,
+                    projectID: accountProjectID, headerName: header.isEmpty ? nil : header, token: submitted)
+                error = nil
+                resetEntry()
+                await refresh()
+            } catch let failure as GatewayUpstreamError {
+                error = failure.errorDescription
+            } catch {
+                self.error = "Could not add the fixed-token account. Check the HTTPS URL, server name, project, and Keychain access."
+            }
+        }
+    }
+
+    private func resetEntry() {
+        name = ""; label = ""; endpoint = ""; headerName = ""; token = ""; adding = false
     }
 
     private func projectRouting(_ server: String, projectID: UUID) -> some View {
@@ -896,7 +975,54 @@ private struct GatewayConnectionsSection: View {
 
     private func signOut(_ id: UUID) async {
         do { try await model.signOutGatewayAccount(id); error = nil }
-        catch { self.error = "Could not sign out of the account." }
+        catch { self.error = "Could not remove the account credential." }
         await refresh()
+    }
+}
+
+private struct GatewayTokenEditor: View {
+    let account: GatewayUpstreamAccount
+    @Environment(AppModel.self) private var model
+    @Environment(\.dismiss) private var dismiss
+    @FocusState private var tokenFocused: Bool
+    @State private var token = ""
+    @State private var saving = false
+    @State private var error: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Set token for \(account.displayName)").font(.headline)
+            SecureField("New token", text: $token)
+                .focused($tokenFocused)
+                .disabled(saving)
+                .accessibilityIdentifier("gateway.fixed-token.replacement")
+            if let error { Text(error).font(.caption).foregroundStyle(.secondary) }
+            HStack {
+                Spacer()
+                Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction).disabled(saving)
+                Button("Save token", action: save).keyboardShortcut(.defaultAction).disabled(token.isEmpty || saving)
+            }
+        }
+        .padding(20)
+        .frame(width: 380)
+        .interactiveDismissDisabled(saving)
+        .onAppear { tokenFocused = true }
+    }
+
+    private func save() {
+        let submitted = token
+        token = ""
+        saving = true
+        Task {
+            defer { saving = false }
+            do {
+                try await model.replaceGatewayToken(account.id, token: submitted)
+                dismiss()
+            } catch let failure as GatewayUpstreamError {
+                error = failure.errorDescription
+            } catch {
+                self.error = "Could not save the token. Check Keychain access."
+            }
+        }
     }
 }

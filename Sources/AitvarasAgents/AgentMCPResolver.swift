@@ -74,11 +74,10 @@ public enum AgentMCPResolver {
         let entries = inventory.entries
         let repo = entries.compactMapValues(\.server)
         let fingerprints = entries.mapValues(\.fingerprint)
-        var app = globalServers.filter { !setup.disabledGlobalServers.contains($0.key) }
-        app.merge(setup.projectServers) { _, project in project }
-        guard Set(app.keys).isDisjoint(with: entries.keys) else { throw AgentMCPError.nameCollision }
         // Managed connections are never materialized as a native CLI config.
-        app = app.filter { $0.value.management == nil }
+        var app = globalServers.filter { $0.value.management == nil && !setup.disabledGlobalServers.contains($0.key) }
+        app.merge(setup.projectServers.filter { $0.value.management == nil }) { _, project in project }
+        guard Set(app.keys).isDisjoint(with: entries.keys) else { throw AgentMCPError.nameCollision }
         let disabled = entries.keys.filter {
             inventory.unreadable || entries[$0]?.server == nil || entries[$0]?.conflicting == true || setup.deniedServers.contains($0) || setup.approvedServers[$0] != fingerprints[$0]
         }.sorted()

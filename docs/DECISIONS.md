@@ -1176,6 +1176,16 @@ such as Linear. The gateway does not call cloud LLM APIs.
   never imported. Names are prefixed, such as `linear_list_issues` and
   `memory_search`. Each connection sees its own catalog and receives MCP
   `notifications/tools/list_changed` when that catalog changes.
+- **Fixed-token upstreams (delivered in G2).** Settings → Connections adds
+  an HTTPS upstream with a hidden token field. Each account stores its token
+  in the profile Keychain. A user can replace or remove the token. By default
+  every request sends `Authorization: Bearer <token>`. A custom header sends
+  the raw value. URLs cannot include query strings. Fixed-token accounts use
+  the same routing, project opt-outs, and account picker as OAuth accounts.
+  They start untrusted. Trust allows eligible `readOnlyHint` reads and writes
+  still require confirmation. A 401 or 403 stops use of the rejected
+  credential and raises a card that opens the account's replacement field.
+  No refresh or automatic retry follows a rejection.
 - **Policy.** Every call goes through the autonomy policy. Hard prohibitions
   and existing outbound approval requirements take precedence. Otherwise use
   an explicit per-tool override, then annotations for a trusted upstream
@@ -1195,8 +1205,8 @@ such as Linear. The gateway does not call cloud LLM APIs.
   administrator access and reports when the folder is missing from PATH.
   Installation preserves existing files and foreign links. Uninstall removes
   only a symlink to the bundled launcher.
-- **Milestones.** G1 ships Claude, Codex and Linear. G2 adds opencode via
-  `OPENCODE_CONFIG_CONTENT`, bearer/header upstreams, user-registered OAuth
-  clients such as Slack, and the per-tool risk UI. Desktop apps and Cursor
-  are outside both milestones. See [ROADMAP](ROADMAP.md) and
+- **Milestones.** G1 ships Claude, Codex and Linear. G2 delivered fixed-token
+  upstreams in #51. G2 also includes opencode via `OPENCODE_CONFIG_CONTENT`,
+  user-registered OAuth clients such as Slack, and the per-tool risk UI.
+  Desktop apps and Cursor are outside both milestones. See [ROADMAP](ROADMAP.md) and
   [MASTERPLAN](MASTERPLAN.md#part-v-one-toolbelt-for-every-agent-cli).
