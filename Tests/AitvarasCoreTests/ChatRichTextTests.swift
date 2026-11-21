@@ -392,6 +392,7 @@ import Testing
         view.update("    first line\n    second line\n    third line")
         for width: CGFloat in [60, 350] {
             let size = view.measuredSize(width: width)
+            view.setFrameSize(size)
             let layout = try #require(view.layoutManager)
             let text = try #require(view.textStorage?.string) as NSString
             let lines = ["first line", "second line", "third line"]
@@ -412,5 +413,33 @@ import Testing
         #expect(wide.width == 700)
         #expect(narrow.width == 350)
         #expect(narrow.height > wide.height)
+    }
+
+    /// SwiftUI measures during its layout pass. If measuring reflowed the
+    /// displayed text, every pass re-dirtied the window until AppKit crashed.
+    @Test func measuringOtherWidthsLeavesTheDisplayedViewAlone() throws {
+        let view = ChatMessageTextView(frame: .zero, textContainer: nil)
+        view.update(String(repeating: "Long prose with **formatting**. ", count: 25)
+            + "\n\n| a | b |\n|---|---|\n| one | two |\n\n```\n" + String(repeating: "code", count: 100) + "\n```")
+        view.setFrameSize(view.measuredSize(width: 700))
+        let storage = try #require(view.textStorage)
+        let before = storage.copy() as! NSAttributedString
+        let container = try #require(view.textContainer).containerSize
+        let subviews = view.subviews.map(\.frame)
+        var edits = 0
+        let observer = NotificationCenter.default.addObserver(
+            forName: NSTextStorage.didProcessEditingNotification, object: storage, queue: nil) { _ in edits += 1 }
+        defer { NotificationCenter.default.removeObserver(observer) }
+
+        let narrow = view.measuredSize(width: 351.5)
+        _ = view.measuredSize(width: 700.25)
+
+        #expect(edits == 0)
+        #expect(storage.isEqual(to: before))
+        #expect(view.textContainer?.containerSize == container)
+        #expect(view.subviews.map(\.frame) == subviews)
+        // The off-screen answer matches what the view shows once given that width.
+        view.setFrameSize(NSSize(width: 351.5, height: narrow.height))
+        #expect(view.measuredSize(width: 351.5).height == narrow.height)
     }
 }
