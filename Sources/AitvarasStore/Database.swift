@@ -1284,6 +1284,48 @@ public final class AitvarasDatabase: Sendable {
             // Rate limit observations are disposable. New observations require a known key.
             try db.execute(sql: "DELETE FROM agentUsageResetObservation")
         }
+        m.registerMigration("v45-gateway-upstream-accounts") { db in
+            try db.create(table: "gatewayUpstreamAccount") { t in
+                t.primaryKey("id", .blob)
+                t.column("serverName", .text).notNull().indexed()
+                t.column("definitionProjectID", .blob).references("workspaceProject", onDelete: .cascade)
+                t.column("definitionFingerprint", .text).notNull()
+                t.column("globallyAvailable", .boolean).notNull()
+                t.column("isGlobalDefault", .boolean).notNull()
+            }
+            try db.create(index: "gatewayUpstreamGlobalDefault", on: "gatewayUpstreamAccount",
+                          columns: ["serverName"], unique: true, condition: Column("isGlobalDefault") == true)
+            try db.create(table: "gatewayProjectUpstreamSelection") { t in
+                t.column("projectID", .blob).notNull().references("workspaceProject", onDelete: .cascade)
+                t.column("serverName", .text).notNull()
+                t.column("accountID", .blob).notNull().references("gatewayUpstreamAccount").indexed()
+                t.primaryKey(["projectID", "serverName"])
+            }
+        }
+        m.registerMigration("v46-gateway-tool-scopes") { db in
+            try db.create(table: "gatewayProjectToolScopes") { t in
+                t.primaryKey("projectID", .blob).references("workspaceProject", onDelete: .cascade)
+                t.column("revision", .integer).notNull()
+                t.column("scopesJSON", .text).notNull()
+            }
+        }
+        m.registerMigration("v47-gateway-project-links") { db in
+            try db.create(table: "gatewayProjectKnowledgeSource") { t in
+                t.column("projectID", .blob).notNull().references("workspaceProject", onDelete: .cascade)
+                t.column("sourceID", .text).notNull().indexed()
+                t.primaryKey(["projectID", "sourceID"])
+            }
+            try db.create(table: "gatewayActivityProject") { t in
+                t.primaryKey("eventID", .blob).references("activityEvent", onDelete: .cascade)
+                t.column("projectID", .blob).notNull().indexed().references("workspaceProject", onDelete: .cascade)
+            }
+        }
+        m.registerMigration("v48-gateway-account-trust") { db in
+            try db.alter(table: "gatewayUpstreamAccount") { t in
+                t.add(column: "trusted", .boolean).notNull().defaults(to: false)
+                t.add(column: "label", .text)
+            }
+        }
         return m
     }
 

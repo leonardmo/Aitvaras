@@ -42,17 +42,22 @@ public enum AgentPermissionSource: String, Sendable, Codable { case repo, aitvar
 
 public struct AgentMCPServer: Sendable, Equatable, Codable {
     public enum Transport: String, Sendable, Codable { case stdio, http, sse }
+    public enum Management: String, Sendable, Codable { case gatewayOAuth }
     public let transport: Transport
     public let command: String?
     public let args: [String]
     public let env: [String: AgentMCPValue]
     public let url: String?
     public let headers: [String: AgentMCPValue]
+    /// Absent in native definitions, including every D34 definition.
+    public let management: Management?
 
     public init(transport: Transport = .stdio, command: String? = nil, args: [String] = [],
-                env: [String: AgentMCPValue] = [:], url: String? = nil, headers: [String: AgentMCPValue] = [:]) {
+                env: [String: AgentMCPValue] = [:], url: String? = nil, headers: [String: AgentMCPValue] = [:],
+                management: Management? = nil) {
         self.transport = transport; self.command = command; self.args = args
         self.env = env; self.url = url; self.headers = headers
+        self.management = management
     }
 
     public func validate() throws {
@@ -74,6 +79,11 @@ public struct AgentMCPServer: Sendable, Equatable, Codable {
                   parts.host?.isEmpty == false, parts.user == nil, parts.password == nil, parts.fragment == nil else {
                 throw AgentMCPError.invalidConfiguration
             }
+        }
+        if management == .gatewayOAuth {
+            guard transport == .http, headers.isEmpty, let url,
+                  let endpoint = URLComponents(string: url), endpoint.scheme == "https",
+                  endpoint.query == nil else { throw AgentMCPError.invalidConfiguration }
         }
     }
 

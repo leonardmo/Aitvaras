@@ -36,6 +36,7 @@ public actor AgentMCPRuntimeFile {
                               policy: AutonomyPolicy = .init(), audit: @escaping AgentActionCoordinator.Audit,
                               resolveSecret: @escaping SecretResolver) async throws -> AgentMCPRuntimeFile {
         try AgentMCPConfiguration.validate(servers)
+        guard servers.values.allSatisfy({ $0.management == nil }) else { throw AgentMCPError.invalidConfiguration }
         let tool = ToolDefinition(name: "runtimeConfiguration", description: "Prepare MCP runtime", parametersJSON: "{}", risk: .reversibleWrite)
         guard policy.verdict(for: tool, connectorID: "agent.mcp") == .allow else { throw AgentMCPError.runtimeFile }
         try await record("authorized", projectID: projectID, runID: runID, audit: audit)

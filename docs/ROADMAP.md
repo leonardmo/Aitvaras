@@ -14,11 +14,32 @@ claimed complete by this roadmap.
 5. Add an installable mobile-friendly dashboard, preserving the study dashboard.
 6. Pilot private focus/mail assistance; consider native Android only afterward.
 
-That plan supersedes the older priorities below and in `MASTERPLAN.md`,
+That plan supersedes the historical priorities below and in `MASTERPLAN.md`,
 `FUTURE.md` and `MOBILE-COMPANION.md`. The following is a historical
 implementation record, not evidence of runtime reliability or a current delivery order.
 In particular, existing text-only capture and ephemeral CLI delegation do not
 yet meet the new capture/session-continuity requirements.
+
+## Agent MCP gateway (D42)
+
+### G1 — Gateway core
+
+- ✅ Implemented the shared gateway, Claude and Codex launch adapters, scoped
+  tools, shared OAuth, approvals and audit, Connections and command installation.
+- ✅ Package acceptance covers shared sign-in and memory, distinct project
+  catalogs, untrusted writes and catalog updates with a fake upstream.
+- ⏳ Host acceptance remains open for the launcher-to-socket fixture, signed
+  app and helper pins, and live Linear sign-in shared by Claude Haiku and the
+  smallest available Codex model. The host checklist also covers plain-launch
+  rejection, live revoke and Settings presentation.
+
+See the [G1 checks](TESTING.md#agent-mcp-gateway-d42).
+
+### G2 — Gateway breadth 💡
+
+Add opencode, bearer/header upstreams, user-registered OAuth clients such
+as Slack, and per-tool risk controls. Desktop apps and Cursor stay out of
+scope.
 
 ## Historical roadmap and implementation record
 

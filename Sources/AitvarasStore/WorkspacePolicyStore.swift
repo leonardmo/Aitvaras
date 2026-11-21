@@ -1,6 +1,7 @@
 import Foundation
 import GRDB
 import AitvarasCore
+import AitvarasAgents
 
 public enum WorkspacePolicyError: Error, LocalizedError, Sendable, Equatable {
     case staleReview, invalidPolicy, invalidCaptureTarget, captureNotFound, immutableCaptureTarget
@@ -231,5 +232,75 @@ extension Stores {
         try dbc.execute(sql: "INSERT INTO workspaceCaptureTarget(recordID, projectID, chatID, linkedAt) VALUES(?, ?, ?, ?)",
                         arguments: [recordID, chat.projectID, chatID, Date.now])
         return try WorkspaceCaptureTarget.fetchOne(dbc, key: recordID)!
+    }
+}
+
+public struct GatewayToolScopeSettings: Sendable, Equatable {
+    public let revision: Int
+    public let scopes: Set<GatewayToolScope>
+    public let knowledgeSourceIDs: Set<String>
+}
+
+private struct StoredGatewayToolScopes: Codable, FetchableRecord, PersistableRecord {
+    static let databaseTableName = "gatewayProjectToolScopes"
+    let projectID: UUID
+    let revision: Int
+    let scopesJSON: String
+
+    var scopes: Set<GatewayToolScope> {
+        get throws {
+            let records = try JSONDecoder().decode([GatewayToolScope].self, from: Data(scopesJSON.utf8))
+            let scopes = Set(records)
+            guard revision > 0, scopes.count == records.count else { throw WorkspacePolicyError.invalidPolicy }
+            return scopes
+        }
+    }
+}
+
+extension Stores {
+    public func gatewayToolScopeSettings(projectID: UUID) throws -> GatewayToolScopeSettings {
+        try db.queue.read { dbc in try Self.gatewayToolScopeSettings(projectID: projectID, in: dbc) }
+    }
+
+    @discardableResult
+    public func saveGatewayToolScopes(projectID: UUID, scopes: Set<GatewayToolScope>,
+                                      expectedRevision: Int,
+                                      knowledgeSourceIDs: Set<String>? = nil) throws -> GatewayToolScopeSettings {
+        try db.queue.write { dbc in
+            let existing = try Self.gatewayToolScopeSettings(projectID: projectID, in: dbc)
+            guard existing.revision == expectedRevision, expectedRevision < Int.max else { throw WorkspacePolicyError.staleReview }
+            let sources = knowledgeSourceIDs ?? existing.knowledgeSourceIDs
+            if sources != existing.knowledgeSourceIDs {
+                let configured = try Set(Self.configuredKnowledgeSources(in: dbc).map(\.id))
+                guard sources.count <= 128, sources.isSubset(of: configured) else { throw WorkspacePolicyError.invalidPolicy }
+                try GatewayProjectKnowledgeSource.filter(Column("projectID") == projectID).deleteAll(dbc)
+                for id in sources.sorted() {
+                    try GatewayProjectKnowledgeSource(projectID: projectID, sourceID: id).insert(dbc)
+                }
+            }
+            if existing.scopes == scopes, sources == existing.knowledgeSourceIDs { return existing }
+            let row = StoredGatewayToolScopes(projectID: projectID, revision: expectedRevision + 1,
+                scopesJSON: try AgentMCPConfiguration.encode(scopes.sorted { $0.rawValue < $1.rawValue }))
+            try row.save(dbc)
+            try Self.recordGatewaySetting("Save project gateway tool scopes", projectID: projectID, in: dbc)
+            return .init(revision: row.revision, scopes: scopes, knowledgeSourceIDs: sources)
+        }
+    }
+
+    public func gatewayToolScopeGate() -> GatewayToolScopeGate {
+        GatewayToolScopeGate { projectID in try gatewayToolScopeSettings(projectID: projectID).scopes }
+    }
+
+    static func requireGatewayScope(_ scope: GatewayToolScope, projectID: UUID, in dbc: Database) throws {
+        guard try gatewayToolScopeSettings(projectID: projectID, in: dbc).scopes.contains(scope) else {
+            throw GatewayToolScopeError.notGranted
+        }
+    }
+
+    private static func gatewayToolScopeSettings(projectID: UUID, in dbc: Database) throws -> GatewayToolScopeSettings {
+        try requireGatewayProject(projectID, in: dbc)
+        let row = try StoredGatewayToolScopes.fetchOne(dbc, key: projectID)
+        return try .init(revision: row?.revision ?? 0, scopes: row?.scopes ?? [],
+                         knowledgeSourceIDs: gatewayKnowledgeSourceIDs(projectID: projectID, in: dbc))
     }
 }

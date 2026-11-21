@@ -19,6 +19,7 @@
 | [CLAUDE-INTEGRATION.md](CLAUDE-INTEGRATION.md) | Claude Code provider and account modes. |
 | [CODEX-BIDIRECTIONAL-INTEGRATION.md](CODEX-BIDIRECTIONAL-INTEGRATION.md) | Native Codex projects and chats. |
 | [CODEX-NATIVE-SETUP.md](CODEX-NATIVE-SETUP.md) | Shared native Codex setup. |
+| [Agent MCP gateway](DECISIONS.md#d42--one-mcp-gateway-for-agent-clis--2026-11-19) | Gateway design, scope and [G1 acceptance](TESTING.md#agent-mcp-gateway-d42). |
 | [FRONTIER-INTEGRATION-STATUS.md](FRONTIER-INTEGRATION-STATUS.md) | Claude/Codex integration checklist. |
 | [FRONTIER-CODEX-PROOF.md](FRONTIER-CODEX-PROOF.md) | Codex text-only proof. |
 | [NEXT-WORKSPACE-PLAN.md](NEXT-WORKSPACE-PLAN.md) | Structured workspace checkpoints. |

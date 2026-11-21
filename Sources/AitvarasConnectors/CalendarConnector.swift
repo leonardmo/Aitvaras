@@ -8,22 +8,29 @@ import AitvarasCore
 /// user's data and is off-limits for writes.
 public enum AitvarasEventTag {
     public static let scheme = "aitvaras"
+    public enum Item: String, Sendable { case event, reminder }
 
-    /// URL stored on Aitvaras-created events, e.g. `aitvaras://event/<uuid>`.
-    public static func makeURL() -> URL {
-        URL(string: "aitvaras://event/\(UUID().uuidString)")!
+    /// URL stored on Aitvaras-created items, including older tagged events.
+    public static func makeURL(item: Item = .event) -> URL {
+        URL(string: "\(scheme)://\(item.rawValue)/\(UUID().uuidString)")!
     }
 
-    /// True when the event URL identifies the event as Aitvaras-managed.
     public static func isAitvarasManaged(_ url: URL?) -> Bool {
         url?.scheme?.lowercased() == scheme
+    }
+
+    /// Write authorization requires the marker for the correct item type.
+    public static func owns(_ url: URL?, item: Item) -> Bool {
+        guard let url, isAitvarasManaged(url), url.host == item.rawValue else { return false }
+        let parts = url.pathComponents.dropFirst()
+        return parts.count == 1 && parts.allSatisfy { UUID(uuidString: $0) != nil }
     }
 }
 
 /// Apple Calendar via EventKit (D6). Creating events is a reversible write;
 /// updating/deleting is allowed only for events Aitvaras created herself,
 /// enforced here via `AitvarasEventTag` in addition to the central D13 policy.
-public actor CalendarConnector: Connector {
+public actor CalendarConnector: GatewayProfileConnector {
     public nonisolated let id = "calendar"
     public nonisolated let displayName = "Calendar"
 
@@ -94,7 +101,20 @@ public actor CalendarConnector: Connector {
     public func execute(toolName: String, argumentsJSON: String) async throws -> String {
         let args = try ToolArgs(json: argumentsJSON)
         try await ensureFullAccess()
+        return try executeAuthorized(toolName, args: args)
+    }
 
+    public func executeGatewayTool(toolName: String, argumentsJSON: String, projectID: UUID,
+                                   authorize: @Sendable () throws -> Void) async throws -> String {
+        let args = try ToolArgs(json: argumentsJSON)
+        try authorize()
+        try await ensureFullAccess()
+        try Task.checkCancellation()
+        try authorize()
+        return try executeAuthorized(toolName, args: args)
+    }
+
+    private func executeAuthorized(_ toolName: String, args: ToolArgs) throws -> String {
         switch toolName {
         case "list_events":
             return try listEvents(args)
@@ -134,7 +154,7 @@ public actor CalendarConnector: Connector {
                 ("allDay", event.isAllDay ? .bool(true) : nil),
                 ("calendar", .string(event.calendar?.title ?? "")),
                 ("location", event.location.map { .string($0) }),
-                ("aitvarasCreated", AitvarasEventTag.isAitvarasManaged(event.url) ? .bool(true) : nil)
+                ("aitvarasCreated", AitvarasEventTag.owns(event.url, item: .event) ? .bool(true) : nil)
             ])
         }
         var result = lines.joined(separator: "\n")
@@ -208,7 +228,7 @@ public actor CalendarConnector: Connector {
         guard let event = store.event(withIdentifier: id) else {
             throw ConnectorError("No event with id '\(id)'.")
         }
-        guard AitvarasEventTag.isAitvarasManaged(event.url) else {
+        guard AitvarasEventTag.owns(event.url, item: .event) else {
             throw ConnectorError(
                 "Refusing to \(action) '\(event.title ?? id)': Aitvaras only modifies events she created herself (D6). Ask the user to change it, or create a new event instead.")
         }

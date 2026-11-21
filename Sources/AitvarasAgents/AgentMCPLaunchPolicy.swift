@@ -98,8 +98,16 @@ public struct AgentMCPLaunchPolicy: Sendable {
     }
 
     public func runtimeFile(snapshot: AgentMCPLaunchSnapshot, runID: UUID,
-                            format: AgentMCPRuntimeFile.Format, baseConfiguration: JSONValue? = nil) async throws -> AgentMCPRuntimeFile? {
-        let servers = format == .claude ? snapshot.resolution.claudeServers : snapshot.resolution.localServers
+                            format: AgentMCPRuntimeFile.Format, baseConfiguration: JSONValue? = nil,
+                            gateway: GatewayCLIConfiguration? = nil) async throws -> AgentMCPRuntimeFile? {
+        var servers = format == .claude ? snapshot.resolution.claudeServers : snapshot.resolution.localServers
+        if let gateway {
+            let name = GatewayCLIConfiguration.serverName
+            guard format == .claude, servers[name] == nil, snapshot.resolution.repositoryEntries[name] == nil else {
+                throw AgentMCPError.nameCollision
+            }
+            servers[name] = gateway.server
+        }
         guard !servers.isEmpty else { return nil }
         return try await AgentMCPRuntimeFile.create(stateDirectory: stateDirectory, projectID: snapshot.projectID,
             runID: runID, servers: servers, format: format, baseConfiguration: baseConfiguration,

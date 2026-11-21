@@ -1847,3 +1847,179 @@ check the IOPS callback on AC/battery changes, real assertion presence/release
 and quit/cancelled termination. Use synthetic quota stops and fake providers in
 the isolated profile for those checks. Do not schedule wake alarms or use
 admin commands. Unit tests cannot establish these OS behaviors.
+
+## Agent MCP gateway (D42)
+
+For the identity and registry foundation in a supervised sandbox:
+
+```sh
+scripts/codex-swift.sh build --build-tests
+scripts/codex-swift.sh test --skip-build --filter 'GatewayProcessIdentity|GatewayLaunchRegistryTests'
+make privacy
+```
+
+The ancestry spike checks a spawned supervisor, child and Unix-socket peer
+against the kernel PID and start time. Also check unrelated peers, exited
+ancestors, simulated PID reuse, inspection failure, immutable launch context,
+and exit/revoke while a connection is active. All spawned fixtures must
+terminate on their own, with a bounded deadline and no spinning. Reap every
+child. If a sandbox denies an operation, record the operation and error and
+rerun that real-kernel check on the host.
+
+For the registry and scope foundation, run the same build and filter tests with
+`GatewayUpstreamStoreTests|GatewayProjectScopeTests|WorkspaceAgentSetupTests|AgentMCPRuntimeFileTests`.
+Run the full `AgentMCPResolverTests` suite on the host. The supervised sandbox
+can report an unreadable ancestor even when the fixture's own MCP file is
+readable, so tests that require a fully readable ancestor chain need that check.
+Upgrade a v44 profile and check that native definitions, secret references,
+approvals and opt-outs are preserved. Gateway accounts require an explicit
+gateway-managed definition. A project account choice overrides the global
+default. The existing project opt-out blocks global accounts, while an
+explicitly assigned account can still be used. Definition changes require a
+fresh account binding. For launch resolution, check nested roots, ready
+worktrees, ambiguous ownership and an existing launch after folders change.
+Verify that tool grants control both discovery and dispatch, that an existing
+launch observes revocation, and that foreign or unknown record IDs are denied.
+Each real tool adapter must also filter its record reads and writes by the
+authorized project. On the host, build the App and verify that Project Settings
+→ Gateway Tools starts with all categories off and that Save, Reload and
+revocation work in an isolated profile.
+
+For the transport-independent gateway, run the sandbox build and filter with
+`MCPGatewayTests|GatewayCallCoordinatorTests|GatewayOwnToolsTests|ConnectorHubTests`.
+Replay initialization, pagination and stale cursors, duplicate names and
+request IDs, malformed and oversized frames, and cancel/close. Check that
+approval is one-shot, outside requests expire, and inline requests remain
+pending until the chat lifecycle resolves them. A stale launch or tool
+definition must stop a previously approved call. Check that a failed
+pre-dispatch audit stops the action and that uncertain writes produce a
+do-not-retry error. Inspect both legacy suggestions and every gateway event
+for absence of complete arguments, results, and connector error text.
+
+Gateway memory and today's goals use profile rows. Check that Memory search
+and About omit quarantined and invalidated facts. A gateway memory write
+appears in the profile, with launch, client and project in Activity. Sensitive
+drafted facts stay quarantined until approved. Knowledge is absent until a
+project links an existing Knowledge source. Index a new document into a linked
+source and verify it is searchable without a record link. Removing the source
+removes the link and its contents. Mail offers only the profile connector's
+read/search tools. Calendar and Reminders read the profile and can change
+only items tagged as created by Aitvaras. Gateway activity remains local
+to the launch's project.
+
+On the host, build the App and check that the Gateway Tools tab explains
+profile access and saves Knowledge source links. With disposable EventKit
+and Mail data, verify that ownership tags survive a fetch, tagged items can
+be changed, untagged items can be read but cannot be changed, and reading a
+message leaves it unread.
+
+For the Unix transport and launcher, filter the sandbox package run with
+`GatewayTransportTests|GatewaySocketHostTests|GatewayPTYHostTests|MCPGatewayTests`.
+The host socket fixtures check private endpoint modes, stale versus active
+sockets, signature matching, kernel cwd, and cancellation on revoke. The PTY
+fixture checks tty input, window resize, Ctrl-C and terminal restoration. If
+an operation is denied under supervision, rerun the unchanged fixture on the
+host. Fixtures have their own deadlines.
+
+After `make app`, the supervisor can test a throwaway state profile with
+external integrations disabled. The launcher is
+`Contents/Helpers/aitvaras` and the stdio relay is
+`Contents/MacOS/aitvaras-mcp`. The launcher uses Helpers so its name does not
+collide with `Aitvaras` on a case-insensitive volume. An isolated launch uses
+`open -g -n` with the selected state directory so an existing default app
+cannot satisfy it. The startup deadline is ten seconds and stdout is reserved
+for MCP frames. A state path too long for Darwin's Unix socket address must
+be shortened. The gateway never falls back to another profile or port.
+
+Xcode's development targets sign the commands ad hoc and embed them before
+signing the App. Embedding verifies both copied signatures. An unsigned local
+build can use the same path by signing each command with
+`codesign --force --options runtime --sign -` before embedding it, then signing
+the enclosing build. Restart the app after replacing a binary so it pins the
+new hash. There is no unsigned opt-out.
+
+`GatewayG1CoreAcceptanceTests` connects two clients to one project while a
+third uses a different project. It checks a single fake OAuth registration
+and upstream initialization, the shared memory scope, an approval on each
+untrusted write, and the catalog update in both connected clients.
+`GatewayG1HostAcceptanceTests` drives fake Claude and Codex through
+`GatewayLauncher` and its supervisor. A finite stdio test relay exercises the
+Unix gateway, including an unregistered client and EOF after revocation.
+That test uses an in-process launcher registration and a fake verifier.
+The separate built-App test checks the actual helper paths, static pins and
+the signed bundle seal. Run both checks with the built App on the host.
+
+```sh
+make app
+app="$PWD/.build-xcode/Build/Products/Debug/Aitvaras.app"
+AITVARAS_GATEWAY_TEST_APP="$app" swift test --filter GatewayG1
+```
+
+`GatewayCLIConfigurationTests` checks the arguments against small synthetic
+help excerpts. `GatewayChatLaunchTests` uses finite provider fixtures to verify
+Claude's D34 settings and separate Codex process roots for different projects.
+On the host, compare `claude --help` and `codex --help` with the excerpts. Use
+Claude `--model haiku` and the smallest available Codex model for live runs.
+Check that the launcher and interactive Chat both discover `aitvaras`, that
+two Codex projects see only their own granted tools, and that an inline
+gateway approval is cleared on Stop or provider cancellation. Check that
+native repo/user MCP policy still applies and that side questions and
+restricted non-chat jobs have no gateway.
+
+`GatewayOAuthTests` runs discovery, dynamic registration, S256 PKCE, token
+exchange, refresh rotation and protected MCP calls with injected HTTP and
+an in-memory credential store. It covers invalid state/verifier, cancellation,
+refresh failure, shared sessions and deduplicated re-auth. On the host,
+`GatewayOAuthHostTests` checks the bounded IPv4 loopback browser callback
+and Streamable HTTP parsing. For a registered managed Linear account at
+`https://mcp.linear.app/mcp`, call its listed tool to surface the sign-in card
+in Settings → Connections. Sign in there, then list tools again in the same
+CLI connection. Before discovery, every upstream exposes the same
+`sign_in` entry. An expired or rejected grant must keep the last discovered
+catalog visible for the current app run and surface a fresh sign-in request.
+
+For external approvals, make a confirmable call from a terminal-launched
+agent. The same request should appear in the companion's Agent requests
+popover and the Chat suggestion bar. Allow or deny from either surface and
+verify both clear. Repeat with a disconnected CLI and a revoked launch and
+verify the old card cannot dispatch. Re-auth appears on the same surfaces
+and in Settings → Connections. With Aitvaras inactive and notifications
+enabled, verify the notification contains no tool arguments or credentials.
+
+In Settings → Connections, add a managed account, sign in and sign out,
+switch the global default, and verify a project's account choice and global
+opt-out against two running launches. Revoke one launch and verify that its
+pending approvals and relay access end. Trust and untrust one account and
+verify that eligible annotations affect decisions only while it is trusted.
+`GatewayCommandInstallerTests` uses a temporary home to check link ownership
+and PATH detection. For the App check, use a disposable macOS user or an
+empty command path. Install and uninstall through Settings, and verify that
+the App leaves an unrelated command or dangling foreign link intact.
+
+### Pending host and live acceptance
+
+1. With the host-built App, make a short isolated state directory and disable
+   external integrations for offline checks. Start from a terminal whose
+   working directory belongs to a disposable project that grants Memory.
+   Set `AITVARAS_STATE_DIR` to that profile for the App and both CLI launches.
+   Leave the profile's App stopped for the first launch to exercise
+   `open -g -n` and background startup.
+2. Compare the loaded adapter flags with `claude --help` and `codex --help`.
+   Launch from the bundle with `"$app/Contents/Helpers/aitvaras" claude --model haiku`
+   and `"$app/Contents/Helpers/aitvaras" codex --model "$smallest_codex_model"`.
+   Set `smallest_codex_model` to the smallest available subscription model.
+   Repeat Claude with an existing disposable `CLAUDE_CONFIG_DIR`. Verify both
+   clients discover `aitvaras` and appear in Connections. Successful discovery
+   through those actual bundled binaries exercises the live app and launcher pins.
+3. Enable only the integrations required for the live check. Add one managed
+   Linear account, sign in once through Connections, and list tools again
+   in the connected CLIs. From each CLI, read one issue and search for the same
+   synthetic project-authorized memory fact. Check that the two clients share
+   the login and that project opt-out or account choice changes the second
+   project's catalog.
+4. Launch a CLI directly and verify it lacks `aitvaras`. Starting
+   `"$app/Contents/MacOS/aitvaras-mcp"` directly should fail admission.
+   Deny a request for a disposable untrusted upstream write. Revoke a live
+   launch from Connections and verify its relay and pending cards close.
+   Check Settings installation, TTY and signal handling, and approval and
+   re-auth presentation on the host. Run `make check` before shipping.

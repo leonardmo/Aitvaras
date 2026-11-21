@@ -4,6 +4,8 @@ import Foundation
 /// must be answered explicitly. No raw provider error text escapes this layer.
 actor AgentWire {
     enum Format: Sendable { case claude, codex }
+    typealias CancelApprovals = @Sendable () async -> Void
+    typealias RegisterProcess = @Sendable (pid_t) async throws -> CancelApprovals
     private let process: StreamingProcess
     private let format: Format
     private var nextID: Int64 = 0
@@ -16,14 +18,27 @@ actor AgentWire {
     var failureReport: AgentFailureReport? { failure }
     private var receive: (@Sendable (JSONValue, AgentRequestID?) async -> Void)?
     private var disconnected: (@Sendable (AgentFailureReport) async -> Void)?
+    private var cancelApprovals: CancelApprovals?
 
     init(process: StreamingProcess, format: Format) { self.process = process; self.format = format }
 
     deinit { reader?.cancel(); process.terminate() }
 
     func open(receive: @escaping @Sendable (JSONValue, AgentRequestID?) async -> Void,
-              disconnected: @escaping @Sendable (AgentFailureReport) async -> Void) throws {
-        try process.start()
+              disconnected: @escaping @Sendable (AgentFailureReport) async -> Void,
+              register: RegisterProcess? = nil) async throws {
+        try Task.checkCancellation()
+        let pid = try process.start(suspended: register != nil)
+        if let register {
+            do {
+                cancelApprovals = try await register(pid)
+                try Task.checkCancellation()
+                try process.resumeAfterRegistration(pid)
+            } catch {
+                try? await process.shutdown(grace: .zero)
+                throw error
+            }
+        }
         self.receive = receive; self.disconnected = disconnected
         reader = Task { [weak self, process] in
             do {
@@ -44,6 +59,8 @@ actor AgentWire {
             }
         }
     }
+
+    func cancelGatewayApprovals() async { await cancelApprovals?() }
 
     func write(_ value: JSONValue) async throws {
         if let failure { throw failure.failure }
@@ -134,6 +151,10 @@ actor AgentWire {
         timers.values.forEach { $0.cancel() }; timers.removeAll()
         waiters.values.forEach { $0.resume(throwing: error.failure) }
         process.terminate()
+        if let cancelApprovals {
+            self.cancelApprovals = nil
+            await cancelApprovals()
+        }
         await disconnected?(error)
     }
     func close() async throws {

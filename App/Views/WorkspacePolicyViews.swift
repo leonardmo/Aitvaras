@@ -120,11 +120,14 @@ struct WorkspaceBoundaryReviewView: View {
                 Text("General").tag("general")
                 Text("Codex link").tag("codex")
                 Text("Agent setup").tag("agent")
+                Text("Gateway tools").tag("gateway")
             }.pickerStyle(.segmented)
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
                     if settingsTab == "agent" {
                         AgentSetupSection(projectID: projectID, directory: agentDirectory)
+                    } else if settingsTab == "gateway" {
+                        WorkspaceGatewayToolScopesView(projectID: projectID)
                     } else if settingsTab == "codex" {
                         CodexProjectLinkView(projectID: projectID)
                     } else if review != nil {
@@ -259,6 +262,86 @@ struct WorkspaceBoundaryReviewView: View {
         } catch {
             if let id { model.activityReporter?.finish(id: id, state: .failed, outcome: "Boundary review not saved; reload current project metadata") }
             message = "Settings were not saved. The project may have changed elsewhere. Reload and try again."
+        }
+    }
+}
+
+private struct WorkspaceGatewayToolScopesView: View {
+    @Environment(AppModel.self) private var model
+    let projectID: UUID
+    @State private var saved: GatewayToolScopeSettings?
+    @State private var scopes: Set<GatewayToolScope> = []
+    @State private var knowledgeSources: [KnowledgeSourceConfiguration] = []
+    @State private var linkedSourceIDs: Set<String> = []
+    @State private var message: String?
+
+    var body: some View {
+        GroupBox("Aitvaras tools") {
+            VStack(alignment: .leading, spacing: 10) {
+                Text("Allow agents launched for this project to use your Aitvaras profile tools. The provider can receive tool results. Knowledge uses the sources you link below, and gateway activity stays within this project.")
+                    .font(.callout)
+                ForEach(GatewayToolScope.allCases) { scope in
+                    Toggle(scope == .mail ? "Mail (read only)" : scope.rawValue.capitalized,
+                           isOn: Binding(get: { scopes.contains(scope) }, set: { enabled in
+                        if enabled { scopes.insert(scope) } else { scopes.remove(scope) }
+                    }))
+                    .disabled(saved == nil)
+                    .accessibilityIdentifier("workspace.gateway.scope.\(scope.rawValue)")
+                }
+                if scopes.contains(.knowledge) {
+                    Text("Linked Knowledge sources").font(.headline)
+                    if knowledgeSources.isEmpty {
+                        Text("Add a source in Knowledge first.").font(.callout).foregroundStyle(.secondary)
+                    }
+                    ForEach(knowledgeSources) { source in
+                        Toggle(source.name, isOn: Binding(get: { linkedSourceIDs.contains(source.id) }, set: { enabled in
+                            if enabled { linkedSourceIDs.insert(source.id) } else { linkedSourceIDs.remove(source.id) }
+                        }))
+                        .help(source.path)
+                    }
+                }
+                HStack {
+                    Button("Reload", action: reload)
+                    Spacer()
+                    Button("Save tool access", action: save)
+                        .disabled(saved == nil || (saved?.scopes == scopes && saved?.knowledgeSourceIDs == linkedSourceIDs))
+                        .accessibilityIdentifier("workspace.gateway.save")
+                }
+                if let message { Text(message).font(.callout) }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(6)
+        }
+        .task(id: projectID) { reload() }
+    }
+
+    private func reload() {
+        do {
+            guard let stores = model.stores else { throw WorkspacePolicyError.invalidPolicy }
+            let settings = try stores.gatewayToolScopeSettings(projectID: projectID)
+            let sources = try stores.configuredKnowledgeSources()
+            saved = settings
+            scopes = settings.scopes
+            knowledgeSources = sources
+            linkedSourceIDs = settings.knowledgeSourceIDs.intersection(sources.map(\.id))
+            message = nil
+        } catch {
+            saved = nil
+            scopes = []
+            knowledgeSources = []
+            linkedSourceIDs = []
+            message = "Tool access could not be loaded. Try Reload."
+        }
+    }
+
+    private func save() {
+        guard let stores = model.stores, let saved else { return }
+        do {
+            self.saved = try stores.saveGatewayToolScopes(projectID: projectID, scopes: scopes, expectedRevision: saved.revision,
+                                                          knowledgeSourceIDs: linkedSourceIDs)
+            message = "Tool access saved."
+        } catch {
+            message = "Tool access could not be saved. Reload and try again."
         }
     }
 }

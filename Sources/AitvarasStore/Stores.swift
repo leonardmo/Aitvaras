@@ -424,8 +424,9 @@ public struct Stores: Sendable {
 
     /// Resolve entity names and persist the fact as one unit. This prevents a
     /// rejected fact write from leaving orphaned People & Things rows behind.
-    public func saveFact(_ fact: MemoryFact, entityNames: String?) throws {
+    public func saveFact(_ fact: MemoryFact, entityNames: String?, gatewayProjectID: UUID? = nil) throws {
         try db.queue.write { dbc in
+            if let gatewayProjectID { try Self.requireGatewayScope(.memory, projectID: gatewayProjectID, in: dbc) }
             let entities = try Self.resolveEntities(names: entityNames, in: dbc)
             var stored = fact
             stored.entitiesText = entities.map(\.name).joined(separator: ", ")
@@ -501,8 +502,14 @@ public struct Stores: Sendable {
     /// Resolve replacement entities inside the correction transaction. Unlike
     /// the id-based overload, nil names explicitly means no entity links.
     public func replaceFact(_ oldID: UUID, with replacement: MemoryFact,
-                            entityNames: String?, at: Date = .now) throws {
+                            entityNames: String?, at: Date = .now, gatewayProjectID: UUID? = nil) throws {
         try db.queue.write { dbc in
+            if let gatewayProjectID {
+                try Self.requireGatewayScope(.memory, projectID: gatewayProjectID, in: dbc)
+                guard let old = try MemoryFact.fetchOne(dbc, key: oldID), !old.needsReview && old.isCurrentlyValid else {
+                    throw AitvarasStoreError.factNotFound(oldID)
+                }
+            }
             let entities = try Self.resolveEntities(names: entityNames, in: dbc)
             var stored = replacement
             stored.entitiesText = entities.map(\.name).joined(separator: ", ")
@@ -1220,6 +1227,9 @@ public struct Stores: Sendable {
                     sql: "DELETE FROM ragFTS WHERE chunkID = ?", arguments: [chunkID.uuidString])
             }
             try dbc.execute(sql: "DELETE FROM ragDocument WHERE source = ?", arguments: [source])
+            if key == KnowledgeSourceConfiguration.settingsKey {
+                try GatewayProjectKnowledgeSource.filter(Column("sourceID") == source).deleteAll(dbc)
+            }
         }
     }
 

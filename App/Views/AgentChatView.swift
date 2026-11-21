@@ -2,6 +2,7 @@ import SwiftUI
 import AppKit
 import UniformTypeIdentifiers
 import AitvarasAgents
+import AitvarasAgent
 import AitvarasStore
 
 private struct AgentSetupDestination: Identifiable {
@@ -37,12 +38,19 @@ struct AgentChatView: View {
     @State private var showingCompletion = false
     @FocusState private var composerFocused: Bool
 
+    private var gatewayApprovals: [GatewayApprovalRequest] {
+        model.gatewayInlineApprovals.filter { $0.invocation.presentation == .inline(chatID: chatID) }
+    }
+
     var body: some View {
         HSplitView {
             transcript.frame(minWidth: 300)
             if !compact, showingChanges, let changes = chat.changes {
                 AgentChangesView(chat: chat, owner: chatID, changes: changes).id(chatID)
             }
+        }
+        .safeAreaInset(edge: .top, spacing: 0) {
+            if !compact { GatewaySuggestionBar() }
         }
         .toolbar {
             AgentWakeBadge(manager: model.agentSessionManager, chatID: chatID)
@@ -121,6 +129,22 @@ struct AgentChatView: View {
                         ForEach(Array((chat.state?.pendingCards ?? []).enumerated()), id: \.element.identity) { index, request in
                             requestCard(request, index: index)
                         }
+                        ForEach(gatewayApprovals) { request in
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text("Allow \(request.toolName)?").font(.headline)
+                                DisclosureGroup("Arguments") {
+                                    Text(verbatim: request.arguments.jsonString)
+                                        .font(.caption.monospaced()).textSelection(.enabled)
+                                }
+                                HStack {
+                                    Button("Deny") { Task { await model.decideGatewayApproval(request, allow: false) } }
+                                    Button("Allow once") { Task { await model.decideGatewayApproval(request, allow: true) } }
+                                }
+                            }
+                            .padding(12)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 8))
+                        }
                         Color.clear.frame(height: 1).id("chat.end")
                     }
                     .frame(maxWidth: 760, alignment: .leading)
@@ -143,6 +167,9 @@ struct AgentChatView: View {
                     if atBottom { proxy.scrollTo("chat.end", anchor: .bottom) }
                 }
                 .onChange(of: chat.state?.pendingCards) {
+                    if atBottom { proxy.scrollTo("chat.end", anchor: .bottom) }
+                }
+                .onChange(of: gatewayApprovals.map(\.id)) {
                     if atBottom { proxy.scrollTo("chat.end", anchor: .bottom) }
                 }
                 .onChange(of: chatID) { atBottom = true; proxy.scrollTo("chat.end", anchor: .bottom) }

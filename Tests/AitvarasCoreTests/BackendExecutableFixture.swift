@@ -9,11 +9,12 @@ struct BackendExecutableFixture {
     let executable: URL
     var environment: [String: String] { ["PATH": "/usr/bin:/bin", "ANTHROPIC_API_KEY": "must-be-removed", "OPENAI_API_KEY": "must-be-removed"] }
 
-    init(script: String) throws {
+    init(timeoutSeconds: Int = 45, script: String) throws {
         directory = FileManager.default.temporaryDirectory.appendingPathComponent("agent-backend-" + UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         executable = directory.appendingPathComponent("provider")
-        try ("#!/usr/bin/python3\n" + Self.prelude + "\n" + script).write(to: executable, atomically: true, encoding: .utf8)
+        try ("#!/usr/bin/python3\nfixture_timeout = \(timeoutSeconds)\n" + Self.prelude + "\n" + script)
+            .write(to: executable, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: executable.path)
     }
     init(provider: String, name: String) throws {
@@ -48,7 +49,12 @@ struct BackendExecutableFixture {
         throw AgentFailure.invalidRequest
     }
     static let prelude = #"""
-import sys, os, json, time, base64, uuid
+import sys, os, json, time, base64, uuid, signal
+# exec preserves blocked signals and ignored dispositions from the runner.
+# Arm a working deadline before any protocol I/O, including direct stdin reads.
+signal.signal(signal.SIGALRM, signal.SIG_DFL)
+signal.pthread_sigmask(signal.SIG_UNBLOCK, {signal.SIGALRM})
+signal.alarm(fixture_timeout)
 root = os.path.dirname(os.path.abspath(__file__))
 os.chdir(root)
 def emit(value):
@@ -60,7 +66,7 @@ def read():
     return json.loads(line)
 def done():
     open('done','w').close()
-    while sys.stdin.readline(): pass
+    sys.stdin.read()
 def fail(expected, actual):
     open('failure','w').write('Expected: '+repr(expected)+'\nActual: '+repr(actual))
     sys.exit(9)

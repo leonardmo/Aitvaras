@@ -12,7 +12,9 @@ let package = Package(
         .library(name: "AitvarasConnectors", targets: ["AitvarasConnectors"]),
         .library(name: "AitvarasVoice", targets: ["AitvarasVoice"]),
         .library(name: "AitvarasAgent", targets: ["AitvarasAgent"]),
-        .library(name: "AitvarasAgents", targets: ["AitvarasAgents"])
+        .library(name: "AitvarasAgents", targets: ["AitvarasAgents"]),
+        .executable(name: "aitvaras", targets: ["AitvarasCommand"]),
+        .executable(name: "aitvaras-mcp", targets: ["AitvarasMCPCommand"])
     ],
     dependencies: [
         .package(url: "https://github.com/swiftlang/swift-markdown", exact: "0.7.3"),
@@ -46,8 +48,11 @@ let package = Package(
             ]
         ),
         .target(name: "AitvarasRAG", dependencies: ["AitvarasCore", "AitvarasStore"]),
+        .target(name: "CGatewayPTY"),
+        .executableTarget(name: "AitvarasCommand", dependencies: ["AitvarasAgents"]),
+        .executableTarget(name: "AitvarasMCPCommand", dependencies: ["AitvarasAgents"]),
         .target(name: "AitvarasAgents", dependencies: [
-            "AitvarasCore",
+            "AitvarasCore", "CGatewayPTY",
             .product(name: "Markdown", package: "swift-markdown"),
             .product(name: "SwiftMath", package: "SwiftMath")
         ]),
@@ -62,7 +67,7 @@ let package = Package(
         ]),
         .target(
             name: "AitvarasAgent",
-            dependencies: ["AitvarasCore", "AitvarasStore", "AitvarasEngines", "AitvarasRAG", "AitvarasConnectors"]
+            dependencies: ["AitvarasCore", "AitvarasStore", "AitvarasEngines", "AitvarasRAG", "AitvarasConnectors", "AitvarasAgents"]
         ),
         .testTarget(
             name: "AitvarasCoreTests",

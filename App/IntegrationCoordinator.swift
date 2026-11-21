@@ -404,22 +404,17 @@ final class IntegrationCoordinator {
 
     // MARK: RAG sources (user-configured, D11)
 
-    static let ragSourcesKey = "rag.sources"
+    static let ragSourcesKey = KnowledgeSourceConfiguration.settingsKey
 
     /// One user-added folder to index. Stored as JSON in the kv table —
     /// nothing is preconfigured (D18; also keeps personal paths out of code).
-    struct RAGSourceConfig: Codable, Equatable, Identifiable {
-        var id: String
-        var name: String
-        var path: String
-    }
+    typealias RAGSourceConfig = KnowledgeSourceConfiguration
 
     private(set) var ragSourceConfigs: [RAGSourceConfig] = []
     private var ragSourceConfigurationLoaded = false
 
     private func loadRAGSourceConfigs() throws -> [RAGSourceConfig] {
-        guard let raw = try stores.value(forKey: Self.ragSourcesKey) else { return [] }
-        return try JSONDecoder().decode([RAGSourceConfig].self, from: Data(raw.utf8))
+        try stores.configuredKnowledgeSources()
     }
 
     private func encodedRAGSourceConfigs(_ configs: [RAGSourceConfig]) throws -> String {

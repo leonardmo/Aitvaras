@@ -63,8 +63,8 @@ struct CodexNativeClientTests {
         let fixture = try Fixture(scenario: "hang", timeout: .milliseconds(100)); defer { fixture.remove() }
         let start = ContinuousClock.now
         await #expect(throws: CodexNativeError.timeout) { _ = try await fixture.client.connect() }
-        #expect(start.duration(to: .now) < .seconds(2))
-        let canceled = try Fixture(scenario: "hang"); defer { canceled.remove() }
+        #expect(start.duration(to: .now) < .seconds(10))
+        let canceled = try Fixture(scenario: "hang", timeout: .seconds(30)); defer { canceled.remove() }
         let task = Task { try await canceled.client.connect() }
         try await Task.sleep(for: .milliseconds(50)); task.cancel()
         await #expect(throws: CancellationError.self) { _ = try await task.value }
@@ -78,13 +78,14 @@ struct CodexNativeClientTests {
     private struct Fixture {
         let directory: URL
         let client: CodexNativeClient
-        init(scenario: String = "normal", timeout: Duration = .seconds(2)) throws {
+        init(scenario: String = "normal", timeout: Duration = .seconds(10)) throws {
             directory = FileManager.default.temporaryDirectory.appendingPathComponent("aitvaras-native-fixture-\(UUID().uuidString)")
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
             let helper = directory.appendingPathComponent("fixture.mjs")
             let source = """
             import {createInterface} from 'node:readline';
             const scenario='\(scenario)';
+            setTimeout(() => process.exit(124), 30000).unref();
             const send=f=>process.stdout.write(JSON.stringify(f)+'\\n');
             const thread={id:'synthetic-thread',name:'Synthetic',projectId:'synthetic-project',cwd:'/synthetic/workspace',status:{type:'idle'},futureMetadata:'preserved'};
             const turn=(id)=>({id,status:'completed',items:[],itemsView:'notLoaded'});

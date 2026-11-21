@@ -162,7 +162,7 @@ public actor AgentSetupCoordinator {
     public func state(projectID: UUID?, directory: URL? = nil, provider: AgentProvider, profile: String = "default") async throws -> AgentSetupState {
         var state = AgentSetupState(projectID: projectID, provider: provider)
         guard let projectID else {
-            let globals = try persistence.globalAgentMCPServers()
+            let globals = try persistence.globalAgentMCPServers().filter { $0.value.management == nil }
             state.servers = globals.keys.sorted().map { row(name: $0, source: .global, server: globals[$0], snapshot: nil, provider: provider) }
             return state
         }
@@ -183,12 +183,12 @@ public actor AgentSetupCoordinator {
         }
         let inventory = AgentMCPResolver.repositoryInventory(directory: project.directory)
         if inventory.unreadable { state.notices.append("Project MCP configuration could not be read. Repo servers are disabled.") }
-        for name in globals.keys.sorted() where setup.projectServers[name] == nil {
+        for name in globals.keys.sorted() where setup.projectServers[name] == nil && globals[name]?.management == nil {
             state.servers.append(row(name: name, source: .global, server: globals[name],
                 snapshot: snapshot?.servers.first { $0.name == name }, provider: provider,
                 indicator: provider == .local && !setup.localMayUseMCP ? .off : nil, off: setup.disabledGlobalServers.contains(name)))
         }
-        for name in setup.projectServers.keys.sorted() {
+        for name in setup.projectServers.keys.sorted() where setup.projectServers[name]?.management == nil {
             state.servers.append(row(name: name, source: .project, server: setup.projectServers[name],
                 snapshot: snapshot?.servers.first { $0.name == name }, provider: provider,
                 indicator: provider == .local && !setup.localMayUseMCP ? .off : nil))

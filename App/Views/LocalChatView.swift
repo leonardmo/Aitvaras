@@ -17,6 +17,7 @@ struct LocalChatView: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            GatewaySuggestionBar()
             if !model.selectedUnassignedVoiceHistory {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 10) {

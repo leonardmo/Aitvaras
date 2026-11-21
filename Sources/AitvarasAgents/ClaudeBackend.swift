@@ -5,6 +5,7 @@ public actor ClaudeBackend: AgentBackend {
     private let executable: URL?
     private let profile: String
     private let mcpPolicy: AgentMCPLaunchPolicy
+    private let gateway: GatewayChatLaunch?
     private let probeDirectory: URL
     private var mcpLoginInProgress = false
     private struct LiveRun { weak var run: ClaudeRun?; let directory: URL; let projectID: UUID? }
@@ -13,12 +14,13 @@ public actor ClaudeBackend: AgentBackend {
 
     public init(executable: URL? = nil, environment: [String: String] = ProcessInfo.processInfo.environment,
                 profile: String = "default", overrides: [String: String] = [:], mcpPolicy: AgentMCPLaunchPolicy = .default,
-                probeDirectory: URL = FileManager.default.temporaryDirectory) {
+                probeDirectory: URL = FileManager.default.temporaryDirectory, gateway: GatewayChatLaunch? = nil) {
         self.environment = ProviderEnvironment.make(inherited: environment, overrides: overrides)
         self.executable = ProviderLocator.executable(for: .claude, environment: self.environment,
             overrides: executable.map { [.claude: $0] } ?? [:])
         self.profile = profile
         self.mcpPolicy = mcpPolicy
+        self.gateway = gateway
         self.probeDirectory = probeDirectory
     }
 
@@ -180,7 +182,9 @@ public actor ClaudeBackend: AgentBackend {
         let snapshot = try mcpPolicy.snapshot(directory: configuration.directory, projectID: configuration.projectID)
         mcpSetup = snapshot.status
         let runID = UUID()
-        let file = try await mcpPolicy.runtimeFile(snapshot: snapshot, runID: runID, format: .claude)
+        let chatGateway = configuration.gatewayChatID.flatMap { _ in gateway }
+        let file = try await mcpPolicy.runtimeFile(snapshot: snapshot, runID: runID, format: .claude,
+                                                  gateway: chatGateway?.configuration)
         var launch = configuration
         do {
             try Task.checkCancellation()
@@ -207,7 +211,10 @@ public actor ClaudeBackend: AgentBackend {
                                 try await mcpPolicy.validateProjectServers(report, snapshot: snapshot, runID: runID)
                             })
         do {
-            try await run.initialize()
+            let register = configuration.gatewayChatID.flatMap { chatID in
+                chatGateway?.register(client: .claude, chatID: chatID, projectID: configuration.projectID)
+            }
+            try await run.initialize(register: register)
             liveRuns = liveRuns.filter { $0.value.run != nil }
             liveRuns[runID] = .init(run: run, directory: configuration.directory, projectID: configuration.projectID)
             return run

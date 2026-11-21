@@ -22,6 +22,34 @@ targets:
         SWIFT_VERSION: "6.0"
         CODE_SIGN_IDENTITY: "-"
 
+  AitvarasCommand:
+    type: tool
+    platform: macOS
+    sources: [Sources/AitvarasCommand]
+    dependencies:
+      - package: AitvarasKit
+        products: [AitvarasAgents]
+    settings:
+      base:
+        PRODUCT_NAME: aitvaras
+        SWIFT_VERSION: "6.0"
+        CODE_SIGN_IDENTITY: "-"
+        ENABLE_HARDENED_RUNTIME: YES
+
+  AitvarasMCPCommand:
+    type: tool
+    platform: macOS
+    sources: [Sources/AitvarasMCPCommand]
+    dependencies:
+      - package: AitvarasKit
+        products: [AitvarasAgents]
+    settings:
+      base:
+        PRODUCT_NAME: aitvaras-mcp
+        SWIFT_VERSION: "6.0"
+        CODE_SIGN_IDENTITY: "-"
+        ENABLE_HARDENED_RUNTIME: YES
+
   Aitvaras:
     type: application
     platform: macOS
@@ -39,6 +67,10 @@ targets:
         buildPhase: resources
     dependencies:
       - target: NotifyReader
+        embed: false
+      - target: AitvarasCommand
+        embed: false
+      - target: AitvarasMCPCommand
         embed: false
       - package: AitvarasKit
         products:
@@ -74,6 +106,20 @@ targets:
         name: Embed notify-reader helper
         outputFiles:
           - $(BUILT_PRODUCTS_DIR)/$(EXECUTABLE_FOLDER_PATH)/notify-reader
+      - script: |
+          set -eu
+          mkdir -p "$TARGET_BUILD_DIR/$CONTENTS_FOLDER_PATH/Helpers"
+          cp "$BUILT_PRODUCTS_DIR/aitvaras" "$TARGET_BUILD_DIR/$CONTENTS_FOLDER_PATH/Helpers/aitvaras"
+          cp "$BUILT_PRODUCTS_DIR/aitvaras-mcp" "$TARGET_BUILD_DIR/$EXECUTABLE_FOLDER_PATH/aitvaras-mcp"
+          /usr/bin/codesign --verify --strict "$TARGET_BUILD_DIR/$CONTENTS_FOLDER_PATH/Helpers/aitvaras"
+          /usr/bin/codesign --verify --strict "$TARGET_BUILD_DIR/$EXECUTABLE_FOLDER_PATH/aitvaras-mcp"
+        name: Embed signed gateway commands
+        inputFiles:
+          - $(BUILT_PRODUCTS_DIR)/aitvaras
+          - $(BUILT_PRODUCTS_DIR)/aitvaras-mcp
+        outputFiles:
+          - $(TARGET_BUILD_DIR)/$(CONTENTS_FOLDER_PATH)/Helpers/aitvaras
+          - $(TARGET_BUILD_DIR)/$(EXECUTABLE_FOLDER_PATH)/aitvaras-mcp
     info:
       path: App/Info.plist
       properties:

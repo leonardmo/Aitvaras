@@ -4,7 +4,7 @@ import AitvarasStore
 
 /// Daily goals, set collaboratively in conversation ("let's plan my
 /// day") and tracked by the focus coach. All writes are reversible.
-public actor GoalsConnector: Connector {
+public actor GoalsConnector: GatewayProfileConnector {
     public nonisolated let id = "goals"
     public nonisolated let displayName = "Daily Goals"
 

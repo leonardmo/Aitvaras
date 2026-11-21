@@ -18,11 +18,16 @@ public struct AutonomyPolicy: Sendable {
     }
 
     public func verdict(for tool: ToolDefinition, connectorID: String) -> Verdict {
-        switch tool.risk {
+        verdict(for: tool.risk, hasExactGrant: whitelist.contains("\(connectorID).\(tool.name)"))
+    }
+
+    public func verdict(for risk: ActionRisk, hasExactGrant: Bool, requiresExplicitConfirmation: Bool = false) -> Verdict {
+        if requiresExplicitConfirmation { return .requireConfirmation }
+        switch risk {
         case .read, .reversibleWrite:
             return .allow
         case .confirmable:
-            return whitelist.contains("\(connectorID).\(tool.name)") ? .allow : .requireConfirmation
+            return hasExactGrant ? .allow : .requireConfirmation
         }
     }
 }

@@ -1,0 +1,8 @@
+Usage: codex [OPTIONS] [PROMPT]
+       codex [OPTIONS] <COMMAND> [ARGS]
+
+Commands:
+  app-server  Run the app server
+
+Options:
+  -c, --config <key=value>  Override a configuration value. Use a dotted path for nested values. Values are parsed as TOML.

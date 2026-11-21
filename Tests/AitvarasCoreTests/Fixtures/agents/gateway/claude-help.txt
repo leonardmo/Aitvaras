@@ -1,0 +1,4 @@
+Usage: claude [options] [command] [prompt]
+
+  --mcp-config <configs...>  Load MCP servers from JSON files or strings (space-separated)
+  --strict-mcp-config        Only use MCP servers from --mcp-config, ignoring all other MCP configurations

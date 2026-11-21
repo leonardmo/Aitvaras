@@ -111,6 +111,7 @@ struct ChatView: View {
 
     private var chatContent: some View {
         VStack(spacing: 0) {
+            GatewaySuggestionBar()
             if model.selectedWorkspaceProjectID == nil, !model.selectedUnassignedVoiceHistory, (!model.suggestions.isEmpty || model.chatModel?.approvalSuggestions.isEmpty == false) {
                 suggestionBar
             }

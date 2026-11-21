@@ -1,6 +1,7 @@
 import Foundation
 
-/// One app-server connection per backend, with independent thread runs.
+/// Native metadata uses a shared connection. Gateway Chat runs own their
+/// app-server because MCP configuration and process ancestry are launch-wide.
 public actor CodexBackend: AgentBackend {
     public private(set) var availableSetup = AgentSetupSnapshot(provider: .codex)
     private var mcpEpoch = 0
@@ -8,6 +9,12 @@ public actor CodexBackend: AgentBackend {
     private let executable: URL?
     private let environment: [String: String]
     private let profile: String
+    private let gateway: GatewayChatLaunch?
+    private let boundGateway: BoundGateway?
+    private struct BoundGateway: Sendable {
+        let arguments: [String]
+        let register: AgentWire.RegisterProcess
+    }
     private var wire: AgentWire?
     private var transport: AgentWire?
     private var generation = UUID()
@@ -23,11 +30,21 @@ public actor CodexBackend: AgentBackend {
     private var mcpLoginInProgress = false
 
     public init(executable: URL? = nil, environment: [String: String] = ProcessInfo.processInfo.environment,
-                profile: String = "default", overrides: [String: String] = [:]) {
+                profile: String = "default", overrides: [String: String] = [:], gateway: GatewayChatLaunch? = nil) {
         self.environment = ProviderEnvironment.make(inherited: environment, overrides: overrides)
         self.executable = ProviderLocator.executable(for: .codex, environment: self.environment,
             overrides: executable.map { [.codex: $0] } ?? [:])
         self.profile = profile
+        self.gateway = gateway
+        boundGateway = nil
+    }
+
+    private init(executable: URL?, environment: [String: String], profile: String, boundGateway: BoundGateway) {
+        self.executable = executable
+        self.environment = environment
+        self.profile = profile
+        self.boundGateway = boundGateway
+        gateway = nil
     }
     private func connection() async throws -> AgentWire {
         if let wire { return wire }
@@ -42,12 +59,13 @@ public actor CodexBackend: AgentBackend {
         let generation = UUID(); self.generation = generation
         let task = Task { [self] () throws -> AgentWire in
             let wire = AgentWire(process: StreamingProcess(executable: executable,
-                arguments: ["app-server"],
+                arguments: (boundGateway?.arguments ?? []) + ["app-server"],
                 currentDirectory: nil, environment: environment), format: .codex)
             self.transport = wire
             do {
                 try await wire.open(receive: { [weak self] value, id in await self?.receive(value, id: id, generation: generation) },
-                    disconnected: { [weak self] error in await self?.disconnected(error, generation: generation) })
+                    disconnected: { [weak self] error in await self?.disconnected(error, generation: generation) },
+                    register: boundGateway?.register)
                 _ = try await wire.request("initialize", .object([
                     "clientInfo": .object(["name": .string("aitvaras"), "title": .string("Aitvaras"), "version": .string("1")]),
                     "capabilities": .object(["experimentalApi": .bool(true)])]))
@@ -270,6 +288,19 @@ public actor CodexBackend: AgentBackend {
     }
     public func start(_ configuration: AgentSessionConfiguration) async throws -> any AgentRun {
         guard !configuration.forkSession, configuration.resumeSessionAt == nil else { throw AgentFailure.unsupported }
+        if let gateway, let chatID = configuration.gatewayChatID {
+            let child = CodexBackend(executable: executable, environment: environment, profile: profile,
+                boundGateway: .init(arguments: gateway.configuration.codexArguments,
+                    register: gateway.register(client: .codex, chatID: chatID, projectID: configuration.projectID)))
+            do {
+                let run = try await child.start(configuration)
+                try Task.checkCancellation()
+                return run
+            } catch {
+                try? await child.shutdown()
+                throw error
+            }
+        }
         let status = try await status()
         let authentication = status.authentication
         guard authentication == .subscription else {
@@ -295,7 +326,7 @@ public actor CodexBackend: AgentBackend {
         if let provider = result["thread"]?["modelProvider"]?.stringValue, provider != "openai" { throw AgentFailure.unsupported }
         let session = AgentSessionID(provider: .codex, profile: profile, nativeID: nativeID)
         let run = CodexRun(backend: self, wire: connection, session: session, configuration: configuration, accountID: status.accountID,
-            initialLimitWindows: observedLimits)
+            initialLimitWindows: observedLimits, hasGateway: boundGateway != nil)
         runs[nativeID] = run
         await run.started()
         if availableSetup.serversAvailable { await run.setup(availableSetup) }
@@ -316,8 +347,10 @@ public actor CodexBackend: AgentBackend {
         guard let wire = transport else { throw AgentFailure.invalidTransition }
         try await wire.writeResponse(id: id, result: result, error: error)
     }
-    func release(_ session: AgentSessionID, runID: UUID) {
-        if runs[session.nativeID]?.id == runID { runs.removeValue(forKey: session.nativeID) }
+    func release(_ session: AgentSessionID, runID: UUID) async throws {
+        guard runs[session.nativeID]?.id == runID else { return }
+        runs.removeValue(forKey: session.nativeID)
+        if boundGateway != nil { try await shutdown() }
     }
     private func receive(_ value: JSONValue, id: AgentRequestID?, generation: UUID) async {
         guard generation == self.generation else { return }

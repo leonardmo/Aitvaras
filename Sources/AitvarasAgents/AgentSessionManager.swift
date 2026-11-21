@@ -11,6 +11,7 @@ public actor AgentSessionManager {
     private struct Live {
         let token: UUID
         var session: AgentChatSession
+        var projectID: UUID?
         var coordinator: AgentActionCoordinator?
         var startup: Task<any AgentRun, Error>?
         var reader: Task<Void, Never>?
@@ -407,16 +408,18 @@ public actor AgentSessionManager {
         configuration.knownMessageIDs = Set((states[chatID]?.entries ?? []).filter { $0.sessionID == session.id }.compactMap(\.nativeMessageID))
         configuration.verifiesResumeIdentity = automatic != nil || recovery?.action == .continueTurn
         configuration.projectID = try persistence.agentProjectID(chatID: chatID)
+        configuration.gatewayChatID = chatID
         let revision = try (provider == .claude || provider == .local)
             ? mcpPolicy.snapshot(directory: configuration.directory, projectID: configuration.projectID).status.revision : nil
         let setupMatches = old?.coordinator?.mcpSetup.map { $0.revision == revision } ?? true
-        let canReuse = session.usesThreadContext && old?.session == session && setupMatches
+        let canReuse = session.usesThreadContext && old?.session == session && old?.projectID == configuration.projectID && setupMatches
         let token = canReuse ? old!.token : UUID()
         old?.idle?.cancel()
         // Native Local sessions reuse their transport and acknowledged handover
         // receipts, just like the subscription providers. AgentLoop stays fresh.
         let reusable = canReuse ? old?.coordinator : nil
-        live[chatID] = Live(token: token, session: session, coordinator: reusable, inputID: input.id, automatic: automatic?.id, accountID: reusable?.accountID)
+        live[chatID] = Live(token: token, session: session, projectID: configuration.projectID,
+            coordinator: reusable, inputID: input.id, automatic: automatic?.id, accountID: reusable?.accountID)
         live[chatID]?.expectedNative = automatic?.native ?? recovery?.session.sessionID
         do {
             if let automatic, let continuationPersistence {

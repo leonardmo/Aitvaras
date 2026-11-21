@@ -1,5 +1,7 @@
 import SwiftUI
 import AitvarasCore
+import AitvarasAgent
+import AitvarasAgents
 import AitvarasConnectors
 import AitvarasStore
 
@@ -49,6 +51,8 @@ struct ConnectorsView: View {
             }
 
             ForgeConnectionsSection()
+
+            GatewayConnectionsSection()
 
             Section("Connections") {
                 let active = activeConnections
@@ -673,5 +677,226 @@ struct WhitelistEditor: View {
             }.filter { !$0.isEmpty })
             model.updateWhitelist(entries)
         }
+    }
+}
+
+private struct GatewayConnectionsSection: View {
+    @Environment(AppModel.self) private var model
+    @State private var launches: [GatewayLaunch] = []
+    @State private var accounts: [GatewayUpstreamAccount] = []
+    @State private var states: [UUID: Bool] = [:]
+    @State private var projects: [WorkspaceProject] = []
+    @State private var disabledGlobals: Set<String> = []
+    @State private var selectedAccounts: [String: UUID] = [:]
+    @State private var projectID: UUID?
+    @State private var accountProjectID: UUID?
+    @State private var adding = false
+    @State private var name = ""
+    @State private var label = ""
+    @State private var endpoint = ""
+    @State private var command: GatewayCommandInstaller.Status?
+    @State private var error: String?
+
+    var body: some View {
+        Section("Agent gateway") {
+            commandRow
+            DisclosureGroup("Live launches (\(launches.count))") {
+                if launches.isEmpty { Text("No active agent launches.").foregroundStyle(.secondary) }
+                ForEach(launches) { launch in
+                    HStack {
+                        VStack(alignment: .leading) {
+                            Text(launch.context.client.rawValue.capitalized)
+                            Text(projectName(launch.context.projectID) + " · " + started(launch).formatted(date: .abbreviated, time: .standard))
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        Button("Revoke") { Task { await revoke(launch) } }
+                            .buttonStyle(.bordered)
+                    }
+                }
+            }
+
+            DisclosureGroup("Upstream accounts (\(accounts.count))") {
+                ForEach(accounts) { account in accountRow(account) }
+                DisclosureGroup("Add upstream account", isExpanded: $adding) {
+                    TextField("Server name", text: $name)
+                    TextField("Account label", text: $label)
+                    TextField("MCP HTTPS URL", text: $endpoint)
+                    Picker("Availability", selection: $accountProjectID) {
+                        Text("Global").tag(nil as UUID?)
+                        ForEach(projects) { Text($0.title).tag(Optional($0.id)) }
+                    }
+                    Button("Add account") {
+                        changeRouting {
+                            try $0.addGatewayUpstream(serverName: name, label: label, endpoint: endpoint, projectID: accountProjectID)
+                            name = ""; label = ""; endpoint = ""; adding = false
+                        }
+                    }.disabled(name.isEmpty || label.isEmpty || endpoint.isEmpty)
+                }
+            }
+
+            if !projects.isEmpty, !accounts.isEmpty {
+                Picker("Project routing", selection: $projectID) {
+                    Text("Choose a project").tag(nil as UUID?)
+                    ForEach(projects) { Text($0.title).tag(Optional($0.id)) }
+                }
+                .onChange(of: projectID) { updateAssignments() }
+                if let projectID {
+                    ForEach(Array(Set(availableAccounts(projectID).map(\.serverName))).sorted(), id: \.self) { server in
+                        projectRouting(server, projectID: projectID)
+                    }
+                }
+            }
+            if let message = error ?? model.gatewaySignInError { Text(message).font(.caption).foregroundStyle(.secondary) }
+        }
+        .task {
+            command = try? model.gatewayCommandInstaller.status()
+            while !Task.isCancelled {
+                await refresh()
+                do { try await Task.sleep(for: .seconds(1)) } catch { return }
+            }
+        }
+    }
+
+    private var commandRow: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            switch command {
+            case .installed:
+                Button("Uninstall command-line tool") { changeCommand(install: false) }
+            case .absent:
+                Button("Install command-line tool") { changeCommand(install: true) }
+            case .occupied:
+                Text("~/.local/bin/aitvaras is already in use.")
+            case nil:
+                Text("Command installation is unavailable.")
+            }
+            Text("~/.local/bin/aitvaras").font(.caption.monospaced()).foregroundStyle(.secondary)
+            if !model.gatewayCommandOnPath {
+                Text("~/.local/bin is not on your PATH. Add it to your shell’s PATH or run the command using its full path.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private func accountRow(_ account: GatewayUpstreamAccount) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                VStack(alignment: .leading) {
+                    Text(account.displayName)
+                    let status = states[account.id].map { $0 ? "Signed in" : "Signed out" } ?? "Sign-in status unavailable"
+                    Text("\(account.serverName) · \(availability(account)) · \(status)")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                Spacer()
+                if model.gatewaySigningIn == account.id {
+                    Button("Cancel") { model.cancelGatewaySignIn() }.buttonStyle(.bordered)
+                } else if states[account.id] == true {
+                    Button("Sign out") { Task { await signOut(account.id) } }.buttonStyle(.bordered)
+                } else {
+                    Button("Sign in") { model.startGatewaySignIn(account.id) }
+                        .buttonStyle(.bordered)
+                        .disabled(model.gatewaySigningIn != nil || states[account.id] == nil)
+                }
+            }
+            Toggle("Trust MCP tool annotations", isOn: Binding(get: { account.trusted }, set: { trusted in
+                changeRouting { try $0.setGatewayUpstreamTrust(id: account.id, trusted: trusted) }
+            }))
+            .help("Trust can let eligible upstream tools run without confirmation.")
+            if account.globallyAvailable {
+                Toggle("Global default", isOn: Binding(get: { account.isGlobalDefault }, set: { global in
+                    changeRouting { try $0.setGatewayGlobalDefault(serverName: account.serverName, accountID: global ? account.id : nil) }
+                }))
+            }
+        }
+    }
+
+    private func projectRouting(_ server: String, projectID: UUID) -> some View {
+        let eligible = availableAccounts(projectID).filter { $0.serverName == server }
+        let globalEnabled = !disabledGlobals.contains(server)
+        return VStack(alignment: .leading, spacing: 6) {
+            if eligible.contains(where: \.globallyAvailable) {
+                Toggle("Allow global \(server) accounts", isOn: Binding(get: { globalEnabled }, set: { enabled in
+                    changeRouting { try $0.editAgentSetup(projectID: projectID, edit: .globalEnabled(name: server, enabled: enabled)) }
+                }))
+            }
+            Picker("\(server) account", selection: Binding(get: { selectedAccounts[server] }, set: { accountID in
+                changeRouting { try $0.selectGatewayUpstreamAccount(projectID: projectID, serverName: server, accountID: accountID) }
+            })) {
+                Text("Use global default if allowed").tag(nil as UUID?)
+                ForEach(eligible) { account in
+                    Text(account.displayName + (account.globallyAvailable && !globalEnabled ? " (opted out)" : ""))
+                        .tag(Optional(account.id))
+                        .disabled(account.globallyAvailable && !globalEnabled)
+                }
+            }
+        }
+    }
+
+    private func availableAccounts(_ project: UUID) -> [GatewayUpstreamAccount] {
+        accounts.filter { $0.definitionProjectID == nil || $0.definitionProjectID == project }
+    }
+
+    private func projectName(_ id: UUID?) -> String {
+        guard let id else { return "No project" }
+        return projects.first { $0.id == id }?.title ?? "Unavailable project"
+    }
+
+    private func availability(_ account: GatewayUpstreamAccount) -> String {
+        if account.globallyAvailable { return "Global" }
+        return account.definitionProjectID.map { projectName($0) } ?? "By project selection"
+    }
+
+    private func started(_ launch: GatewayLaunch) -> Date {
+        Date(timeIntervalSince1970: Double(launch.root.startSeconds) + Double(launch.root.startMicroseconds) / 1_000_000)
+    }
+
+    private func refresh() async {
+        launches = await model.gatewayLiveLaunches().sorted { started($0) > started($1) }
+        guard let stores = model.stores else { return }
+        if let rows = try? stores.allGatewayUpstreamAccounts() { accounts = rows }
+        if let rows = try? stores.workspaceProjects(includeHidden: false) { projects = rows }
+        updateAssignments()
+        var current: [UUID: Bool] = [:]
+        for account in accounts {
+            current[account.id] = try? await model.gatewayAccountSignedIn(account.id)
+        }
+        states = current
+    }
+
+    private func updateAssignments() {
+        let values = projectID.flatMap { id in try? model.stores?.gatewayProjectAssignments(projectID: id) }
+        disabledGlobals = values?.disabled ?? []
+        selectedAccounts = values?.selected ?? [:]
+    }
+
+    private func changeRouting(_ operation: (Stores) throws -> Void) {
+        guard let stores = model.stores else { return }
+        do {
+            try operation(stores)
+            error = nil
+            accounts = try stores.allGatewayUpstreamAccounts()
+            updateAssignments()
+            Task { await model.refreshGatewayRouting(); await refresh() }
+        } catch { self.error = "Could not save the gateway setting. Check the server name, HTTPS URL, and project." }
+    }
+
+    private func changeCommand(install: Bool) {
+        do {
+            try model.changeGatewayCommand(install: install)
+            error = nil
+        } catch { self.error = (error as? GatewayCommandInstaller.Failure)?.errorDescription ?? "Could not change command installation." }
+        command = try? model.gatewayCommandInstaller.status()
+    }
+
+    private func revoke(_ launch: GatewayLaunch) async {
+        do { try await model.revokeGatewayLaunch(launch); error = nil }
+        catch { self.error = "Could not revoke the launch." }
+        await refresh()
+    }
+
+    private func signOut(_ id: UUID) async {
+        do { try await model.signOutGatewayAccount(id); error = nil }
+        catch { self.error = "Could not sign out of the account." }
+        await refresh()
     }
 }

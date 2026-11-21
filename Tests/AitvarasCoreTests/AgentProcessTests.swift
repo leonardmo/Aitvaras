@@ -5,6 +5,20 @@ import Testing
 
 @Suite(.timeLimit(.minutes(2)))
 struct AgentProcessTests {
+    @Test func concurrentFastExitsDrainAndReap() async throws {
+        try await withThrowingTaskGroup(of: Void.self) { group in
+            for _ in 0..<48 {
+                group.addTask {
+                    let result = try await OneShotProcess.run(executable: URL(fileURLWithPath: "/bin/sh"),
+                        arguments: ["-c", "printf output; printf diagnostic >&2; exit 7"], timeout: .seconds(20))
+                    #expect(!result.timedOut)
+                    #expect(result.exitCode == 7 && result.stdout == "output" && result.stderr == "diagnostic")
+                }
+            }
+            try await group.waitForAll()
+        }
+    }
+
     @Test func framesSplitUTF8AndTrailingLine() async throws {
         let fixture = try AgentExecutableFixture("printf '\\303'; /bin/sleep 0.03; printf '\\244\\n\\nlast'")
         defer { fixture.remove() }
