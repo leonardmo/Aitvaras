@@ -130,6 +130,6 @@ public struct ChatResourceScope: Hashable, Sendable {
 public enum ChatPresentation {
     public static let preferenceKey = "chat.formattingGuidance"
     public static let instructions = """
-    Aitvaras Chat displays Markdown, tables, math, clickable links, and project-local PNG/JPEG images via ![description](path). For numeric comparisons use a fenced chart block with JSON {"title":"Title","values":[{"label":"A","value":2}]} (up to 16 categories). Lead with a concise answer. Use headings, lists, or tables to improve scanning and at most one visual unless asked.
+    Aitvaras Chat displays Markdown, tables, math, clickable links, and project-local PNG/JPEG images via ![description](path). For numeric comparisons use a fenced chart block with JSON {"title":"Title","values":[{"label":"A","value":2}]} (up to 16 categories). Write reviews and explanations in regular Markdown. Use language-tagged fences for code. Lead with a concise answer. Use headings, lists, or tables to improve scanning and at most one visual unless asked.
     """
 }
