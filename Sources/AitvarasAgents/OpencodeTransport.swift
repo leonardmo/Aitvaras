@@ -3,7 +3,7 @@ import Darwin
 
 /// Injection boundary used by offline recordings. Credentials never cross it.
 protocol OpencodeTransport: Actor {
-    func open(projects: [URL], models: [AgentModel], mcpConfigPath: URL?) async throws
+    func open(projects: [URL], models: [AgentModel], mcpConfigPath: URL?, unrestrictedWrites: Bool) async throws
     func subscribe() async throws -> AsyncThrowingStream<JSONValue, Error>
     func request(_ path: String, method: String, body: JSONValue?) async throws -> JSONValue
     func close() async
@@ -35,7 +35,7 @@ actor OpencodeHTTPTransport: OpencodeTransport {
         self.session = session; self.password = password
         baseURL = URL(string: "http://127.0.0.1:\(port)")!
     }
-    func open(projects: [URL], models: [AgentModel], mcpConfigPath: URL? = nil) async throws {
+    func open(projects: [URL], models: [AgentModel], mcpConfigPath: URL? = nil, unrestrictedWrites: Bool = false) async throws {
         guard process == nil, closeTask == nil else { throw AgentFailure.invalidTransition }
         let generation = UUID(); self.generation = generation
         let fm = FileManager.default
@@ -51,7 +51,8 @@ actor OpencodeHTTPTransport: OpencodeTransport {
         try fm.createDirectory(at: configURL.deletingLastPathComponent(), withIntermediateDirectories: true)
         try Data(configuration.config(models: models).jsonString.utf8).write(to: configURL, options: .atomic)
         let sandboxURL = configuration.root.appendingPathComponent("sandbox.sb")
-        try Data(configuration.sandbox(projects: projects).utf8).write(to: sandboxURL, options: .atomic)
+        try Data(configuration.sandbox(projects: projects, unrestrictedWrites: unrestrictedWrites).utf8)
+            .write(to: sandboxURL, options: .atomic)
         let port = try Self.freePort()
         baseURL = URL(string: "http://127.0.0.1:\(port)")!
         let child = StreamingProcess(executable: URL(fileURLWithPath: "/usr/bin/sandbox-exec"),

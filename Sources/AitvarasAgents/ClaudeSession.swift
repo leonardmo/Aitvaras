@@ -58,7 +58,10 @@ actor ClaudeRun: AgentRun {
         forkSource = configuration.forkSession ? configuration.resume : nil
         var arguments = ["-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose",
                          "--include-partial-messages", "--permission-prompt-tool", "stdio", "--permission-mode",
-                         configuration.mode.claudePermission]
+                         ClaudeRunPermissions.nativeMode(configuration.mode, permissions: configuration.permissions)]
+        if configuration.permissions?.isFullAccess == true {
+            arguments += ["--setting-sources", "user"]
+        }
         for root in configuration.additionalDirectories { arguments += ["--add-dir", root.path] }
         arguments += ["--model", ChatSettings.claudeModel(configuration.model)]
         if let resume = configuration.resume { arguments += ["--resume", resume.nativeID] }
@@ -381,6 +384,8 @@ actor ClaudeRun: AgentRun {
         case .continueHook where isHook: payload = .object(["continue": .bool(true)])
         case .askHook where isHook && raw["callback_id"]?.stringValue == "pre":
             payload = .object(["hookSpecificOutput": .object(["hookEventName": .string("PreToolUse"), "permissionDecision": .string("ask")])])
+        case .allowHook where isHook && raw["callback_id"]?.stringValue == "pre":
+            payload = .object(["hookSpecificOutput": .object(["hookEventName": .string("PreToolUse"), "permissionDecision": .string("allow")])])
         case .deny where isHook:
             payload = .object(["continue": .bool(false), "stopReason": .string("Action denied")])
         case .allow(let updated) where !isHook:
@@ -609,6 +614,32 @@ actor ClaudeRun: AgentRun {
 
 extension AgentMode {
     var claudePermission: String { self == .ask ? "default" : rawValue }
+}
+
+enum ClaudeRunPermissions {
+    static func nativeMode(_ mode: AgentMode, permissions: AgentChatPermissions?) -> String {
+        guard let permissions, mode != .plan else { return mode.claudePermission }
+        if permissions.isFullAccess { return "bypassPermissions" }
+        // The app's policy and the sandbox decide which calls need confirmation.
+        // Native Auto can otherwise classify and approve an unsandboxed retry.
+        return mode == .ask ? mode.claudePermission : AgentMode.acceptEdits.claudePermission
+    }
+
+    static func settings(_ existing: String, permissions: AgentChatPermissions?) -> String {
+        guard let permissions, !permissions.isPlan else { return existing }
+        var settings = JSONValue.parse(existing)?.objectValue ?? [:]
+        let sandboxed = permissions.commands != .unrestricted
+        settings["sandbox"] = .object([
+            "enabled": .bool(sandboxed),
+            "failIfUnavailable": .bool(sandboxed),
+            "autoAllowBashIfSandboxed": .bool(permissions.commands == .auto),
+            "allowUnsandboxedCommands": .bool(sandboxed)
+        ])
+        if sandboxed {
+            settings["permissions"] = .object(["ask": .array([.string("Bash(dangerouslyDisableSandbox:true)")])])
+        }
+        return JSONValue.object(settings).jsonString
+    }
 }
 
 func claudeRateLimits(_ value: JSONValue) -> [AgentRateLimitWindow] {

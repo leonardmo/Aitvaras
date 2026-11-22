@@ -5,6 +5,14 @@ import AitvarasStore
 @testable import AitvarasAgents
 
 @Suite(.timeLimit(.minutes(2))) struct OpencodeConfigurationTests {
+    @Test func unrestrictedWritesKeepLocalInferenceNetworkIsolation() throws {
+        let config = OpencodeConfiguration(root: URL(fileURLWithPath: "/tmp/profile/Opencode"))
+        let sandbox = try config.sandbox(projects: [URL(fileURLWithPath: "/tmp/example")], unrestrictedWrites: true)
+        #expect(!sandbox.contains("(deny file-write*)"))
+        #expect(sandbox.contains("(deny network*)"))
+        #expect(sandbox.contains("(allow network-outbound (remote ip \"localhost:*\"))"))
+    }
+
     @Test func configContainsOnlyLocalInferenceAndAsksBeforeTools() throws {
         let config = OpencodeConfiguration(root: URL(fileURLWithPath: "/tmp/profile/Opencode"))
         let value = config.config(models: [.init(id: "test-model", name: "Test model")])

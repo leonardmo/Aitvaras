@@ -151,6 +151,7 @@ public struct AgentJournalTurn: Codable, Sendable, Equatable {
 /// Synchronous calls commit before returning, including the willDeliver barrier.
 /// The application injects its single store into its single manager.
 public protocol AgentSessionPersistence: Sendable {
+    func agentChatPermissions(chatID: UUID) throws -> AgentChatPermissions?
     func agentProjectID(chatID: UUID) throws -> UUID?
     func agentAlwaysAllowedTools(chatID: UUID) throws -> Set<String>
     func allowAgentTool(chatID: UUID, request: AgentRequest) throws
@@ -208,6 +209,7 @@ extension AgentSessionPersistence {
         try [AgentProvider.claude, .codex, .local].compactMap { try agentSession(chatID: chatID, provider: $0) }
     }
     public func orderAgentEntries(chatID: UUID, ids: [UUID]) throws { throw AgentFailure.unsupported }
+    public func agentChatPermissions(chatID: UUID) throws -> AgentChatPermissions? { nil }
     public func agentProjectID(chatID: UUID) throws -> UUID? { nil }
     public func agentAlwaysAllowedTools(chatID: UUID) throws -> Set<String> { [] }
     public func allowAgentTool(chatID: UUID, request: AgentRequest) throws { throw AgentFailure.unsupported }

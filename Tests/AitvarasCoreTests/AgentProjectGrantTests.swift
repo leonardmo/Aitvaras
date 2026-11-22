@@ -268,6 +268,39 @@ done()
         try await coordinator.shutdown()
     }
 
+    @Test func fullAccessSkipsToolApprovalAndKeepsHardDenials() async throws {
+        let raw = GrantRun(provider: .claude)
+        let policy = AgentActionCoordinator(run: raw, mode: .auto, provenance: .init(chatID: UUID()),
+            permissions: .fullAccess, audit: { _ in })
+        try await policy.send(.init(text: "Run approved chat tools"), willDeliver: {})
+        let command = AgentTool(name: "Bash", input: .object(["command": .string("mkdir example")]))
+        let deletion = AgentTool(name: "mcp__notes__delete_page", input: .null)
+        let blocked = AgentTool(name: "mcp__mail__send", input: .null)
+        _ = await raw.offer(.preToolUse(command))
+        _ = await raw.offer(.permission(deletion))
+        _ = await raw.offer(.preToolUse(blocked))
+        try await waitGrant { await raw.responses.count == 3 }
+        #expect(await raw.responses == [.allowHook, .allow(updatedInput: nil), .deny])
+        #expect(await policy.pendingRequests().isEmpty)
+        try await policy.shutdown()
+    }
+
+    @Test func autoLetsRoutineHooksPassAndAsksForRecognizedCriticalActions() async throws {
+        let raw = GrantRun(provider: .claude)
+        let policy = AgentActionCoordinator(run: raw, mode: .auto, provenance: .init(chatID: UUID()),
+            permissions: .auto, audit: { _ in })
+        try await policy.send(.init(text: "Run routine and critical calls"), willDeliver: {})
+        let command = AgentTool(name: "Bash", input: .object(["command": .string("find . | head")]))
+        let deletion = AgentTool(name: "Bash", input: .object(["command": .string("find . -delete")]))
+        let gateway = AgentTool(name: "mcp__aitvaras__notes_find", input: .null)
+        _ = await raw.offer(.preToolUse(command))
+        _ = await raw.offer(.preToolUse(deletion))
+        _ = await raw.offer(.permission(gateway))
+        try await waitGrant { await raw.responses.count == 3 }
+        #expect(await raw.responses == [.continueHook, .askHook, .allow(updatedInput: nil)])
+        try await policy.shutdown()
+    }
+
     @Test func mcpPresentationNeverChangesTheWireNameOrInfersRiskFromTheLabel() {
         let tool = AgentTool(name: "mcp__docs__list_pages", input: .object(["command": .string("example")]))
         #expect(AgentActionPresentation(tool: tool).title == "Allow docs · list_pages?")
@@ -325,4 +358,19 @@ private func waitGrant(_ condition: () async throws -> Bool) async throws {
         guard ContinuousClock.now < deadline else { throw AgentFailure.offline }
         try await Task.sleep(for: .milliseconds(10))
     }
+}
+
+@Test(arguments: [
+    ("printf hello | wc -c && git status", false),
+    ("printf 'nothing && rm -rf sources'", false),
+    ("git status && rm -rf sources", true),
+    ("git push origin HEAD:refs/heads/main", true),
+    ("git push origin feature-branch", false),
+    ("git clean -ndx # && rm -rf sources", false),
+    ("git push --dry-run origin main", false),
+    ("./build.sh", false)
+])
+func autoPermissionsRecognizeCommandsWithoutFlaggingPipelines(test: (String, Bool)) {
+    let tool = AgentTool(name: "Bash", input: .object(["command": .string(test.0)]))
+    #expect((AgentToolPolicy.criticalApprovalReason(tool) != nil) == test.1)
 }

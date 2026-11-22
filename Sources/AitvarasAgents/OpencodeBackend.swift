@@ -11,6 +11,7 @@ public actor OpencodeBackend: AgentBackend {
     private var serverModels: [AgentModel] = []
     private let mcpPolicy: AgentMCPLaunchPolicy
     private var serverMCPRevision: String?
+    private var serverUnrestrictedWrites = false
     private var serverRuntimeFile: AgentMCPRuntimeFile?
     private var runs: [String: OpencodeRun] = [:]
     private var reader: Task<Void, Never>?
@@ -62,8 +63,10 @@ public actor OpencodeBackend: AgentBackend {
         guard configuration.effort == nil, models.contains(where: { $0.id == configuration.model }) else { throw AgentFailure.unsupported }
         let projects = [configuration.directory] + configuration.additionalDirectories
         let requestedRoots = try OpencodeConfiguration.writeRoots(projects)
+        let unrestrictedWrites = configuration.permissions?.commands == .unrestricted && configuration.mode != .plan
         let snapshot = try mcpPolicy.snapshot(directory: configuration.directory, projectID: configuration.projectID)
-        if roots != requestedRoots || serverModels != models || serverMCPRevision != snapshot.status.revision {
+        if roots != requestedRoots || serverModels != models || serverMCPRevision != snapshot.status.revision
+            || serverUnrestrictedWrites != unrestrictedWrites {
             for run in runs.values where await run.isActive { throw AgentFailure.invalidTransition }
             if roots != nil { await shutdown() }
             let openingGeneration = generation
@@ -77,11 +80,13 @@ public actor OpencodeBackend: AgentBackend {
                 guard try mcpPolicy.snapshot(directory: configuration.directory, projectID: configuration.projectID).status.revision == snapshot.status.revision else {
                     throw AgentFailure.invalidTransition
                 }
-                try await transport.open(projects: projects, models: models, mcpConfigPath: file?.url)
+                try await transport.open(projects: projects, models: models, mcpConfigPath: file?.url,
+                                         unrestrictedWrites: unrestrictedWrites)
                 guard openingGeneration == generation else { throw AgentFailure.invalidTransition }
                 let events = try await transport.subscribe()
                 guard openingGeneration == generation else { throw AgentFailure.invalidTransition }
                 roots = requestedRoots; serverModels = models; serverMCPRevision = snapshot.status.revision
+                serverUnrestrictedWrites = unrestrictedWrites
                 let generation = self.generation
                 reader = Task { [weak self] in
                     do {
@@ -91,13 +96,14 @@ public actor OpencodeBackend: AgentBackend {
                 }
             } catch { await shutdown(); throw (error as? AgentFailure) ?? .offline }
         }
-        do { return try await startSession(configuration, setup: snapshot.status) }
+        do { return try await startSession(configuration, setup: snapshot.status, mcpServers: Set(snapshot.resolution.localServers.keys)) }
         catch {
             if runs.isEmpty { await shutdown() }
             throw error
         }
     }
-    private func startSession(_ configuration: AgentSessionConfiguration, setup: AgentMCPLaunchStatus) async throws -> any AgentRun {
+    private func startSession(_ configuration: AgentSessionConfiguration, setup: AgentMCPLaunchStatus,
+                              mcpServers: Set<String>) async throws -> any AgentRun {
         let sessionGeneration = generation
         let nativeID: String
         let model: JSONValue = .object(["id": .string(configuration.model), "providerID": .string("ollama")])
@@ -122,6 +128,7 @@ public actor OpencodeBackend: AgentBackend {
         guard sessionGeneration == generation else { throw AgentFailure.invalidTransition }
         let session = AgentSessionID(provider: .local, profile: OpencodeConfiguration.profile, nativeID: nativeID)
         let run = OpencodeRun(transport: transport, session: session, configuration: configuration, mcpSetup: setup,
+            mcpServers: mcpServers,
             release: { [weak self] id in await self?.release(nativeID, id: id) })
         runs[nativeID] = run
         await run.started()
@@ -180,6 +187,7 @@ actor OpencodeRun: AgentRun {
     private let transport: any OpencodeTransport
     private let session: AgentSessionID
     private let configuration: AgentSessionConfiguration
+    private let mcpServers: Set<String>
     private let release: @Sendable (UUID) async -> Void
     private var inputID: UUID?
     private var queued: [String: UUID] = [:]
@@ -197,9 +205,11 @@ actor OpencodeRun: AgentRun {
 
     init(transport: any OpencodeTransport, session: AgentSessionID, configuration: AgentSessionConfiguration,
          mcpSetup: AgentMCPLaunchStatus? = nil,
+         mcpServers: Set<String> = [],
          release: @escaping @Sendable (UUID) async -> Void) {
         self.transport = transport; self.session = session; self.configuration = configuration; self.release = release
         self.mcpSetup = mcpSetup
+        self.mcpServers = mcpServers
         mode = configuration.mode
         (events, continuation) = AsyncThrowingStream.makeStream(bufferingPolicy: .bufferingOldest(4096))
     }
@@ -376,7 +386,7 @@ actor OpencodeRun: AgentRun {
         case "session.reasoning.ended": if let text = data["text"]?.stringValue { emit(.thinkingCompleted(text), item: item) }
         case "session.tool.input.started":
             guard let item, let name = data["name"]?.stringValue, tools.count < 1024 else { await abort(); return }
-            tools[item] = .init(name: name, input: .null)
+            tools[item] = .init(name: canonicalMCPName(name), input: .null)
         case "session.tool.input.delta": if let text = data["delta"]?.stringValue { emit(.toolInputDelta(text), item: item) }
         case "session.tool.input.ended":
             if let item, let tool = tools[item], let text = data["text"]?.stringValue {
@@ -404,7 +414,7 @@ actor OpencodeRun: AgentRun {
             if action == "bash" {
                 fallbackInput["command"] = .string((data["resources"]?.arrayValue ?? []).compactMap(\.stringValue).joined(separator: "\n"))
             }
-            let tool = toolID.flatMap { tools[$0] } ?? AgentTool(name: action, input: .object(fallbackInput))
+            let tool = toolID.flatMap { tools[$0] } ?? AgentTool(name: canonicalMCPName(action), input: .object(fallbackInput))
             let request = AgentRequest(id: .string(requestID), scope: scope(item: toolID), kind: .permission(tool))
             requests[request.id] = request; emit(.request(request), item: toolID)
         case "permission.replied":
@@ -454,6 +464,13 @@ actor OpencodeRun: AgentRun {
              "session.renamed", "session.metadata.updated", "session.viewed": break
         default: break // Includes unknown notifications; their payloads stay private.
         }
+    }
+
+    private func canonicalMCPName(_ name: String) -> String {
+        guard configuration.permissions != nil else { return name }
+        let matching = mcpServers.filter { name.hasPrefix($0 + "_") && name.count > $0.count + 1 }
+        guard matching.count == 1, let server = matching.first else { return name }
+        return "mcp__\(server)__\(name.dropFirst(server.count + 1))"
     }
 
     private func unsupportedEvent(showMessage: Bool = true) async {

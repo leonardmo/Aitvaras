@@ -52,7 +52,9 @@ public struct AgentSessionConfiguration: Sendable {
     public let additionalDirectories: [URL]
     public let model: String
     public let effort: String?
-    public let mode: AgentMode
+    private let initialMode: AgentMode
+    public var permissions: AgentChatPermissions?
+    public var mode: AgentMode { permissions?.mode ?? initialMode }
     public let instructions: String
     /// Ephemeral launch options; AgentChatSession never persists these.
     public var projectID: UUID?
@@ -71,9 +73,9 @@ public struct AgentSessionConfiguration: Sendable {
                 effort: String? = nil, mode: AgentMode = .ask, instructions: String = "", additionalDirectories: [URL] = [],
                 projectID: UUID? = nil, settingsJSON: String? = nil, mcpConfigPath: URL? = nil,
                 includeHookEvents: Bool = true, strictMCPConfig: Bool = false,
-                forkSession: Bool = false, resumeSessionAt: String? = nil) {
+                forkSession: Bool = false, resumeSessionAt: String? = nil, permissions: AgentChatPermissions? = nil) {
         self.directory = directory; self.resume = resume; self.model = model
-        self.effort = effort; self.mode = mode; self.instructions = instructions; self.additionalDirectories = additionalDirectories
+        self.effort = effort; self.initialMode = mode; self.permissions = permissions; self.instructions = instructions; self.additionalDirectories = additionalDirectories
         self.projectID = projectID; self.settingsJSON = settingsJSON; self.mcpConfigPath = mcpConfigPath
         self.includeHookEvents = includeHookEvents; self.strictMCPConfig = strictMCPConfig
         self.forkSession = forkSession; self.resumeSessionAt = resumeSessionAt

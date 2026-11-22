@@ -65,16 +65,20 @@ public struct OpencodeConfiguration: Sendable {
         }
         return .array(rules)
     }
-    public func sandbox(projects: [URL]) throws -> String {
+    public func sandbox(projects: [URL], unrestrictedWrites: Bool = false) throws -> String {
         let roots = try Self.writeRoots(projects + dataDirectories + [temporaryDirectory])
         let paths = roots.map { "(subpath \(Self.quote($0)))" }.joined(separator: " ")
-        return """
+        let network = """
         (version 1)
         (allow default)
         (deny network*)
         (allow network-bind (local ip "localhost:*"))
         (allow network-inbound (local ip "localhost:*"))
         (allow network-outbound (remote ip "localhost:*"))
+        """
+        if unrestrictedWrites { return network }
+        return """
+        \(network)
         (deny file-write*)
         (allow file-write* \(paths))
         """

@@ -529,7 +529,7 @@ actor OpencodeFakeTransport: OpencodeTransport {
     func setOpenFailure(_ value: Bool) { openFailure = value }
     func failNextFormCancellation() { failFormCancellation = true }
     private(set) var mcpConfigPaths: [URL?] = []
-    func open(projects: [URL], models: [AgentModel], mcpConfigPath: URL?) async throws {
+    func open(projects: [URL], models: [AgentModel], mcpConfigPath: URL?, unrestrictedWrites: Bool) async throws {
         mcpConfigPaths.append(mcpConfigPath)
         opens += 1
         if openFailure { throw AgentFailure.offline }

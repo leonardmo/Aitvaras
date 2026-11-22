@@ -34,7 +34,8 @@ public actor AgentMCPRuntimeFile {
                               servers: [String: AgentMCPServer], format: Format = .claude,
                               baseConfiguration: JSONValue? = nil,
                               policy: AutonomyPolicy = .init(), audit: @escaping AgentActionCoordinator.Audit,
-                              resolveSecret: @escaping SecretResolver) async throws -> AgentMCPRuntimeFile {
+                              resolveSecret: @escaping SecretResolver,
+                              repositoryServers: [String: String] = [:]) async throws -> AgentMCPRuntimeFile {
         try AgentMCPConfiguration.validate(servers)
         guard servers.values.allSatisfy({ $0.management == nil }) else { throw AgentMCPError.invalidConfiguration }
         let tool = ToolDefinition(name: "runtimeConfiguration", description: "Prepare MCP runtime", parametersJSON: "{}", risk: .reversibleWrite)
@@ -71,6 +72,13 @@ public actor AgentMCPRuntimeFile {
                 return .object(result)
             }
             var entries: [String: JSONValue] = [:]
+            for (name, definition) in repositoryServers {
+                guard format == .claude, servers[name] == nil,
+                      let entry = JSONValue.parse(definition), entry.objectValue != nil else {
+                    throw AgentMCPError.invalidConfiguration
+                }
+                entries[name] = entry
+            }
             for name in servers.keys.sorted() {
                 let server = servers[name]!
                 switch format {

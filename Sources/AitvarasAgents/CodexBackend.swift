@@ -13,7 +13,7 @@ public actor CodexBackend: AgentBackend {
     private let boundGateway: BoundGateway?
     private struct BoundGateway: Sendable {
         let arguments: [String]
-        let register: AgentWire.RegisterProcess
+        let register: AgentWire.RegisterProcess?
     }
     private var wire: AgentWire?
     private var transport: AgentWire?
@@ -288,10 +288,23 @@ public actor CodexBackend: AgentBackend {
     }
     public func start(_ configuration: AgentSessionConfiguration) async throws -> any AgentRun {
         guard !configuration.forkSession, configuration.resumeSessionAt == nil else { throw AgentFailure.unsupported }
-        if let gateway, let chatID = configuration.gatewayChatID {
+        if boundGateway == nil, let chatID = configuration.gatewayChatID,
+           gateway != nil || configuration.permissions?.isFullAccess == true {
+            var arguments = gateway?.configuration.codexArguments ?? []
+            if configuration.permissions != nil, gateway != nil {
+                // The gateway performs its own audited, project-scoped approval.
+                arguments += ["-c", "mcp_servers.aitvaras.default_tools_approval_mode=\"approve\""]
+            }
+            if configuration.permissions?.isFullAccess == true {
+                let directory = configuration.directory.resolvingSymlinksInPath().standardizedFileURL
+                let root = (try? await GitWorkspace(environment: environment).repository(at: directory)) ?? directory
+                try Task.checkCancellation()
+                arguments += ["-c", CodexRunPermissions.ignoringProjectConfiguration(at: root)]
+            }
             let child = CodexBackend(executable: executable, environment: environment, profile: profile,
-                boundGateway: .init(arguments: gateway.configuration.codexArguments,
-                    register: gateway.register(client: .codex, chatID: chatID, projectID: configuration.projectID)))
+                boundGateway: .init(arguments: arguments,
+                    register: gateway?.register(client: .codex, chatID: chatID, projectID: configuration.projectID,
+                                                permissions: configuration.permissions)))
             do {
                 let run = try await child.start(configuration)
                 try Task.checkCancellation()
@@ -306,9 +319,10 @@ public actor CodexBackend: AgentBackend {
         guard authentication == .subscription else {
             throw authentication == .signedOut ? AgentFailure.authRequired : AgentFailure.unsupported
         }
+        let permissions = CodexRunPermissions(mode: configuration.mode, permissions: configuration.permissions)
         var parameters: [String: JSONValue] = ["cwd": .string(configuration.directory.path),
-            "approvalPolicy": .string(configuration.mode.codexApproval),
-            "sandbox": .string(configuration.mode.codexSandbox)]
+            "approvalPolicy": permissions.approvalPolicy, "sandbox": .string(permissions.sandboxMode)]
+        if configuration.permissions != nil { parameters["approvalsReviewer"] = .string("user") }
         if configuration.model != "default" { parameters["model"] = .string(configuration.model) }
         if !configuration.instructions.isEmpty { parameters["developerInstructions"] = .string(configuration.instructions) }
         let method: String
@@ -318,15 +332,24 @@ public actor CodexBackend: AgentBackend {
             parameters["threadId"] = .string(resume.nativeID); method = "thread/resume"
         } else { method = "thread/start" }
         let connection = try await connection()
+        if let permissions = configuration.permissions, !permissions.isPlan, permissions.mcp != .auto {
+            let config = try await connection.request("config/read", .object(["cwd": .string(configuration.directory.path)]))
+            let overrides = CodexRunPermissions.mcpApprovalOverrides(config["config"] ?? .null,
+                hasGateway: boundGateway?.register != nil)
+            if !overrides.isEmpty { parameters["config"] = .object(overrides) }
+        }
         let result: JSONValue
         do { result = try await connection.request(method, .object(parameters)) }
         catch let rejection as AgentUsageLimitRejection { throw AgentFailure.quota(resetsAt: rejection.evidence.resetsAt) }
         guard wire === connection else { throw AgentFailure.invalidTransition }
         guard let nativeID = result["thread"]?["id"]?.stringValue, runs[nativeID] == nil else { throw AgentFailure.invalidRequest }
         if let provider = result["thread"]?["modelProvider"]?.stringValue, provider != "openai" { throw AgentFailure.unsupported }
+        if configuration.permissions != nil, !permissions.matchesReportedPolicy(result) {
+            throw AgentFailure.unsupported
+        }
         let session = AgentSessionID(provider: .codex, profile: profile, nativeID: nativeID)
         let run = CodexRun(backend: self, wire: connection, session: session, configuration: configuration, accountID: status.accountID,
-            initialLimitWindows: observedLimits, hasGateway: boundGateway != nil)
+            initialLimitWindows: observedLimits, hasGateway: boundGateway?.register != nil)
         runs[nativeID] = run
         await run.started()
         if availableSetup.serversAvailable { await run.setup(availableSetup) }
@@ -421,6 +444,72 @@ public actor CodexBackend: AgentBackend {
 extension AgentMode {
     var codexApproval: String { self == .ask ? "untrusted" : "on-request" }
     var codexSandbox: String { self == .plan ? "read-only" : "workspace-write" }
+}
+
+struct CodexRunPermissions {
+    let approvalPolicy: JSONValue
+    let sandboxMode: String
+    private let sandboxType: String
+
+    static func ignoringProjectConfiguration(at root: URL) -> String {
+        let path = JSONValue.string(root.path).jsonString.replacingOccurrences(of: "\u{7f}", with: "\\u007f")
+        // Codex applies the whole projects table at project-layer discovery.
+        // A dotted trust_level override is only merged after that step.
+        return "projects={ \(path) = { trust_level = \"untrusted\" } }"
+    }
+
+    static func mcpApprovalOverrides(_ config: JSONValue, hasGateway: Bool) -> [String: JSONValue] {
+        let servers = config["mcp_servers"]?.objectValue ?? [:]
+        var overrides: [String: JSONValue] = [:]
+        for (name, server) in servers where server["enabled"]?.boolValue != false {
+            // The gateway runs the app's policy after the native tool dispatch.
+            if hasGateway, name == GatewayCLIConfiguration.serverName { continue }
+            // Route native prompts through the coordinator so it can enforce
+            // hard denials even when an eligible call is approved silently.
+            var policy: [String: JSONValue] = ["default_tools_approval_mode": .string("prompt")]
+            if let tools = server["tools"]?.objectValue {
+                policy["tools"] = .object(tools.mapValues { _ in .object(["approval_mode": .string("prompt")]) })
+            }
+            overrides[name] = .object(policy)
+        }
+        return overrides.isEmpty ? [:] : ["mcp_servers": .object(overrides)]
+    }
+
+    init(mode: AgentMode, permissions: AgentChatPermissions?) {
+        let unrestricted = mode != .plan && permissions?.commands == .unrestricted
+        sandboxMode = unrestricted ? "danger-full-access" : mode.codexSandbox
+        sandboxType = unrestricted ? "dangerFullAccess" : (mode == .plan ? "readOnly" : "workspaceWrite")
+        if let permissions, mode != .plan {
+            switch (permissions.commands, permissions.mcp) {
+            case (.ask, _): approvalPolicy = .string("untrusted")
+            default:
+                approvalPolicy = .object(["granular": .object([
+                    "sandbox_approval": .bool(!unrestricted || permissions.isFullAccess),
+                    "rules": .bool(true),
+                    "mcp_elicitations": .bool(true),
+                    "request_permissions": .bool(!unrestricted),
+                    "skill_approval": .bool(false)
+                ])])
+            }
+        } else {
+            approvalPolicy = .string(mode.codexApproval)
+        }
+    }
+
+    func sandboxPolicy(additionalDirectories: [URL]) -> JSONValue {
+        var policy: [String: JSONValue] = ["type": .string(sandboxType)]
+        if sandboxType == "workspaceWrite", !additionalDirectories.isEmpty {
+            policy["writableRoots"] = .array(additionalDirectories.map { .string($0.path) })
+        }
+        return .object(policy)
+    }
+
+    func matchesReportedPolicy(_ result: JSONValue) -> Bool {
+        if let effective = result["approvalPolicy"], effective != approvalPolicy { return false }
+        if let effective = result["sandbox"]?["type"]?.stringValue, effective != sandboxType { return false }
+        if let effective = result["approvalsReviewer"]?.stringValue, effective != "user" { return false }
+        return true
+    }
 }
 
 func codexRateLimits(_ value: JSONValue) -> [AgentRateLimitWindow] {

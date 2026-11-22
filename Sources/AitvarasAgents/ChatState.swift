@@ -31,6 +31,7 @@ public struct ChatState: Sendable, Equatable {
     public private(set) var inputID: UUID?
     public private(set) var delivery: AgentDeliveryState?
     public private(set) var acknowledgedMode: AgentMode?
+    public private(set) var activePermissions: AgentChatPermissions?
     private var outputID: UUID?
     private var automaticInputID: UUID?
     private var thinkingIDs: [String: UUID] = [:]
@@ -51,6 +52,10 @@ public struct ChatState: Sendable, Equatable {
         self.chatID = chatID; self.entries = entries
     }
     mutating func noteDelivery(_ value: AgentDeliveryState) { delivery = value }
+    mutating func beginPermissions(_ permissions: AgentChatPermissions?) {
+        activePermissions = permissions
+        if let permissions { acknowledgedMode = permissions.mode }
+    }
     mutating func restore(turn: AgentJournalTurn) {
         inputID = turn.id; delivery = turn.delivery
         if let stop = entries.reversed().compactMap(\.stoppedTurn).first(where: { $0.inputID == turn.id && $0.attempt == turn.resendCount }) {

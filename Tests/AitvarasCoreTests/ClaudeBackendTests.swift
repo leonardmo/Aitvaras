@@ -5,6 +5,19 @@ import AitvarasStore
 
 @Suite(.timeLimit(.minutes(2)))
 struct ClaudeBackendTests {
+    @Test func composerAutoKeepsSandboxAndExplicitEscalations() throws {
+        let settings = ClaudeRunPermissions.settings(#"{"disabledMcpjsonServers":["disabled"]}"#, permissions: .auto)
+        let json = try #require(JSONValue.parse(settings))
+        #expect(json["disabledMcpjsonServers"] == .array([.string("disabled")]))
+        #expect(json["sandbox"]?["enabled"] == .bool(true))
+        #expect(json["sandbox"]?["failIfUnavailable"] == .bool(true))
+        #expect(json["sandbox"]?["autoAllowBashIfSandboxed"] == .bool(true))
+        #expect(json["permissions"]?["ask"] == .array([.string("Bash(dangerouslyDisableSandbox:true)")]))
+        #expect(ClaudeRunPermissions.nativeMode(.auto, permissions: .auto) == "acceptEdits")
+        #expect(ClaudeRunPermissions.nativeMode(.auto, permissions: .fullAccess) == "bypassPermissions")
+        #expect(JSONValue.parse(ClaudeRunPermissions.settings("{}", permissions: .fullAccess))?["sandbox"]?["enabled"] == .bool(false))
+    }
+
     @Test func foreignSessionFramesDoNotEndANormalTurn() async throws {
         let fixture = try BackendExecutableFixture(script: #"""
 claude_init()

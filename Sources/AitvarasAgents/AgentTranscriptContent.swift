@@ -197,7 +197,7 @@ public struct AgentActionPresentation: Sendable, Equatable {
             title = "Allow \(tool.name)?"
             detail = name == "filechange" ? "File changes requested; the provider did not supply paths." : AgentTranscriptContent.display(input)
         }
-        self.init(title: title, detail: detail, reason: input["reason"]?.stringValue)
+        self.init(title: title, detail: detail, reason: AgentToolPolicy.criticalApprovalReason(tool) ?? input["reason"]?.stringValue)
     }
 }
 

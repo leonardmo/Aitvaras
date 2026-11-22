@@ -92,6 +92,7 @@ public enum AgentResponse: Sendable, Equatable {
     case answers([String: [String]])
     case continueHook
     case askHook
+    case allowHook
     case unsupported
 }
 

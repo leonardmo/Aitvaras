@@ -4,6 +4,42 @@ import Testing
 
 @Suite(.timeLimit(.minutes(2)))
 struct CodexBackendTests {
+    @Test func composerPolicyKeepsAutoSandboxAndRoutesFullAccessMCPInternally() throws {
+        let workspace = URL(fileURLWithPath: "/tmp/example workspace")
+        let auto = CodexRunPermissions(mode: .auto, permissions: .auto)
+        #expect(auto.sandboxMode == "workspace-write")
+        #expect(auto.approvalPolicy["granular"]?["sandbox_approval"] == .bool(true))
+        #expect(auto.approvalPolicy["granular"]?["rules"] == .bool(true))
+        #expect(auto.sandboxPolicy(additionalDirectories: [workspace])["writableRoots"] == .array([.string(workspace.path)]))
+
+        let full = CodexRunPermissions(mode: .auto, permissions: .fullAccess)
+        #expect(full.sandboxMode == "danger-full-access")
+        #expect(full.sandboxPolicy(additionalDirectories: [workspace]) == .object(["type": .string("dangerFullAccess")]))
+        #expect(full.approvalPolicy["granular"]?["sandbox_approval"] == .bool(true))
+        #expect(full.approvalPolicy["granular"]?["rules"] == .bool(true))
+        #expect(full.approvalPolicy["granular"]?["request_permissions"] == .bool(false))
+        #expect(full.approvalPolicy["granular"]?["mcp_elicitations"] == .bool(true))
+        #expect(!full.matchesReportedPolicy(.object(["sandbox": .object(["type": .string("workspaceWrite")])])))
+        #expect(CodexRunPermissions.ignoringProjectConfiguration(at: workspace)
+            == "projects={ \"/tmp/example workspace\" = { trust_level = \"untrusted\" } }")
+
+        let config = try #require(JSONValue.parse(#"{"mcp_servers":{"aitvaras":{},"one":{"tools":{"lookup":{"approval_mode":"approve"}}},"disabled":{"enabled":false}}}"#))
+        let overrides = CodexRunPermissions.mcpApprovalOverrides(config, hasGateway: true)
+        #expect(overrides["mcp_servers"]?.objectValue?.keys.sorted() == ["one"])
+        #expect(overrides["mcp_servers"]?["one"]?["tools"]?["lookup"]?["approval_mode"] == .string("prompt"))
+    }
+
+    @Test func mcpApprovalRequiresMatchingInProgressToolAndEmptyForm() throws {
+        let request = try #require(JSONValue.parse(#"{"mode":"form","serverName":"example","requestedSchema":{"type":"object","properties":{}},"_meta":{"codex_approval_kind":"mcp_tool_call","tool_name":"lookup","tool_params":{"id":1}}}"#))
+        let item = try #require(JSONValue.parse(#"{"type":"mcpToolCall","status":"inProgress","server":"example","tool":"lookup","arguments":{"id":1}}"#))
+        #expect(CodexRun.mcpToolApproval(request, items: [item])?.name == "mcp__example__lookup")
+        #expect(CodexRun.mcpToolApproval(request, items: [item])?.input == item["arguments"])
+        #expect(CodexRun.mcpToolApproval(request, items: []) == nil)
+        var generic = request.objectValue ?? [:]
+        generic["requestedSchema"] = .object(["type": .string("object"), "properties": .object(["password": .object([:])])])
+        #expect(CodexRun.mcpToolApproval(.object(generic), items: [item]) == nil)
+    }
+
     @Test func automaticContinuationSuppliesItsDurableClientMessageIdentity() async throws {
         let fixture = try BackendExecutableFixture(script: #"""
 codex_init()

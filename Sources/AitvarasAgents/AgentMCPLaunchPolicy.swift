@@ -99,8 +99,12 @@ public struct AgentMCPLaunchPolicy: Sendable {
 
     public func runtimeFile(snapshot: AgentMCPLaunchSnapshot, runID: UUID,
                             format: AgentMCPRuntimeFile.Format, baseConfiguration: JSONValue? = nil,
-                            gateway: GatewayCLIConfiguration? = nil) async throws -> AgentMCPRuntimeFile? {
+                            gateway: GatewayCLIConfiguration? = nil,
+                            includeApprovedRepository: Bool = false) async throws -> AgentMCPRuntimeFile? {
         var servers = format == .claude ? snapshot.resolution.claudeServers : snapshot.resolution.localServers
+        let approvedRepository = includeApprovedRepository && format == .claude
+            ? snapshot.resolution.repositoryEntries.filter { snapshot.resolution.effectiveServers[$0.key] != nil }
+            : [:]
         if let gateway {
             let name = GatewayCLIConfiguration.serverName
             guard format == .claude, servers[name] == nil, snapshot.resolution.repositoryEntries[name] == nil else {
@@ -108,9 +112,10 @@ public struct AgentMCPLaunchPolicy: Sendable {
             }
             servers[name] = gateway.server
         }
-        guard !servers.isEmpty else { return nil }
+        guard !servers.isEmpty || !approvedRepository.isEmpty else { return nil }
         return try await AgentMCPRuntimeFile.create(stateDirectory: stateDirectory, projectID: snapshot.projectID,
             runID: runID, servers: servers, format: format, baseConfiguration: baseConfiguration,
-            audit: audit, resolveSecret: resolveSecret)
+            audit: audit, resolveSecret: resolveSecret,
+            repositoryServers: approvedRepository.mapValues(\.canonicalJSON))
     }
 }

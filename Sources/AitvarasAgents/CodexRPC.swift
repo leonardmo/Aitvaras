@@ -111,14 +111,12 @@ actor CodexRun: AgentRun {
     }
     private func startTurn(content: JSONValue, mode: AgentMode) async throws {
         let owner = input
+        let permissions = CodexRunPermissions(mode: mode, permissions: configuration.permissions)
         var parameters: [String: JSONValue] = ["threadId": .string(session.nativeID),
             "input": content,
-            "approvalPolicy": .string(mode.codexApproval),
-            "sandboxPolicy": .object(["type": .string(mode == .plan ? "readOnly" : "workspaceWrite")])]
-        if mode != .plan, !configuration.additionalDirectories.isEmpty {
-            parameters["sandboxPolicy"] = .object(["type": .string("workspaceWrite"),
-                "writableRoots": .array(configuration.additionalDirectories.map { .string($0.path) })])
-        }
+            "approvalPolicy": permissions.approvalPolicy,
+            "sandboxPolicy": permissions.sandboxPolicy(additionalDirectories: configuration.additionalDirectories)]
+        if configuration.permissions != nil { parameters["approvalsReviewer"] = .string("user") }
         if (automaticInput == input && !executingApprovedPlan) || (content.arrayValue?.count ?? 0) > 1, let input {
             parameters["clientUserMessageId"] = .string(input.uuidString)
         }
@@ -135,7 +133,9 @@ actor CodexRun: AgentRun {
     func receive(_ method: String, parameters p: JSONValue, requestID: AgentRequestID?) async {
         guard !closed else { return }
         if let requestID {
-            guard p["threadId"]?.stringValue == nil || p["threadId"]?.stringValue == session.nativeID, input != nil, let nativeTurn = p["turnId"]?.stringValue,
+            let isMCPPrompt = method == "mcpServer/elicitation/request"
+            let requestedTurn = p["turnId"]?.stringValue ?? (isMCPPrompt ? turn : nil)
+            guard p["threadId"]?.stringValue == nil || p["threadId"]?.stringValue == session.nativeID, input != nil, let nativeTurn = requestedTurn,
                   !completedTurns.contains(nativeTurn), turn == nil || nativeTurn == turn, !seenRequests.contains(requestID), seenRequests.count < 100_000,
                   requests.count < 64 else {
                 requests.removeValue(forKey: requestID)
@@ -149,6 +149,11 @@ actor CodexRun: AgentRun {
                 if let item = p["itemId"]?.stringValue, let changes = items[item]?["changes"] { input["changes"] = changes }
                 kind = .permission(AgentTool(name: method == "item/commandExecution/requestApproval" ? "commandExecution" : "fileChange", input: .object(input)))
             case "item/permissions/requestApproval": kind = .permissions(p)
+            case "mcpServer/elicitation/request":
+                guard configuration.permissions != nil, let tool = Self.mcpToolApproval(p, items: items.values) else {
+                    try? await wire.writeResponse(id: requestID, result: nil, error: true); return
+                }
+                kind = .permission(tool)
             case "item/tool/requestUserInput":
                 guard let questions = try? agentQuestions(p["questions"] ?? .null, claude: false) else {
                     try? await wire.writeResponse(id: requestID, result: nil, error: true); return
@@ -223,6 +228,33 @@ actor CodexRun: AgentRun {
             } else { endTurn(outcome) }
         default: emit(.unknown(name: method, payload: p), item: itemID)
         }
+    }
+
+    static func mcpToolApproval(_ parameters: JSONValue, items: some Sequence<JSONValue>) -> AgentTool? {
+        guard parameters["mode"]?.stringValue == "form",
+              let metadata = parameters["_meta"],
+              metadata["codex_approval_kind"]?.stringValue == "mcp_tool_call",
+              metadata["codex_requires_user_input"]?.boolValue != true,
+              let server = parameters["serverName"]?.stringValue, !server.isEmpty, server.utf8.count <= 128,
+              let name = metadata["tool_name"]?.stringValue, !name.isEmpty, name.utf8.count <= 256,
+              let schema = parameters["requestedSchema"],
+              schema == .null || (schema["type"]?.stringValue == "object" && schema["properties"]?.objectValue?.isEmpty == true
+                  && (schema["required"] == nil || schema["required"]?.arrayValue?.isEmpty == true)) else { return nil }
+        // An upstream controls its own elicitation metadata. Bind the approval
+        // to a native tool invocation already observed on this turn.
+        let requestedArguments = metadata["tool_params"]?.objectValue
+        let environment = parameters["environmentId"]?.stringValue
+        let matches = items.filter {
+            $0["type"]?.stringValue == "mcpToolCall" && $0["status"]?.stringValue == "inProgress"
+                && $0["server"]?.stringValue == server && $0["tool"]?.stringValue == name
+                && (requestedArguments == nil || requestedArguments == $0["arguments"]?.objectValue)
+                && (environment == nil || environment == $0["environmentId"]?.stringValue)
+        }
+        guard let item = matches.first, let arguments = item["arguments"],
+              matches.allSatisfy({ $0["arguments"] == arguments }),
+              arguments == .null || arguments.objectValue != nil else { return nil }
+        let input = arguments == .null ? .object([:]) : arguments
+        return .init(name: "mcp__\(server)__\(name)", input: input)
     }
     private func reconcileTools(_ unfinished: Set<String>, turn nativeTurn: String, owner: UUID,
                                 outcome: AgentTurnOutcome) async {
@@ -328,6 +360,10 @@ actor CodexRun: AgentRun {
         }
         let result: JSONValue
         switch (request.kind, response) {
+        case (.permission(let tool), .allow) where AgentToolPolicy.isMCPTool(tool):
+            result = .object(["action": .string("accept"), "content": .null])
+        case (.permission(let tool), .deny) where AgentToolPolicy.isMCPTool(tool):
+            result = .object(["action": .string("decline"), "content": .null])
         case (.permission, .allow): result = .object(["decision": .string("accept")])
         case (.permission(let tool), .deny):
             let choices = tool.input["availableDecisions"]?.arrayValue?.compactMap(\.stringValue)

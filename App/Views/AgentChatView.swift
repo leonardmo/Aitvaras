@@ -144,6 +144,9 @@ struct AgentChatView: View {
                         ForEach(gatewayApprovals) { request in
                             VStack(alignment: .leading, spacing: 8) {
                                 Text("Allow \(request.toolName)?").font(.headline)
+                                if let reason = request.reason {
+                                    Text(reason).font(.caption).foregroundStyle(.secondary)
+                                }
                                 DisclosureGroup("Arguments") {
                                     Text(verbatim: request.arguments.jsonString)
                                         .font(.caption.monospaced()).textSelection(.enabled)
@@ -151,6 +154,12 @@ struct AgentChatView: View {
                                 HStack {
                                     Button("Deny") { Task { await model.decideGatewayApproval(request, allow: false) } }
                                     Button("Allow once") { Task { await model.decideGatewayApproval(request, allow: true) } }
+                                }
+                                if request.canAlwaysAllow {
+                                    Button("Always allow in this project") {
+                                        Task { await model.decideGatewayApproval(request, allow: true, forProject: true) }
+                                    }
+                                    .accessibilityIdentifier("chat.gateway.approval.\(request.id).alwaysAllow")
                                 }
                             }
                             .padding(12)
@@ -804,26 +813,8 @@ private struct AgentChatComposer: View {
                     .accessibilityIdentifier("chat.effort").disabled(chat.isBusy || chat.creatingChat)
                 } else { Color.clear.frame(height: 16).accessibilityHidden(true) }
             }.frame(width: iconOnly ? 32 : 54)
-            Group {
-                if chat.provider != .local || chat.statuses[.local]?.capabilities.contains(.approvals) == true {
-                    Menu {
-                        Picker("Mode", selection: $chat.mode) {
-                            Text("Ask").tag(AgentMode.ask)
-                            Text("Accept edits").tag(AgentMode.acceptEdits)
-                            Text("Plan").tag(AgentMode.plan)
-                            Text("Auto").tag(AgentMode.auto)
-                        }.pickerStyle(.inline)
-                    } label: {
-                        if iconOnly { Image(systemName: modeSymbol) }
-                        else { Text(modeTitle).lineLimit(1) }
-                    }
-                    .menuIndicator(.visible)
-                    .frame(maxWidth: .infinity)
-                    .help("Mode: \(modeTitle)")
-                    .accessibilityLabel("Mode").accessibilityValue(modeTitle)
-                    .accessibilityIdentifier("chat.mode").disabled(chat.isBusy || chat.creatingChat)
-                } else { Color.clear.frame(height: 16).accessibilityHidden(true) }
-            }.frame(width: iconOnly ? 32 : 64)
+            AgentComposerPermissionsControl(chat: chat, iconOnly: iconOnly)
+                .frame(width: iconOnly ? 32 : 104)
         }
         .controlSize(.small).menuStyle(.borderlessButton)
     }
@@ -890,20 +881,225 @@ private struct AgentChatComposer: View {
         }
         return true
     }
-    private var modeTitle: String {
-        switch chat.mode { case .ask: "Ask"; case .acceptEdits: "Accept edits"; case .plan: "Plan"; case .auto: "Auto" }
+    private var composerMessageColor: Color {
+        colorScheme == .dark ? Color(white: 0.92) : Color(white: 0.12)
     }
-    private var modeSymbol: String {
-        switch chat.mode {
-        case .ask: "hand.raised"
-        case .acceptEdits: "pencil"
-        case .plan: "list.bullet.clipboard"
-        case .auto: "bolt"
+}
+
+private struct AgentComposerPermissionsControl: View {
+    @Bindable var chat: ChatModel
+    let iconOnly: Bool
+
+    @State private var isPresented = false
+
+    private var selection: AgentChatPermissions { chat.permissions }
+    private var isFullAccessVisible: Bool {
+        selection == .fullAccess || chat.activePermissions == .fullAccess
+    }
+    private var selectionTitle: String {
+        chat.permissionsApplyNextTurn ? "\(title(selection)) from next turn" : title(selection)
+    }
+
+    var body: some View {
+        Button {
+            isPresented.toggle()
+        } label: {
+            HStack(spacing: 4) {
+                if isFullAccessVisible {
+                    Image(systemName: "exclamationmark.triangle")
+                        .symbolRenderingMode(.monochrome)
+                        .foregroundStyle(Color.orange)
+                } else if iconOnly {
+                    Image(systemName: symbol)
+                }
+                if !iconOnly { Text(title(selection)).lineLimit(1) }
+                if !iconOnly || chat.permissionsApplyNextTurn {
+                    Image(systemName: chat.permissionsApplyNextTurn ? "clock" : "chevron.down")
+                        .font(.system(size: 8, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .font(.caption)
+            .frame(maxWidth: .infinity, minHeight: 24)
+            .background(isFullAccessVisible ? Color.orange.opacity(0.22) : .clear, in: Capsule())
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help(selectionTitle)
+        .accessibilityLabel("Permissions")
+        .accessibilityValue(selectionTitle)
+        .accessibilityIdentifier("chat.mode")
+        .disabled(chat.creatingChat)
+        .popover(isPresented: $isPresented, arrowEdge: .top) { panel }
+        .onChange(of: chat.composerOwnerID) { isPresented = false }
+    }
+
+    private var panel: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Chat permissions").font(.headline)
+            HStack(spacing: 6) {
+                permissionOption("Auto", id: "preset.auto", selected: selection == .auto, icon: "bolt") {
+                    chat.permissions = .auto
+                }
+                permissionOption("Full access", id: "preset.fullAccess", selected: selection == .fullAccess,
+                                 icon: "exclamationmark.triangle.fill") {
+                    chat.permissions = .fullAccess
+                }
+                permissionOption("Plan", id: "preset.plan", selected: selection.isPlan, icon: "list.bullet.clipboard") {
+                    chat.permissions = .plan
+                }
+            }
+            if isFullAccessVisible {
+                Label("Full access runs commands outside the workspace sandbox and skips tool approvals.",
+                      systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Divider()
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Commands").font(.subheadline.weight(.semibold))
+                HStack(spacing: 6) {
+                    permissionOption("Ask", id: "commands.ask", selected: !selection.isPlan && selection.commands == .ask) {
+                        customize { $0.commands = .ask }
+                    }
+                    permissionOption("Auto (workspace)", id: "commands.auto", selected: !selection.isPlan && selection.commands == .auto) {
+                        customize { $0.commands = .auto }
+                    }
+                    permissionOption("Unrestricted", id: "commands.unrestricted", selected: !selection.isPlan && selection.commands == .unrestricted) {
+                        customize { $0.commands = .unrestricted }
+                    }
+                }
+            }.accessibilityElement(children: .contain).accessibilityLabel("Commands")
+            VStack(alignment: .leading, spacing: 6) {
+                Text("MCP tools").font(.subheadline.weight(.semibold))
+                HStack(spacing: 6) {
+                    permissionOption("Ask", id: "mcp.ask", selected: !selection.isPlan && selection.mcp == .ask) {
+                        customize { $0.mcp = .ask }
+                    }
+                    permissionOption("Auto", id: "mcp.auto", selected: !selection.isPlan && selection.mcp == .auto) {
+                        customize { $0.mcp = .auto }
+                    }
+                    permissionOption("No approval prompts", id: "mcp.unprompted", selected: !selection.isPlan && selection.mcp == .unprompted) {
+                        customize { $0.mcp = .unprompted }
+                    }
+                }
+            }.accessibilityElement(children: .contain).accessibilityLabel("MCP tools")
+            Divider()
+            providerDetails
+        }
+        .padding(16)
+        .frame(width: 444)
+        .controlSize(.regular)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("chat.permissions")
+    }
+
+    private func permissionOption(_ label: String, id: String, selected: Bool, icon: String? = nil,
+                                  action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 5) {
+                if let icon {
+                    Image(systemName: icon)
+                        .foregroundStyle(icon == "exclamationmark.triangle.fill" ? Color.orange : Color.primary)
+                }
+                Text(label)
+                if selected {
+                    Image(systemName: "checkmark").font(.caption.weight(.semibold))
+                        .foregroundStyle(Color.accentColor)
+                }
+            }
+            .font(.caption)
+            .padding(.horizontal, 8)
+            .frame(maxWidth: .infinity, minHeight: 29)
+            .background(selected ? Color.accentColor.opacity(0.14) : Color.primary.opacity(0.05),
+                        in: RoundedRectangle(cornerRadius: 6))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityAddTraits(selected ? .isSelected : [])
+        .accessibilityIdentifier("chat.permissions.\(id)")
+    }
+
+    private var providerDetails: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Text(chat.title(chat.choice)).font(.subheadline.weight(.semibold))
+            if chat.permissionsApplyNextTurn {
+                Label(selectionTitle, systemImage: "clock").foregroundStyle(Color.accentColor)
+                if let active = chat.activePermissions {
+                    Text("Current turn uses \(title(active)).").foregroundStyle(.secondary)
+                }
+            }
+            if let status = chat.profileStatuses[chat.choice], !status.capabilities.contains(.tools),
+               status.installed, status.authentication == .local {
+                Text("This Local setup runs without command or MCP tools.").foregroundStyle(.secondary)
+            } else {
+                Text(commandDetail).foregroundStyle(.secondary)
+                Text(mcpDetail).foregroundStyle(.secondary)
+            }
+            if let status = chat.profileStatuses[chat.choice],
+               !status.installed || [.signedOut, .unsupported, .unavailable].contains(status.authentication) {
+                Text(chat.statusLabel(chat.choice)).foregroundStyle(.secondary)
+            }
+        }
+        .font(.caption)
+        .fixedSize(horizontal: false, vertical: true)
+    }
+
+    private var commandDetail: String {
+        if selection.isPlan { return "Commands stay read-only during planning." }
+        if chat.choice.provider == .local {
+            switch selection.commands {
+            case .ask: return "Commands run in the workspace sandbox with approval."
+            case .auto: return "Commands stay in the workspace sandbox and critical actions require approval. Choose Unrestricted for the next turn if broader access is needed."
+            case .unrestricted: return "Commands can run outside the workspace sandbox without approval. Network access stays on this Mac."
+            }
+        }
+        if chat.choice.provider == .codex {
+            switch selection.commands {
+            case .ask: return "Codex applies its approval rules to command execution."
+            case .auto: return "Commands stay in the workspace sandbox. Codex asks for broader access and applies its command rules."
+            case .unrestricted: return "Commands can run outside the workspace sandbox. Codex user and managed rules can still apply."
+            }
+        }
+        switch selection.commands {
+        case .ask: return "Command execution requires approval."
+        case .auto: return "Commands stay in the workspace sandbox. Broader access and critical actions require approval."
+        case .unrestricted: return "Commands can run outside the workspace sandbox without approval."
         }
     }
 
-    private var composerMessageColor: Color {
-        colorScheme == .dark ? Color(white: 0.92) : Color(white: 0.12)
+    private var mcpDetail: String {
+        if selection.isPlan { return "Planning limits MCP tools to reads." }
+        if chat.choice.provider == .codex, selection.mcp == .auto {
+            return "Critical or unclassified gateway calls require approval. Native MCP servers also use their Codex approval rules."
+        }
+        switch selection.mcp {
+        case .ask: return "MCP calls require approval."
+        case .auto: return "Critical or unclassified MCP calls require approval."
+        case .unprompted: return "MCP tools enabled for this project can run without approval."
+        }
+    }
+
+    private func customize(_ change: (inout AgentChatPermissions) -> Void) {
+        var updated = selection.isPlan ? .auto : selection
+        change(&updated)
+        chat.permissions = updated
+    }
+
+    private func title(_ permissions: AgentChatPermissions) -> String {
+        if permissions.isPlan { return "Plan" }
+        if permissions == .auto { return "Auto" }
+        if permissions == .fullAccess { return "Full access" }
+        if permissions == .ask { return "Ask" }
+        return "Custom"
+    }
+
+    private var symbol: String {
+        if selection.isPlan { return "list.bullet.clipboard" }
+        if selection == .auto { return "bolt" }
+        if selection == .ask { return "hand.raised" }
+        return "slider.horizontal.3"
     }
 }
 
