@@ -406,6 +406,66 @@ import Testing
         }
     }
 
+    @Test func codeCopyTargetsTheRightBlockAndPreservesItsText() throws {
+        let parent = NSView(frame: NSRect(x: 0, y: 0, width: 420, height: 400))
+        let view = ChatMessageTextView(frame: .zero, textContainer: nil)
+        parent.addSubview(view)
+        let pasteboard = NSPasteboard.withUniqueName()
+        defer { pasteboard.releaseGlobally() }
+        view.codePasteboard = pasteboard
+
+        let code = "let value = \"☀️\"  \n\n  print(value)\n"
+        view.update("```text\nExample review\n```\n\n```swift\n" + code + "```")
+        view.setFrameSize(view.measuredSize(width: 350))
+        let block = try #require(view.renderer.codeBlocks.last)
+        let button = try #require(view.subviews.compactMap { $0 as? NSButton }.first { $0.tag == block.range.location })
+        let center = view.convert(NSPoint(x: button.frame.midX, y: button.frame.midY), to: parent)
+        #expect(parent.hitTest(center) === button)
+        #expect(view.accessibilityChildren()?.contains { $0 as AnyObject === button } == true)
+        #expect(button.accessibilityPerformPress())
+
+        #expect(pasteboard.string(forType: .string) == code)
+        #expect(button.title == "Copied")
+    }
+
+    @Test func plainCodeFencesWrapWhileTaggedCodeKeepsHorizontalScrolling() throws {
+        let view = ChatMessageTextView(frame: .zero, textContainer: nil)
+        let line = String(repeating: "a long example ", count: 12)
+        for tag in ["", "text", "swift"] {
+            view.update("```" + tag + "\n" + line + "\n```")
+            view.setFrameSize(view.measuredSize(width: 250))
+            let block = try #require(view.renderer.codeBlocks.first)
+            let layout = try #require(view.layoutManager)
+            let start = layout.glyphIndexForCharacter(at: block.contentRange.location)
+            let end = layout.glyphIndexForCharacter(at: NSMaxRange(block.contentRange) - 2)
+            let wrapped = layout.lineFragmentRect(forGlyphAt: end, effectiveRange: nil).minY
+                > layout.lineFragmentRect(forGlyphAt: start, effectiveRange: nil).minY
+            let scroller = try #require(view.subviews.compactMap { $0 as? NSScroller }.first)
+            #expect(wrapped == (tag != "swift"))
+            #expect(scroller.isHidden == (tag != "swift"))
+            #expect(scroller.isEnabled == (tag == "swift"))
+            if scroller.isEnabled {
+                let knob = scroller.rect(for: .knob)
+                #expect(knob.width > knob.height)
+            }
+        }
+    }
+
+    @Test func syntaxColorsTaggedCodeWithoutChangingItsContents() {
+        let code = #"let sample = "// 123""# + "\n"
+        let highlighted = renderer("```swift\n" + code + "```")
+        let keyword = attributes(highlighted, containing: "let")[.foregroundColor] as? NSColor
+        let name = attributes(highlighted, containing: "sample")[.foregroundColor] as? NSColor
+        let string = attributes(highlighted, containing: "// 123")[.foregroundColor] as? NSColor
+        #expect(keyword != name)
+        #expect(keyword != string)
+        #expect(string != name)
+        #expect(highlighted.codeBlocks.first?.code == code)
+        let plain = renderer("```text\n" + code + "```")
+        #expect(attributes(plain, containing: "let")[.foregroundColor] as? NSColor
+            == attributes(plain, containing: "// 123")[.foregroundColor] as? NSColor)
+    }
+
     @Test func nativeMeasurementUsesProposedTranscriptWidth() {
         let view = ChatMessageTextView(frame: .zero, textContainer: nil)
         view.update(String(repeating: "Long prose with **formatting**. ", count: 25) + "\n\n```\n" + String(repeating: "code", count: 100) + "\n```")

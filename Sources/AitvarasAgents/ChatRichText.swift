@@ -12,6 +12,10 @@ public struct ChatCodeBlock {
     public let contentRange: NSRange
     public let code: String
     public let language: String
+
+    var wraps: Bool {
+        ["code", "text", "plain", "plaintext", "txt"].contains(language.lowercased())
+    }
 }
 
 /// One native text storage for the whole message: selections can cross every
@@ -107,6 +111,7 @@ public struct ChatCodeBlock {
             p.headIndent = indent; p.firstLineHeadIndent = indent
             p.lineSpacing = kind == "code" ? 0 : 2
             p.paragraphSpacing = kind == "heading" ? 10 : 8
+            if kind == "code" { p.paragraphSpacing = 0 }
             if kind == "heading" { p.paragraphSpacingBefore = 4 }
             if kind == "list" { p.paragraphSpacing = 4 }
             if kind == "figure" { p.paragraphSpacingBefore = 6 }
@@ -386,7 +391,7 @@ public struct ChatCodeBlock {
     func renderCode(_ block: CodeBlock, _ initial: Style) {
         var style = initial
         style.font = .monospacedSystemFont(ofSize: initial.font.pointSize, weight: .regular)
-        style.kind = "code"; style.code = true
+        style.kind = "code"
         let literal = raw(block), lines = literal.components(separatedBy: "\n")
         let opening = (lines.first ?? "").trimmingCharacters(in: .whitespaces)
         if let mark = opening.first, mark == "`" || mark == "~" {
@@ -404,6 +409,7 @@ public struct ChatCodeBlock {
                 return line.count >= count && line.allSatisfy { $0 == mark }
             }
             if !closed {
+                style.code = true
                 let start = output.length; append(literal, style)
                 if let range = coordinates.range(block.range) { mapRange(range, from: start, exact: true) }
                 newline(style); return
@@ -416,11 +422,19 @@ public struct ChatCodeBlock {
             renderFigure(image, node: block, caption: chart.title, style: initial)
             return
         }
-        append(language + "\n", style)
+        var header = style
+        header.font = .systemFont(ofSize: NSFont.smallSystemFontSize, weight: .medium)
+        header.color = .secondaryLabelColor
+        append(language + "\n", header)
+        output.addAttribute(.baselineOffset, value: 8,
+                            range: NSRange(location: start, length: output.length - start - 1))
         let contentStart = output.length
-        append(block.code, style); newline(style)
+        append(block.code, style)
+        ChatCodeHighlighting.apply(to: output, code: block.code, start: contentStart,
+                                   tag: language, appearance: appearance)
+        newline(style)
         let contentEnd = output.length
-        // An empty footer reserves space for the horizontal scrollbar.
+        // Reserve room below the last line for padding or the scrollbar.
         append("\n", style)
         let range = NSRange(location: start, length: output.length - start)
         output.addAttribute(.chatCodeBlock, value: renderedBase + start, range: range)

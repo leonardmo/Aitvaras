@@ -18,7 +18,10 @@ import UniformTypeIdentifiers
     private var figurePreview: NSPopover?
     private var offsets: [Int: CGFloat] = [:]
     private var codeWidths: [Int: CGFloat] = [:]
-    private var controls: [Int: (NSButton, NSScroller)] = [:]
+    private var controls: [Int: (CodeCopyButton, NSScroller)] = [:]
+    var codePasteboard = NSPasteboard.general
+    private static let codeInset: CGFloat = 12
+    private static let codeHeaderHeight: CGFloat = 32
     /// Heights measured off-screen for widths other than the live one, so
     /// SwiftUI's repeated proposals are answered without relayout.
     private var measuredHeights: [CGFloat: CGFloat] = [:]
@@ -72,10 +75,10 @@ import UniformTypeIdentifiers
                 from: NSRange(location: replacement.location, length: renderer.text.length - replacement.location)))
             setSelectedRange(NSRange(location: min(selection.location, storage.length), length: min(selection.length, max(0, storage.length - selection.location))))
             codeWidths = codeWidths.filter { $0.key < replacement.location }
-            for block in renderer.codeBlocks where block.range.location >= replacement.location {
+            for block in renderer.codeBlocks where !block.wraps && block.range.location >= replacement.location {
                 let font = NSFont.monospacedSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
                 codeWidths[block.range.location] = block.code.components(separatedBy: "\n").map {
-                    ($0 as NSString).size(withAttributes: [.font: font]).width + 20
+                    ceil(($0 as NSString).size(withAttributes: [.font: font]).width) + 2 * Self.codeInset + 1
                 }.max() ?? 0
             }
             measuredHeights.removeAll()
@@ -91,13 +94,16 @@ import UniformTypeIdentifiers
     public override func draw(_ dirtyRect: NSRect) {
         if let layout = layoutManager, let container = textContainer {
             for block in renderer.codeBlocks {
-                let glyphs = layout.glyphRange(forCharacterRange: block.range, actualCharacterRange: nil)
-                let bounds = layout.boundingRect(forGlyphRange: glyphs, in: container)
-                let panel = NSRect(x: 0, y: bounds.minY, width: viewportWidth, height: bounds.height)
-                if panel.intersects(dirtyRect) {
-                    NSColor.quaternaryLabelColor.withAlphaComponent(0.12).setFill()
-                    NSBezierPath(roundedRect: panel, xRadius: 6, yRadius: 6).fill()
-                }
+                let panel = codePanel(for: block, layout: layout, container: container)
+                guard panel.intersects(dirtyRect) else { continue }
+                let outline = NSBezierPath(roundedRect: panel.insetBy(dx: 0.5, dy: 0.5), xRadius: 8, yRadius: 8)
+                NSColor.labelColor.withAlphaComponent(0.045).setFill()
+                outline.fill()
+                NSColor.labelColor.withAlphaComponent(0.16).setStroke()
+                outline.stroke()
+                let y = panel.minY + Self.codeHeaderHeight
+                NSBezierPath.strokeLine(from: NSPoint(x: panel.minX + 1, y: y),
+                                        to: NSPoint(x: panel.maxX - 1, y: y))
             }
         }
         super.draw(dirtyRect)
@@ -128,7 +134,7 @@ import UniformTypeIdentifiers
         scratchContainer.lineFragmentPadding = 0
         scratchLayout.addTextContainer(scratchContainer)
         // Tables are shared with the live storage; restore their widths after.
-        let tables = applyParagraphStyles(width: width, to: scratchStorage, container: scratchContainer, layout: scratchLayout)
+        let tables = applyParagraphStyles(width: width, to: scratchStorage, container: scratchContainer)
         scratchLayout.ensureLayout(for: scratchContainer)
         let height = max(20, ceil(scratchLayout.usedRect(for: scratchContainer).maxY))
         for (table, value, type) in tables { table.setValue(value, type: type, for: .width) }
@@ -145,6 +151,14 @@ import UniformTypeIdentifiers
         positionCodeControls()
     }
 
+    private func codePanel(for block: ChatCodeBlock, layout: NSLayoutManager, container: NSTextContainer) -> NSRect {
+        let glyphs = layout.glyphRange(forCharacterRange: block.range, actualCharacterRange: nil)
+        guard glyphs.length > 0 else { return .zero }
+        let first = layout.lineFragmentRect(forGlyphAt: glyphs.location, effectiveRange: nil)
+        let last = layout.lineFragmentRect(forGlyphAt: NSMaxRange(glyphs) - 1, effectiveRange: nil)
+        return NSRect(x: 0, y: first.minY, width: viewportWidth, height: max(0, last.maxY - first.minY - 6))
+    }
+
     private func codeWidth(_ block: ChatCodeBlock) -> CGFloat {
         codeWidth(block, viewport: viewportWidth)
     }
@@ -154,16 +168,15 @@ import UniformTypeIdentifiers
     }
 
     private func constrainParagraphs(in requested: NSRange? = nil) {
-        guard viewportWidth > 0, let storage = textStorage, let container = textContainer,
-              let layout = layoutManager else { return }
-        _ = applyParagraphStyles(width: viewportWidth, to: storage, container: container, layout: layout, in: requested)
+        guard viewportWidth > 0, let storage = textStorage, let container = textContainer else { return }
+        _ = applyParagraphStyles(width: viewportWidth, to: storage, container: container, in: requested)
         positionCodeControls()
     }
 
     /// Fits `storage` to `width` and returns each table's previous width.
     @discardableResult
     private func applyParagraphStyles(width viewportWidth: CGFloat, to storage: NSTextStorage,
-                                      container: NSTextContainer, layout: NSLayoutManager,
+                                      container: NSTextContainer,
                                       in requested: NSRange? = nil) -> [(NSTextTable, CGFloat, NSTextBlock.ValueType)] {
         func codeWidth(_ block: ChatCodeBlock) -> CGFloat { self.codeWidth(block, viewport: viewportWidth) }
         var tables: [(NSTextTable, CGFloat, NSTextBlock.ValueType)] = []
@@ -190,18 +203,23 @@ import UniformTypeIdentifiers
                 }
             }
             if let block = renderer.codeBlocks.first(where: { NSIntersectionRange($0.range, range).length > 0 }) {
-                let offset = offsets[block.range.location] ?? 0
-                style.headIndent = 8 - offset; style.firstLineHeadIndent = 8 - offset
-                style.tailIndent = codeWidth(block) - offset
-                // Keep TextKit's regular line fragments for multiline code.
-                // The container is widened for the code; the view clips the viewport.
-                style.lineBreakMode = .byCharWrapping
-                if let font = storage.attribute(.font, at: range.location, effectiveRange: nil) as? NSFont {
-                    style.minimumLineHeight = ceil(layout.defaultLineHeight(for: font))
-                }
-                // Header and footer must not move with the code contents.
-                if NSIntersectionRange(block.contentRange, range).length == 0 {
-                    style.headIndent = 8; style.firstLineHeadIndent = 8; style.tailIndent = viewportWidth
+                let inset = Self.codeInset
+                let content = NSIntersectionRange(block.contentRange, range).length > 0
+                let offset = content && !block.wraps ? offsets[block.range.location] ?? 0 : 0
+                let width = content && !block.wraps ? codeWidth(block) : viewportWidth
+                style.headIndent = inset - offset
+                style.firstLineHeadIndent = inset - offset
+                style.tailIndent = max(inset + 1, width - inset) - offset
+                style.lineBreakMode = block.wraps ? .byWordWrapping : .byCharWrapping
+                if range.location == block.range.location {
+                    style.minimumLineHeight = Self.codeHeaderHeight
+                    style.tailIndent = max(inset + 1, viewportWidth - 78)
+                    style.lineBreakMode = .byTruncatingTail
+                } else if !content {
+                    style.minimumLineHeight = codeWidth(block) > viewportWidth ? 25 : 15
+                    style.maximumLineHeight = style.minimumLineHeight
+                } else if range.location == block.contentRange.location {
+                    style.paragraphSpacingBefore = 5
                 }
             } else {
                 let kind = storage.attribute(.chatBlockKind, at: range.location, effectiveRange: nil) as? String
@@ -224,31 +242,66 @@ import UniformTypeIdentifiers
         layout.ensureLayout(for: container)
         for block in renderer.codeBlocks {
             let id = block.range.location
-            let pair: (NSButton, NSScroller)
+            let pair: (CodeCopyButton, NSScroller)
             if let existing = controls[id] { pair = existing }
             else {
-                let copy = NSButton(title: "Copy", target: self, action: #selector(copyCode(_:)))
-                copy.bezelStyle = .inline; copy.controlSize = .small; copy.tag = id
-                copy.setAccessibilityLabel("Copy code")
-                let scroller = NSScroller()
+                let copy = CodeCopyButton()
+                copy.target = self
+                copy.action = #selector(copyCode(_:))
+                copy.tag = id
+                copy.setAccessibilityIdentifier("chat.code.copy.\(id)")
+                copy.setAccessibilityParent(self)
+                // NSScroller takes its orientation from the initial frame.
+                let scroller = NSScroller(frame: NSRect(x: 0, y: 0, width: 100, height: 15))
                 scroller.scrollerStyle = .legacy; scroller.controlSize = .small
                 scroller.target = self; scroller.action = #selector(scrollCode(_:)); scroller.tag = id
+                scroller.setAccessibilityLabel("Scroll code horizontally")
+                scroller.setAccessibilityParent(self)
                 addSubview(copy); addSubview(scroller); pair = (copy, scroller); controls[id] = pair
             }
-            let glyphs = layout.glyphRange(forCharacterRange: block.range, actualCharacterRange: nil)
-            let rect = layout.boundingRect(forGlyphRange: glyphs, in: container)
-            pair.0.frame = NSRect(x: max(0, viewportWidth - 52), y: rect.minY, width: 48, height: 18)
+            let rect = codePanel(for: block, layout: layout, container: container)
+            let buttonWidth = min(66, max(0, viewportWidth - 12))
+            pair.0.frame = NSRect(x: max(0, viewportWidth - buttonWidth - 6),
+                                  y: rect.minY + 5, width: buttonWidth, height: 22)
             let extent = max(0, codeWidth(block) - viewportWidth)
             pair.1.isHidden = extent < 1
-            pair.1.frame = NSRect(x: 4, y: max(rect.minY, rect.maxY - 14), width: max(0, viewportWidth - 8), height: 12)
+            pair.1.isEnabled = extent >= 1
+            let thickness = NSScroller.scrollerWidth(for: .small, scrollerStyle: .legacy)
+            pair.1.frame = NSRect(x: Self.codeInset, y: max(rect.minY, rect.maxY - thickness - 2),
+                                  width: max(0, viewportWidth - 2 * Self.codeInset), height: thickness)
             pair.1.knobProportion = min(1, viewportWidth / max(1, codeWidth(block)))
             pair.1.doubleValue = extent > 0 ? Double((offsets[id] ?? 0) / extent) : 0
         }
     }
 
-    @objc private func copyCode(_ sender: NSButton) {
+    public override func accessibilityChildren() -> [Any]? {
+        var children = super.accessibilityChildren() ?? []
+        // NSTextView advertises its links but omits the controls we embed.
+        for id in controls.keys.sorted() {
+            guard let (button, scroller) = controls[id] else { continue }
+            for control: NSControl in [button, scroller] where !control.isHidden {
+                if !children.contains(where: { $0 as AnyObject === control }) { children.append(control) }
+            }
+        }
+        return children
+    }
+
+    public override func hitTest(_ point: NSPoint) -> NSView? {
+        // Give the native button priority over the text selection surface.
+        if let superview, !isHiddenOrHasHiddenAncestor {
+            let location = convert(point, from: superview)
+            if bounds.contains(location),
+               let button = controls.values.lazy.map(\.0).first(where: { !$0.isHidden && $0.frame.contains(location) }) {
+                return button
+            }
+        }
+        return super.hitTest(point)
+    }
+
+    @objc private func copyCode(_ sender: CodeCopyButton) {
         guard let block = renderer.codeBlocks.first(where: { $0.range.location == sender.tag }) else { return }
-        copyString(block.code)
+        codePasteboard.clearContents()
+        if codePasteboard.setString(block.code, forType: .string) { sender.showConfirmation() }
     }
     @objc private func scrollCode(_ sender: NSScroller) {
         guard let block = renderer.codeBlocks.first(where: { $0.range.location == sender.tag }) else { return }
@@ -268,9 +321,8 @@ import UniformTypeIdentifiers
         if abs(event.scrollingDeltaX) > abs(event.scrollingDeltaY), let layout = layoutManager, let container = textContainer {
             let point = convert(event.locationInWindow, from: nil)
             if let block = renderer.codeBlocks.first(where: {
-                let glyphs = layout.glyphRange(forCharacterRange: $0.range, actualCharacterRange: nil)
-                let rect = layout.boundingRect(forGlyphRange: glyphs, in: container)
-                return point.y >= rect.minY && point.y <= rect.maxY
+                !$0.wraps && codeWidth($0) > viewportWidth
+                    && codePanel(for: $0, layout: layout, container: container).contains(point)
             }) {
                 let id = block.range.location, extent = max(0, codeWidth(block) - viewportWidth)
                 offsets[id] = min(extent, max(0, (offsets[id] ?? 0) - event.scrollingDeltaX))
@@ -427,5 +479,44 @@ import UniformTypeIdentifiers
         if let url = link as? URL { activateLink(url) }
         else if let string = link as? String, let url = ChatResourceScope.webURL(string) { activateLink(url) }
         return true
+    }
+}
+
+@MainActor private final class CodeCopyButton: NSButton {
+    private var confirmation: Task<Void, Never>?
+
+    init() {
+        super.init(frame: .zero)
+        title = "Copy"
+        bezelStyle = .roundRect
+        controlSize = .small
+        toolTip = "Copy code"
+        setAccessibilityLabel("Copy code")
+        setAccessibilityElement(true)
+        setAccessibilityRole(.button)
+    }
+
+    required init?(coder: NSCoder) { fatalError("Use init()") }
+
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+    override func accessibilityChildren() -> [Any]? { nil }
+
+    override func accessibilityPerformPress() -> Bool {
+        guard isEnabled else { return false }
+        performClick(nil)
+        return true
+    }
+
+    func showConfirmation() {
+        confirmation?.cancel()
+        title = "Copied"
+        setAccessibilityLabel("Code copied")
+        confirmation = Task { [weak self] in
+            do { try await Task.sleep(for: .seconds(1.5)) }
+            catch { return }
+            self?.title = "Copy"
+            self?.setAccessibilityLabel("Copy code")
+        }
     }
 }

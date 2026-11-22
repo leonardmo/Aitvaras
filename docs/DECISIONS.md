@@ -885,8 +885,11 @@ them.
 A single text storage per message keeps selection continuous across formatting,
 code, tables and math without a web process per message. Source spans recover
 Markdown for Copy and Reply with quote; Fork retains its existing anchor and
-eligibility. Code stays in that text storage, with native copy controls and
-horizontal scrollers rather than nested editors. Prose wraps at 620 points or the available transcript width. Tables, code
+eligibility. Code stays in that text storage. Each block has a compact header and a Copy
+button that copies the code content and confirms success. Untagged and plain
+text blocks wrap. Other language tags keep horizontal scrolling for long
+lines. Swift, Python, JavaScript, TypeScript, shell and JSON get local lexical
+highlighting in light and dark appearances. Prose wraps at 620 points or the available transcript width. Tables, code
 and figures use the available transcript width. Complete top-level blocks and their math
 attachments survive appends; only the open tail is parsed and replaced. Edits,
 appearance changes and reference definitions invalidate the necessary prefix.
