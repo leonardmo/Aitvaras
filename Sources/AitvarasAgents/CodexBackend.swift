@@ -10,10 +10,12 @@ public actor CodexBackend: AgentBackend {
     private let environment: [String: String]
     private let profile: String
     private let gateway: GatewayChatLaunch?
+    private let hookExecutable: URL?
     private let boundGateway: BoundGateway?
     private struct BoundGateway: Sendable {
         let arguments: [String]
         let register: AgentWire.RegisterProcess?
+        let hook: CodexCommandHook?
     }
     private var wire: AgentWire?
     private var transport: AgentWire?
@@ -30,12 +32,16 @@ public actor CodexBackend: AgentBackend {
     private var mcpLoginInProgress = false
 
     public init(executable: URL? = nil, environment: [String: String] = ProcessInfo.processInfo.environment,
-                profile: String = "default", overrides: [String: String] = [:], gateway: GatewayChatLaunch? = nil) {
+                profile: String = "default", overrides: [String: String] = [:], gateway: GatewayChatLaunch? = nil,
+                hookExecutable: URL? = nil) {
         self.environment = ProviderEnvironment.make(inherited: environment, overrides: overrides)
         self.executable = ProviderLocator.executable(for: .codex, environment: self.environment,
             overrides: executable.map { [.codex: $0] } ?? [:])
         self.profile = profile
         self.gateway = gateway
+        let bundledHelper = Bundle.main.bundleURL.appendingPathComponent("Contents/MacOS/aitvaras-mcp")
+        self.hookExecutable = hookExecutable ?? gateway?.configuration.executable
+            ?? (FileManager.default.isExecutableFile(atPath: bundledHelper.path) ? bundledHelper : nil)
         boundGateway = nil
     }
 
@@ -45,6 +51,7 @@ public actor CodexBackend: AgentBackend {
         self.profile = profile
         self.boundGateway = boundGateway
         gateway = nil
+        hookExecutable = nil
     }
     private func connection() async throws -> AgentWire {
         if let wire { return wire }
@@ -63,9 +70,24 @@ public actor CodexBackend: AgentBackend {
                 currentDirectory: nil, environment: environment), format: .codex)
             self.transport = wire
             do {
+                let register: AgentWire.RegisterProcess?
+                if let hook = boundGateway?.hook {
+                    let registerGateway = boundGateway?.register
+                    let callback: @Sendable (JSONValue) async -> JSONValue? = { [weak self] value in
+                        await self?.receiveHook(value) ?? CodexCommandHook.rejected
+                    }
+                    register = { pid in
+                        try await hook.socket.bind(ownerPID: pid, verifyPeer: hook.identity.matches, handler: callback)
+                        if let registerGateway { return try await registerGateway(pid) }
+                        let cancel: AgentWire.CancelApprovals = {}
+                        return cancel
+                    }
+                } else {
+                    register = boundGateway?.register
+                }
                 try await wire.open(receive: { [weak self] value, id in await self?.receive(value, id: id, generation: generation) },
                     disconnected: { [weak self] error in await self?.disconnected(error, generation: generation) },
-                    register: boundGateway?.register)
+                    register: register)
                 _ = try await wire.request("initialize", .object([
                     "clientInfo": .object(["name": .string("aitvaras"), "title": .string("Aitvaras"), "version": .string("1")]),
                     "capabilities": .object(["experimentalApi": .bool(true)])]))
@@ -289,8 +311,16 @@ public actor CodexBackend: AgentBackend {
     public func start(_ configuration: AgentSessionConfiguration) async throws -> any AgentRun {
         guard !configuration.forkSession, configuration.resumeSessionAt == nil else { throw AgentFailure.unsupported }
         if boundGateway == nil, let chatID = configuration.gatewayChatID,
-           gateway != nil || configuration.permissions?.isFullAccess == true {
+           gateway != nil || configuration.permissions != nil {
             var arguments = gateway?.configuration.codexArguments ?? []
+            let hook: CodexCommandHook?
+            if let permissions = configuration.permissions, !permissions.isPlan {
+                guard let hookExecutable else { throw AgentFailure.unsupported }
+                hook = try CodexCommandHook(helper: hookExecutable)
+                arguments += hook?.arguments ?? []
+            } else {
+                hook = nil
+            }
             if configuration.permissions != nil, gateway != nil {
                 // The gateway performs its own audited, project-scoped approval.
                 arguments += ["-c", "mcp_servers.aitvaras.default_tools_approval_mode=\"approve\""]
@@ -304,7 +334,7 @@ public actor CodexBackend: AgentBackend {
             let child = CodexBackend(executable: executable, environment: environment, profile: profile,
                 boundGateway: .init(arguments: arguments,
                     register: gateway?.register(client: .codex, chatID: chatID, projectID: configuration.projectID,
-                                                permissions: configuration.permissions)))
+                                                permissions: configuration.permissions), hook: hook))
             do {
                 let run = try await child.start(configuration)
                 try Task.checkCancellation()
@@ -332,11 +362,20 @@ public actor CodexBackend: AgentBackend {
             parameters["threadId"] = .string(resume.nativeID); method = "thread/resume"
         } else { method = "thread/start" }
         let connection = try await connection()
-        if let permissions = configuration.permissions, !permissions.isPlan, permissions.mcp != .auto {
-            let config = try await connection.request("config/read", .object(["cwd": .string(configuration.directory.path)]))
-            let overrides = CodexRunPermissions.mcpApprovalOverrides(config["config"] ?? .null,
+        var enabledMCPServers: Set<String> = []
+        if let permissions = configuration.permissions, !permissions.isPlan {
+            let result = try await connection.request("config/read", .object(["cwd": .string(configuration.directory.path)]))
+            let config = result["config"] ?? .null
+            enabledMCPServers = Set(CodexRunPermissions.enabledMCPServers(config).keys)
+            let overrides = CodexRunPermissions.mcpApprovalOverrides(config,
                 hasGateway: boundGateway?.register != nil)
             if !overrides.isEmpty { parameters["config"] = .object(overrides) }
+        }
+        if let hook = boundGateway?.hook {
+            let report = try await connection.request("hooks/list", .object(["cwds": .array([.string(configuration.directory.path)])]))
+            var nativeConfig = parameters["config"]?.objectValue ?? [:]
+            nativeConfig["hooks"] = try hook.trustedConfiguration(report)
+            parameters["config"] = .object(nativeConfig)
         }
         let result: JSONValue
         do { result = try await connection.request(method, .object(parameters)) }
@@ -347,13 +386,21 @@ public actor CodexBackend: AgentBackend {
         if configuration.permissions != nil, !permissions.matchesReportedPolicy(result) {
             throw AgentFailure.unsupported
         }
+        if let hook = boundGateway?.hook {
+            let report = try await connection.request("hooks/list", .object(["threadId": .string(nativeID)]))
+            guard hook.isTrusted(report), wire === connection else { throw AgentFailure.unsupported }
+        }
         let session = AgentSessionID(provider: .codex, profile: profile, nativeID: nativeID)
         let run = CodexRun(backend: self, wire: connection, session: session, configuration: configuration, accountID: status.accountID,
-            initialLimitWindows: observedLimits, hasGateway: boundGateway?.register != nil)
+            initialLimitWindows: observedLimits, hasGateway: boundGateway?.register != nil, enabledMCPServers: enabledMCPServers)
         runs[nativeID] = run
         await run.started()
         if availableSetup.serversAvailable { await run.setup(availableSetup) }
         return run
+    }
+    private func receiveHook(_ value: JSONValue) async -> JSONValue {
+        guard let session = value["session_id"]?.stringValue, let run = runs[session] else { return CodexCommandHook.rejected }
+        return await run.receiveHook(value)
     }
     func nativeSessionID(_ id: String) -> AgentSessionID { .init(provider: .codex, profile: profile, nativeID: id) }
     func validateNativeSession(_ session: AgentSessionID) throws {
@@ -427,6 +474,7 @@ public actor CodexBackend: AgentBackend {
         publishRateLimits([]); observedAccountID = nil
         availableSetup = .init(provider: .codex); mcpUpdates = [:]; mcpEpoch = 0
         for run in current.values { await run.disconnected(error) }
+        await boundGateway?.hook?.socket.close()
     }
     /// Application-level disposal; shutting down one run leaves other threads alive.
     public func shutdown() async throws {
@@ -436,6 +484,7 @@ public actor CodexBackend: AgentBackend {
         let active = runs; runs.removeAll()
         let current = transport; wire = nil; transport = nil
         for run in active.values { await run.disconnected(.crashed(exitCode: nil)) }
+        await boundGateway?.hook?.socket.close()
         if let connecting { connecting.cancel(); _ = try? await connecting.value; self.connecting = nil }
         if let current { try await current.close() }
     }
@@ -458,10 +507,13 @@ struct CodexRunPermissions {
         return "projects={ \(path) = { trust_level = \"untrusted\" } }"
     }
 
+    static func enabledMCPServers(_ config: JSONValue) -> [String: JSONValue] {
+        (config["mcp_servers"]?.objectValue ?? [:]).filter { $0.value["enabled"]?.boolValue != false }
+    }
+
     static func mcpApprovalOverrides(_ config: JSONValue, hasGateway: Bool) -> [String: JSONValue] {
-        let servers = config["mcp_servers"]?.objectValue ?? [:]
         var overrides: [String: JSONValue] = [:]
-        for (name, server) in servers where server["enabled"]?.boolValue != false {
+        for (name, server) in enabledMCPServers(config) {
             // The gateway runs the app's policy after the native tool dispatch.
             if hasGateway, name == GatewayCLIConfiguration.serverName { continue }
             // Route native prompts through the coordinator so it can enforce
@@ -480,17 +532,16 @@ struct CodexRunPermissions {
         sandboxMode = unrestricted ? "danger-full-access" : mode.codexSandbox
         sandboxType = unrestricted ? "dangerFullAccess" : (mode == .plan ? "readOnly" : "workspaceWrite")
         if let permissions, mode != .plan {
-            switch (permissions.commands, permissions.mcp) {
-            case (.ask, _): approvalPolicy = .string("untrusted")
-            default:
-                approvalPolicy = .object(["granular": .object([
-                    "sandbox_approval": .bool(!unrestricted || permissions.isFullAccess),
-                    "rules": .bool(true),
-                    "mcp_elicitations": .bool(true),
-                    "request_permissions": .bool(!unrestricted),
-                    "skill_approval": .bool(false)
-                ])])
-            }
+            // Explicit Ask is enforced before shell dispatch. Keeping native
+            // approvals at the sandbox/rule boundary avoids a second prompt
+            // for routine commands while preserving escalations and denials.
+            approvalPolicy = .object(["granular": .object([
+                "sandbox_approval": .bool(!unrestricted || permissions.isFullAccess),
+                "rules": .bool(true),
+                "mcp_elicitations": .bool(true),
+                "request_permissions": .bool(!unrestricted),
+                "skill_approval": .bool(false)
+            ])])
         } else {
             approvalPolicy = .string(mode.codexApproval)
         }

@@ -5,7 +5,7 @@ import AitvarasCore
 /// The same reserved stdio entry is used by terminal and Chat launches.
 public struct GatewayCLIConfiguration: Sendable {
     public static let serverName = "aitvaras"
-    private let executable: URL
+    let executable: URL
     private let stateDirectory: URL?
 
     public init(executable: URL, stateDirectory: URL?) {

@@ -5,6 +5,47 @@ import AitvarasStore
 @testable import AitvarasAgents
 
 @Suite(.timeLimit(.minutes(2))) struct OpencodeBackendTests {
+    @Test func workspaceShellGrantIsExactOneShotAndKeepsOtherWritesConfined() async throws {
+        let fm = FileManager.default
+        let fixture = URL(fileURLWithPath: "/private/tmp", isDirectory: true)
+            .appendingPathComponent("opencode-grant-" + UUID().uuidString, isDirectory: true)
+        defer { try? fm.removeItem(at: fixture) }
+        let project = fixture.appendingPathComponent("project", isDirectory: true)
+        let external = fixture.appendingPathComponent("external", isDirectory: true)
+        let unrelated = fixture.appendingPathComponent("unrelated", isDirectory: true)
+        let scratch = fixture.appendingPathComponent("isolation", isDirectory: true)
+        for directory in [project, external, unrelated, scratch] {
+            try fm.createDirectory(at: directory, withIntermediateDirectories: true)
+        }
+        let configuration = OpencodeConfiguration(root: scratch, temporaryDirectory: scratch)
+        let bridge = OpencodeShellBridge(configuration: configuration, projects: [project],
+                                         environment: ["HOME": scratch.path])
+        let command = "/usr/bin/touch allowed-marker && /usr/bin/touch ../unrelated/blocked-marker"
+        let approval = try #require(OpencodeShellApproval(sessionID: "ses_fixture", command: command,
+            workdir: external.path, project: project, resources: [.string(external.path + "/*")]))
+        try await bridge.authorize(approval)
+        func request(session: String = "ses_fixture", command: String, directory: String) -> JSONValue {
+            .object(["session": .string(session), "command": .string(command), "directory": .string(directory)])
+        }
+
+        let wrongSession = await bridge.execute(request(session: "ses_other", command: command, directory: external.path))
+        let wrongCommand = await bridge.execute(request(command: command + " ", directory: external.path))
+        let wrongDirectory = await bridge.execute(request(command: command, directory: project.path))
+        #expect([wrongSession, wrongCommand, wrongDirectory].allSatisfy { $0?["contained"] == .bool(true) })
+        #expect(!fm.fileExists(atPath: external.appendingPathComponent("allowed-marker").path))
+
+        let correct = request(command: command, directory: external.path)
+        let result = try #require(await bridge.execute(correct))
+        #expect(result["exitCode"]?.doubleValue != 0)
+        #expect(fm.fileExists(atPath: external.appendingPathComponent("allowed-marker").path))
+        #expect(!fm.fileExists(atPath: unrelated.appendingPathComponent("blocked-marker").path))
+        #expect(await bridge.execute(correct)?["contained"] == .bool(true))
+        try await bridge.authorize(approval)
+        await bridge.revoke(sessionID: "ses_fixture")
+        #expect(await bridge.execute(correct)?["contained"] == .bool(true))
+        await bridge.close()
+    }
+
     @Test func replayRecordedSessionDoesNotCancelInformationalEvents() async throws {
         let fixture = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
             .appendingPathComponent("Fixtures/agents/opencode/allow-deny-stop.jsonl")
@@ -529,7 +570,8 @@ actor OpencodeFakeTransport: OpencodeTransport {
     func setOpenFailure(_ value: Bool) { openFailure = value }
     func failNextFormCancellation() { failFormCancellation = true }
     private(set) var mcpConfigPaths: [URL?] = []
-    func open(projects: [URL], models: [AgentModel], mcpConfigPath: URL?, unrestrictedWrites: Bool) async throws {
+    func open(projects: [URL], models: [AgentModel], mcpConfigPath: URL?, unrestrictedWrites: Bool,
+              workspaceShellApprovals: Bool) async throws {
         mcpConfigPaths.append(mcpConfigPath)
         opens += 1
         if openFailure { throw AgentFailure.offline }

@@ -3,10 +3,14 @@ import Foundation
 
 enum GatewayUnixSocket {
     static func connect(_ endpoint: GatewayEndpoint, until deadline: ContinuousClock.Instant) throws -> GatewayFDChannel {
-        let path = endpoint.socketURL.path
+        try connect(socketURL: endpoint.socketURL, until: deadline)
+    }
+
+    static func connect(socketURL: URL, until deadline: ContinuousClock.Instant) throws -> GatewayFDChannel {
+        let path = socketURL.path
         // Validate the length even when the app has not created the directory.
         _ = try address(path)
-        let directory = try statAt(endpoint.socketURL.deletingLastPathComponent().path)
+        let directory = try statAt(socketURL.deletingLastPathComponent().path)
         guard type(directory) == S_IFDIR, directory.st_uid == geteuid(), directory.st_mode & 0o777 == 0o700 else {
             throw GatewayTransportError.insecurePath
         }
@@ -100,11 +104,15 @@ final class GatewayUnixListener: @unchecked Sendable {
     private let state = NSLock()
     private var stopped = false
 
-    init(_ endpoint: GatewayEndpoint) throws {
-        let path = endpoint.socketURL.path
+    convenience init(_ endpoint: GatewayEndpoint) throws {
+        try self.init(socketURL: endpoint.socketURL)
+    }
+
+    init(socketURL: URL) throws {
+        let path = socketURL.path
         _ = try GatewayUnixSocket.address(path)
-        let folder = endpoint.socketURL.deletingLastPathComponent()
-        let name = endpoint.socketURL.lastPathComponent
+        let folder = socketURL.deletingLastPathComponent()
+        let name = socketURL.lastPathComponent
         if mkdir(folder.path, 0o700) != 0 && errno != EEXIST {
             throw GatewayTransportError.system("create socket directory", errno)
         }

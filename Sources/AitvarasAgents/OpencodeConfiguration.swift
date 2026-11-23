@@ -8,10 +8,21 @@ public struct OpencodeConfiguration: Sendable {
     public static let ollamaURL = URL(string: "http://127.0.0.1:11434")!
     public let root: URL
     public let temporaryDirectory: URL
+    let ollamaEndpoint: URL
     public init(root: URL = AitvarasPaths.opencodeDirectory,
                 temporaryDirectory: URL = FileManager.default.temporaryDirectory) {
+        self.init(root: root, temporaryDirectory: temporaryDirectory, ollamaEndpoint: Self.ollamaURL)
+    }
+
+    init(root: URL, temporaryDirectory: URL, ollamaPort: UInt16) {
+        self.init(root: root, temporaryDirectory: temporaryDirectory,
+                  ollamaEndpoint: URL(string: "http://127.0.0.1:\(ollamaPort)")!)
+    }
+
+    private init(root: URL, temporaryDirectory: URL, ollamaEndpoint: URL) {
         self.root = root.resolvingSymlinksInPath().standardizedFileURL
         self.temporaryDirectory = temporaryDirectory.resolvingSymlinksInPath().standardizedFileURL
+        self.ollamaEndpoint = ollamaEndpoint
     }
     public var dataDirectories: [URL] {
         ["config", "data", "cache", "state", "home"].map { root.appendingPathComponent($0, isDirectory: true) }
@@ -34,18 +45,18 @@ public struct OpencodeConfiguration: Sendable {
         return result
     }
     public func config(models: [AgentModel]) -> JSONValue {
-        Self.generatedConfig(models: models)
+        Self.generatedConfig(models: models, ollamaEndpoint: ollamaEndpoint)
     }
     /// Configuration content does not depend on a profile path. In particular,
     /// building a private runtime config must not inspect the default profile.
-    static func generatedConfig(models: [AgentModel]) -> JSONValue {
+    static func generatedConfig(models: [AgentModel], ollamaEndpoint: URL = ollamaURL) -> JSONValue {
         .object([
             "share": .string("disabled"), "autoupdate": .bool(false),
             "enabled_providers": .array([.string("ollama")]),
             "plugin": .array([]), "mcp": .object([:]),
             "provider": .object(["ollama": .object([
                 "npm": .string("@ai-sdk/openai-compatible"), "name": .string("Ollama (this Mac)"),
-                "options": .object(["baseURL": .string(Self.ollamaURL.absoluteString + "/v1")]),
+                "options": .object(["baseURL": .string(ollamaEndpoint.absoluteString + "/v1")]),
                 "models": .object(Dictionary(uniqueKeysWithValues: models.map {
                     ($0.id, .object(["name": .string($0.name), "tools": .bool(true)]))
                 }))])]),
@@ -60,13 +71,20 @@ public struct OpencodeConfiguration: Sendable {
         var rules: [JSONValue] = [.object(["action": .string("*"), "resource": .string("*"), "effect": .string("ask")])]
         // Plan forbids shell as well as edits: shell cannot be made read-only
         // by classifying command text. Other modes always pass the coordinator.
-        for action in (mode == .plan ? ["bash", "edit", "webfetch", "websearch", "question"] : ["websearch", "question"]) {
+        for action in (mode == .plan ? ["bash", "shell", "edit", "webfetch", "websearch", "question"] : ["websearch", "question"]) {
             rules.append(.object(["action": .string(action), "resource": .string("*"), "effect": .string("deny")]))
         }
         return .array(rules)
     }
     public func sandbox(projects: [URL], unrestrictedWrites: Bool = false) throws -> String {
-        let roots = try Self.writeRoots(projects + dataDirectories + [temporaryDirectory])
+        try sandbox(projects: projects, unrestrictedWrites: unrestrictedWrites, shellSocket: nil)
+    }
+
+    func sandbox(projects: [URL], unrestrictedWrites: Bool, shellSocket: URL?,
+                 approvedExternalRoots: [String] = []) throws -> String {
+        // An exact approval is bound to canonical roots. Do not resolve a
+        // replacement symlink again when producing the authorized profile.
+        let roots = try Self.writeRoots(projects + dataDirectories + [temporaryDirectory]) + approvedExternalRoots
         let paths = roots.map { "(subpath \(Self.quote($0)))" }.joined(separator: " ")
         let network = """
         (version 1)
@@ -77,11 +95,20 @@ public struct OpencodeConfiguration: Sendable {
         (allow network-outbound (remote ip "localhost:*"))
         """
         if unrestrictedWrites { return network }
-        return """
+        var policy = """
         \(network)
         (deny file-write*)
         (allow file-write* \(paths))
         """
+        if let shellSocket {
+            let socketPath = Self.realPath(shellSocket.path)
+            policy += """
+
+            (allow network-outbound (remote unix-socket (path \(Self.quote(socketPath)))))
+            (deny file-write* (subpath \(Self.quote((socketPath as NSString).deletingLastPathComponent))))
+            """
+        }
+        return policy
     }
     static func writeRoots(_ urls: [URL]) throws -> [String] {
         try Array(Set(urls.map {
@@ -114,9 +141,13 @@ public struct OpencodeConfiguration: Sendable {
             .replacingOccurrences(of: "\n", with: "\\n").replacingOccurrences(of: "\r", with: "\\r") + "\""
     }
     public static func installedModels(session injected: URLSession? = nil) async throws -> [AgentModel] {
+        try await installedModels(session: injected, endpoint: ollamaURL)
+    }
+
+    static func installedModels(session injected: URLSession? = nil, endpoint: URL) async throws -> [AgentModel] {
         let session = injected ?? localHTTPSession()
         defer { if injected == nil { session.invalidateAndCancel() } }
-        var request = URLRequest(url: ollamaURL.appendingPathComponent("api/tags"))
+        var request = URLRequest(url: endpoint.appendingPathComponent("api/tags"))
         request.timeoutInterval = 2
         do {
             let (data, response) = try await session.data(for: request)

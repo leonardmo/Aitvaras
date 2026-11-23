@@ -1263,11 +1263,12 @@ composer marks it with a warning. Aitvaras continues to enforce project MCP
 scope, hard product prohibitions and activity auditing. Repo permissions
 and blocking hooks are bypassed for this preset where the provider permits
 the override. Provider-managed requirements can still prevent a requested
-policy from starting. Codex evaluates its own workspace sandbox and command
-rules, and Aitvaras can classify commands surfaced through its approval
-protocol. The local OpenCode process has a runtime-wide filesystem sandbox.
-Broader writes require an Unrestricted turn, and the Local network remains
-loopback-only. Follow-ups already delivered to a provider stay with that
-provider run's policy.
+policy from starting. Codex uses an app-owned pre-execution callback scoped
+to its chat app-server to evaluate critical calls while retaining its
+workspace sandbox and repo rules. OpenCode keeps its process sandbox and
+uses a separate executor for a single explicitly approved shell call. The
+executor retains Local's loopback-only network boundary and grants write
+access to the directories shown on the approval card. Follow-ups already
+delivered to a provider stay with that provider run's policy.
 
 Issue #59. Related to #53 and #16.

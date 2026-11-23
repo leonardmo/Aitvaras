@@ -184,7 +184,8 @@ public struct AgentActionPresentation: Sendable, Equatable {
             title = "Allow \(display)?"; detail = AgentTranscriptContent.display(input)
         } else if let command, !command.isEmpty {
             title = input["kind"]?.stringValue == "writeStdin" ? "Send input to command?" : "Run command?"
-            detail = Self.displayCommand(command)
+            let locations = (input["aitvarasWorkspaceResources"]?.arrayValue ?? []).compactMap { $0.stringValue }
+            detail = ([Self.displayCommand(command)] + locations.map { "Outside workspace: " + $0 }).joined(separator: "\n")
         } else if let root = input["grantRoot"]?.stringValue {
             title = "Allow file changes?"
             detail = (["Write access under \(root) for this session"] + paths).joined(separator: "\n")

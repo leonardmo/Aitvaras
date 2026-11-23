@@ -5,7 +5,7 @@ import AitvarasCore
 public enum AgentToolPolicy {
     public static func risk(_ tool: AgentTool) -> ActionRisk {
         if isCommandExecution(tool) { return .confirmable }
-        if tool.name == "ToolSearch" || serviceRead(tool) { return .read }
+        if tool.name == "ToolSearch" || serviceRead(tool) || isMCPTool(tool) && tool.providerReportsReadOnly { return .read }
         return switch tool.name.lowercased() {
         case "read", "glob", "grep", "list", "ls", "todoread", "websearch", "webfetch", "enterplanmode", "exitplanmode", "askuserquestion", "question": .read
         case "write", "edit", "multiedit", "notebookedit": .reversibleWrite
@@ -14,8 +14,9 @@ public enum AgentToolPolicy {
     }
     public static func forbidden(_ tool: AgentTool) -> Bool {
         let name = tool.name.lowercased()
-        if name.contains("mail") || name.contains("calendar") || name.contains("reminder") { return !serviceRead(tool) }
-        if name == "bash" || name == "commandexecution" {
+        if name.contains("mail") || name.contains("calendar") || name.contains("reminder")
+            || (isMCPTool(tool) && ["outlook", "smtp", "eventkit"].contains(where: name.contains)) { return !serviceRead(tool) }
+        if isCommandExecution(tool) {
             let command = (tool.input["command"]?.stringValue ?? tool.input["command"]?.jsonString ?? "").lowercased()
             return ["sendmail", "smtp", "mail ", "mailx", "mailto:", "osascript"].contains { command.contains($0) }
         }
@@ -42,7 +43,8 @@ public enum AgentToolPolicy {
             return criticalMCPApprovalReason(toolName: name)
         }
         guard isCommandExecution(tool) else { return nil }
-        if tool.input["dangerouslyDisableSandbox"]?.boolValue == true {
+        if tool.input["dangerouslyDisableSandbox"]?.boolValue == true
+            || tool.input["aitvarasWorkspaceApproval"]?.boolValue == true {
             return "This command requests access outside the workspace sandbox."
         }
         let command = tool.input["command"]?.stringValue
@@ -58,13 +60,15 @@ public enum AgentToolPolicy {
                 return "This command can recursively delete files."
             }
             if command == "git" {
-                let dryRun = arguments.contains("--dry-run") || arguments.contains(where: {
+                let subcommand = gitInvocation(arguments)
+                let options = subcommand.dropFirst().prefix(while: { $0 != "--" })
+                let dryRun = options.contains("--dry-run") || options.contains(where: {
                     $0.hasPrefix("-") && !$0.hasPrefix("--") && $0.dropFirst().contains("n")
                 })
-                if arguments.contains("clean") && !dryRun || arguments.contains("reset") && arguments.contains("--hard") {
+                if subcommand.first == "clean" && !dryRun || subcommand.first == "reset" && options.contains("--hard") {
                     return "This command can discard local changes."
                 }
-                if arguments.contains("push"), !dryRun, arguments.contains(where: {
+                if subcommand.first == "push", !dryRun, subcommand.dropFirst().contains(where: {
                     let ref = $0.split(separator: ":").last?.split(separator: "/").last ?? ""
                     return ["main", "master", "production"].contains(ref) || ["--force", "--mirror", "--delete", "-f"].contains($0)
                         || $0.hasPrefix("--force-with-lease")
@@ -74,6 +78,15 @@ public enum AgentToolPolicy {
             }
         }
         return nil
+    }
+
+    private static func gitInvocation(_ arguments: ArraySlice<String>) -> ArraySlice<String> {
+        var arguments = arguments
+        let optionsWithValue = ["-C", "-c", "--config-env", "--git-dir", "--namespace", "--work-tree", "--super-prefix"]
+        while let argument = arguments.first, argument.hasPrefix("-") {
+            arguments = arguments.dropFirst(optionsWithValue.contains(argument) ? 2 : 1)
+        }
+        return arguments
     }
 
     public static func criticalMCPApprovalReason(toolName: String) -> String? {

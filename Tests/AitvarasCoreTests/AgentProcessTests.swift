@@ -19,6 +19,25 @@ struct AgentProcessTests {
         }
     }
 
+    @Test func spawnedProviderDoesNotInheritWorkersBlockedSIGCHLD() async throws {
+        let process = StreamingProcess(executable: URL(fileURLWithPath: "/usr/bin/python3"),
+            arguments: ["-c", "import signal; print(int(signal.SIGCHLD in signal.pthread_sigmask(signal.SIG_BLOCK, [])))"],
+            currentDirectory: nil)
+        func startWithSignalBlocked() throws {
+            var blocked = sigset_t()
+            var previous = sigset_t()
+            sigemptyset(&blocked)
+            sigaddset(&blocked, SIGCHLD)
+            try #require(pthread_sigmask(SIG_BLOCK, &blocked, &previous) == 0)
+            defer { pthread_sigmask(SIG_SETMASK, &previous, nil) }
+            try process.start()
+        }
+        try startWithSignalBlocked()
+        var iterator = process.lines.makeAsyncIterator()
+        #expect(try await iterator.next() == "0")
+        #expect(try await process.waitForExit() == 0)
+    }
+
     @Test func framesSplitUTF8AndTrailingLine() async throws {
         let fixture = try AgentExecutableFixture("printf '\\303'; /bin/sleep 0.03; printf '\\244\\n\\nlast'")
         defer { fixture.remove() }

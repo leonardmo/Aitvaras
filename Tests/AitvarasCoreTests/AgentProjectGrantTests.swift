@@ -282,6 +282,10 @@ done()
         try await waitGrant { await raw.responses.count == 3 }
         #expect(await raw.responses == [.allowHook, .allow(updatedInput: nil), .deny])
         #expect(await policy.pendingRequests().isEmpty)
+        let localShell = AgentTool(name: "shell", input: .object(["command": .string("sendmail fixture@example.invalid")]))
+        let nativeMCP = AgentTool(name: "mcp__outlook__send_message", input: .null)
+        #expect(AgentToolPolicy.forbidden(localShell))
+        #expect(AgentToolPolicy.forbidden(nativeMCP))
         try await policy.shutdown()
     }
 
@@ -366,6 +370,8 @@ private func waitGrant(_ condition: () async throws -> Bool) async throws {
     ("git status && rm -rf sources", true),
     ("git push origin HEAD:refs/heads/main", true),
     ("git push origin feature-branch", false),
+    ("git add clean", false),
+    ("git -C sources push origin main", true),
     ("git clean -ndx # && rm -rf sources", false),
     ("git push --dry-run origin main", false),
     ("./build.sh", false)

@@ -444,8 +444,9 @@ public actor AgentActionCoordinator: AgentRun {
         } else if AgentToolPolicy.isCommandExecution(tool) {
             let critical = AgentToolPolicy.criticalApprovalReason(tool) != nil
             let containedLocal = request.scope.session?.profile == OpencodeConfiguration.profile
+            let alreadyApproved = tool.input["aitvarasWorkspaceApproved"]?.boolValue == true
             shouldAllow = permissions.commands == .unrestricted
-                || (permissions.commands == .auto && !critical && containedLocal)
+                || (permissions.commands == .auto && containedLocal && (!critical || alreadyApproved))
         } else if AgentToolPolicy.isMCPTool(tool) {
             switch permissions.mcp {
             case .ask: shouldAllow = false

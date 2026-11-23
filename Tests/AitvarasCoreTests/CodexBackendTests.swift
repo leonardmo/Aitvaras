@@ -4,6 +4,57 @@ import Testing
 
 @Suite(.timeLimit(.minutes(2)))
 struct CodexBackendTests {
+    @Test func composerPreflightWaitsForApprovalBeforeReturningVerdict() async throws {
+        let fixture = try BackendExecutableFixture(script: #"""
+codex_init()
+r=read()
+assert r['method']=='account/read'
+account(r)
+r=read()
+assert r['method']=='config/read'
+emit({'id':r['id'],'result':{'config':{}}})
+r=read()
+assert r['method']=='thread/start'
+emit({'id':r['id'],'result':{'thread':{'id':'thread-test','modelProvider':'openai'}}})
+r=read()
+assert r['method']=='turn/start'
+emit({'id':r['id'],'result':{'turn':{'id':'turn-test'}}})
+r=read()
+assert r['method']=='turn/interrupt'
+emit({'id':r['id'],'result':{}})
+emit({'method':'turn/completed','params':{'threadId':'thread-test','turn':{'id':'turn-test','status':'interrupted','items':[]}}})
+done()
+"""#)
+        defer { fixture.remove() }
+        let backend = CodexBackend(executable: fixture.executable, environment: fixture.environment)
+        let run = try #require(try await backend.start(.init(directory: fixture.directory, model: "test", permissions: .auto)) as? CodexRun)
+        try await run.send(.init(text: "Fixture"), willDeliver: {})
+        var events = run.events.makeAsyncIterator()
+        func hook(_ call: String, _ name: String, _ input: JSONValue) -> JSONValue {
+            .object(["hook_event_name": .string("PreToolUse"), "session_id": .string("thread-test"),
+                "turn_id": .string("turn-test"), "tool_use_id": .string(call), "tool_name": .string(name), "tool_input": input])
+        }
+        let pipeline = hook("routine", "Bash", .object(["command": .string("printf 'a\\n' | head -1")]))
+        #expect(await run.receiveHook(pipeline) == CodexCommandHook.allowed)
+        let recursiveDelete = hook("critical", "Bash", .object(["command": .string("rm -r example")]))
+        let pending = Task { await run.receiveHook(recursiveDelete) }
+        var approval: AgentRequest?
+        while let event = try await events.next() {
+            if case .request(let request) = event.kind { approval = request; break }
+        }
+        let request = try #require(approval)
+        let expectedTool = AgentTool(name: "Bash", input: .object(["command": .string("rm -r example")]))
+        #expect(request.kind == .permission(expectedTool))
+        try await run.respond(to: request, with: .deny)
+        #expect(await pending.value == CodexCommandHook.rejected)
+        try await run.interrupt()
+        while let event = try await events.next() {
+            if case .turnEnded = event.kind { break }
+        }
+        try fixture.assertComplete()
+        try await backend.shutdown()
+    }
+
     @Test func composerPolicyKeepsAutoSandboxAndRoutesFullAccessMCPInternally() throws {
         let workspace = URL(fileURLWithPath: "/tmp/example workspace")
         let auto = CodexRunPermissions(mode: .auto, permissions: .auto)
@@ -11,6 +62,11 @@ struct CodexBackendTests {
         #expect(auto.approvalPolicy["granular"]?["sandbox_approval"] == .bool(true))
         #expect(auto.approvalPolicy["granular"]?["rules"] == .bool(true))
         #expect(auto.sandboxPolicy(additionalDirectories: [workspace])["writableRoots"] == .array([.string(workspace.path)]))
+        let ask = CodexRunPermissions(mode: .ask, permissions: .ask)
+        #expect(ask.approvalPolicy == auto.approvalPolicy)
+        let pipeline = AgentTool(name: "Bash", input: .object(["command": .string("printf a | head -1")]))
+        #expect(CodexRun.requiresHookApproval(pipeline, permissions: .ask))
+        #expect(!CodexRun.requiresHookApproval(pipeline, permissions: .auto))
 
         let full = CodexRunPermissions(mode: .auto, permissions: .fullAccess)
         #expect(full.sandboxMode == "danger-full-access")
@@ -38,6 +94,10 @@ struct CodexBackendTests {
         var generic = request.objectValue ?? [:]
         generic["requestedSchema"] = .object(["type": .string("object"), "properties": .object(["password": .object([:])])])
         #expect(CodexRun.mcpToolApproval(.object(generic), items: [item]) == nil)
+        var readItem = item.objectValue ?? [:]
+        readItem["readOnlyHint"] = .bool(true)
+        #expect(CodexRun.mcpToolApproval(request, items: [JSONValue.object(readItem)])?.providerReportsReadOnly == false)
+        #expect(CodexRun.mcpToolApproval(request, items: [JSONValue.object(readItem)], enabledServers: ["example"])?.providerReportsReadOnly == true)
     }
 
     @Test func automaticContinuationSuppliesItsDurableClientMessageIdentity() async throws {

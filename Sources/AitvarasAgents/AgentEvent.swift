@@ -41,7 +41,11 @@ public struct AgentEventScope: Sendable, Equatable {
 public struct AgentTool: Sendable, Equatable {
     public let name: String
     public let input: JSONValue
-    public init(name: String, input: JSONValue) { self.name = name; self.input = input }
+    /// Observed in provider metadata for an enabled native MCP server.
+    public let providerReportsReadOnly: Bool
+    public init(name: String, input: JSONValue, providerReportsReadOnly: Bool = false) {
+        self.name = name; self.input = input; self.providerReportsReadOnly = providerReportsReadOnly
+    }
 }
 
 public struct AgentQuestion: Sendable, Equatable {

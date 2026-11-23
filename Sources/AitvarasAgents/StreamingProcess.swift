@@ -151,7 +151,13 @@ public final class StreamingProcess: @unchecked Sendable {
         func check(_ result: Int32) throws {
             guard result == 0 else { throw AgentProcessError.launchFailed }
         }
-        var flags = POSIX_SPAWN_SETPGROUP | POSIX_SPAWN_CLOEXEC_DEFAULT
+        // Swift/Dispatch workers may block SIGCHLD. Providers need to
+        // receive it to reap their own tool subprocesses.
+        var signalMask = sigset_t()
+        try check(pthread_sigmask(SIG_SETMASK, nil, &signalMask))
+        sigdelset(&signalMask, SIGCHLD)
+        try check(posix_spawnattr_setsigmask(&attributes, &signalMask))
+        var flags = POSIX_SPAWN_SETPGROUP | POSIX_SPAWN_CLOEXEC_DEFAULT | POSIX_SPAWN_SETSIGMASK
         if suspended { flags |= POSIX_SPAWN_START_SUSPENDED }
         try check(posix_spawnattr_setflags(&attributes, Int16(flags)))
         try check(posix_spawnattr_setpgroup(&attributes, 0))

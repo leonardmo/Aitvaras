@@ -1051,14 +1051,14 @@ private struct AgentComposerPermissionsControl: View {
         if chat.choice.provider == .local {
             switch selection.commands {
             case .ask: return "Commands run in the workspace sandbox with approval."
-            case .auto: return "Commands stay in the workspace sandbox and critical actions require approval. Choose Unrestricted for the next turn if broader access is needed."
+            case .auto: return "Commands stay in the workspace sandbox. Recognized outside directories and critical actions require approval."
             case .unrestricted: return "Commands can run outside the workspace sandbox without approval. Network access stays on this Mac."
             }
         }
         if chat.choice.provider == .codex {
             switch selection.commands {
             case .ask: return "Codex applies its approval rules to command execution."
-            case .auto: return "Commands stay in the workspace sandbox. Codex asks for broader access and applies its command rules."
+            case .auto: return "Commands stay in the workspace sandbox. Broader access and recognized critical actions require approval."
             case .unrestricted: return "Commands can run outside the workspace sandbox. Codex user and managed rules can still apply."
             }
         }
@@ -1072,7 +1072,7 @@ private struct AgentComposerPermissionsControl: View {
     private var mcpDetail: String {
         if selection.isPlan { return "Planning limits MCP tools to reads." }
         if chat.choice.provider == .codex, selection.mcp == .auto {
-            return "Critical or unclassified gateway calls require approval. Native MCP servers also use their Codex approval rules."
+            return "Critical or unclassified MCP calls require approval. Project grants apply to Aitvaras-managed tools."
         }
         switch selection.mcp {
         case .ask: return "MCP calls require approval."
