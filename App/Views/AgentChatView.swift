@@ -125,11 +125,9 @@ struct AgentChatView: View {
                             switch row {
                             case .entry(let entry):
                                 transcriptRow(entry, streaming: chat.state?.isStreaming(entryID: entry.id) == true).id(entry.id)
-                            case .activity(_, let updates, let isLive):
-                                AgentActivityPanel(isLive: isLive, isLatest: row.id == rows.last?.id) {
-                                    ForEach(updates) { entry in
-                                        transcriptRow(entry, streaming: chat.state?.isStreaming(entryID: entry.id) == true)
-                                    }
+                            case .activity(_, let entries, let isLive):
+                                AgentActivityPanel(entries: entries, isLive: isLive, isLatest: row.id == rows.last?.id) { entry in
+                                    transcriptRow(entry, streaming: chat.state?.isStreaming(entryID: entry.id) == true)
                                 }
                             }
                         }
@@ -337,25 +335,42 @@ struct AgentChatView: View {
 
 }
 
-private struct AgentActivityPanel<Content: View>: View {
+/// The overview has a bounded preview. Only an explicit expansion lays out the timeline.
+private struct AgentActivityPanel<Row: View>: View {
+    let entries: [AgentTranscriptEntry]
     let isLive: Bool
     let isLatest: Bool
-    @ViewBuilder var content: Content
-    @State private var expanded: Bool?
+    @ViewBuilder var row: (AgentTranscriptEntry) -> Row
+    @State private var showTimeline = false
 
     var body: some View {
-        DisclosureGroup(isExpanded: Binding(get: { expanded ?? isLive }, set: { expanded = $0 })) {
-            VStack(alignment: .leading, spacing: 8) {
-                content
+        let tools = entries.filter { $0.kind == "tool" }
+        VStack(alignment: .leading, spacing: 6) {
+            AgentActivityDisclosure(expanded: $showTimeline) {
+                HStack(spacing: 6) {
+                    if isLive && isLatest { AgentWorkingLabel() }
+                    else { Label("Activity", systemImage: "text.bubble") }
+                    Spacer(minLength: 6)
+                    if !tools.isEmpty {
+                        Text(tools.count == 1 ? "1 tool call" : "\(tools.count) tool calls")
+                    }
+                }
             }
-            .padding(.top, 8)
-        } label: {
-            if isLive && isLatest {
-                AgentWorkingLabel()
+            .accessibilityIdentifier("chat.activity.timeline")
+
+            if showTimeline {
+                ForEach(AgentActivityStep.group(entries)) { step in
+                    AgentActivityStepView(step: step, row: row)
+                }
             } else {
-                Label("Activity", systemImage: "text.bubble")
-                    .font(.caption.weight(.medium))
-                    .foregroundStyle(.secondary)
+                if isLive, let update = entries.last(where: { $0.kind == "assistant" || $0.kind == "thinking" }) {
+                    Text(verbatim: AgentActivityStep.preview(update.text))
+                        .font(.callout)
+                        .lineLimit(3)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .textSelection(.enabled)
+                }
+                if let tool = tools.last { row(tool).id(tool.id) }
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -367,6 +382,69 @@ private struct AgentActivityPanel<Content: View>: View {
                 .allowsHitTesting(false)
         }
         .accessibilityIdentifier("chat.activity")
+    }
+}
+
+private struct AgentActivityStepView<Row: View>: View {
+    let step: AgentActivityStep
+    @ViewBuilder var row: (AgentTranscriptEntry) -> Row
+    @State private var showDetails = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            if step.isToolActivity {
+                if step.entries.count == 1, let entry = step.entries.first {
+                    row(entry)
+                } else {
+                    AgentActivityDisclosure(expanded: $showDetails) {
+                        Label("\(step.entries.count) tool events", systemImage: "terminal")
+                    }
+                    if showDetails { details }
+                }
+            } else {
+                AgentActivityDisclosure(expanded: $showDetails) {
+                    Text("Model updates")
+                }
+                if showDetails {
+                    details
+                } else {
+                    Text(verbatim: step.updatePreview)
+                        .font(.callout)
+                        .lineLimit(3)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .textSelection(.enabled)
+                }
+            }
+        }
+        .padding(.leading, 12)
+    }
+
+    private var details: some View {
+        ForEach(step.entries) { entry in row(entry) }
+    }
+}
+
+struct AgentActivityDisclosure<Label: View>: View {
+    @Binding var expanded: Bool
+    @ViewBuilder var label: Label
+
+    var body: some View {
+        Button {
+            expanded.toggle()
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: expanded ? "chevron.down" : "chevron.right")
+                    .font(.caption2.weight(.semibold))
+                    .accessibilityHidden(true)
+                label
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .font(.caption)
+        .foregroundStyle(.secondary)
+        .accessibilityValue(expanded ? "Expanded" : "Collapsed")
     }
 }
 

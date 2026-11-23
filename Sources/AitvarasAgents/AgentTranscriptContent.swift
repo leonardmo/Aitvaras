@@ -1,6 +1,6 @@
 import Foundation
 
-/// Groups neighboring model updates without moving tool rows or actionable cards.
+/// Groups neighboring model updates and tool calls without moving actionable cards.
 public enum AgentTranscriptRow: Identifiable, Equatable {
     case entry(AgentTranscriptEntry)
     case activity(id: UUID, entries: [AgentTranscriptEntry], isLive: Bool)
@@ -32,6 +32,9 @@ public enum AgentTranscriptRow: Identifiable, Equatable {
 
         for entry in entries.reversed() {
             switch entry.kind {
+            case "tool", "hook":
+                activity.append(entry)
+                if entry.kind == "tool" { canShowFinalReply = false }
             case "thinking", "assistant":
                 guard !entry.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
                 let isCommentary = entry.payloadJSON.flatMap(JSONValue.parse)?["commentary"]?.boolValue == true
@@ -50,7 +53,7 @@ public enum AgentTranscriptRow: Identifiable, Equatable {
                     // A queued follow-up can be visible before the current turn ends.
                     if entry.id == activeInputID { isLive = false }
                     canShowFinalReply = !isLive
-                case "tool", "stopped":
+                case "stopped":
                     canShowFinalReply = false
                 default:
                     break
@@ -59,6 +62,40 @@ public enum AgentTranscriptRow: Identifiable, Equatable {
         }
         flushActivity()
         return rows.reversed()
+    }
+}
+
+/// Neighboring updates or calls share one disclosure, in transcript order.
+public struct AgentActivityStep: Identifiable, Equatable {
+    public let id: UUID
+    public let isToolActivity: Bool
+    public private(set) var entries: [AgentTranscriptEntry]
+
+    public static func group(_ entries: [AgentTranscriptEntry]) -> [Self] {
+        var steps: [Self] = []
+        for entry in entries {
+            let isToolActivity = entry.kind == "tool" || entry.kind == "hook"
+            if let last = steps.indices.last, steps[last].isToolActivity == isToolActivity {
+                steps[last].entries.append(entry)
+            } else {
+                steps.append(.init(id: entry.id, isToolActivity: isToolActivity, entries: [entry]))
+            }
+        }
+        return steps
+    }
+
+    /// Blank lines and repeated neighboring updates carry no information in a preview.
+    public var updatePreview: String {
+        var updates: [String] = []
+        for entry in entries {
+            let update = Self.preview(entry.text)
+            if !update.isEmpty, updates.last != update { updates.append(update) }
+        }
+        return AgentTranscriptContent.bounded(updates.joined(separator: " "), limit: 680)
+    }
+
+    public static func preview(_ text: String) -> String {
+        AgentTranscriptContent.bounded(text.split(whereSeparator: \.isWhitespace).joined(separator: " "), limit: 680)
     }
 }
 

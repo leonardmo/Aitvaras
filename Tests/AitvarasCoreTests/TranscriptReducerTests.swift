@@ -57,11 +57,33 @@ import AitvarasStore
         let partial = AgentTranscriptEntry(chatID: chat, provider: .local, kind: "assistant", text: "I found")
         let stop = AgentTranscriptEntry(chatID: chat, provider: .local, kind: "stopped")
         #expect(AgentTranscriptRow.rows([user, reasoning, tool, partial, stop], activeInputID: nil) == [
-            .entry(user), .entry(tool), .activity(id: partial.id, entries: [partial], isLive: false), .entry(stop)
+            .entry(user), .activity(id: tool.id, entries: [tool, partial], isLive: false), .entry(stop)
         ])
         #expect(AgentTranscriptRow.rows([user, partial, tool], activeInputID: nil) == [
-            .entry(user), .activity(id: partial.id, entries: [partial], isLive: false), .entry(tool)
+            .entry(user), .activity(id: partial.id, entries: [partial, tool], isLive: false)
         ])
+    }
+
+    @Test func neighboringUpdatesAndToolsKeepTimelineOrderInOnePanel() throws {
+        let chat = UUID()
+        func entry(_ kind: String, _ text: String) -> AgentTranscriptEntry {
+            .init(chatID: chat, provider: .claude, kind: kind, text: text)
+        }
+        let user = entry("user", "Check the examples")
+        let update = entry("thinking", "Checking the\n\n examples")
+        let repeated = entry("thinking", "Checking the examples")
+        let tool = entry("tool", "Read")
+        let otherTool = entry("tool", "Grep")
+        let progress = entry("assistant", "Found two matches")
+        let final = entry("assistant", "Both examples agree.")
+        let activity = [update, repeated, tool, otherTool, progress]
+
+        let rows = AgentTranscriptRow.rows([user] + activity + [final], activeInputID: nil)
+        #expect(rows == [.entry(user), .activity(id: update.id, entries: activity, isLive: false), .entry(final)])
+        let steps = AgentActivityStep.group(activity)
+        #expect(steps.map(\.isToolActivity) == [false, true, false])
+        #expect(steps.map(\.entries) == [[update, repeated], [tool, otherTool], [progress]])
+        #expect(steps.first?.updatePreview == "Checking the examples")
     }
 
     @Test(arguments: ["completed", "nonzero", "failure", "disconnect", "missing", "wrong-turn", "in-progress", "malformed", "timeout", "paginated", "repeated-cursor", "wrong-type", "declined"])

@@ -84,9 +84,18 @@ struct AgentTranscriptView: View {
                     .foregroundStyle(.secondary)
                     .textSelection(.enabled)
             } else if ["handover", "tool"].contains(entry.kind) {
-                DisclosureGroup(isExpanded: $expanded) {
+                AgentActivityDisclosure(expanded: $expanded) {
+                    HStack(spacing: 6) {
+                        if entry.kind == "tool" { Image(systemName: entry.toolPresentationIcon) }
+                        Text(title).lineLimit(1).truncationMode(.middle)
+                        if entry.kind == "tool" {
+                            ForEach(entry.toolHooks) { hook in foldedHookIcon(hook) }
+                        }
+                    }
+                }
+                if expanded {
                     ScrollView {
-                        VStack(alignment: .leading, spacing: 10) {
+                        VStack(alignment: .leading, spacing: 6) {
                             if entry.kind == "tool" {
                                 toolDetails
                                 ForEach(entry.toolHooks) { hook in
@@ -105,19 +114,11 @@ struct AgentTranscriptView: View {
                                 Text(AgentTranscriptContent.bounded(entry.text))
                                     .font(.caption.monospaced()).textSelection(.enabled)
                             }
-                        }.frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 6)
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
                     }
                     .frame(maxHeight: 240)
-                } label: {
-                    HStack(spacing: 6) {
-                        if entry.kind == "tool" {
-                            Image(systemName: entry.toolPresentationIcon)
-                        }
-                        Text(title).lineLimit(1).truncationMode(.middle)
-                        if entry.kind == "tool" {
-                            ForEach(entry.toolHooks) { hook in foldedHookIcon(hook) }
-                        }
-                    }.font(.caption).foregroundStyle(.secondary)
+                    .padding(.top, 4)
                 }
                 if entry.kind == "tool" {
                     if let reason = entry.blockedHookReason {
@@ -173,9 +174,9 @@ struct AgentTranscriptView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier(entry.presentationIdentifier)
-        // Give completion a fresh AX container as well as a new identifier,
-        // keeping the row identity stable throughout streaming.
-        .id(entry.presentationIdentifier)
+        // Refresh the AX container when status changes while keeping SwiftUI
+        // identity unique across tools with the same accessibility identifier.
+        .id("\(entry.id).\(entry.presentationIdentifier)")
     }
     private func foldedHookIcon(_ hook: AgentToolHookPresentation) -> some View {
         Image(systemName: hook.icon)
