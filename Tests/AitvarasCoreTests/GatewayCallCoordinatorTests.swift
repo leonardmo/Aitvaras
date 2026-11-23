@@ -20,7 +20,7 @@ import AitvarasStore
         let effects = Mutex(0)
         for disconnect in [false, true] {
             let invocation = gatewayFixtureInvocation(projectID: nil)
-            let call = Task {
+            let call = Task { @Sendable in
                 try await hub.executeGateway(invocation, tool: tool, arguments: .object([:]), approvals: approvals,
                     rules: { .init() }, revalidate: {}) {
                         effects.withLock { $0 += 1 }

@@ -262,7 +262,7 @@ private final class RecordingSpeechSynthesizer: SpeechSynthesizing, @unchecked S
             respond: { _, _ in replies.stream })
         let states = await controller.states()
         let observed = Mutex<[VoicePhase]>([])
-        let observer = Task {
+        let observer = Task { @Sendable in
             for await snapshot in states {
                 observed.withLock { $0.append(snapshot.phase) }
             }
