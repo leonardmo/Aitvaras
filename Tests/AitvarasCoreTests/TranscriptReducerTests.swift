@@ -86,6 +86,62 @@ import AitvarasStore
         #expect(steps.first?.updatePreview == "Checking the examples")
     }
 
+    @Test func scriptedClaudeApprovalsKeepShellAndMCPResultsInTheTimeline() async throws {
+        let fixture = try BackendExecutableFixture(script: #"""
+claude_init()
+read()
+sid=str(uuid.uuid4())
+emit({'type':'system','subtype':'init','session_id':sid,'apiKeySource':'none'})
+actions=[
+    ('shell-test','Bash',{'command':'sh check-value.sh incorrect'},'VALUE-CHECK-FAILED',True),
+    ('lookup-test','mcp__example__lookup',{'query':'example'},'LOOKUP-COMPLETE',False),
+    ('shell-retry','Bash',{'command':'sh check-value.sh correct'},'VALUE-CHECK-PASSED',False),
+]
+for item,name,args,output,error in actions:
+    emit({'type':'assistant','message':{'id':'call-'+item,'role':'assistant','content':[
+        {'type':'tool_use','id':item,'name':name,'input':args}]}})
+    emit({'type':'control_request','request_id':'approval-'+item,'request':{
+        'subtype':'can_use_tool','tool_use_id':item,'tool_name':name,'input':args}})
+    assert read()['response']['response']['behavior']=='allow'
+    emit({'type':'user','message':{'id':'result-'+item,'role':'user','content':[
+        {'type':'tool_result','tool_use_id':item,'content':output,'is_error':error}]}})
+emit({'type':'assistant','message':{'id':'reply','role':'assistant','content':[{'type':'text','text':'Done'}]}})
+emit({'type':'result','is_error':False})
+done()
+"""#)
+        defer { fixture.remove() }
+        let stores = try inMemoryStores()
+        let (chat, _) = try agentStoreChat(stores, provider: .claude, cwd: fixture.directory.path)
+        let backend = ClaudeBackend(executable: fixture.executable, environment: fixture.environment)
+        let manager = try AgentSessionManager(persistence: stores, backend: { _ in backend }, audit: { _ in })
+        let updates = try await manager.updates(chatID: chat.id)
+        try await manager.send(chatID: chat.id, provider: .claude, input: .init(text: "Check the example"))
+
+        var approvals = Set<String>()
+        for await state in updates {
+            if let request = state.pendingCards.first, approvals.insert(request.identity).inserted {
+                try await manager.respond(chatID: chat.id, to: request, with: .allow(updatedInput: nil))
+            }
+            if state.outcome != nil {
+                #expect(state.outcome == .completed)
+                break
+            }
+        }
+        #expect(approvals.count == 3)
+        let saved = try stores.agentEntries(chatID: chat.id)
+        let tools = AgentTranscriptRow.rows(saved, activeInputID: nil).flatMap { row -> [AgentTranscriptEntry] in
+            guard case .activity(_, let entries, _) = row else { return [] }
+            return entries.filter { $0.kind == "tool" }
+        }
+        #expect(tools.map(\.text) == ["Bash", "mcp__example__lookup", "Bash"])
+        let payloads = tools.compactMap { $0.payloadJSON.flatMap(JSONValue.parse) }
+        #expect(payloads.map { $0["output"]?.stringValue } == ["VALUE-CHECK-FAILED", "LOOKUP-COMPLETE", "VALUE-CHECK-PASSED"])
+        #expect(payloads.map { $0["isError"]?.boolValue } == [true, false, false])
+        #expect(tools.compactMap(\.commandOutcome) == [.failed, .succeeded])
+        try fixture.assertComplete()
+        try await manager.shutdown()
+    }
+
     @Test(arguments: ["completed", "nonzero", "failure", "disconnect", "missing", "wrong-turn", "in-progress", "malformed", "timeout", "paginated", "repeated-cursor", "wrong-type", "declined"])
     func missingCodexToolCompletionReconcilesBeforeTurnEnd(scenario: String) async throws {
         let fixture = try BackendExecutableFixture(script: "scenario = '\(scenario)'\n" + #"""
@@ -246,6 +302,7 @@ done()
         #expect(payload["isDenied"] == .bool(true))
         #expect(payload["isError"] == .bool(true))
         #expect(row.toolPresentationIcon == "hand.raised")
+        #expect(row.commandOutcome == nil)
         #expect(row.presentationIdentifier == "chat.entry.\(row.id)")
         #expect(AgentActionPresentation.toolSummary(.init(name: row.text, input: payload["input"] ?? .null),
             finished: true, isError: true, isDenied: payload["isDenied"]?.boolValue == true) == "Denied: touch example.txt")
@@ -309,6 +366,7 @@ done()
         let saved = try #require(stores.agentEntries(chatID: chat.id).first { $0.id == rowID })
         #expect(saved.presentationIdentifier == (completionDelivered ? "chat.tool.completed" : "chat.tool.unconfirmed"))
         #expect(saved.toolPresentationIcon == (completionDelivered ? "checkmark.circle" : "terminal"))
+        #expect(saved.commandOutcome == (completionDelivered ? .succeeded : nil))
         let payload = try #require(saved.payloadJSON.flatMap(JSONValue.parse))
         #expect(payload["finished"] == .bool(true))
         #expect(AgentActionPresentation.toolSummary(.init(name: saved.text, input: payload["input"] ?? .null),

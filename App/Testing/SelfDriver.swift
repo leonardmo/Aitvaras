@@ -2,6 +2,7 @@
 import AppKit
 import SwiftUI
 import AitvarasCore
+import AitvarasAgents
 import AitvarasStore
 
 /// No AXUIElement client, event posting, screen capture or system automation.
@@ -99,6 +100,16 @@ import AitvarasStore
                     throw SelfDriveFailure("Self-drive project folder is unavailable")
                 }
                 AppModel.shared.startNewAgentChat(projectID: AppModel.shared.selectedWorkspaceProjectID)
+            }
+            if let rawProvider = env["AITVARAS_SELF_DRIVE_PROVIDER"] {
+                guard let provider = AgentProvider(rawValue: rawProvider),
+                      let chat = AppModel.shared.chatModel else {
+                    throw SelfDriveFailure("Invalid initial self-drive provider")
+                }
+                chat.setProvider(provider)
+                guard chat.provider == provider else {
+                    throw SelfDriveFailure("Could not select initial self-drive provider")
+                }
             }
             let projectID = AppModel.shared.chatModel?.newProjectID
             var chats: [UUID] = []

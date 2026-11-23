@@ -566,10 +566,11 @@ restore that saved input, never the current draft. Restored chat/provider settin
 are checked against the cached provider catalog on selection and before Send.
 
 The transcript groups reasoning, progress messages and tool calls in a tinted
-activity panel. The compact view shows a short live update and the latest tool
-call. Expanding the timeline groups adjacent updates and calls in their original
-order. Full updates and tool details open on demand. Final replies and approval
-cards remain directly visible.
+activity panel. The compact view shows a short live update, the latest tool
+call, and counts of confirmed command successes and failures. Expanding the
+timeline shows each tool call in order and groups adjacent model updates. Full
+updates and tool details open on demand. Final replies and approval cards
+remain directly visible.
 
 On Chat, the activity dock appears only while automatic work is actually running;
 manual chat/provider failures remain inline and do not add dock attention. Other

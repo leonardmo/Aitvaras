@@ -1310,6 +1310,23 @@ path stays covered by `golden-path.json` and `switching.json`. Provider tabs sta
 disabled while the chat is busy, slightly after Stop disappears, so the scenario
 waits for each tab to be enabled before pressing it.
 
+Run `approval-transcript` once with each provider to check approved command
+results in a project chat. The fixture modifies a disposable tracked file,
+fails its first check, then passes the second. The scenario approves both
+commands and inspects the first result while the second approval is pending.
+It then checks the outcome counts and both outputs before and after reopening
+the chat from the sidebar.
+
+```sh
+AITVARAS_SELF_DRIVE_PROVIDER=claude AITVARAS_SELF_DRIVE_TEMPLATE="$PWD/UITests/self-drive/fixtures/approval-project" \
+  scripts/run-self-drive.sh approval-transcript 240
+AITVARAS_SELF_DRIVE_PROVIDER=codex AITVARAS_SELF_DRIVE_TEMPLATE="$PWD/UITests/self-drive/fixtures/approval-project" \
+  scripts/run-self-drive.sh approval-transcript 240 --no-build
+```
+
+The optional provider override selects the provider for the first composer
+in the isolated driver, so the scenario works with the compact provider menu.
+
 Set `AITVARAS_SELF_DRIVE` to a scenario JSON file and
 `AITVARAS_SELF_DRIVE_OUTPUT` to a local artifact directory. Also set
 `AITVARAS_STATE_DIR` to a disposable profile and
@@ -1387,8 +1404,9 @@ background themselves. Package tests do not prove these runtime assumptions. A f
 relying on self-drive coverage; preserve the artifacts to fix the adapter.
 
 The format is `{"steps":[{"action":"press","identifier":"chat.new"}]}`.
-Actions: `press` by identifier or an `anyOf` identifier array (first available,
-enabled target); `type` appends `text` to the composer;
+Actions: `press` by identifier, an `anyOf` identifier array (first available,
+enabled target), or `text` matching one enabled button label or title (optionally
+scoped with `within` and `caseSensitive`); `type` appends `text` to the composer;
 `waitFor` takes exactly one `identifier`, an `anyOf` identifier array, or case-insensitive visible `text`,
 a `timeout` in seconds, optional `absent:true`, `enabled:true` (or `false`), `within` subtree identifier and
 `caseSensitive:true`; `screenshot` and `dumpTree`

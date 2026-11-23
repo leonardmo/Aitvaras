@@ -345,12 +345,24 @@ private struct AgentActivityPanel<Row: View>: View {
 
     var body: some View {
         let tools = entries.filter { $0.kind == "tool" }
+        let commandOutcomes = tools.compactMap(\.commandOutcome)
+        let failedCommands = commandOutcomes.count(where: { $0 == .failed })
+        let successfulCommands = commandOutcomes.count - failedCommands
         VStack(alignment: .leading, spacing: 6) {
             AgentActivityDisclosure(expanded: $showTimeline) {
                 HStack(spacing: 6) {
                     if isLive && isLatest { AgentWorkingLabel() }
                     else { Label("Activity", systemImage: "text.bubble") }
                     Spacer(minLength: 6)
+                    if successfulCommands > 0 {
+                        Label(successfulCommands == 1 ? "1 command succeeded" : "\(successfulCommands) commands succeeded",
+                              systemImage: "checkmark.circle")
+                    }
+                    if failedCommands > 0 {
+                        Label(failedCommands == 1 ? "1 command failed" : "\(failedCommands) commands failed",
+                              systemImage: "exclamationmark.circle")
+                            .foregroundStyle(.red)
+                    }
                     if !tools.isEmpty {
                         Text(tools.count == 1 ? "1 tool call" : "\(tools.count) tool calls")
                     }
@@ -381,7 +393,6 @@ private struct AgentActivityPanel<Row: View>: View {
             RoundedRectangle(cornerRadius: 8).strokeBorder(Color.teal.opacity(0.24))
                 .allowsHitTesting(false)
         }
-        .accessibilityIdentifier("chat.activity")
     }
 }
 
@@ -393,14 +404,7 @@ private struct AgentActivityStepView<Row: View>: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             if step.isToolActivity {
-                if step.entries.count == 1, let entry = step.entries.first {
-                    row(entry)
-                } else {
-                    AgentActivityDisclosure(expanded: $showDetails) {
-                        Label("\(step.entries.count) tool events", systemImage: "terminal")
-                    }
-                    if showDetails { details }
-                }
+                details
             } else {
                 AgentActivityDisclosure(expanded: $showDetails) {
                     Text("Model updates")
