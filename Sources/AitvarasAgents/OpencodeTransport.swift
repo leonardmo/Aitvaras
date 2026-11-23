@@ -3,16 +3,25 @@ import Darwin
 
 /// Injection boundary used by offline recordings. Credentials never cross it.
 protocol OpencodeTransport: Actor {
-    func open(projects: [URL], models: [AgentModel], mcpConfigPath: URL?) async throws
+    func open(projects: [URL], models: [AgentModel], mcpConfigPath: URL?, unrestrictedWrites: Bool,
+              workspaceShellApprovals: Bool) async throws
+    func shellApprovalBridge() -> OpencodeShellBridge?
     func subscribe() async throws -> AsyncThrowingStream<JSONValue, Error>
     func request(_ path: String, method: String, body: JSONValue?) async throws -> JSONValue
     func close() async
+}
+
+extension OpencodeTransport {
+    func shellApprovalBridge() -> OpencodeShellBridge? { nil }
 }
 
 actor OpencodeHTTPTransport: OpencodeTransport {
     private let executable: URL
     private let configuration: OpencodeConfiguration
     private let environment: [String: String]
+    private let shellHelper: URL
+    private var shellSocket: ProviderHookSocket?
+    private var shellBridge: OpencodeShellBridge?
     private var process: StreamingProcess?
     private var outputReader: Task<Void, Never>?
     private var eventReader: Task<Void, Never>?
@@ -25,17 +34,22 @@ actor OpencodeHTTPTransport: OpencodeTransport {
     private var closeTask: Task<Void, Never>?
     private var recoveryTask: Task<Void, Error>?
 
-    init(executable: URL, environment: [String: String], configuration: OpencodeConfiguration) {
+    init(executable: URL, environment: [String: String], configuration: OpencodeConfiguration, shellHelper: URL? = nil) {
         self.executable = executable; self.environment = environment; self.configuration = configuration
+        self.shellHelper = shellHelper ?? Bundle.main.bundleURL.appendingPathComponent("Contents/MacOS/aitvaras-mcp")
     }
+
+    func shellApprovalBridge() -> OpencodeShellBridge? { shellBridge }
     /// HTTP-only injection seam; process stdout remains private to the transport.
     init(session: URLSession, password: String? = nil, port: UInt16) {
         executable = URL(fileURLWithPath: "/usr/bin/false")
         environment = [:]; configuration = .init(root: FileManager.default.temporaryDirectory.appendingPathComponent("opencode-http-test"))
+        shellHelper = URL(fileURLWithPath: "/usr/bin/false")
         self.session = session; self.password = password
         baseURL = URL(string: "http://127.0.0.1:\(port)")!
     }
-    func open(projects: [URL], models: [AgentModel], mcpConfigPath: URL? = nil) async throws {
+    func open(projects: [URL], models: [AgentModel], mcpConfigPath: URL? = nil, unrestrictedWrites: Bool = false,
+              workspaceShellApprovals: Bool = false) async throws {
         guard process == nil, closeTask == nil else { throw AgentFailure.invalidTransition }
         let generation = UUID(); self.generation = generation
         let fm = FileManager.default
@@ -50,17 +64,43 @@ actor OpencodeHTTPTransport: OpencodeTransport {
         let configURL = configuration.dataDirectories[0].appendingPathComponent("opencode/opencode.json")
         try fm.createDirectory(at: configURL.deletingLastPathComponent(), withIntermediateDirectories: true)
         try Data(configuration.config(models: models).jsonString.utf8).write(to: configURL, options: .atomic)
+        var childEnvironment = configuration.environment(environment, runtimeConfig: mcpConfigPath)
+        let helperIdentity: GatewayCodeIdentity?
+        if workspaceShellApprovals {
+            helperIdentity = try GatewayCodeIdentity(executable: shellHelper)
+            let socket = try ProviderHookSocket()
+            shellSocket = socket
+            // OpenCode's compatible shell resolver honors SHELL. The name keeps
+            // its native zsh scanner and argument conventions in use.
+            let wrapper = socket.url.deletingLastPathComponent().appendingPathComponent("zsh")
+            try fm.createSymbolicLink(at: wrapper, withDestinationURL: shellHelper)
+            shellBridge = OpencodeShellBridge(configuration: configuration, projects: projects, environment: childEnvironment)
+            childEnvironment["SHELL"] = wrapper.path
+            childEnvironment["AITVARAS_SHELL_APPROVAL_SOCKET"] = socket.url.path
+        } else {
+            helperIdentity = nil
+        }
         let sandboxURL = configuration.root.appendingPathComponent("sandbox.sb")
-        try Data(configuration.sandbox(projects: projects).utf8).write(to: sandboxURL, options: .atomic)
+        try Data(configuration.sandbox(projects: projects, unrestrictedWrites: unrestrictedWrites,
+                                       shellSocket: shellSocket?.url).utf8)
+            .write(to: sandboxURL, options: .atomic)
         let port = try Self.freePort()
         baseURL = URL(string: "http://127.0.0.1:\(port)")!
         let child = StreamingProcess(executable: URL(fileURLWithPath: "/usr/bin/sandbox-exec"),
             arguments: ["-f", sandboxURL.path, executable.path, "serve", "--hostname", "127.0.0.1", "--port", String(port)],
-            currentDirectory: projects.first, environment: configuration.environment(environment, runtimeConfig: mcpConfigPath),
+            currentDirectory: projects.first, environment: childEnvironment,
             terminationDelay: .seconds(2))
         process = child
         do {
             try child.start()
+            if let socket = shellSocket, let bridge = shellBridge, let helperIdentity {
+                let ownerPID = child.processIdentifier
+                try await socket.bind(ownerPID: ownerPID, verifyPeer: { peer in
+                    guard let process = try? GatewayProcessInspector.live.snapshot(peer.identity.pid),
+                          process.identity == peer.identity, process.parentPID == ownerPID else { return false }
+                    return helperIdentity.matches(peer)
+                }, handler: { request in await bridge.execute(request) })
+            }
             try Data(String(child.processIdentifier).utf8).write(to: configuration.serverPIDFile, options: .atomic)
             outputReader = Task { [weak self] in
                 do {
@@ -166,8 +206,12 @@ actor OpencodeHTTPTransport: OpencodeTransport {
         eventContinuation?.finish(); eventContinuation = nil
         outputReader?.cancel(); outputReader = nil
         let child = process; process = nil
+        let socket = shellSocket; shellSocket = nil
+        let bridge = shellBridge; shellBridge = nil
         let recovery = recoveryTask
         let cleanup = Task { [file = configuration.serverPIDFile] in
+            await socket?.close()
+            await bridge?.close()
             _ = try? await recovery?.value
             if let child {
                 do {

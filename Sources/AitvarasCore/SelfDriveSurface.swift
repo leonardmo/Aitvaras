@@ -41,7 +41,10 @@ import AppKit
         // A SwiftUI sheet is a separate attached window; include its tree so a
         // scenario can drive it. Popped last, so the sheet's nodes win ties.
         var pending: [Any] = [root ?? window]
-        if root == nil, let sheet = window.attachedSheet { pending.append(sheet) }
+        if root == nil {
+            pending.append(contentsOf: window.childWindows ?? [])
+            if let sheet = window.attachedSheet { pending.append(sheet) }
+        }
         var seen = Set<ObjectIdentifier>()
         var found: [SelfDriveNode] = []
         while let next = pending.popLast() {
@@ -64,14 +67,15 @@ import AppKit
         guard let element = try find(identifier) else { throw SelfDriveFailure("Identifier unavailable: \(identifier)") }
         guard element.enabled else { throw SelfDriveFailure("Control disabled: \(identifier)") }
         // AppKit menu tracking can depend on real focus and run a modal loop.
-        guard !["chat.model", "chat.mode", "chat.effort", "chat.project"].contains(identifier),
+        guard !["chat.model", "chat.effort", "chat.project"].contains(identifier),
               !["AXPopUpButton", "AXMenuButton", "AXMenuItem"].contains(element.role ?? "") else {
             throw SelfDriveFailure("Native menu tracking requires XCUITest: \(identifier)")
         }
         if element.pressAction() { return "accessibilityPerformPress accepted" }
         let frame = element.frame
         let center = NSPoint(x: frame.midX, y: frame.midY)
-        let target = [window.attachedSheet, window].compactMap { $0 }.first { $0.frame.contains(center) }
+        let windows = [window.attachedSheet].compactMap { $0 } + (window.childWindows ?? []).reversed() + [window]
+        let target = windows.first { $0.frame.contains(center) }
         guard frame.width > 0, frame.height > 0, let target else {
             throw SelfDriveFailure("No in-window press target: \(identifier)")
         }

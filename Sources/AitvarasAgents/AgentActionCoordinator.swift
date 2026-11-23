@@ -27,6 +27,8 @@ public actor AgentActionCoordinator: AgentRun {
     private let provenance: Provenance
     private let audit: Audit
     private let policy: AutonomyPolicy
+    private let permissions: AgentChatPermissions?
+    private let permissionsAreCurrent: @Sendable () throws -> Bool
     private let projectGrants: @Sendable () throws -> Set<String>
     private var mode: AgentMode
     private var inputID: UUID?
@@ -48,11 +50,14 @@ public actor AgentActionCoordinator: AgentRun {
     /// Explicit user whitelist entries use `provider.<native tool name>`.
     public init(run: any AgentRun, mode: AgentMode, provenance: Provenance,
                 policy: AutonomyPolicy = AutonomyPolicy(), permissionSource: AgentPermissionSource? = nil,
-                projectGrants: @escaping @Sendable () throws -> Set<String> = { [] }, audit: @escaping Audit) {
+                permissions: AgentChatPermissions? = nil,
+                projectGrants: @escaping @Sendable () throws -> Set<String> = { [] },
+                permissionsAreCurrent: @escaping @Sendable () throws -> Bool = { true }, audit: @escaping Audit) {
         self.run = run; id = run.id; accountID = run.accountID; self.mode = mode
         mcpSetup = run.mcpSetup
         self.permissionSource = permissionSource ?? run.permissionSource; self.projectGrants = projectGrants
         self.provenance = provenance; self.policy = policy; self.audit = audit
+        self.permissions = permissions; self.permissionsAreCurrent = permissionsAreCurrent
         (events, continuation) = AsyncThrowingStream.makeStream(bufferingPolicy: .bufferingOldest(4096))
     }
 
@@ -232,6 +237,7 @@ public actor AgentActionCoordinator: AgentRun {
     public func alwaysAllow(to request: AgentRequest, persist: @Sendable () throws -> Void) async throws {
         guard !interrupting, isCurrent(request), pending[request.id] == request,
               AgentToolPolicy.canAlwaysAllow(request), case .permission(let tool) = request.kind,
+              permissions == nil || permissions?.mcp == .auto && AgentToolPolicy.criticalApprovalReason(tool) == nil,
               let provider = request.scope.session?.provider,
               (try? AgentToolPolicy.grantKey(provider: provider, tool: tool.name,
                   fingerprint: AgentToolPolicy.fingerprint(tool: tool.name, servers: mcpSetup?.serverFingerprints ?? [:]))) != nil else { throw AgentFailure.invalidRequest }
@@ -289,6 +295,10 @@ public actor AgentActionCoordinator: AgentRun {
         // clear or authorize the current turn.
         if case .autonomousTurnStarted(let input, _) = event.kind {
             guard inputID == nil, event.scope.inputID == input else { return }
+            guard (try? permissionsAreCurrent()) == true else {
+                try? await shutdown()
+                return
+            }
             // An acknowledged Stop ends one turn; a retained CLI may wake again.
             inputID = input; interrupting = false
         }
@@ -371,6 +381,8 @@ public actor AgentActionCoordinator: AgentRun {
             // permission request may create a user-facing approval.
             if forbidden(tool) {
                 try await finish(request, response: .deny, decision: "forbidden")
+            } else if let permissions, !permissions.isPlan, let response = try hookPermission(tool, using: permissions) {
+                try await finish(request, response: response, decision: response == .askHook ? "requires chat approval" : "allowed by chat permissions")
             } else if AgentToolPolicy.requiresExplicitMCPApproval(tool) {
                 try await finish(request, response: .askHook, decision: "requires explicit MCP approval")
             } else if permissionSource == .aitvaras, requiresAitvarasApproval(tool) {
@@ -381,17 +393,15 @@ public actor AgentActionCoordinator: AgentRun {
         case .permission(let tool):
             if forbidden(tool) {
                 try await finish(request, response: .deny, decision: "forbidden")
+            } else if let permissions, !permissions.isPlan, try await handleChatPermission(request, tool: tool, permissions: permissions) {
+                return
             } else if request.scope.session?.profile == OpencodeConfiguration.profile,
                       request.scope.session?.provider == .local,
                       risk(tool) == .read || ((mode == .acceptEdits || mode == .auto) && risk(tool) == .reversibleWrite) {
                 // Native Local permissions always ask, so policy and durable
                 // provenance are applied even when the app mode permits edits.
                 try await finish(request, response: .allow(updatedInput: nil), decision: "allowed by local mode")
-            } else if let provider = request.scope.session?.provider,
-                      AgentToolPolicy.grantEligible(tool),
-                      let key = try? AgentToolPolicy.grantKey(provider: provider, tool: tool.name,
-                          fingerprint: AgentToolPolicy.fingerprint(tool: tool.name, servers: mcpSetup?.serverFingerprints ?? [:])),
-                      try projectGrants().contains(key) {
+            } else if let provider = request.scope.session?.provider, try hasProjectGrant(tool, provider: provider) {
                 try await finish(request, response: .allow(updatedInput: nil), decision: "allowed by project grant")
             } else if AgentToolPolicy.grantEligible(tool), !tool.name.hasPrefix("mcp__"), policy.whitelist.contains("provider.\(tool.name)") {
                 try await finish(request, response: .allow(updatedInput: nil), decision: "allowed by whitelist")
@@ -400,6 +410,67 @@ public actor AgentActionCoordinator: AgentRun {
             }
         case .permissions, .plan, .questions: try await offer(request, risk: .confirmable)
         }
+    }
+
+    private func hookPermission(_ tool: AgentTool, using permissions: AgentChatPermissions) throws -> AgentResponse? {
+        if permissions.isFullAccess {
+            // Plan reviews and questions are conversation interactions.
+            return ["AskUserQuestion", "ExitPlanMode"].contains(tool.name) ? .continueHook : .allowHook
+        }
+        if AgentToolPolicy.isGatewayTool(tool) { return .continueHook }
+        if AgentToolPolicy.isCommandExecution(tool) {
+            if permissions.commands == .ask || permissions.commands == .auto && AgentToolPolicy.criticalApprovalReason(tool) != nil {
+                return .askHook
+            }
+            return .continueHook
+        }
+        if AgentToolPolicy.isMCPTool(tool) {
+            switch permissions.mcp {
+            case .ask: return .askHook
+            case .unprompted: return .continueHook
+            case .auto:
+                if AgentToolPolicy.criticalApprovalReason(tool) != nil { return .askHook }
+                let hasGrant = try hasProjectGrant(tool, provider: .claude)
+                return risk(tool) == .read || hasGrant ? .continueHook : .askHook
+            }
+        }
+        return nil
+    }
+
+    private func handleChatPermission(_ request: AgentRequest, tool: AgentTool, permissions: AgentChatPermissions) async throws -> Bool {
+        let shouldAllow: Bool
+        if permissions.isFullAccess || AgentToolPolicy.isGatewayTool(tool) {
+            shouldAllow = true
+        } else if AgentToolPolicy.isCommandExecution(tool) {
+            let critical = AgentToolPolicy.criticalApprovalReason(tool) != nil
+            let containedLocal = request.scope.session?.profile == OpencodeConfiguration.profile
+            let alreadyApproved = tool.input["aitvarasWorkspaceApproved"]?.boolValue == true
+            shouldAllow = permissions.commands == .unrestricted
+                || (permissions.commands == .auto && containedLocal && (!critical || alreadyApproved))
+        } else if AgentToolPolicy.isMCPTool(tool) {
+            switch permissions.mcp {
+            case .ask: shouldAllow = false
+            case .unprompted: shouldAllow = true
+            case .auto:
+                let hasGrant = try request.scope.session.map { try hasProjectGrant(tool, provider: $0.provider) } ?? false
+                shouldAllow = AgentToolPolicy.criticalApprovalReason(tool) == nil && (risk(tool) == .read || hasGrant)
+            }
+        } else {
+            return false
+        }
+        if shouldAllow {
+            try await finish(request, response: .allow(updatedInput: nil), decision: "allowed by chat permissions")
+        } else {
+            try await offer(request, risk: risk(tool))
+        }
+        return true
+    }
+
+    private func hasProjectGrant(_ tool: AgentTool, provider: AgentProvider) throws -> Bool {
+        guard AgentToolPolicy.grantEligible(tool),
+              let key = try? AgentToolPolicy.grantKey(provider: provider, tool: tool.name,
+                  fingerprint: AgentToolPolicy.fingerprint(tool: tool.name, servers: mcpSetup?.serverFingerprints ?? [:])) else { return false }
+        return try projectGrants().contains(key)
     }
 
     private func offer(_ request: AgentRequest, risk: ActionRisk) async throws {
@@ -521,6 +592,8 @@ public actor AgentActionCoordinator: AgentRun {
     }
 
     private func forbidden(_ tool: AgentTool) -> Bool {
-        AgentToolPolicy.forbidden(tool)
+        // Gateway calls carry their own scope, hard prohibitions, and audit.
+        if permissions != nil, AgentToolPolicy.isGatewayTool(tool) { return false }
+        return AgentToolPolicy.forbidden(tool)
     }
 }

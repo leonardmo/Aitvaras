@@ -7,6 +7,8 @@ public struct GatewayApprovalRequest: Sendable, Identifiable {
     public let invocation: MCPGatewayInvocation
     public let toolName: String
     public let risk: ActionRisk
+    public let reason: String?
+    public let canAlwaysAllow: Bool
     /// Transient card data. This type deliberately has no persistence encoding.
     public let arguments: JSONValue
 }
@@ -14,7 +16,7 @@ public struct GatewayApprovalRequest: Sendable, Identifiable {
 /// App presentation consumes pending requests and resolves their one-shot IDs.
 /// Inline requests use the native chat lifecycle rather than the outside timer.
 public actor GatewayApprovalBroker {
-    enum Outcome: String, Sendable { case approved, denied, timedOut, cancelled }
+    enum Outcome: String, Sendable { case approved, approvedForProject, denied, timedOut, cancelled }
     private struct Pending {
         let request: GatewayApprovalRequest
         let continuation: CheckedContinuation<Outcome, Never>
@@ -80,13 +82,14 @@ public actor GatewayApprovalBroker {
     }
 
     @discardableResult
-    public func decide(id: UUID, allow: Bool) -> Bool {
-        guard let entry = pending[id] else { return false }
+    public func decide(id: UUID, allow: Bool, forProject: Bool = false) -> Bool {
+        guard let entry = pending[id], !forProject || (allow && entry.request.canAlwaysAllow) else { return false }
         if let deadline = entry.deadline, now() >= deadline {
             resolve(id, as: .timedOut)
             return false
         }
-        resolve(id, as: allow ? .approved : .denied)
+        let outcome: Outcome = forProject ? .approvedForProject : (allow ? .approved : .denied)
+        resolve(id, as: outcome)
         return true
     }
 

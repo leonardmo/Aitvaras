@@ -7,10 +7,12 @@ public struct GatewayLaunchContext: Equatable, Sendable {
 
     public let client: Client
     public let projectID: UUID?
+    public let permissions: AgentChatPermissions?
 
-    public init(client: Client, projectID: UUID?) {
+    public init(client: Client, projectID: UUID?, permissions: AgentChatPermissions? = nil) {
         self.client = client
         self.projectID = projectID
+        self.permissions = permissions
     }
 }
 

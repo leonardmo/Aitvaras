@@ -1332,6 +1332,19 @@ public final class AitvarasDatabase: Sendable {
                 t.add(column: "headerName", .text)
             }
         }
+        m.registerMigration("v50-chat-tool-permissions") { db in
+            try db.create(table: "agentChatPermissions") { t in
+                t.primaryKey("chatID", .blob).references("workspaceChat", onDelete: .cascade)
+                t.column("policy", .text).notNull()
+            }
+        }
+        m.registerMigration("v51-gateway-project-tool-grants") { db in
+            try db.create(table: "gatewayProjectToolGrant") { t in
+                t.column("projectID", .blob).notNull().references("workspaceProject", onDelete: .cascade)
+                t.column("toolRevision", .text).notNull()
+                t.primaryKey(["projectID", "toolRevision"])
+            }
+        }
         return m
     }
 

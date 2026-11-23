@@ -200,6 +200,7 @@ final class ChatModel {
         select(nil)
         for provider in [AgentProvider.local, .claude, .codex] { composerSelections[newChatID, provider] = .init() }
         newChatID = UUID(); newProjectID = projectID; useWorktree = false
+        selectedPermissions = nil
         setVisibleDraft("")
         reloadProfiles()
         let savedChoice = (try? stores.value(forKey: "agent.lastProfile")).flatMap(AgentProviderChoice.init(id:))
@@ -535,7 +536,7 @@ final class ChatModel {
         guard selectedSignInProvider == nil else { return false }
         guard let id = chatID else { return !terminating && !creatingChat && newProjectID != nil && signingIn == nil }
         return !terminating && !gitBusy && !stopping.contains(id) && sending[id] == nil && !submittedText.contains(id) && signingIn == nil
-            && (!isBusy || statuses[provider]?.capabilities.contains(.followups) == true)
+            && (!isBusy || (!permissionsApplyNextTurn && statuses[provider]?.capabilities.contains(.followups) == true))
     }
     private var settingsKey: String { "\(composerOwnerID.uuidString).\(choice.id)" }
     var localProviderDetail: String {
@@ -573,6 +574,29 @@ final class ChatModel {
             session.effort = newValue.isEmpty ? nil : newValue; saveSettings(session)
         }
     }
+    private var selectedPermissions: AgentChatPermissions?
+    var permissions: AgentChatPermissions {
+        get { selectedPermissions ?? AgentChatPermissions(legacy: mode) }
+        set {
+            do {
+                if let chatID {
+                    try stores.saveAgentChatPermissions(newValue, chatID: chatID)
+                    Task { await manager.permissionsDidChange(chatID: chatID) }
+                }
+                selectedPermissions = newValue
+                error = nil
+            } catch { self.error = "Chat permissions could not be saved." }
+        }
+    }
+    var activePermissions: AgentChatPermissions? {
+        guard state?.isRunning == true else { return nil }
+        return state?.activePermissions ?? state?.acknowledgedMode.map(AgentChatPermissions.init(legacy:))
+    }
+    var permissionsApplyNextTurn: Bool {
+        guard state?.isRunning == true, let selectedPermissions else { return false }
+        return selectedPermissions != state?.activePermissions
+    }
+
     var mode: AgentMode {
         get { settings[settingsKey]?.mode ?? .ask }
         set {
@@ -602,6 +626,7 @@ final class ChatModel {
         if let pending = try? stores.pendingSend(), pending.session.chatID != id { invalidatePending() }
         resourceScope = ChatResourceScope()
         selectedProjectID = nil
+        selectedPermissions = nil
         state = id.flatMap { sidebarStates[$0] }; error = nil; authProvider = nil; changes = nil; canDiscardChanges = false; branchStatus = nil; pushDisabledReason = "Refresh branch status first."; gitError = nil
         pullRequest = nil; pullRequestBinding = id.flatMap { try? stores.agentPullRequest(chatID: $0) }; pullRequestChecks = []; forgeError = nil; forgeDraft = nil; forgeKind = nil; forgeNeedsSignIn = false; forgeRefreshID = nil
         pullRequestCheckedAt = nil; pullRequestSignedIn = false
@@ -611,6 +636,7 @@ final class ChatModel {
             claudeProfile = try id.map { try stores.selectedClaudeProfile(chatID: $0) } ?? "default"
             snapshotInlineChoices(); syncSelectedStatus()
             try loadSettings()
+            if let id { selectedPermissions = try stores.agentChatPermissions(chatID: id) }
             if let id, state == nil { state = ChatState(chatID: id, entries: try stores.agentEntries(chatID: id)) }
             if let pending = try stores.pendingSend(), pending.session.chatID == id {
                 if pending.expiresAt > .now, pending.session.choice == choice {
@@ -1006,11 +1032,12 @@ final class ChatModel {
             creatingChat = true
             defer { creatingChat = false }
             let text = draft, chosenProvider = provider, chosenChoice = choice, chosenSettings = settings[settingsKey]
-            let composition = composerSelection
+            let composition = composerSelection, requestedPermissions = selectedPermissions
             var createdChat: WorkspaceChat?
             do {
                 guard let created = try stores.createChatOnFirstSend(projectID: projectID, text: text, hasAttachments: !composition.attachments.isEmpty, requiresWorktree: useWorktree) else { return }
                 createdChat = created
+                if let requestedPermissions { try stores.saveAgentChatPermissions(requestedPermissions, chatID: created.id) }
                 try stores.selectAgentChoice(chosenChoice, chatID: created.id)
                 if useWorktree {
                     let folders = try stores.workspaceFolders(projectID: projectID).map { URL(fileURLWithPath: $0.path) }
@@ -1122,7 +1149,7 @@ final class ChatModel {
         clearComposer(chatID: chatID, provider: provider, sent: input)
     }
     private func observe(_ state: ChatState) {
-        if let mode = state.acknowledgedMode, let sessionID = state.entries.last?.sessionID,
+        if state.activePermissions == nil, let mode = state.acknowledgedMode, let sessionID = state.entries.last?.sessionID,
            let session = try? stores.agentSessions(chatID: state.chatID).first(where: { $0.id == sessionID }),
            observedModes[state.chatID]?.input != state.inputID || observedModes[state.chatID]?.mode != mode {
             observedModes[state.chatID] = (state.inputID, mode)
@@ -1402,6 +1429,10 @@ final class ChatModel {
     func canAlwaysAllow(chatID: UUID, request: AgentRequest) -> Bool {
         guard AgentToolPolicy.canAlwaysAllow(request), case .permission(let tool) = request.kind,
               let provider = request.scope.session?.provider else { return false }
+        let activePolicy = (self.chatID == chatID ? state : sidebarStates[chatID])?.activePermissions
+        if let activePolicy {
+            guard activePolicy.mcp == .auto, AgentToolPolicy.criticalApprovalReason(tool) == nil else { return false }
+        }
         guard tool.name.hasPrefix("mcp__") else { return true }
         guard provider != .codex, let owner = try? stores.workspaceChat(id: chatID),
               let session = try? stores.agentSession(chatID: chatID, provider: provider),

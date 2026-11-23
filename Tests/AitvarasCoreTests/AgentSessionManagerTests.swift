@@ -22,6 +22,35 @@ import AitvarasStore
         try await manager.shutdown()
     }
 
+    @Test func savedChatPermissionsTakeEffectOnTheNextTurn() async throws {
+        let stores = try inMemoryStores()
+        let backend = ManagerTestBackend()
+        let manager = try AgentSessionManager(persistence: stores, backend: { _ in backend }, audit: { _ in })
+        let chat = try agentStoreChat(stores).0.id
+        let unrelated = try agentStoreChat(stores).0.id
+        try stores.saveAgentChatPermissions(.auto, chatID: chat)
+        let first = AgentInput(text: "Start with Auto")
+        try await manager.send(chatID: chat, provider: .claude, input: first)
+        let oldRun = try #require(await backend.runs.last)
+
+        try stores.saveAgentChatPermissions(.fullAccess, chatID: chat)
+        await manager.permissionsDidChange(chatID: chat)
+        #expect(try await manager.state(chatID: chat).activePermissions == .auto)
+        #expect(await !oldRun.isShutdown)
+        #expect(try stores.agentChatPermissions(chatID: unrelated) == nil)
+
+        let native = AgentSessionID(provider: .claude, profile: "default", nativeID: "permission-fixture")
+        await oldRun.emit(.sessionStarted(native), input: first.id)
+        await oldRun.emit(.turnEnded(.completed), input: first.id)
+        try await waitManager { try await manager.state(chatID: chat).outcome == .completed }
+        try await manager.send(chatID: chat, provider: .claude, input: .init(text: "Continue with Full access"))
+        let policies = await backend.configurations.map { $0.permissions }
+        #expect(policies == [AgentChatPermissions.auto, .fullAccess])
+        #expect(await backend.configurations.last?.resume == native)
+        #expect(try await manager.state(chatID: chat).activePermissions == .fullAccess)
+        try await manager.shutdown()
+    }
+
     @Test func leastRecentlyUsedIdleRunIsEvictedAndResumesNativeSession() async throws {
         let stores = try inMemoryStores()
         let backend = ManagerTestBackend()

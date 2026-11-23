@@ -67,6 +67,88 @@ import AitvarasStore
         #expect(GatewayPolicyDecision(tool: forbidden, invocation: invocation, rules: rules, policy: .init()).forbidden)
     }
 
+    @Test func chatPoliciesDistinguishPlanAskAutoAndUnprompted() throws {
+        let projectID = UUID()
+        let chatID = UUID()
+        let upstream = MCPGatewayTool.Origin.upstream(server: "example", accountID: UUID(),
+                                                       definitionFingerprint: String(repeating: "a", count: 64))
+        let read = try gatewayFixtureTool(name: "list_posts", origin: upstream,
+                                          annotations: .init(readOnly: true), trusted: true)
+        let destructive = try gatewayFixtureTool(name: "bulkDelete", origin: upstream,
+                                                 annotations: .init(readOnly: true), trusted: true)
+        let protected = try gatewayFixtureTool(name: "send_mail", origin: upstream)
+        func decision(_ tool: MCPGatewayTool, mode: AgentChatPermissions,
+                      presentation: MCPGatewayInvocation.Presentation? = nil) -> GatewayPolicyDecision {
+            let invocation = MCPGatewayInvocation(launchID: UUID(),
+                context: .init(client: .claude, projectID: projectID, permissions: mode),
+                presentation: presentation ?? .inline(chatID: chatID))
+            return .init(tool: tool, invocation: invocation, rules: .init(), policy: .init())
+        }
+        #expect(decision(read, mode: .ask).verdict == .requireConfirmation)
+        #expect(decision(read, mode: .auto).verdict == .allow)
+        #expect(decision(read, mode: .plan).verdict == .allow)
+        #expect(decision(destructive, mode: .plan).forbidden)
+        let critical = decision(destructive, mode: .auto)
+        #expect(critical.verdict == .requireConfirmation)
+        #expect(critical.approvalReason != nil)
+        #expect(!critical.canAlwaysAllow)
+        #expect(decision(destructive, mode: .fullAccess).verdict == .allow)
+        #expect(decision(protected, mode: .fullAccess).forbidden)
+        #expect(decision(destructive, mode: .fullAccess, presentation: .outside).verdict == .requireConfirmation)
+    }
+
+    @Test func chatAutoApprovalPersistsOnlyForTheCurrentToolRevisionAndProject() async throws {
+        let stores = try inMemoryStores()
+        let project = try stores.createWorkspaceProject(title: "Example")
+        let chat = try stores.createWorkspaceChat(projectID: project.id, title: "Example chat")
+        let hub = ConnectorHub(stores: stores)
+        let approvals = GatewayApprovalBroker()
+        let accounting = MCPGatewayTool.Origin.upstream(server: "example", accountID: UUID(),
+                                                         definitionFingerprint: String(repeating: "a", count: 64))
+        let unknown = try gatewayFixtureTool(name: "lookup", origin: accounting)
+        let changed = try gatewayFixtureTool(name: "lookup", origin: accounting, annotations: .init(idempotent: true))
+        @Sendable func call(_ tool: MCPGatewayTool, revalidate: MCPGateway.Authorize = {}) async throws -> MCPGatewayToolResult {
+            let invocation = MCPGatewayInvocation(launchID: UUID(),
+                context: .init(client: .claude, projectID: project.id, permissions: .auto),
+                presentation: .inline(chatID: chat.id))
+            return try await hub.executeGateway(invocation, tool: tool, arguments: .object([:]), approvals: approvals,
+                rules: { .init() }, revalidate: revalidate) { .init(text: "Fixture result") }
+        }
+        let initial = Task { try await call(unknown) }
+        defer { initial.cancel() }
+        let offered = try await nextGatewayApproval(approvals)
+        #expect(offered.canAlwaysAllow)
+        #expect(await approvals.decide(id: offered.id, allow: true, forProject: true))
+        _ = try await initial.value
+        #expect(try stores.hasGatewayToolGrant(projectID: project.id, toolRevision: unknown.revision))
+
+        let granted = Task { try await call(unknown) }
+        let deadline = Task {
+            try await Task.sleep(for: .seconds(2))
+            granted.cancel()
+        }
+        defer { deadline.cancel(); granted.cancel() }
+        _ = try await granted.value
+        #expect(await approvals.requests().isEmpty)
+        let audited = try stores.recentActivity().compactMap { $0.detailJSON.flatMap(JSONValue.parse) }
+        #expect(audited.contains { $0["approval"] == .string("approvedForProject") && $0["outcome"] == .string("dispatching") })
+        #expect(audited.contains { $0["approval"] == .string("exactGrant") && $0["outcome"] == .string("succeeded") })
+
+        let scope = GatewayFixtureState()
+        let revised = Task {
+            try await call(changed) {
+                guard await scope.open else { throw MCPGatewayCallError.stale }
+            }
+        }
+        defer { revised.cancel() }
+        let revisedOffer = try await nextGatewayApproval(approvals)
+        await scope.close()
+        #expect(await approvals.decide(id: revisedOffer.id, allow: true, forProject: true))
+        await #expect(throws: MCPGatewayCallError.stale) { try await revised.value }
+        #expect(!(try stores.hasGatewayToolGrant(projectID: project.id, toolRevision: changed.revision)))
+        #expect(!(try stores.hasGatewayToolGrant(projectID: UUID(), toolRevision: unknown.revision)))
+    }
+
     @Test func approvalIsOneShotAndOnlyMetadataReachesStorage() async throws {
         let stores = try inMemoryStores()
         let project = try stores.createWorkspaceProject(title: "Example")

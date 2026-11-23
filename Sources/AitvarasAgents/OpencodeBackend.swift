@@ -7,10 +7,13 @@ public actor OpencodeBackend: AgentBackend {
     private let executable: URL?
     private let transport: any OpencodeTransport
     private let catalog: @Sendable () async throws -> [AgentModel]
+    private let ollamaEndpoint: URL
     private var roots: [String]?
     private var serverModels: [AgentModel] = []
     private let mcpPolicy: AgentMCPLaunchPolicy
     private var serverMCPRevision: String?
+    private var serverUnrestrictedWrites = false
+    private var serverWorkspaceShellApprovals = false
     private var serverRuntimeFile: AgentMCPRuntimeFile?
     private var runs: [String: OpencodeRun] = [:]
     private var reader: Task<Void, Never>?
@@ -19,19 +22,22 @@ public actor OpencodeBackend: AgentBackend {
     private var shutdownTask: Task<Void, Never>?
 
     public init(executable: URL? = nil, environment: [String: String] = ProcessInfo.processInfo.environment,
-                configuration: OpencodeConfiguration = .init(), mcpPolicy: AgentMCPLaunchPolicy = .default) {
+                configuration: OpencodeConfiguration = .init(), mcpPolicy: AgentMCPLaunchPolicy = .default,
+                shellHelper: URL? = nil) {
         self.mcpPolicy = mcpPolicy
         let found = ProviderLocator.executable(for: .local, environment: environment,
             overrides: executable.map { [.local: $0] } ?? [:])
         self.executable = found
         transport = OpencodeHTTPTransport(executable: found ?? URL(fileURLWithPath: "/usr/bin/false"),
-            environment: environment, configuration: configuration)
-        catalog = { try await OpencodeConfiguration.installedModels() }
+            environment: environment, configuration: configuration, shellHelper: shellHelper)
+        ollamaEndpoint = configuration.ollamaEndpoint
+        catalog = { try await OpencodeConfiguration.installedModels(endpoint: configuration.ollamaEndpoint) }
     }
     init(transport: any OpencodeTransport, mcpPolicy: AgentMCPLaunchPolicy = .default,
          catalog: @escaping @Sendable () async throws -> [AgentModel]) {
         self.mcpPolicy = mcpPolicy
         executable = URL(fileURLWithPath: "/usr/bin/true"); self.transport = transport; self.catalog = catalog
+        ollamaEndpoint = OpencodeConfiguration.ollamaURL
     }
     public func status() async throws -> AgentStatus {
         guard executable != nil else { return .init(installed: false, authentication: .unavailable, capabilities: []) }
@@ -62,14 +68,17 @@ public actor OpencodeBackend: AgentBackend {
         guard configuration.effort == nil, models.contains(where: { $0.id == configuration.model }) else { throw AgentFailure.unsupported }
         let projects = [configuration.directory] + configuration.additionalDirectories
         let requestedRoots = try OpencodeConfiguration.writeRoots(projects)
+        let unrestrictedWrites = configuration.permissions?.commands == .unrestricted && configuration.mode != .plan
+        let workspaceShellApprovals = configuration.permissions?.commands == .auto && configuration.mode != .plan
         let snapshot = try mcpPolicy.snapshot(directory: configuration.directory, projectID: configuration.projectID)
-        if roots != requestedRoots || serverModels != models || serverMCPRevision != snapshot.status.revision {
+        if roots != requestedRoots || serverModels != models || serverMCPRevision != snapshot.status.revision
+            || serverUnrestrictedWrites != unrestrictedWrites || serverWorkspaceShellApprovals != workspaceShellApprovals {
             for run in runs.values where await run.isActive { throw AgentFailure.invalidTransition }
             if roots != nil { await shutdown() }
             let openingGeneration = generation
             do {
                 let file = try await mcpPolicy.runtimeFile(snapshot: snapshot, runID: UUID(), format: .opencode,
-                    baseConfiguration: OpencodeConfiguration.generatedConfig(models: models))
+                    baseConfiguration: OpencodeConfiguration.generatedConfig(models: models, ollamaEndpoint: ollamaEndpoint))
                 guard openingGeneration == generation, !Task.isCancelled else {
                     try? await file?.remove(); throw AgentFailure.invalidTransition
                 }
@@ -77,11 +86,14 @@ public actor OpencodeBackend: AgentBackend {
                 guard try mcpPolicy.snapshot(directory: configuration.directory, projectID: configuration.projectID).status.revision == snapshot.status.revision else {
                     throw AgentFailure.invalidTransition
                 }
-                try await transport.open(projects: projects, models: models, mcpConfigPath: file?.url)
+                try await transport.open(projects: projects, models: models, mcpConfigPath: file?.url,
+                                         unrestrictedWrites: unrestrictedWrites, workspaceShellApprovals: workspaceShellApprovals)
                 guard openingGeneration == generation else { throw AgentFailure.invalidTransition }
                 let events = try await transport.subscribe()
                 guard openingGeneration == generation else { throw AgentFailure.invalidTransition }
                 roots = requestedRoots; serverModels = models; serverMCPRevision = snapshot.status.revision
+                serverUnrestrictedWrites = unrestrictedWrites
+                serverWorkspaceShellApprovals = workspaceShellApprovals
                 let generation = self.generation
                 reader = Task { [weak self] in
                     do {
@@ -91,13 +103,14 @@ public actor OpencodeBackend: AgentBackend {
                 }
             } catch { await shutdown(); throw (error as? AgentFailure) ?? .offline }
         }
-        do { return try await startSession(configuration, setup: snapshot.status) }
+        do { return try await startSession(configuration, setup: snapshot.status, mcpServers: Set(snapshot.resolution.localServers.keys)) }
         catch {
             if runs.isEmpty { await shutdown() }
             throw error
         }
     }
-    private func startSession(_ configuration: AgentSessionConfiguration, setup: AgentMCPLaunchStatus) async throws -> any AgentRun {
+    private func startSession(_ configuration: AgentSessionConfiguration, setup: AgentMCPLaunchStatus,
+                              mcpServers: Set<String>) async throws -> any AgentRun {
         let sessionGeneration = generation
         let nativeID: String
         let model: JSONValue = .object(["id": .string(configuration.model), "providerID": .string("ollama")])
@@ -122,6 +135,7 @@ public actor OpencodeBackend: AgentBackend {
         guard sessionGeneration == generation else { throw AgentFailure.invalidTransition }
         let session = AgentSessionID(provider: .local, profile: OpencodeConfiguration.profile, nativeID: nativeID)
         let run = OpencodeRun(transport: transport, session: session, configuration: configuration, mcpSetup: setup,
+            mcpServers: mcpServers, shellBridge: await transport.shellApprovalBridge(),
             release: { [weak self] id in await self?.release(nativeID, id: id) })
         runs[nativeID] = run
         await run.started()
@@ -180,6 +194,11 @@ actor OpencodeRun: AgentRun {
     private let transport: any OpencodeTransport
     private let session: AgentSessionID
     private let configuration: AgentSessionConfiguration
+    private let mcpServers: Set<String>
+    private let shellBridge: OpencodeShellBridge?
+    private var pendingShellApprovals: [AgentRequestID: OpencodeShellApproval] = [:]
+    private var approvedShellTools: [String: UUID] = [:]
+    private var stoppingInputID: UUID?
     private let release: @Sendable (UUID) async -> Void
     private var inputID: UUID?
     private var queued: [String: UUID] = [:]
@@ -197,9 +216,12 @@ actor OpencodeRun: AgentRun {
 
     init(transport: any OpencodeTransport, session: AgentSessionID, configuration: AgentSessionConfiguration,
          mcpSetup: AgentMCPLaunchStatus? = nil,
+         mcpServers: Set<String> = [], shellBridge: OpencodeShellBridge? = nil,
          release: @escaping @Sendable (UUID) async -> Void) {
         self.transport = transport; self.session = session; self.configuration = configuration; self.release = release
         self.mcpSetup = mcpSetup
+        self.mcpServers = mcpServers
+        self.shellBridge = shellBridge
         mode = configuration.mode
         (events, continuation) = AsyncThrowingStream.makeStream(bufferingPolicy: .bufferingOldest(4096))
     }
@@ -286,8 +308,18 @@ actor OpencodeRun: AgentRun {
         default: throw AgentFailure.invalidRequest
         }
         requests.removeValue(forKey: request.id); forms.removeValue(forKey: request.id)
-        do { _ = try await transport.request(path, method: method, body: body) }
-        catch { await abort(); throw error }
+        let escalation = pendingShellApprovals.removeValue(forKey: request.id)
+        do {
+            if let escalation, let shellBridge, let toolID = request.scope.itemID, case .allow = response {
+                try await shellBridge.authorize(escalation)
+                guard !closed, inputID == request.scope.inputID, stoppingInputID != inputID else {
+                    await shellBridge.revoke(approvalID: escalation.id)
+                    throw AgentFailure.invalidTransition
+                }
+                approvedShellTools[toolID] = escalation.id
+            }
+            _ = try await transport.request(path, method: method, body: body)
+        } catch { await abort(); throw error }
         emit(.requestResolved(request.id), item: request.scope.itemID)
     }
     func setMode(_ mode: AgentMode) async throws {
@@ -297,6 +329,8 @@ actor OpencodeRun: AgentRun {
     }
     func interrupt() async throws {
         guard !closed else { throw AgentFailure.invalidTransition }
+        stoppingInputID = inputID
+        await shellBridge?.revoke(sessionID: session.nativeID)
         _ = try await transport.request("api/session/\(session.nativeID)/interrupt", method: "POST", body: .object([:]))
     }
     func shutdown() async throws {
@@ -306,6 +340,7 @@ actor OpencodeRun: AgentRun {
             catch { await abort(); throw error }
         }
         closed = true; requests.removeAll(); forms.removeAll(); queued.removeAll(); buffered.removeAll(); inputID = nil
+        await shellBridge?.revoke(sessionID: session.nativeID)
         continuation.finish(); await release(id)
     }
     func abort() async {
@@ -317,7 +352,10 @@ actor OpencodeRun: AgentRun {
         closed = true; requests.removeAll(); forms.removeAll(); queued.removeAll(); buffered.removeAll(); inputID = nil
         continuation.finish(throwing: AgentFailure.offline)
     }
-    private func end(_ outcome: AgentTurnOutcome) {
+    private func end(_ outcome: AgentTurnOutcome) async {
+        await shellBridge?.revoke(sessionID: session.nativeID)
+        pendingShellApprovals.removeAll()
+        approvedShellTools.removeAll()
         for id in requests.keys { emit(.requestResolved(id)) }; requests.removeAll(); forms.removeAll()
         if inputID != nil { emit(.turnEnded(outcome)) }
         inputID = nil; tools.removeAll(); seenForms.removeAll()
@@ -365,7 +403,7 @@ actor OpencodeRun: AgentRun {
     private func apply(_ value: JSONValue, type: String, data: JSONValue) async {
         let item = data["id"]?.stringValue ?? data["assistantMessageID"]?.stringValue
         if type == "session.inbox.delivered", let inbox = data["inboxID"]?.stringValue, let next = queued.removeValue(forKey: inbox) {
-            if inputID != nil { end(.completed) }
+            if inputID != nil { await end(.completed) }
             inputID = next; emit(.inputActivated); return
         }
         guard inputID != nil else { return }
@@ -376,7 +414,7 @@ actor OpencodeRun: AgentRun {
         case "session.reasoning.ended": if let text = data["text"]?.stringValue { emit(.thinkingCompleted(text), item: item) }
         case "session.tool.input.started":
             guard let item, let name = data["name"]?.stringValue, tools.count < 1024 else { await abort(); return }
-            tools[item] = .init(name: name, input: .null)
+            tools[item] = .init(name: canonicalMCPName(name), input: .null)
         case "session.tool.input.delta": if let text = data["delta"]?.stringValue { emit(.toolInputDelta(text), item: item) }
         case "session.tool.input.ended":
             if let item, let tool = tools[item], let text = data["text"]?.stringValue {
@@ -395,20 +433,45 @@ actor OpencodeRun: AgentRun {
                 : data["content"] ?? data["error"] ?? .null
             emit(.toolFinished(output: output, isError: type == "session.tool.failed"), item: item)
             tools.removeValue(forKey: item)
+            if let approvalID = approvedShellTools.removeValue(forKey: item) {
+                await shellBridge?.revoke(approvalID: approvalID)
+            }
         case "permission.asked":
             guard let requestID = data["id"]?.stringValue, opencodeRequestID(requestID),
                   let action = data["action"]?.stringValue, requests.count < 64,
                   requests[.string(requestID)] == nil else { await abort(); return }
             let toolID = data["source"]?["id"]?.stringValue
             var fallbackInput: [String: JSONValue] = ["resources": data["resources"] ?? .array([])]
-            if action == "bash" {
+            if action == "bash" || action == "shell" {
                 fallbackInput["command"] = .string((data["resources"]?.arrayValue ?? []).compactMap(\.stringValue).joined(separator: "\n"))
             }
-            let tool = toolID.flatMap { tools[$0] } ?? AgentTool(name: action, input: .object(fallbackInput))
+            var tool = toolID.flatMap { tools[$0] } ?? AgentTool(name: canonicalMCPName(action), input: .object(fallbackInput))
+            if shellBridge != nil, let toolID, AgentToolPolicy.isCommandExecution(tool), var input = tool.input.objectValue {
+                // Approval metadata comes only from native permission events.
+                input["aitvarasWorkspaceApproval"] = nil
+                input["aitvarasWorkspaceApproved"] = nil
+                input["aitvarasWorkspaceResources"] = nil
+                if action == "external_directory" {
+                    guard let command = input["command"]?.stringValue, input["background"]?.boolValue != true,
+                          let resources = data["resources"]?.arrayValue,
+                          let approval = OpencodeShellApproval(sessionID: session.nativeID, command: command,
+                              workdir: input["workdir"]?.stringValue, project: configuration.directory, resources: resources)
+                    else { await unsupportedEvent(); return }
+                    pendingShellApprovals[.string(requestID)] = approval
+                    input["aitvarasWorkspaceApproval"] = .bool(true)
+                    input["aitvarasWorkspaceResources"] = .array(approval.externalDirectories.map { .string($0.path) })
+                } else if action == "shell" || action == "bash", approvedShellTools[toolID] != nil {
+                    input["aitvarasWorkspaceApproved"] = .bool(true)
+                }
+                tool = .init(name: tool.name, input: .object(input))
+            }
             let request = AgentRequest(id: .string(requestID), scope: scope(item: toolID), kind: .permission(tool))
             requests[request.id] = request; emit(.request(request), item: toolID)
         case "permission.replied":
-            if let id = data["requestID"]?.stringValue, requests.removeValue(forKey: .string(id)) != nil { emit(.requestResolved(.string(id))) }
+            if let id = data["requestID"]?.stringValue, requests.removeValue(forKey: .string(id)) != nil {
+                pendingShellApprovals.removeValue(forKey: .string(id))
+                emit(.requestResolved(.string(id)))
+            }
         case "form.created":
             guard let form = data["form"], let formID = form["id"]?.stringValue,
                   formID.hasPrefix("frm_"), opencodeRequestID(formID), requests.count < 64 else {
@@ -435,9 +498,9 @@ actor OpencodeRun: AgentRun {
                 if requests.removeValue(forKey: .string(id)) != nil { emit(.requestResolved(.string(id))) }
             }
         case "question.asked", "opencode.unroutable.wait": await unsupportedEvent()
-        case "session.execution.succeeded": end(.completed)
-        case "session.execution.interrupted": end(.interrupted)
-        case "session.execution.failed": end(.failed(.unknown))
+        case "session.execution.succeeded": await end(.completed)
+        case "session.execution.interrupted": await end(.interrupted)
+        case "session.execution.failed": await end(.failed(.unknown))
         case "session.step.ended", "session.usage.updated":
             if let tokens = data["tokens"] {
                 emit(.usage(.init(scope: type == "session.usage.updated" ? .session : .lastCall,
@@ -456,6 +519,13 @@ actor OpencodeRun: AgentRun {
         }
     }
 
+    private func canonicalMCPName(_ name: String) -> String {
+        guard configuration.permissions != nil else { return name }
+        let matching = mcpServers.filter { name.hasPrefix($0 + "_") && name.count > $0.count + 1 }
+        guard matching.count == 1, let server = matching.first else { return name }
+        return "mcp__\(server)__\(name.dropFirst(server.count + 1))"
+    }
+
     private func unsupportedEvent(showMessage: Bool = true) async {
         guard !rejectingUnknown else { return }
         rejectingUnknown = true
@@ -466,7 +536,7 @@ actor OpencodeRun: AgentRun {
         // via the supported API and resolve locally even if no terminal SSE arrives.
         do {
             _ = try await transport.request("api/session/\(session.nativeID)/interrupt", method: "POST", body: .object([:]))
-            if inputID == interruptedInput { end(.interrupted) }
+            if inputID == interruptedInput { await end(.interrupted) }
         } catch { await abort() }
     }
 }

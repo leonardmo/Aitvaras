@@ -40,12 +40,16 @@ import Testing
     @Test func appOwnedLaunchUsesTheSpawnedChildIdentity() async throws {
         let fixture = GatewayRegistryFixture()
         fixture.setParent(of: 10, to: getpid())
-        let context = GatewayLaunchContext(client: .codex, projectID: UUID())
-        let launch = try await fixture.registry.registerOwnedProcess(pid: 10, context: context)
+        let projectID = UUID(), chatID = UUID()
+        let gateway = GatewayChatLaunch(configuration: .init(executable: URL(fileURLWithPath: "/fixture/relay"),
+            stateDirectory: nil), registry: fixture.registry)
+        let register = gateway.register(client: .codex, chatID: chatID, projectID: projectID, permissions: .fullAccess)
+        _ = try await register(10)
+
         let connection = try await fixture.registry.connect(on: 12)
-        #expect(launch.root.pid == 10)
-        #expect(connection.launch == launch)
-        #expect(try await fixture.registry.validate(connection) == context)
+        #expect(connection.launch.root.pid == 10)
+        #expect(connection.launch.chatID == chatID)
+        #expect(try await fixture.registry.validate(connection) == .init(client: .codex, projectID: projectID, permissions: .fullAccess))
     }
 
     @Test func revokeInvalidatesConnectionsWithoutAffectingAnotherLaunch() async throws {

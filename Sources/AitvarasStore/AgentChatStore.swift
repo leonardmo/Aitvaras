@@ -105,7 +105,28 @@ public struct AgentChatStore: Sendable {
     }
 }
 
+private struct SavedAgentChatPermissions: Codable, FetchableRecord, PersistableRecord {
+    static let databaseTableName = "agentChatPermissions"
+    let chatID: UUID
+    let policy: String
+}
+
 extension Stores: AgentSessionPersistence {
+    public func agentChatPermissions(chatID: UUID) throws -> AgentChatPermissions? {
+        try db.queue.read { db in
+            guard let saved = try SavedAgentChatPermissions.fetchOne(db, key: chatID) else { return nil }
+            return try JSONDecoder().decode(AgentChatPermissions.self, from: Data(saved.policy.utf8))
+        }
+    }
+
+    public func saveAgentChatPermissions(_ permissions: AgentChatPermissions, chatID: UUID) throws {
+        let encoded = try JSONEncoder().encode(permissions)
+        try db.queue.write { db in
+            try SavedAgentChatPermissions(chatID: chatID, policy: String(decoding: encoded, as: UTF8.self)).save(db)
+        }
+    }
+
+
     public func agentProjectID(chatID: UUID) throws -> UUID? { try workspaceChat(id: chatID)?.projectID }
     public func requireAgentChatAvailable(chatID: UUID) throws {
         try db.queue.read { dbc in

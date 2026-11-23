@@ -1236,3 +1236,39 @@ such as Linear. The gateway does not call cloud LLM APIs.
   user-registered OAuth clients such as Slack, and the per-tool risk UI.
   Desktop apps and Cursor are outside both milestones. See [ROADMAP](ROADMAP.md) and
   [MASTERPLAN](MASTERPLAN.md#part-v-one-toolbelt-for-every-agent-cli).
+
+## D43 — Chat composer permissions 🚧 (2026-11-22)
+
+The composer owns a saved policy per chat, shared across provider selections.
+A single popover exposes Auto, Full access, Plan, and the command and MCP
+choices. Provider details in that popover describe the policy that will be
+used. Existing chats can still use their legacy provider mode until they
+select a composer policy.
+
+A changed policy takes effect at the next turn boundary. Running tools and
+pending approvals keep the policy of their turn. When required, the app
+closes the old transport and resumes the chat with a new one. The selection
+survives restart. Project defaults and external CLI launches remain
+independent.
+
+Auto uses workspace command containment and raises specific approval
+requirements for broader access and known critical effects. Compound shell
+syntax alone has no effect on the decision. The process sandbox handles
+opaque scripts. Auto keeps repo denials and blocking hooks. The MCP policy
+honors project grants bound to the current tool revision for routine calls.
+Unknown tools and known critical actions ask.
+
+Full access combines unrestricted commands and unprompted MCP calls. The
+composer marks it with a warning. Aitvaras continues to enforce project MCP
+scope, hard product prohibitions and activity auditing. Repo permissions
+and blocking hooks are bypassed for this preset where the provider permits
+the override. Provider-managed requirements can still prevent a requested
+policy from starting. Codex uses an app-owned pre-execution callback scoped
+to its chat app-server to evaluate critical calls while retaining its
+workspace sandbox and repo rules. OpenCode keeps its process sandbox and
+uses a separate executor for a single explicitly approved shell call. The
+executor retains Local's loopback-only network boundary and grants write
+access to the directories shown on the approval card. Follow-ups already
+delivered to a provider stay with that provider run's policy.
+
+Issue #59. Related to #53 and #16.

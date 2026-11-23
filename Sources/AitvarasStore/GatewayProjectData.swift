@@ -30,6 +30,12 @@ private struct GatewayActivityProject: Codable, FetchableRecord, PersistableReco
     let projectID: UUID
 }
 
+private struct GatewayProjectToolGrant: Codable, FetchableRecord, PersistableRecord {
+    static let databaseTableName = "gatewayProjectToolGrant"
+    let projectID: UUID
+    let toolRevision: String
+}
+
 extension Stores {
     public func configuredKnowledgeSources() throws -> [KnowledgeSourceConfiguration] {
         try db.queue.read { try Self.configuredKnowledgeSources(in: $0) }
@@ -63,8 +69,26 @@ extension Stores {
         }
     }
 
-    public func recordGatewayActivity(_ event: ActivityEvent, projectID: UUID?) throws {
+    public func hasGatewayToolGrant(projectID: UUID, toolRevision: String) throws -> Bool {
+        try db.queue.read { dbc in
+            try GatewayProjectToolGrant.filter(Column("projectID") == projectID && Column("toolRevision") == toolRevision)
+                .fetchCount(dbc) > 0
+        }
+    }
+
+    public func recordGatewayActivity(_ event: ActivityEvent, projectID: UUID?,
+                                      grant: (chatID: UUID, toolRevision: String)? = nil) throws {
         try db.queue.write { dbc in
+            if let grant {
+                guard let projectID,
+                      let chat = try WorkspaceChat.fetchOne(dbc, key: grant.chatID),
+                      chat.projectID == projectID, chat.archivedAt == nil,
+                      grant.toolRevision.utf8.count == 64,
+                      grant.toolRevision.utf8.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) })
+                else { throw AgentFailure.invalidRequest }
+                try Self.requireGatewayProject(projectID, in: dbc)
+                try GatewayProjectToolGrant(projectID: projectID, toolRevision: grant.toolRevision).save(dbc)
+            }
             try event.insert(dbc)
             if let projectID, try WorkspaceProject.fetchOne(dbc, key: projectID) != nil {
                 try GatewayActivityProject(eventID: event.id, projectID: projectID).insert(dbc)

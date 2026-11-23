@@ -728,8 +728,8 @@ final class AppModel {
         else { try gatewayCommandInstaller.uninstall() }
     }
 
-    func decideGatewayApproval(_ request: GatewayApprovalRequest, allow: Bool) async {
-        if await gatewayApprovalBroker?.decide(id: request.id, allow: allow) == true {
+    func decideGatewayApproval(_ request: GatewayApprovalRequest, allow: Bool, forProject: Bool = false) async {
+        if await gatewayApprovalBroker?.decide(id: request.id, allow: allow, forProject: forProject) == true {
             gatewayInlineApprovals.removeAll { $0.id == request.id }
             gatewayOutsideApprovals.removeAll { $0.id == request.id }
         }

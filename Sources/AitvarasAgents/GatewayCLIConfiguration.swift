@@ -5,7 +5,7 @@ import AitvarasCore
 /// The same reserved stdio entry is used by terminal and Chat launches.
 public struct GatewayCLIConfiguration: Sendable {
     public static let serverName = "aitvaras"
-    private let executable: URL
+    let executable: URL
     private let stateDirectory: URL?
 
     public init(executable: URL, stateDirectory: URL?) {
@@ -71,10 +71,11 @@ public struct GatewayChatLaunch: Sendable {
         self.cancelApprovals = cancelApprovals
     }
 
-    func register(client: GatewayLaunchContext.Client, chatID: UUID, projectID: UUID?) -> AgentWire.RegisterProcess {
+    func register(client: GatewayLaunchContext.Client, chatID: UUID, projectID: UUID?,
+                  permissions: AgentChatPermissions? = nil) -> AgentWire.RegisterProcess {
         { pid in
-            let launch = try await registry.registerOwnedProcess(pid: pid, context: .init(client: client, projectID: projectID),
-                                                                 chatID: chatID)
+            let context = GatewayLaunchContext(client: client, projectID: projectID, permissions: permissions)
+            let launch = try await registry.registerOwnedProcess(pid: pid, context: context, chatID: chatID)
             return { await cancelApprovals(launch.id) }
         }
     }

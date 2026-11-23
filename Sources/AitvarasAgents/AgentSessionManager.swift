@@ -12,6 +12,7 @@ public actor AgentSessionManager {
         let token: UUID
         var session: AgentChatSession
         var projectID: UUID?
+        var permissions: AgentChatPermissions?
         var coordinator: AgentActionCoordinator?
         var startup: Task<any AgentRun, Error>?
         var reader: Task<Void, Never>?
@@ -212,6 +213,18 @@ public actor AgentSessionManager {
         }
     }
 
+    /// A retained provider process must never start another turn under stale policy.
+    public func permissionsDidChange(chatID: UUID) async {
+        guard let slot = live[chatID], !slot.isRunning else { return }
+        let saved = try? persistence.agentChatPermissions(chatID: chatID)
+        let exitedPlan = slot.permissions?.isPlan == true && states[chatID]?.acknowledgedMode != .plan
+        guard slot.permissions != saved || exitedPlan else { return }
+        live.removeValue(forKey: chatID)
+        slot.reader?.cancel(); slot.idle?.cancel()
+        try? wakeStore?.releaseAgentWakeTransport(slot.token)
+        if let run = slot.coordinator { await Self.close(run, timeout: .seconds(2)) }
+    }
+
     public func send(chatID: UUID, provider: AgentProvider, input: AgentInput,
                      onAccepted: @escaping @Sendable () async -> Void = {}) async throws {
         if !input.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !input.attachments.isEmpty || input.command != nil {
@@ -239,6 +252,7 @@ public actor AgentSessionManager {
         guard !closing else { throw AgentSessionManagerError.shuttingDown }
         try persistence.requireAgentChatAvailable(chatID: chatID)
         guard let slot = live[chatID], slot.session.provider == provider,
+              try persistence.agentChatPermissions(chatID: chatID) == slot.permissions,
               try persistence.agentSession(chatID: chatID, provider: provider)?.id == slot.session.id,
               let run = slot.coordinator, !slot.stopping, !slot.sendingFollowup,
               slot.session.usesThreadContext, slot.followups.count < 32,
@@ -409,17 +423,19 @@ public actor AgentSessionManager {
         configuration.verifiesResumeIdentity = automatic != nil || recovery?.action == .continueTurn
         configuration.projectID = try persistence.agentProjectID(chatID: chatID)
         configuration.gatewayChatID = chatID
+        configuration.permissions = try persistence.agentChatPermissions(chatID: chatID)
         let revision = try (provider == .claude || provider == .local)
             ? mcpPolicy.snapshot(directory: configuration.directory, projectID: configuration.projectID).status.revision : nil
         let setupMatches = old?.coordinator?.mcpSetup.map { $0.revision == revision } ?? true
-        let canReuse = session.usesThreadContext && old?.session == session && old?.projectID == configuration.projectID && setupMatches
+        let canReuse = session.usesThreadContext && old?.session == session && old?.projectID == configuration.projectID
+            && old?.permissions == configuration.permissions && setupMatches
         let token = canReuse ? old!.token : UUID()
         old?.idle?.cancel()
         // Native Local sessions reuse their transport and acknowledged handover
         // receipts, just like the subscription providers. AgentLoop stays fresh.
         let reusable = canReuse ? old?.coordinator : nil
         live[chatID] = Live(token: token, session: session, projectID: configuration.projectID,
-            coordinator: reusable, inputID: input.id, automatic: automatic?.id, accountID: reusable?.accountID)
+            permissions: configuration.permissions, coordinator: reusable, inputID: input.id, automatic: automatic?.id, accountID: reusable?.accountID)
         live[chatID]?.expectedNative = automatic?.native ?? recovery?.session.sessionID
         do {
             if let automatic, let continuationPersistence {
@@ -463,6 +479,7 @@ public actor AgentSessionManager {
         if let reason = autonomousReason {
             states[chatID]?.beginAutonomous(id: input.id, reason: reason, provider: provider, sessionID: session.id)
         } else { states[chatID]?.begin(input, session: session, outputID: UUID(), context: context, automatic: automatic != nil) }
+        states[chatID]?.beginPermissions(configuration.permissions)
         do {
             try persistEntries(chatID)
             publish(chatID)
@@ -497,11 +514,13 @@ public actor AgentSessionManager {
                 guard live[chatID]?.token == token, !closing else {
                     await Self.close(raw, timeout: .seconds(2)); throw AgentSessionManagerError.staleRun
                 }
-                coordinator = AgentActionCoordinator(run: raw, mode: session.mode,
-                    provenance: .init(chatID: chatID), projectGrants: { [persistence, mcpPolicy] in
+                coordinator = AgentActionCoordinator(run: raw, mode: launchConfiguration.mode,
+                    provenance: .init(chatID: chatID), permissions: launchConfiguration.permissions, projectGrants: { [persistence, mcpPolicy] in
                         let current = try mcpPolicy.snapshot(directory: launchConfiguration.directory, projectID: launchConfiguration.projectID)
                         return AgentToolPolicy.currentGrants(try persistence.agentAlwaysAllowedTools(chatID: chatID),
                             servers: current.status.serverFingerprints)
+                    }, permissionsAreCurrent: { [persistence] in
+                        try persistence.agentChatPermissions(chatID: chatID) == launchConfiguration.permissions
                     }, audit: { [audit] event in
                         var value = event
                         // Coordinator IDs identify a transport that can serve many
@@ -647,7 +666,7 @@ public actor AgentSessionManager {
                         }
                     }
                 }
-            case .modeChanged(let mode):
+            case .modeChanged(let mode) where slot.permissions == nil:
                 var session = slot.session; session.mode = mode
                 try persistence.saveAgentSession(session)
                 live[chatID]?.session = session
@@ -675,6 +694,7 @@ public actor AgentSessionManager {
                 live[chatID]?.automatic = nil; live[chatID]?.usageLimit = nil
                 live[chatID]?.followups.removeAll { $0.id == id }
                 states[chatID]?.begin(input, session: slot.session, outputID: UUID())
+                states[chatID]?.beginPermissions(slot.permissions)
                 states[chatID]?.markFollowup(id, status: "sent")
             case .delivery(let delivery):
                 guard let input = event.scope.inputID else { return }
@@ -776,6 +796,7 @@ public actor AgentSessionManager {
                 states[chatID]?.pendingCards = pending
             }
             publish(chatID)
+            if case .turnEnded = event.kind { await permissionsDidChange(chatID: chatID) }
             if case .turnEnded(.failed(let failure)) = event.kind {
                 let report = event.failureReport ?? AgentFailureDiagnostics.capture(failure)
                 _ = await report.recording(chatID: chatID, inputID: event.scope.inputID, audit: audit)

@@ -10,6 +10,7 @@ actor CodexRun: AgentRun {
     private let hasGateway: Bool
     private let session: AgentSessionID
     private let configuration: AgentSessionConfiguration
+    private let enabledMCPServers: Set<String>
     private var mode: AgentMode
     private var input: UUID?
     private var automaticInput: UUID?
@@ -21,6 +22,13 @@ actor CodexRun: AgentRun {
     private var turnFailure: AgentFailure?
     private var closed = false
     private var requests: [AgentRequestID: AgentRequest] = [:]
+    private struct HookRequest {
+        let continuation: CheckedContinuation<JSONValue, Never>
+        let deadline: Task<Void, Never>
+        let nativeToolID: String
+    }
+    private var hookRequests: [AgentRequestID: HookRequest] = [:]
+    private var approvedMCPHooks: [String: AgentTool] = [:]
     private var seenRequests: Set<AgentRequestID> = []
     private var completedTurns: Set<String> = []
     private var completedItems: Set<String> = []
@@ -32,9 +40,10 @@ actor CodexRun: AgentRun {
     private static let toolTypes: Set<String> = ["commandExecution", "fileChange", "mcpToolCall", "dynamicToolCall", "webSearch"]
 
     init(backend: CodexBackend, wire: AgentWire, session: AgentSessionID, configuration: AgentSessionConfiguration, accountID: String? = nil,
-         initialLimitWindows: [AgentRateLimitWindow] = [], hasGateway: Bool = false) {
+         initialLimitWindows: [AgentRateLimitWindow] = [], hasGateway: Bool = false, enabledMCPServers: Set<String> = []) {
         self.accountID = accountID; limitWindows = initialLimitWindows
         self.hasGateway = hasGateway
+        self.enabledMCPServers = enabledMCPServers
         self.backend = backend; self.wire = wire; self.session = session; self.configuration = configuration; mode = configuration.mode
         (events, continuation) = AsyncThrowingStream.makeStream(bufferingPolicy: .bufferingOldest(4096))
     }
@@ -79,7 +88,7 @@ actor CodexRun: AgentRun {
                 } else {
                     report = await wire.failureReport ?? AgentFailureDiagnostics.capture(error)
                 }
-                emit(.turnEnded(.failed(report.failure)), report: report); input = nil; requests.removeAll()
+                emit(.turnEnded(.failed(report.failure)), report: report); input = nil; clearRequests()
             }
             throw thrown
         }
@@ -111,14 +120,12 @@ actor CodexRun: AgentRun {
     }
     private func startTurn(content: JSONValue, mode: AgentMode) async throws {
         let owner = input
+        let permissions = CodexRunPermissions(mode: mode, permissions: configuration.permissions)
         var parameters: [String: JSONValue] = ["threadId": .string(session.nativeID),
             "input": content,
-            "approvalPolicy": .string(mode.codexApproval),
-            "sandboxPolicy": .object(["type": .string(mode == .plan ? "readOnly" : "workspaceWrite")])]
-        if mode != .plan, !configuration.additionalDirectories.isEmpty {
-            parameters["sandboxPolicy"] = .object(["type": .string("workspaceWrite"),
-                "writableRoots": .array(configuration.additionalDirectories.map { .string($0.path) })])
-        }
+            "approvalPolicy": permissions.approvalPolicy,
+            "sandboxPolicy": permissions.sandboxPolicy(additionalDirectories: configuration.additionalDirectories)]
+        if configuration.permissions != nil { parameters["approvalsReviewer"] = .string("user") }
         if (automaticInput == input && !executingApprovedPlan) || (content.arrayValue?.count ?? 0) > 1, let input {
             parameters["clientUserMessageId"] = .string(input.uuidString)
         }
@@ -132,10 +139,74 @@ actor CodexRun: AgentRun {
         if !completedTurns.contains(native) { turn = native }
         self.mode = mode; emit(.modeChanged(mode)); acknowledge()
     }
+
+    func receiveHook(_ value: JSONValue) async -> JSONValue {
+        guard !closed, input != nil, let permissions = configuration.permissions, !permissions.isPlan,
+              value["hook_event_name"]?.stringValue == "PreToolUse",
+              value["session_id"]?.stringValue == session.nativeID,
+              let nativeTurn = value["turn_id"]?.stringValue, !nativeTurn.isEmpty, !completedTurns.contains(nativeTurn),
+              turn == nil || turn == nativeTurn || value["agent_id"]?.stringValue?.isEmpty == false,
+              let nativeToolID = value["tool_use_id"]?.stringValue, !nativeToolID.isEmpty, nativeToolID.utf8.count <= 512,
+              let rawName = value["tool_name"]?.stringValue, let arguments = value["tool_input"]?.objectValue else {
+            return CodexCommandHook.rejected
+        }
+        if turn == nil { turn = nativeTurn }
+        let tool = AgentTool(name: rawName, input: .object(arguments))
+        guard Self.requiresHookApproval(tool, permissions: permissions) else { return CodexCommandHook.allowed }
+        guard !Task.isCancelled, requests.count < 64 else { return CodexCommandHook.rejected }
+        let requestID = AgentRequestID.string("aitvaras-hook-" + UUID().uuidString)
+        let request = AgentRequest(id: requestID, scope: scope(), kind: .permission(tool))
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                guard !Task.isCancelled else { continuation.resume(returning: CodexCommandHook.rejected); return }
+                let deadline = Task { [weak self] in
+                    do { try await Task.sleep(for: CodexCommandHook.approvalTimeout) } catch { return }
+                    await self?.expireHook(requestID)
+                }
+                requests[requestID] = request
+                hookRequests[requestID] = HookRequest(continuation: continuation, deadline: deadline, nativeToolID: nativeToolID)
+                emit(.request(request))
+            }
+        } onCancel: {
+            Task { await self.expireHook(requestID) }
+        }
+    }
+
+    static func requiresHookApproval(_ tool: AgentTool, permissions: AgentChatPermissions) -> Bool {
+        if AgentToolPolicy.isGatewayTool(tool) { return false }
+        if AgentToolPolicy.forbidden(tool) { return true }
+        let critical = AgentToolPolicy.criticalApprovalReason(tool) != nil
+        if AgentToolPolicy.isCommandExecution(tool) {
+            return permissions.commands == .ask || (permissions.commands == .auto && critical)
+        }
+        if AgentToolPolicy.isMCPTool(tool) { return permissions.mcp == .auto && critical }
+        return false
+    }
+
+    private func expireHook(_ requestID: AgentRequestID) {
+        guard let hook = hookRequests.removeValue(forKey: requestID) else { return }
+        hook.deadline.cancel()
+        hook.continuation.resume(returning: CodexCommandHook.rejected)
+        if requests.removeValue(forKey: requestID) != nil { emit(.requestResolved(requestID)) }
+    }
+
+    private func clearRequests() {
+        let expired = hookRequests.values
+        hookRequests.removeAll()
+        approvedMCPHooks.removeAll()
+        requests.removeAll()
+        for hook in expired {
+            hook.deadline.cancel()
+            hook.continuation.resume(returning: CodexCommandHook.rejected)
+        }
+    }
+
     func receive(_ method: String, parameters p: JSONValue, requestID: AgentRequestID?) async {
         guard !closed else { return }
         if let requestID {
-            guard p["threadId"]?.stringValue == nil || p["threadId"]?.stringValue == session.nativeID, input != nil, let nativeTurn = p["turnId"]?.stringValue,
+            let isMCPPrompt = method == "mcpServer/elicitation/request"
+            let requestedTurn = p["turnId"]?.stringValue ?? (isMCPPrompt ? turn : nil)
+            guard p["threadId"]?.stringValue == nil || p["threadId"]?.stringValue == session.nativeID, input != nil, let nativeTurn = requestedTurn,
                   !completedTurns.contains(nativeTurn), turn == nil || nativeTurn == turn, !seenRequests.contains(requestID), seenRequests.count < 100_000,
                   requests.count < 64 else {
                 requests.removeValue(forKey: requestID)
@@ -149,6 +220,21 @@ actor CodexRun: AgentRun {
                 if let item = p["itemId"]?.stringValue, let changes = items[item]?["changes"] { input["changes"] = changes }
                 kind = .permission(AgentTool(name: method == "item/commandExecution/requestApproval" ? "commandExecution" : "fileChange", input: .object(input)))
             case "item/permissions/requestApproval": kind = .permissions(p)
+            case "mcpServer/elicitation/request":
+                guard configuration.permissions != nil,
+                      let tool = Self.mcpToolApproval(p, items: items.values, enabledServers: enabledMCPServers) else {
+                    try? await wire.writeResponse(id: requestID, result: nil, error: true); return
+                }
+                let preapproved = approvedMCPHooks.keys.filter {
+                    approvedMCPHooks[$0]?.name == tool.name && approvedMCPHooks[$0]?.input == tool.input
+                        && items[$0]?["status"]?.stringValue == "inProgress"
+                }
+                if preapproved.count == 1, let id = preapproved.first {
+                    approvedMCPHooks[id] = nil
+                    try? await wire.writeResponse(id: requestID, result: .object(["action": .string("accept"), "content": .null]))
+                    return
+                }
+                kind = .permission(tool)
             case "item/tool/requestUserInput":
                 guard let questions = try? agentQuestions(p["questions"] ?? .null, claude: false) else {
                     try? await wire.writeResponse(id: requestID, result: nil, error: true); return
@@ -224,6 +310,35 @@ actor CodexRun: AgentRun {
         default: emit(.unknown(name: method, payload: p), item: itemID)
         }
     }
+
+    static func mcpToolApproval(_ parameters: JSONValue, items: some Sequence<JSONValue>,
+                                enabledServers: Set<String> = []) -> AgentTool? {
+        guard parameters["mode"]?.stringValue == "form",
+              let metadata = parameters["_meta"],
+              metadata["codex_approval_kind"]?.stringValue == "mcp_tool_call",
+              metadata["codex_requires_user_input"]?.boolValue != true,
+              let server = parameters["serverName"]?.stringValue, !server.isEmpty, server.utf8.count <= 128,
+              let name = metadata["tool_name"]?.stringValue, !name.isEmpty, name.utf8.count <= 256,
+              let schema = parameters["requestedSchema"],
+              schema == .null || (schema["type"]?.stringValue == "object" && schema["properties"]?.objectValue?.isEmpty == true
+                  && (schema["required"] == nil || schema["required"]?.arrayValue?.isEmpty == true)) else { return nil }
+        // An upstream controls its own elicitation metadata. Bind the approval
+        // to a native tool invocation already observed on this turn.
+        let requestedArguments = metadata["tool_params"]?.objectValue
+        let environment = parameters["environmentId"]?.stringValue
+        let matches = items.filter {
+            $0["type"]?.stringValue == "mcpToolCall" && $0["status"]?.stringValue == "inProgress"
+                && $0["server"]?.stringValue == server && $0["tool"]?.stringValue == name
+                && (requestedArguments == nil || requestedArguments == $0["arguments"]?.objectValue)
+                && (environment == nil || environment == $0["environmentId"]?.stringValue)
+        }
+        guard let item = matches.first, let arguments = item["arguments"],
+              matches.allSatisfy({ $0["arguments"] == arguments }),
+              arguments == .null || arguments.objectValue != nil else { return nil }
+        let input = arguments == .null ? .object([:]) : arguments
+        let readOnly = enabledServers.contains(server) && matches.allSatisfy { $0["readOnlyHint"]?.boolValue == true }
+        return .init(name: "mcp__\(server)__\(name)", input: input, providerReportsReadOnly: readOnly)
+    }
     private func reconcileTools(_ unfinished: Set<String>, turn nativeTurn: String, owner: UUID,
                                 outcome: AgentTurnOutcome) async {
         let deadline = ContinuousClock.now.advanced(by: .seconds(2))
@@ -267,7 +382,7 @@ actor CodexRun: AgentRun {
             emit(.request(request), item: plan.id)
             return
         }
-        emit(.turnEnded(outcome)); input = nil; requests.removeAll()
+        emit(.turnEnded(outcome)); input = nil; clearRequests()
     }
     private func complete(_ item: JSONValue) {
         guard let nativeID = item["id"]?.stringValue, completedItems.insert(nativeID).inserted else { return }
@@ -308,6 +423,19 @@ actor CodexRun: AgentRun {
     }
     func respond(to request: AgentRequest, with response: AgentResponse) async throws {
         guard !closed, request.scope.runID == id, requests[request.id] == request else { throw AgentFailure.invalidRequest }
+        if let hook = hookRequests.removeValue(forKey: request.id) {
+            requests.removeValue(forKey: request.id)
+            hook.deadline.cancel()
+            if case .allow = response {
+                if case .permission(let tool) = request.kind, AgentToolPolicy.isMCPTool(tool) {
+                    approvedMCPHooks[hook.nativeToolID] = tool
+                }
+                hook.continuation.resume(returning: CodexCommandHook.allowed)
+            } else {
+                hook.continuation.resume(returning: CodexCommandHook.rejected)
+            }
+            return
+        }
         if case .plan = request.kind, request.id == planRequestID {
             guard response == .allow(updatedInput: nil) || response == .deny else { throw AgentFailure.invalidRequest }
             requests.removeValue(forKey: request.id); planRequestID = nil
@@ -328,6 +456,10 @@ actor CodexRun: AgentRun {
         }
         let result: JSONValue
         switch (request.kind, response) {
+        case (.permission(let tool), .allow) where AgentToolPolicy.isMCPTool(tool):
+            result = .object(["action": .string("accept"), "content": .null])
+        case (.permission(let tool), .deny) where AgentToolPolicy.isMCPTool(tool):
+            result = .object(["action": .string("decline"), "content": .null])
         case (.permission, .allow): result = .object(["decision": .string("accept")])
         case (.permission(let tool), .deny):
             let choices = tool.input["availableDecisions"]?.arrayValue?.compactMap(\.stringValue)
@@ -360,11 +492,11 @@ actor CodexRun: AgentRun {
             guard !closed, input == owner, self.turn == turn else { return }
         }
         if planRequestID != nil {
-            requests.removeAll(); planRequestID = nil
+            clearRequests(); planRequestID = nil
             emit(.turnEnded(.interrupted)); input = nil
             return
         }
-        requests.removeAll()
+        clearRequests()
         _ = try await wire.request("turn/interrupt", .object(["threadId": .string(session.nativeID), "turnId": .string(turn)]), timeout: .seconds(1))
     }
     func resolved(_ requestID: AgentRequestID) {
@@ -387,7 +519,7 @@ actor CodexRun: AgentRun {
     }
     func disconnected(_ error: AgentFailureReport) {
         guard !closed else { return }
-        closed = true; requests.removeAll()
+        closed = true; clearRequests()
         // The provider already ended this turn; a failed recovery read cannot
         // retroactively change that authoritative outcome.
         if input != nil { emit(.turnEnded(completingOutcome ?? .failed(error.failure)), report: completingOutcome == nil ? error : nil); input = nil }
@@ -405,7 +537,7 @@ actor CodexRun: AgentRun {
         if input != nil, turn != nil {
             do { try await interrupt() } catch { failure = error }
         }
-        closed = true; input = nil; requests.removeAll(); continuation.finish()
+        closed = true; input = nil; clearRequests(); continuation.finish()
         do { try await backend.release(session, runID: id) }
         catch { failure = failure ?? error }
         if let failure { throw failure }

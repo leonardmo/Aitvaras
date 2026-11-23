@@ -183,8 +183,9 @@ public actor ClaudeBackend: AgentBackend {
         mcpSetup = snapshot.status
         let runID = UUID()
         let chatGateway = configuration.gatewayChatID.flatMap { _ in gateway }
+        let fullAccess = configuration.permissions?.isFullAccess == true
         let file = try await mcpPolicy.runtimeFile(snapshot: snapshot, runID: runID, format: .claude,
-                                                  gateway: chatGateway?.configuration)
+                                                  gateway: chatGateway?.configuration, includeApprovedRepository: fullAccess)
         var launch = configuration
         do {
             try Task.checkCancellation()
@@ -198,9 +199,9 @@ public actor ClaudeBackend: AgentBackend {
             catch AgentNativeHistoryError.notFound { /* Durable transcript IDs remain available. */ }
             catch { try? await file?.remove(); throw error }
         }
-        launch.settingsJSON = snapshot.resolution.settingsJSON
+        launch.settingsJSON = ClaudeRunPermissions.settings(snapshot.resolution.settingsJSON, permissions: configuration.permissions)
         launch.mcpConfigPath = file?.url
-        launch.strictMCPConfig = snapshot.resolution.repositoryUnreadable
+        launch.strictMCPConfig = fullAccess || snapshot.resolution.repositoryUnreadable
         launch.includeHookEvents = true
         let run = ClaudeRun(executable: executable, environment: environment, profile: profile, configuration: launch,
                             id: runID, accountID: status.accountID, runtimeFile: file, mcpSetup: snapshot.status, permissionSource: snapshot.permissionSource,
@@ -212,7 +213,8 @@ public actor ClaudeBackend: AgentBackend {
                             })
         do {
             let register = configuration.gatewayChatID.flatMap { chatID in
-                chatGateway?.register(client: .claude, chatID: chatID, projectID: configuration.projectID)
+                chatGateway?.register(client: .claude, chatID: chatID, projectID: configuration.projectID,
+                                      permissions: configuration.permissions)
             }
             try await run.initialize(register: register)
             liveRuns = liveRuns.filter { $0.value.run != nil }
