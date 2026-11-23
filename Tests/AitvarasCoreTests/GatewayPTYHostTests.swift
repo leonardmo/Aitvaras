@@ -6,7 +6,7 @@ import XCTest
 final class GatewayPTYHostTests: XCTestCase {
     @MainActor
     func testPipeChildAlarmResetsParentMaskAndDisposition() async throws {
-        let status = try await Task.detached {
+        let status = try await Task.detached { @Sendable in
             try Self.withBlockedAlarm {
                 let disposition = signal(SIGALRM, SIG_IGN)
                 defer { _ = signal(SIGALRM, disposition) }
@@ -34,7 +34,7 @@ final class GatewayPTYHostTests: XCTestCase {
         _ = fcntl(slave, F_SETFD, FD_CLOEXEC)
         let tty = slave
         let before = try settings(tty)
-        let child = Task.detached {
+        let child = Task.detached { @Sendable in
             try Self.withBlockedAlarm {
                 try GatewayPTY.run(executable: URL(fileURLWithPath: "/usr/bin/python3"),
                     arguments: ["-I", "-c", Self.fixture], environment: ProcessInfo.processInfo.environment,
