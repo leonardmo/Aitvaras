@@ -1,0 +1,40 @@
+name: Public discussion privacy
+
+on:
+  issues:
+    types: [opened, edited, reopened]
+  issue_comment:
+    types: [created, edited]
+  pull_request_target:
+    types: [opened, edited, reopened]
+  pull_request_review:
+    types: [submitted, edited]
+  pull_request_review_comment:
+    types: [created, edited]
+  release:
+    types: [published, edited]
+
+permissions:
+  contents: read
+
+jobs:
+  privacy:
+    name: Scan public text
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      # Scan event data as text. Never check out or execute the PR's branch.
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+      - name: Check titles, bodies and attachment names
+        env:
+          AITVARAS_PRIVACY_DENYLIST: ${{ secrets.PRIVACY_DENYLIST }}
+        run: |
+          set -o pipefail
+          jq -r '[
+            .issue.title, .issue.body, .pull_request.title, .pull_request.body,
+            .comment.body, .review.body, .release.name, .release.body,
+            .release.tag_name, .release.assets[]?.name
+          ] | .[] | strings' "$GITHUB_EVENT_PATH" | scripts/check-privacy.sh --text
