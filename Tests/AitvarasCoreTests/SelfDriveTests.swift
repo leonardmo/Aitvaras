@@ -49,6 +49,8 @@ import AitvarasCore
     @Test(arguments: [
         #"{"steps":[{"action":"unknown"}]}"#,
         #"{"steps":[{"action":"press"}]}"#,
+        #"{"steps":[{"action":"press","text":""}]}"#,
+        #"{"steps":[{"action":"press","identifier":"button","text":"Button"}]}"#,
         #"{"steps":[{"action":"type"}]}"#,
         #"{"steps":[{"action":"waitFor","identifier":"x","text":"y"}]}"#,
         #"{"steps":[{"action":"waitFor","text":""}]}"#,
@@ -80,6 +82,17 @@ import AitvarasCore
         #expect(step.matchesIdentifier("chat.request.0.submit"))
         let restored = try JSONDecoder().decode(SelfDriveStep.self, from: JSONEncoder().encode(step))
         #expect(restored.anyOf == step.anyOf)
+    }
+
+    @Test func approvalTranscriptScenarioUsesScopedCommandButtons() throws {
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+            .deletingLastPathComponent().deletingLastPathComponent()
+        let url = root.appendingPathComponent("UITests/self-drive/approval-transcript.json")
+        let scenario = try SelfDriveScenario.parse(Data(contentsOf: url))
+        let commandPresses = scenario.steps.filter { $0.action == .press && $0.text?.hasPrefix("sh check-value.sh ") == true }
+        #expect(commandPresses.count == 9)
+        #expect(commandPresses.allSatisfy { $0.within == "chat.transcript" && $0.optional != true })
+        #expect(scenario.steps.contains { $0.action == .press && $0.identifier == "chat.sidebar.$chat1" })
     }
 
     @MainActor @Test func failureContinuesAndCheckpointsRoundTrip() async throws {

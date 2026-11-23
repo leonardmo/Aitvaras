@@ -65,7 +65,7 @@ public enum AgentTranscriptRow: Identifiable, Equatable {
     }
 }
 
-/// Neighboring updates or calls share one disclosure, in transcript order.
+/// Groups neighboring updates and tools in transcript order.
 public struct AgentActivityStep: Identifiable, Equatable {
     public let id: UUID
     public let isToolActivity: Bool
@@ -349,6 +349,18 @@ extension AgentTranscriptEntry {
         toolHooks.first { $0.status == .blocked && $0.reason?.isEmpty == false }?.reason
     }
 
+    /// Only provider-confirmed command results contribute to the activity summary.
+    public var commandOutcome: AgentCommandOutcome? {
+        guard kind == "tool", let payload = payloadJSON.flatMap(JSONValue.parse),
+              payload["finished"]?.boolValue == true,
+              payload["completionUnconfirmed"]?.boolValue != true,
+              payload["isDenied"]?.boolValue != true,
+              let isError = payload["isError"]?.boolValue,
+              AgentToolPolicy.isCommandExecution(.init(name: text, input: payload["input"] ?? .null))
+        else { return nil }
+        return isError ? .failed : .succeeded
+    }
+
     public var toolPresentationIcon: String {
         let payload = payloadJSON.flatMap(JSONValue.parse)
         if payload?["isDenied"]?.boolValue == true { return "hand.raised" }
@@ -369,4 +381,8 @@ extension AgentTranscriptEntry {
         if kind == "handover" { return "chat.handover.\(id)" }
         return "chat.entry.\(id)"
     }
+}
+
+public enum AgentCommandOutcome: Sendable, Equatable {
+    case succeeded, failed
 }

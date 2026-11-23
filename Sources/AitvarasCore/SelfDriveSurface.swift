@@ -65,6 +65,10 @@ import AppKit
 
     func press(_ identifier: String) throws -> String {
         guard let element = try find(identifier) else { throw SelfDriveFailure("Identifier unavailable: \(identifier)") }
+        return try press(element, target: identifier)
+    }
+
+    private func press(_ element: SelfDriveNode, target identifier: String) throws -> String {
         guard element.enabled else { throw SelfDriveFailure("Control disabled: \(identifier)") }
         // AppKit menu tracking can depend on real focus and run a modal loop.
         guard !["chat.model", "chat.effort", "chat.project"].contains(identifier),
@@ -123,6 +127,24 @@ import AppKit
     public func perform(_ step: SelfDriveStep, directory: URL) async throws -> String {
         switch step.action {
         case .press:
+            if let text = step.text {
+                let root = try step.within.flatMap(find)
+                if let within = step.within, root == nil {
+                    throw SelfDriveFailure("Subtree unavailable: \(within)")
+                }
+                let matches = try nodes(root: root?.object).filter { node in
+                    node.enabled && node.role == NSAccessibility.Role.button.rawValue &&
+                        [node.label, node.title].compactMap { $0 }.contains {
+                            SelfDriveText.matches($0, text: text, caseSensitive: step.caseSensitive ?? false)
+                        }
+                }
+                guard matches.count == 1, let match = matches.first else {
+                    throw SelfDriveFailure("Expected one enabled button matching \(text), found \(matches.count)")
+                }
+                let reason = try press(match, target: match.identifier ?? text)
+                await Task.yield()
+                return reason
+            }
             let targets = step.anyOf ?? [step.identifier!]
             guard let target = try targets.first(where: { try find($0)?.enabled == true }) else {
                 throw SelfDriveFailure("No enabled press target: \(targets.joined(separator: " or "))")

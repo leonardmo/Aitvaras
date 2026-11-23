@@ -48,9 +48,10 @@ public struct SelfDriveStep: Codable, Sendable {
             guard value.isFinite, value >= 0, value <= 300 else { throw invalid("Invalid time interval") }
         }
         if let within, within.isEmpty { throw invalid("within must be a nonempty identifier") }
-        if (within != nil || caseSensitive != nil || enabled != nil) && action != .waitFor {
-            throw invalid("within, caseSensitive and enabled apply only to waitFor")
+        if (within != nil || caseSensitive != nil) && action != .waitFor && !(action == .press && text != nil) {
+            throw invalid("within and caseSensitive require waitFor or press by text")
         }
+        if enabled != nil && action != .waitFor { throw invalid("enabled requires waitFor") }
         if let anyOf {
             guard [.waitFor, .press].contains(action), !anyOf.isEmpty, anyOf.count <= 16,
                   anyOf.allSatisfy({ !$0.isEmpty }), Set(anyOf).count == anyOf.count else {
@@ -59,8 +60,10 @@ public struct SelfDriveStep: Codable, Sendable {
         }
         switch action {
         case .press:
-            guard [identifier != nil, anyOf != nil].filter({ $0 }).count == 1,
-                  identifier?.isEmpty != true, text == nil else { throw invalid("press needs an identifier or anyOf") }
+            guard [identifier != nil, anyOf != nil, text != nil].filter({ $0 }).count == 1,
+                  identifier?.isEmpty != true, text?.isEmpty != true else {
+                throw invalid("press needs exactly one identifier, text or anyOf")
+            }
         case .type:
             guard text != nil else { throw invalid("type needs text") }
         case .waitFor:

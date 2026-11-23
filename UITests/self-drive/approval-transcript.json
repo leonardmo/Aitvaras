@@ -1,0 +1,274 @@
+{
+  "steps": [
+    {
+      "action": "press",
+      "identifier": "bubble.left.and.text.bubble.right",
+      "delay": 1
+    },
+    {
+      "action": "waitFor",
+      "identifier": "chat.composer.send",
+      "enabled": true,
+      "timeout": 30
+    },
+    {
+      "action": "press",
+      "identifier": "chat.mode"
+    },
+    {
+      "action": "waitFor",
+      "identifier": "chat.permissions.commands.ask",
+      "enabled": true,
+      "timeout": 5
+    },
+    {
+      "action": "press",
+      "identifier": "chat.permissions.commands.ask"
+    },
+    {
+      "action": "press",
+      "identifier": "chat.mode"
+    },
+    {
+      "action": "type",
+      "text": "Use your shell tool for exactly two separate calls. First run sh check-value.sh incorrect. After it finishes, run sh check-value.sh correct. The first check is expected to fail. After the second call, reply with only DONE-CODING."
+    },
+    {
+      "action": "press",
+      "identifier": "chat.composer.send"
+    },
+    {
+      "action": "waitFor",
+      "identifier": "chat.request.0.allow",
+      "enabled": true,
+      "timeout": 45
+    },
+    {
+      "action": "waitFor",
+      "text": "sh check-value.sh incorrect",
+      "within": "chat.transcript",
+      "timeout": 8
+    },
+    {
+      "action": "press",
+      "identifier": "chat.request.0.allow"
+    },
+    {
+      "action": "waitFor",
+      "identifier": "chat.request.0.allow",
+      "absent": true,
+      "timeout": 8
+    },
+    {
+      "action": "waitFor",
+      "identifier": "chat.request.0.allow",
+      "enabled": true,
+      "timeout": 45
+    },
+    {
+      "action": "waitFor",
+      "text": "sh check-value.sh correct",
+      "within": "chat.transcript",
+      "timeout": 8
+    },
+    {
+      "action": "press",
+      "identifier": "chat.activity.timeline"
+    },
+    {
+      "action": "press",
+      "text": "sh check-value.sh incorrect",
+      "within": "chat.transcript",
+      "delay": 0.2
+    },
+    {
+      "action": "waitFor",
+      "text": "VALUE-CHECK-FAILED",
+      "within": "chat.transcript",
+      "timeout": 8,
+      "caseSensitive": true
+    },
+    {
+      "action": "press",
+      "identifier": "chat.activity.timeline"
+    },
+    {
+      "action": "press",
+      "identifier": "chat.request.0.allow"
+    },
+    {
+      "action": "waitFor",
+      "identifier": "chat.request.0.allow",
+      "absent": true,
+      "timeout": 8
+    },
+    {
+      "action": "waitFor",
+      "text": "DONE-CODING",
+      "within": "chat.transcript",
+      "timeout": 45,
+      "caseSensitive": true
+    },
+    {
+      "action": "waitFor",
+      "text": "1 command succeeded",
+      "within": "chat.transcript",
+      "timeout": 8
+    },
+    {
+      "action": "waitFor",
+      "text": "1 command failed",
+      "within": "chat.transcript",
+      "timeout": 8
+    },
+    {
+      "action": "waitFor",
+      "identifier": "chat.stop",
+      "absent": true,
+      "timeout": 10
+    },
+    {
+      "action": "press",
+      "identifier": "chat.activity.timeline"
+    },
+    {
+      "action": "waitFor",
+      "text": "sh check-value.sh incorrect",
+      "within": "chat.transcript",
+      "timeout": 8,
+      "delay": 0.2
+    },
+    {
+      "action": "press",
+      "text": "sh check-value.sh incorrect",
+      "within": "chat.transcript"
+    },
+    {
+      "action": "waitFor",
+      "text": "VALUE-CHECK-FAILED",
+      "within": "chat.transcript",
+      "timeout": 8,
+      "caseSensitive": true
+    },
+    {
+      "action": "press",
+      "text": "sh check-value.sh incorrect",
+      "within": "chat.transcript"
+    },
+    {
+      "action": "waitFor",
+      "text": "sh check-value.sh correct",
+      "within": "chat.transcript",
+      "timeout": 8
+    },
+    {
+      "action": "press",
+      "text": "sh check-value.sh correct",
+      "within": "chat.transcript"
+    },
+    {
+      "action": "waitFor",
+      "text": "VALUE-CHECK-PASSED",
+      "within": "chat.transcript",
+      "timeout": 8,
+      "caseSensitive": true
+    },
+    {
+      "action": "press",
+      "text": "sh check-value.sh correct",
+      "within": "chat.transcript"
+    },
+    {
+      "action": "dumpTree",
+      "name": "approved-command-rows"
+    },
+    {
+      "action": "press",
+      "identifier": "chat.new.$project"
+    },
+    {
+      "action": "waitFor",
+      "identifier": "chat.activity.timeline",
+      "absent": true,
+      "timeout": 5
+    },
+    {
+      "action": "press",
+      "identifier": "chat.sidebar.$chat1"
+    },
+    {
+      "action": "waitFor",
+      "text": "DONE-CODING",
+      "within": "chat.transcript",
+      "timeout": 10,
+      "caseSensitive": true
+    },
+    {
+      "action": "waitFor",
+      "text": "1 command succeeded",
+      "within": "chat.transcript",
+      "timeout": 8
+    },
+    {
+      "action": "waitFor",
+      "text": "1 command failed",
+      "within": "chat.transcript",
+      "timeout": 8
+    },
+    {
+      "action": "press",
+      "identifier": "chat.activity.timeline"
+    },
+    {
+      "action": "waitFor",
+      "text": "sh check-value.sh incorrect",
+      "within": "chat.transcript",
+      "timeout": 8,
+      "delay": 0.2
+    },
+    {
+      "action": "press",
+      "text": "sh check-value.sh incorrect",
+      "within": "chat.transcript"
+    },
+    {
+      "action": "waitFor",
+      "text": "VALUE-CHECK-FAILED",
+      "within": "chat.transcript",
+      "timeout": 8,
+      "caseSensitive": true
+    },
+    {
+      "action": "press",
+      "text": "sh check-value.sh incorrect",
+      "within": "chat.transcript"
+    },
+    {
+      "action": "waitFor",
+      "text": "sh check-value.sh correct",
+      "within": "chat.transcript",
+      "timeout": 8
+    },
+    {
+      "action": "press",
+      "text": "sh check-value.sh correct",
+      "within": "chat.transcript"
+    },
+    {
+      "action": "waitFor",
+      "text": "VALUE-CHECK-PASSED",
+      "within": "chat.transcript",
+      "timeout": 8,
+      "caseSensitive": true
+    },
+    {
+      "action": "press",
+      "text": "sh check-value.sh correct",
+      "within": "chat.transcript"
+    },
+    {
+      "action": "dumpTree",
+      "name": "reopened-command-rows"
+    }
+  ]
+}
