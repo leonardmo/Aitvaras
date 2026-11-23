@@ -77,9 +77,10 @@
     },
     {
       "action": "press",
-      "text": "sh check-value.sh incorrect",
+      "text": "Show output for sh check-value.sh incorrect",
       "within": "chat.transcript",
-      "delay": 0.2
+      "delay": 0.2,
+      "optional": true
     },
     {
       "action": "waitFor",

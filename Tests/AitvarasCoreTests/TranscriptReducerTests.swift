@@ -86,6 +86,60 @@ import AitvarasStore
         #expect(steps.first?.updatePreview == "Checking the examples")
     }
 
+    @Test func commandTerminalRetainsRollingOutputAndProviderResult() throws {
+        let session = AgentChatSession(chatID: UUID(), provider: .codex, cwd: "/example", model: "test")
+        let input = AgentInput(text: "Run the example")
+        var state = ChatState(chatID: session.chatID)
+        state.begin(input, session: session, outputID: UUID())
+        let scope = AgentEventScope(runID: UUID(), inputID: input.id, itemID: "command")
+        let tool = AgentTool(name: "commandExecution", input: .object(["command": .string("sh check.sh")]))
+        let beforeApproval = Date(timeIntervalSince1970: 100)
+        state.reduce(.init(scope: scope, kind: .toolStarted(tool)), newEntryID: UUID(), observedAt: beforeApproval)
+        let request = AgentRequest(id: .integer(1), scope: scope, kind: .permission(tool))
+        state.updatePendingCards([request], observedAt: beforeApproval)
+        let approved = beforeApproval.addingTimeInterval(20)
+        state.updatePendingCards([], observedAt: approved)
+
+        let large = String(repeating: "older output\n", count: 5_000)
+        state.reduce(.init(scope: scope, kind: .toolOutput(.string(large + "\u{1B}[3"))), newEntryID: UUID())
+        state.reduce(.init(scope: scope, kind: .toolOutput(.string("1mFAILED\u{1B}[0m\nlast line\n"))), newEntryID: UUID())
+        let live = try #require(state.entries.last?.commandTranscript)
+        #expect(live.status == .running)
+        #expect(live.startedAt == approved)
+        #expect(live.tail.hasSuffix("FAILED\nlast line"))
+        #expect(live.output.hasPrefix("… [earlier output omitted]"))
+        #expect(live.output.utf8.count <= AgentTranscriptContent.maximumBytes)
+        #expect(!live.output.contains("[31m"))
+
+        let result: JSONValue = .object([
+            "type": .string("commandExecution"), "status": .string("failed"),
+            "aggregatedOutput": .null, "exitCode": .number(7), "durationMs": .number(2_500)
+        ])
+        state.reduce(.init(scope: scope, kind: .toolFinished(output: result, isError: true)),
+                     newEntryID: UUID(), observedAt: approved.addingTimeInterval(4))
+        let entry = try #require(state.entries.last)
+        let restored = try JSONDecoder().decode(AgentTranscriptEntry.self, from: JSONEncoder().encode(entry))
+        let finished = try #require(restored.commandTranscript)
+        #expect(finished.status == .failed)
+        #expect(finished.exitCode == 7)
+        #expect(finished.duration == 2.5)
+        #expect(finished.tail == live.tail)
+    }
+
+    @Test func commandWithoutAProviderResultRemainsUnconfirmed() throws {
+        let session = AgentChatSession(chatID: UUID(), provider: .claude, cwd: "/example", model: "test")
+        let input = AgentInput(text: "Run the example")
+        var state = ChatState(chatID: session.chatID)
+        state.begin(input, session: session, outputID: UUID())
+        let tool = AgentTool(name: "Bash", input: .object(["command": .string("sh check.sh")]))
+        let scope = AgentEventScope(runID: UUID(), inputID: input.id, itemID: "command")
+        state.reduce(.init(scope: scope, kind: .toolStarted(tool)), newEntryID: UUID())
+        state.end(.interrupted)
+        let terminal = try #require(state.entries.last?.commandTranscript)
+        #expect(terminal.status == .unconfirmed)
+        #expect(terminal.exitCode == nil)
+    }
+
     @Test func scriptedClaudeApprovalsKeepShellAndMCPResultsInTheTimeline() async throws {
         let fixture = try BackendExecutableFixture(script: #"""
 claude_init()

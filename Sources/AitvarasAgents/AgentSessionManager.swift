@@ -752,7 +752,7 @@ public actor AgentSessionManager {
             case .inputActivated, .delivery: try persistEntries(chatID)
             default: break
             }
-            states[chatID]?.reduce(event, newEntryID: UUID())
+            states[chatID]?.reduce(event, newEntryID: UUID(), observedAt: .now)
             if states[chatID]?.entries != previous { try persistEntries(chatID, previous: previous) }
             switch event.kind {
             case .textDelta, .message(_, "assistant", _):
@@ -793,7 +793,7 @@ public actor AgentSessionManager {
             if let coordinator = slot.coordinator {
                 let pending = await coordinator.pendingRequests()
                 guard live[chatID]?.token == token else { return }
-                states[chatID]?.pendingCards = pending
+                states[chatID]?.updatePendingCards(pending, observedAt: .now)
             }
             publish(chatID)
             if case .turnEnded = event.kind { await permissionsDidChange(chatID: chatID) }
@@ -979,12 +979,12 @@ public actor AgentSessionManager {
         do { try await run.respond(to: request, with: response) }
         catch {
             let pending = await run.pendingRequests()
-            if live[chatID]?.token == slot.token { states[chatID]?.pendingCards = pending; publish(chatID) }
+            if live[chatID]?.token == slot.token { states[chatID]?.updatePendingCards(pending, observedAt: .now); publish(chatID) }
             throw error
         }
         let pending = await run.pendingRequests()
         guard live[chatID]?.token == slot.token else { return }
-        states[chatID]?.pendingCards = pending; publish(chatID)
+        states[chatID]?.updatePendingCards(pending, observedAt: .now); publish(chatID)
     }
     public func alwaysAllow(chatID: UUID, request: AgentRequest) async throws {
         guard let slot = live[chatID], let run = slot.coordinator,
@@ -1000,10 +1000,10 @@ public actor AgentSessionManager {
                 try persistence.allowAgentTool(chatID: chatID, request: request)
             }
         } catch {
-            if live[chatID]?.token == slot.token { states[chatID]?.pendingCards = await run.pendingRequests(); publish(chatID) }
+            if live[chatID]?.token == slot.token { states[chatID]?.updatePendingCards(await run.pendingRequests(), observedAt: .now); publish(chatID) }
             throw error
         }
-        if live[chatID]?.token == slot.token { states[chatID]?.pendingCards = await run.pendingRequests(); publish(chatID) }
+        if live[chatID]?.token == slot.token { states[chatID]?.updatePendingCards(await run.pendingRequests(), observedAt: .now); publish(chatID) }
     }
 
     /// Detach generations first. Bounded cleanup never poisons the owner: if

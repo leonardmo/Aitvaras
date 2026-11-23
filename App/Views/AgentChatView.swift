@@ -117,6 +117,11 @@ struct AgentChatView: View {
         let isRunning = chat.state?.isRunning == true
         let rows = AgentTranscriptRow.rows(entries.filter { !planCardShows($0) },
                                           activeInputID: isRunning ? chat.state?.inputID : nil)
+        let latestActivityID = rows.last { row in
+            if case .activity = row { return true }
+            return false
+        }?.id
+        let pendingItemIDs = Set((chat.state?.pendingCards ?? []).compactMap(\.scope.itemID))
         return VStack(spacing: 0) {
             ScrollViewReader { proxy in
                 ScrollView {
@@ -126,8 +131,10 @@ struct AgentChatView: View {
                             case .entry(let entry):
                                 transcriptRow(entry, streaming: chat.state?.isStreaming(entryID: entry.id) == true).id(entry.id)
                             case .activity(_, let entries, let isLive):
-                                AgentActivityPanel(entries: entries, isLive: isLive, isLatest: row.id == rows.last?.id) { entry in
-                                    transcriptRow(entry, streaming: chat.state?.isStreaming(entryID: entry.id) == true)
+                                AgentActivityPanel(entries: entries, isLive: isLive, isLatest: row.id == latestActivityID) { entry, featured in
+                                    transcriptRow(entry, streaming: chat.state?.isStreaming(entryID: entry.id) == true,
+                                                  commandFeatured: featured,
+                                                  commandAwaitingApproval: isLive && entry.toolItemID.map(pendingItemIDs.contains) == true)
                                 }
                             }
                         }
@@ -266,7 +273,8 @@ struct AgentChatView: View {
         .sheet(isPresented: $showingProfiles) { AgentProviderSettingsView(chat: chat).frame(minWidth: 560, minHeight: 400) }
         .task(id: "\(chatID).\(chat.choice.id).\(chat.signingIn == nil)") { await chat.loadModels() }
     }
-    private func transcriptRow(_ entry: AgentTranscriptEntry, streaming: Bool) -> some View {
+    private func transcriptRow(_ entry: AgentTranscriptEntry, streaming: Bool,
+                               commandFeatured: Bool = false, commandAwaitingApproval: Bool = false) -> some View {
         let fork: (() -> Void)?
         if entry.provider == .claude, entry.kind == "assistant" { fork = { _ = Task { await chat.fork(entry) } } }
         else { fork = nil }
@@ -280,7 +288,8 @@ struct AgentChatView: View {
             } ?? true
             edit = editable ? { editingMessage = entry } : nil
         } else { edit = nil }
-        return AgentTranscriptView(entry: entry, streaming: streaming, quote: { chat.replyWithQuote(entry, selection: $0); composerFocused = true },
+        return AgentTranscriptView(entry: entry, streaming: streaming, commandFeatured: commandFeatured,
+            commandAwaitingApproval: commandAwaitingApproval, quote: { chat.replyWithQuote(entry, selection: $0); composerFocused = true },
             fork: fork, forkEnabled: !chat.isBusy && !chat.gitBusy && !chat.conversationBusy && entry.sessionID != nil && entry.nativeMessageID.flatMap(UUID.init(uuidString:)) != nil,
             edit: edit, recovery: { action in chat.recover(entry, action: action) },
             recoveryEnabled: !chat.isBusy && !chat.conversationBusy && chat.signingIn == nil && canSend
@@ -340,11 +349,15 @@ private struct AgentActivityPanel<Row: View>: View {
     let entries: [AgentTranscriptEntry]
     let isLive: Bool
     let isLatest: Bool
-    @ViewBuilder var row: (AgentTranscriptEntry) -> Row
+    @ViewBuilder var row: (AgentTranscriptEntry, Bool) -> Row
     @State private var showTimeline = false
 
     var body: some View {
         let tools = entries.filter { $0.kind == "tool" }
+        let runningCommand = tools.last { $0.commandTranscript?.status == .running }
+        let lastCommand = tools.last { $0.commandTranscript != nil }
+        let failedCommand = lastCommand?.commandTranscript?.status == .failed ? lastCommand : nil
+        let previewTool = runningCommand ?? failedCommand ?? tools.last
         let commandOutcomes = tools.compactMap(\.commandOutcome)
         let failedCommands = commandOutcomes.count(where: { $0 == .failed })
         let successfulCommands = commandOutcomes.count - failedCommands
@@ -372,7 +385,9 @@ private struct AgentActivityPanel<Row: View>: View {
 
             if showTimeline {
                 ForEach(AgentActivityStep.group(entries)) { step in
-                    AgentActivityStepView(step: step, row: row)
+                    AgentActivityStepView(step: step) { entry in
+                        row(entry, isLatest && entry.id == previewTool?.id)
+                    }
                 }
             } else {
                 if isLive, let update = entries.last(where: { $0.kind == "assistant" || $0.kind == "thinking" }) {
@@ -382,7 +397,7 @@ private struct AgentActivityPanel<Row: View>: View {
                         .fixedSize(horizontal: false, vertical: true)
                         .textSelection(.enabled)
                 }
-                if let tool = tools.last { row(tool).id(tool.id) }
+                if let tool = previewTool { row(tool, isLatest).id(tool.id) }
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)

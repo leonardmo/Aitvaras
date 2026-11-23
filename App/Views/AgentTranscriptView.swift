@@ -6,6 +6,8 @@ import AitvarasAgents
 struct AgentTranscriptView: View {
     let entry: AgentTranscriptEntry
     var streaming = false
+    var commandFeatured = false
+    var commandAwaitingApproval = false
     var quote: ((String?) -> Void)? = nil
     var fork: (() -> Void)? = nil
     var forkEnabled = false
@@ -19,6 +21,7 @@ struct AgentTranscriptView: View {
     @State private var expanded = false
 
     var body: some View {
+        let command = entry.commandTranscript
         VStack(alignment: .leading, spacing: 0) {
             if entry.kind == "wakeup" {
                 Label(entry.text, systemImage: "clock.arrow.circlepath")
@@ -83,6 +86,12 @@ struct AgentTranscriptView: View {
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .textSelection(.enabled)
+            } else if let command {
+                AgentCommandTerminal(command: command, entryID: entry.id, featured: commandFeatured,
+                                     awaitingApproval: commandAwaitingApproval, hasDetails: !entry.toolHooks.isEmpty) {
+                    toolHookDetails
+                }
+                blockedHookReason
             } else if ["handover", "tool"].contains(entry.kind) {
                 AgentActivityDisclosure(expanded: $expanded) {
                     HStack(spacing: 6) {
@@ -98,18 +107,7 @@ struct AgentTranscriptView: View {
                         VStack(alignment: .leading, spacing: 6) {
                             if entry.kind == "tool" {
                                 toolDetails
-                                ForEach(entry.toolHooks) { hook in
-                                    VStack(alignment: .leading, spacing: 3) {
-                                        HStack(spacing: 6) {
-                                            foldedHookIcon(hook)
-                                            Text(hook.name).lineLimit(2)
-                                            Text(hook.eventLabel).foregroundStyle(.secondary)
-                                        }
-                                        if let reason = hook.reason, !reason.isEmpty {
-                                            Text(reason).foregroundStyle(.secondary).textSelection(.enabled)
-                                        }
-                                    }.font(.caption)
-                                }
+                                toolHookDetails
                             } else {
                                 Text(AgentTranscriptContent.bounded(entry.text))
                                     .font(.caption.monospaced()).textSelection(.enabled)
@@ -120,13 +118,7 @@ struct AgentTranscriptView: View {
                     .frame(maxHeight: 240)
                     .padding(.top, 4)
                 }
-                if entry.kind == "tool" {
-                    if let reason = entry.blockedHookReason {
-                        Text(reason).font(.caption).foregroundStyle(.red).lineLimit(1).truncationMode(.tail)
-                            .help(reason).padding(.leading, 12)
-                            .accessibilityIdentifier("chat.tool.\(entry.id).blockedReason")
-                    }
-                }
+                blockedHookReason
             } else if entry.kind == "user" {
                 HStack {
                     Spacer(minLength: 30)
@@ -176,7 +168,29 @@ struct AgentTranscriptView: View {
         .accessibilityIdentifier(entry.presentationIdentifier)
         // Refresh the AX container when status changes while keeping SwiftUI
         // identity unique across tools with the same accessibility identifier.
-        .id("\(entry.id).\(entry.presentationIdentifier)")
+        .id(command == nil ? "\(entry.id).\(entry.presentationIdentifier)" : entry.id.uuidString)
+    }
+    private var toolHookDetails: some View {
+        ForEach(entry.toolHooks) { hook in
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 6) {
+                    foldedHookIcon(hook)
+                    Text(hook.name).lineLimit(2)
+                    Text(hook.eventLabel).foregroundStyle(.secondary)
+                }
+                if let reason = hook.reason, !reason.isEmpty {
+                    Text(reason).foregroundStyle(.secondary).textSelection(.enabled)
+                }
+            }
+            .font(.caption)
+        }
+    }
+    @ViewBuilder private var blockedHookReason: some View {
+        if let reason = entry.blockedHookReason {
+            Text(reason).font(.caption).foregroundStyle(.red).lineLimit(1).truncationMode(.tail)
+                .help(reason).padding(.leading, 12)
+                .accessibilityIdentifier("chat.tool.\(entry.id).blockedReason")
+        }
     }
     private func foldedHookIcon(_ hook: AgentToolHookPresentation) -> some View {
         Image(systemName: hook.icon)
