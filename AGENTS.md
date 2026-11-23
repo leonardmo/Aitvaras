@@ -71,7 +71,7 @@ also builds with Xcode 26. Both `-skipMacroValidation` and
 
 ## Public repository hygiene
 
-This repository is public and linked from the maintainer's portfolio.
+This repository is public.
 Everything you commit, including commit messages, branch names, PR text and
 issue comments, is published, and history is permanent: a later fix commit
 does not remove a leak.
@@ -113,6 +113,12 @@ Enforcement (don't work around it):
   `$(git rev-parse --git-common-dir)/info/privacy-denylist` and as the
   `PRIVACY_DENYLIST` CI secret. Never copy its contents anywhere, never
   print it, and never commit a pattern list containing private terms.
+- Before creating or editing an issue, pull request, comment, review or
+  release, send the exact outgoing title, body and any names to
+  `scripts/check-privacy.sh --text` on stdin. Publish only after it passes.
+  Review screenshots and attachments separately before uploading them.
+- GitHub Actions checks issue, pull request and comment text after GitHub
+  accepts it. This can detect a missed check after publication.
 - Commits are authored with the maintainer's GitHub noreply address. No
   co-author or "generated with" attribution lines in commits, PRs, issues or
   comments; the hooks and CI reject them.

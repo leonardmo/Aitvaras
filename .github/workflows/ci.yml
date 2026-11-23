@@ -28,6 +28,8 @@ jobs:
           # reported by file and line only, so the terms never reach the log.
           AITVARAS_PRIVACY_DENYLIST: ${{ secrets.PRIVACY_DENYLIST }}
         run: scripts/check-privacy.sh
+      - name: Privacy checker regression tests
+        run: scripts/test-privacy.sh
       - name: Hard rules
         env:
           BASE: ${{ github.event_name == 'pull_request' && format('origin/{0}', github.base_ref) || github.event.before || 'origin/main' }}

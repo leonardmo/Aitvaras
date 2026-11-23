@@ -5,6 +5,7 @@
 # included.
 #
 #   scripts/check-privacy.sh                      # tracked files in the working tree
+#   scripts/check-privacy.sh --text               # read publication text from stdin
 #   scripts/check-privacy.sh --staged             # lines added in the index (pre-commit)
 #   scripts/check-privacy.sh --commits <rev...>   # lines added and messages in commits
 #                                                 # (pre-push, CI), e.g. origin/main..HEAD
@@ -24,9 +25,10 @@ cd "$(git rev-parse --show-toplevel)"
 MODE=tree
 case "${1:-}" in
     --staged) MODE=staged ;;
+    --text) MODE=text ;;
     --commits) MODE=commits; shift; [[ $# -gt 0 ]] || { echo "usage: $0 --commits <rev...>" >&2; exit 2; } ;;
     "") ;;
-    *) echo "usage: $0 [--staged | --commits <rev...>]" >&2; exit 2 ;;
+    *) echo "usage: $0 [--text | --staged | --commits <rev...>]" >&2; exit 2 ;;
 esac
 
 # Files that legitimately contain the patterns themselves.
@@ -45,28 +47,35 @@ added_lines() {
 # Writes "file:line:text" records for everything under scan to stdout.
 scan_input() {
     case "$MODE" in
+        text)
+            awk '{ print "publication:" NR ":" $0 }' ;;
         tree)
+            git ls-files | sed 's/^/path:0:/'
             git grep -I -n -e '' -- . ;;
         staged)
+            git -c core.quotePath=false diff --cached --name-only --diff-filter=ACMRT | sed 's/^/path:0:/'
             git diff --cached --no-color -U0 --no-ext-diff --text | added_lines ;;
         commits)
             local sha
             for sha in $(git rev-list "$@"); do
                 git log -1 --format=%B "$sha" | sed "s|^|commit ${sha:0:12} message:0:|"
-                git show --no-color -U0 --no-ext-diff --format= "$sha" | added_lines
+                git -c core.quotePath=false diff-tree --root -m -r --no-commit-id --name-only --diff-filter=ACMRT "$sha" | sed "s/^/commit ${sha:0:12} path:0:/"
+                git show -m --no-color -U0 --no-ext-diff --format= "$sha" | added_lines
             done ;;
-    esac | awk -F: -v ex="$EXCLUDED_FILES" '$1 !~ ex'
+    esac
 }
 
 INPUT=$(mktemp)
+GENERIC_INPUT=$(mktemp)
 DENYLIST=$(mktemp)
-trap 'rm -f "$INPUT" "$DENYLIST"' EXIT
+trap 'rm -f "$INPUT" "$GENERIC_INPUT" "$DENYLIST"' EXIT
 if [[ "$MODE" == commits ]]; then scan_input "$@" > "$INPUT"; else scan_input > "$INPUT"; fi
+awk -F: -v ex="$EXCLUDED_FILES" '$1 !~ ex' "$INPUT" > "$GENERIC_INPUT"
 
 FAILED=0
 fail() { echo "✗ $1" >&2; FAILED=1; }
-show() { head -5 >&2; }
-locations() { cut -d: -f1,2 | sort -u | sed 's/^/    /'; }
+show() { locations | sed 's/^/    /' >&2; }
+locations() { cut -d: -f1,2 | sort -u; }
 
 FIXED=(
     "/Users/"
@@ -81,21 +90,21 @@ FIXED=(
     "sk-ant-"
 )
 for pattern in "${FIXED[@]}"; do
-    if hits=$(grep -F -e "$pattern" "$INPUT"); then
+    if hits=$(grep -F -e "$pattern" "$GENERIC_INPUT"); then
         fail "forbidden pattern: $pattern"
         echo "$hits" | show
     fi
 done
 
 # Home directories other than the documented placeholder /home/user.
-if hits=$(grep -E '/home/[a-z][a-z0-9_-]*' "$INPUT" | grep -v -E '/home/user([^a-z0-9_-]|$)'); then
+if hits=$(grep -E '/home/[a-z][a-z0-9_-]*' "$GENERIC_INPUT" | grep -v -E '/home/user([^a-z0-9_-]|$)'); then
     fail "personal home path"
     echo "$hits" | show
 fi
 
 # A pasted Home Assistant long-lived token and many other bearer credentials
 # are JWT-shaped. Fixtures should use short, plainly synthetic values instead.
-if hits=$(grep -E '[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}' "$INPUT"); then
+if hits=$(grep -E '[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}' "$GENERIC_INPUT"); then
     fail "likely JWT/bearer token"
     echo "$hits" | show
 fi
@@ -104,7 +113,7 @@ fi
 # GitHub noreply addresses. URL userinfo (https://user@host) is not an address.
 ADDRESS='(^|[^/:A-Za-z0-9._%+-])[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}'
 ALLOWED='@([A-Za-z0-9-]+\.)*(example\.(com|org|net|edu)|example|invalid|test|localhost)$|@users\.noreply\.github\.com$|^noreply@github\.com$|\.(png|jpe?g|gif|svg|webp|pdf)$'
-hits=$(grep -E "$ADDRESS" "$INPUT" | while IFS= read -r record; do
+hits=$(grep -E "$ADDRESS" "$GENERIC_INPUT" | while IFS= read -r record; do
     text=${record#*:}; text=${text#*:}
     if grep -o -E "$ADDRESS" <<<"$text" | sed -E 's/^[^A-Za-z0-9._%+-]//' \
         | grep -q -v -i -E "$ALLOWED"; then
@@ -124,9 +133,20 @@ fi
     if [[ -z "${CI:-}" ]]; then printf '%s\n' "${AITVARAS_PRIVACY_USER:-$(whoami)}"; fi
 } | sed -e 's/[[:space:]]*$//' | { grep -v -E '^(#|$)' || true; } > "$DENYLIST"
 if [[ -s "$DENYLIST" ]]; then
-    if hits=$(grep -i -E -f "$DENYLIST" "$INPUT"); then
+    if hits=$(grep -i -E -f "$DENYLIST" "$INPUT" 2>/dev/null); then
         fail "private denylist match (text withheld):"
-        echo "$hits" | locations >&2
+        echo "$hits" | locations | while IFS= read -r location; do
+            if grep -qiE -f "$DENYLIST" <<<"$location"; then
+                printf '    [location withheld]\n' >&2
+            else
+                printf '    %s\n' "$location" >&2
+            fi
+        done
+    else
+        result=$?
+        if [[ "$result" -ne 1 ]]; then
+            fail "could not apply the private denylist"
+        fi
     fi
 elif [[ -n "${CI:-}" ]]; then
     echo "! no private denylist configured (secret PRIVACY_DENYLIST); generic checks only" >&2

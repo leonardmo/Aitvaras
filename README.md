@@ -14,7 +14,7 @@ the Mac before it is enabled. Mail stays in Mail.app, notes stay on disk,
 facts stay in a local SQLite file, and prompts/responses are not copied into
 the local cloud-usage ledger.
 
-[Portfolio](https://leonardmo.com) · [Architecture](docs/ARCHITECTURE.md) ·
+[Architecture](docs/ARCHITECTURE.md) ·
 [Roadmap](docs/ROADMAP.md) · [Docs](docs/README.md) ·
 [Contributing](CONTRIBUTING.md)
 
