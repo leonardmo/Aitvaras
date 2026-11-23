@@ -114,14 +114,29 @@ struct AgentChatView: View {
 
     private var transcript: some View {
         let entries = chat.displayEntries
+        let isRunning = chat.state?.isRunning == true
+        let rows = AgentTranscriptRow.rows(entries.filter { !planCardShows($0) },
+                                          activeInputID: isRunning ? chat.state?.inputID : nil)
         return VStack(spacing: 0) {
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 18) {
-                        ForEach(entries) { entry in
-                            if !planCardShows(entry) {
+                        ForEach(rows) { row in
+                            switch row {
+                            case .entry(let entry):
                                 transcriptRow(entry, streaming: chat.state?.isStreaming(entryID: entry.id) == true).id(entry.id)
+                            case .activity(_, let updates, let isLive):
+                                AgentActivityPanel(isLive: isLive, isLatest: row.id == rows.last?.id) {
+                                    ForEach(updates) { entry in
+                                        transcriptRow(entry, streaming: chat.state?.isStreaming(entryID: entry.id) == true)
+                                    }
+                                }
                             }
+                        }
+                        if isRunning, case .entry(let last)? = rows.last,
+                           ["user", "wakeup", "continued", "automaticContinuation"].contains(last.kind),
+                           (chat.state?.pendingCards ?? []).isEmpty, gatewayApprovals.isEmpty {
+                            AgentWorkingLabel()
                         }
                         ForEach(Array((chat.state?.pendingCards ?? []).enumerated()), id: \.element.identity) { index, request in
                             requestCard(request, index: index)
@@ -147,7 +162,7 @@ struct AgentChatView: View {
                     .frame(maxWidth: 760, alignment: .leading)
                     .padding(.horizontal, 16).padding(.vertical, 20).frame(maxWidth: .infinity)
                 }
-                .defaultScrollAnchor(.bottom)
+                .defaultScrollAnchor(.bottom, for: .initialOffset)
                 .onScrollGeometryChange(for: Bool.self) { geometry in
                     geometry.contentSize.height - geometry.contentOffset.y - geometry.containerSize.height < 60
                 } action: { _, value in
@@ -160,7 +175,7 @@ struct AgentChatView: View {
                 }
                 .accessibilityElement(children: .contain)
                 .accessibilityIdentifier("chat.transcript")
-                .onChange(of: chat.displayEntries) {
+                .onChange(of: rows) {
                     if atBottom { proxy.scrollTo("chat.end", anchor: .bottom) }
                 }
                 .onChange(of: chat.state?.pendingCards) {
@@ -311,6 +326,50 @@ struct AgentChatView: View {
         }
     }
 
+}
+
+private struct AgentActivityPanel<Content: View>: View {
+    let isLive: Bool
+    let isLatest: Bool
+    @ViewBuilder var content: Content
+    @State private var expanded: Bool?
+
+    var body: some View {
+        DisclosureGroup(isExpanded: Binding(get: { expanded ?? isLive }, set: { expanded = $0 })) {
+            VStack(alignment: .leading, spacing: 8) {
+                content
+            }
+            .padding(.top, 8)
+        } label: {
+            if isLive && isLatest {
+                AgentWorkingLabel()
+            } else {
+                Label("Activity", systemImage: "text.bubble")
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 7)
+        .background(Color.teal.opacity(0.10), in: RoundedRectangle(cornerRadius: 8))
+        .overlay {
+            RoundedRectangle(cornerRadius: 8).strokeBorder(Color.teal.opacity(0.24))
+                .allowsHitTesting(false)
+        }
+        .accessibilityIdentifier("chat.activity")
+    }
+}
+
+private struct AgentWorkingLabel: View {
+    var body: some View {
+        HStack(spacing: 6) {
+            ProgressView().controlSize(.mini).accessibilityHidden(true)
+            Text("Working…")
+        }
+        .font(.caption.weight(.medium))
+        .foregroundStyle(.secondary)
+    }
 }
 
 struct ChatGauge: View {

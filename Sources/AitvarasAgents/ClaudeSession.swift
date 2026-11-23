@@ -113,11 +113,11 @@ actor ClaudeRun: AgentRun {
         return snapshot
     }
 
-    private func scope(item: String? = nil) -> AgentEventScope {
-        AgentEventScope(runID: id, session: session, inputID: input, itemID: item)
+    private func scope(item: String? = nil, isCommentary: Bool = false) -> AgentEventScope {
+        AgentEventScope(runID: id, session: session, inputID: input, itemID: item, isCommentary: isCommentary)
     }
-    private func emit(_ kind: AgentEvent.Kind, item: String? = nil, report: AgentFailureReport? = nil) {
-        switch continuation.yield(AgentEvent(scope: scope(item: item), kind: kind, failureReport: report)) {
+    private func emit(_ kind: AgentEvent.Kind, item: String? = nil, report: AgentFailureReport? = nil, isCommentary: Bool = false) {
+        switch continuation.yield(AgentEvent(scope: scope(item: item, isCommentary: isCommentary), kind: kind, failureReport: report)) {
         case .enqueued: break
         case .dropped, .terminated:
             continuation.finish(throwing: AgentFailure.invalidTransition)
@@ -513,7 +513,7 @@ actor ClaudeRun: AgentRun {
                 streamTexts[index, default: ""] += text
                 emit(.textDelta(text), item: streamingMessageID)
             }
-            if let thinking = delta["thinking"]?.stringValue {
+            if let thinking = delta["thinking"]?.stringValue, !thinking.isEmpty {
                 if let streamingMessageID { streamedThinking.insert(streamingMessageID) }
                 emit(.thinkingDelta(thinking), item: streamingMessageID)
             }
@@ -588,7 +588,10 @@ actor ClaudeRun: AgentRun {
                 let owner = AgentEventScope(runID: id, session: session, inputID: queuedID, itemID: messageID)
                 continuation.yield(.init(scope: owner, kind: .delivery(.acknowledged)))
                 continuation.yield(.init(scope: owner, kind: .message(id: native, role: role, text: text)))
-            } else { emit(.message(id: native, role: role, text: text), item: messageID) }
+            } else {
+                let hasToolUse = blocks.contains { $0["type"]?.stringValue == "tool_use" }
+                emit(.message(id: native, role: role, text: text), item: messageID, isCommentary: role == "assistant" && hasToolUse)
+            }
         }
     }
 

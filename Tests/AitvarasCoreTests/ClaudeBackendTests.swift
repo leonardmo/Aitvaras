@@ -266,7 +266,9 @@ done()
         for n in 0..<2 {
             try await run.send(.init(text: "hello"), willDeliver: {})
             let events = try await collectTurn(run)
-            #expect(events.contains { $0.kind == .message(id: "message-\(n)", role: "assistant", text: "first\nsecond") })
+            #expect(events.contains {
+                $0.scope.isCommentary && $0.kind == .message(id: "message-\(n)", role: "assistant", text: "first\nsecond")
+            })
             #expect(events.contains { $0.scope.itemID == "tool-\(n)" && $0.kind == .toolFinished(output: .string("output"), isError: false) })
             #expect(events.contains { $0.kind == .thinkingDelta("reason") })
             #expect(events.contains { if case .unknown(name: "new-block", payload: _) = $0.kind { true } else { false } })

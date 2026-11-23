@@ -4,6 +4,66 @@ import AitvarasStore
 @testable import AitvarasAgents
 
 @Suite(.timeLimit(.minutes(2))) struct TranscriptReducerTests {
+    @Test func liveActivityGroupsThinkingAndUpdatesUntilTheFinalReply() throws {
+        let session = AgentChatSession(chatID: UUID(), provider: .claude, cwd: "/example", model: "test")
+        let input = AgentInput(text: "Explain the result")
+        var state = ChatState(chatID: session.chatID)
+        state.begin(input, session: session, outputID: UUID())
+        let run = UUID()
+        func update(_ kind: AgentEvent.Kind, item: String, isCommentary: Bool = false) {
+            state.reduce(.init(scope: .init(runID: run, inputID: input.id,
+                itemID: item, isCommentary: isCommentary), kind: kind), newEntryID: UUID())
+        }
+
+        update(.thinkingDelta(""), item: "empty")
+        #expect(AgentTranscriptRow.rows(state.entries, activeInputID: input.id).count == 1)
+        update(.thinkingDelta("Checking"), item: "thinking")
+        let firstActivity = try #require(AgentTranscriptRow.rows(state.entries, activeInputID: input.id).last)
+        update(.thinkingDelta(" context."), item: "thinking")
+        update(.thinkingCompleted(""), item: "thinking")
+        update(.thinkingDelta("Reviewing the evidence."), item: "more-thinking")
+        update(.message(id: "update", role: "assistant", text: "I found a relevant example."),
+               item: "update", isCommentary: true)
+        let rows = AgentTranscriptRow.rows(state.entries, activeInputID: input.id)
+        #expect(rows.count == 2)
+        let liveActivity = try #require(rows.last)
+        #expect(liveActivity.id == firstActivity.id)
+        guard case .activity(_, let updates, true) = liveActivity else {
+            Issue.record("Expected an open activity group")
+            return
+        }
+        #expect(updates.map(\.text) == ["Checking context.", "Reviewing the evidence.", "I found a relevant example."])
+        let queued = AgentTranscriptEntry(chatID: session.chatID, provider: .claude, kind: "user", text: "One more thing")
+        #expect(AgentTranscriptRow.rows(state.entries + [queued], activeInputID: input.id).dropLast().last == liveActivity)
+        #expect(AgentTranscriptRow.rows(state.entries, activeInputID: nil).last
+                == .activity(id: updates[0].id, entries: updates, isLive: false))
+
+        update(.textDelta("Here's the answer."), item: "reply")
+        let answer = try #require(state.entries.last)
+        #expect(AgentTranscriptRow.rows(state.entries, activeInputID: input.id).last
+                == .activity(id: updates[0].id, entries: updates + [answer], isLive: true))
+        state.end(.completed)
+        let completed = AgentTranscriptRow.rows(state.entries, activeInputID: nil)
+        #expect(completed.last == .entry(answer))
+        #expect(AgentTranscriptRow.rows(state.entries, activeInputID: UUID()) == completed)
+        #expect(completed[1] == .activity(id: updates[0].id, entries: updates, isLive: false))
+    }
+
+    @Test func stoppedTurnsKeepPartialTextAndDropEmptyThinkingRows() {
+        let chat = UUID()
+        let user = AgentTranscriptEntry(chatID: chat, provider: .local, kind: "user", text: "Check this")
+        let reasoning = AgentTranscriptEntry(chatID: chat, provider: .local, kind: "thinking", text: " \n ")
+        let tool = AgentTranscriptEntry(chatID: chat, provider: .local, kind: "tool", text: "Read")
+        let partial = AgentTranscriptEntry(chatID: chat, provider: .local, kind: "assistant", text: "I found")
+        let stop = AgentTranscriptEntry(chatID: chat, provider: .local, kind: "stopped")
+        #expect(AgentTranscriptRow.rows([user, reasoning, tool, partial, stop], activeInputID: nil) == [
+            .entry(user), .entry(tool), .activity(id: partial.id, entries: [partial], isLive: false), .entry(stop)
+        ])
+        #expect(AgentTranscriptRow.rows([user, partial, tool], activeInputID: nil) == [
+            .entry(user), .activity(id: partial.id, entries: [partial], isLive: false), .entry(tool)
+        ])
+    }
+
     @Test(arguments: ["completed", "nonzero", "failure", "disconnect", "missing", "wrong-turn", "in-progress", "malformed", "timeout", "paginated", "repeated-cursor", "wrong-type", "declined"])
     func missingCodexToolCompletionReconcilesBeforeTurnEnd(scenario: String) async throws {
         let fixture = try BackendExecutableFixture(script: "scenario = '\(scenario)'\n" + #"""
