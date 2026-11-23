@@ -10,6 +10,10 @@ public struct AgentToolState: Sendable, Equatable {
     public var completionUnconfirmed = false
     public var turnCompletedNormally = false
     public var isDenied = false
+    var commandStartedAt: Date?
+    var commandDuration: TimeInterval?
+
+    var isCommand: Bool { tool.map(AgentToolPolicy.isCommandExecution) ?? false }
 }
 
 /// Value-only reduction. Requests in the event stream are observations, never
@@ -123,8 +127,19 @@ public struct ChatState: Sendable, Equatable {
         entries[index].payloadJSON = JSONValue.object(payload).jsonString
     }
 
-    /// Caller supplies IDs, keeping the reducer deterministic and testable.
-    public mutating func reduce(_ event: AgentEvent, newEntryID: UUID) {
+    mutating func updatePendingCards(_ cards: [AgentRequest], observedAt: Date) {
+        let pending = Set(cards.compactMap(\.scope.itemID))
+        for id in pendingCards.compactMap(\.scope.itemID) where !pending.contains(id) {
+            guard let index = tools.firstIndex(where: { $0.id == id && $0.isCommand && !$0.isFinished }),
+                  let entryID = toolEntryIDs[id] else { continue }
+            tools[index].commandStartedAt = observedAt
+            putTool(index, newEntryID: entryID)
+        }
+        pendingCards = cards
+    }
+
+    /// Caller supplies IDs and observation times, keeping reduction deterministic.
+    public mutating func reduce(_ event: AgentEvent, newEntryID: UUID, observedAt: Date? = nil) {
         switch event.kind {
         case .setupReported(let snapshot): agentSetup = snapshot
         case .hook(let hook):
@@ -192,6 +207,9 @@ public struct ChatState: Sendable, Equatable {
                 closeEarlierTools(before: itemID)
                 let index = toolIndex(itemID)
                 tools[index].tool = AgentTool(name: tool.name, input: AgentTranscriptContent.bounded(tool.input))
+                if tools[index].isCommand, tools[index].commandStartedAt == nil {
+                    tools[index].commandStartedAt = observedAt
+                }
                 putTool(index, newEntryID: newEntryID)
             case .toolInputDelta(let delta):
                 let index = toolIndex(event.scope.itemID ?? "tool")
@@ -202,14 +220,25 @@ public struct ChatState: Sendable, Equatable {
                 let index = toolIndex(event.scope.itemID ?? "tool")
                 guard !tools[index].isFinished || tools[index].completionUnconfirmed else { return }
                 if let text = output.stringValue {
-                    tools[index].output = .string(AgentTranscriptContent.append(text, to: tools[index].output?.stringValue ?? ""))
+                    let previous = tools[index].output?.stringValue ?? ""
+                    tools[index].output = .string(tools[index].isCommand
+                        ? AgentCommandTranscript.boundedOutputTail(previous + text)
+                        : AgentTranscriptContent.append(text, to: previous))
                 } else { tools[index].output = AgentTranscriptContent.bounded(output) }
                 putTool(index, newEntryID: newEntryID)
             case .toolFinished(let output, let error):
                 let index = toolIndex(event.scope.itemID ?? "tool")
                 let finishedID = tools[index].id
                 finishedToolOrder.removeAll { $0 == finishedID }
-                if output != .null { tools[index].output = AgentTranscriptContent.bounded(output) }
+                if output != .null {
+                    tools[index].output = tools[index].isCommand
+                        ? AgentCommandTranscript.completedOutput(output, streamed: tools[index].output)
+                        : AgentTranscriptContent.bounded(output)
+                }
+                if let observedAt, let startedAt = tools[index].commandStartedAt,
+                   tools[index].commandDuration == nil {
+                    tools[index].commandDuration = max(0, observedAt.timeIntervalSince(startedAt))
+                }
                 tools[index].isFinished = true
                 tools[index].completionUnconfirmed = false
                 tools[index].turnCompletedNormally = false
@@ -296,7 +325,9 @@ public struct ChatState: Sendable, Equatable {
                 "itemID": .string(tool.id), "input": tool.tool?.input ?? .null,
                 "partialInput": .string(tool.partialInput), "output": tool.output ?? .null, "finished": .bool(tool.isFinished), "isError": .bool(tool.isError),
                 "completionUnconfirmed": .bool(tool.completionUnconfirmed),
-                "turnCompletedNormally": .bool(tool.turnCompletedNormally), "isDenied": .bool(tool.isDenied)
+                "turnCompletedNormally": .bool(tool.turnCompletedNormally), "isDenied": .bool(tool.isDenied),
+                "commandStartedAt": tool.commandStartedAt.map { .number($0.timeIntervalSince1970) } ?? .null,
+                "commandDuration": tool.commandDuration.map(JSONValue.number) ?? .null
             ]).jsonString
             let related = hookOrder.compactMap { hookTools[$0] == tool.id ? hooks[$0] : nil }
             if !related.isEmpty, var payload = entries[entry].payloadJSON.flatMap(JSONValue.parse)?.objectValue {

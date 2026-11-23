@@ -90,7 +90,11 @@ import AitvarasCore
         let url = root.appendingPathComponent("UITests/self-drive/approval-transcript.json")
         let scenario = try SelfDriveScenario.parse(Data(contentsOf: url))
         let commandPresses = scenario.steps.filter { $0.action == .press && $0.text?.hasPrefix("sh check-value.sh ") == true }
-        #expect(commandPresses.count == 9)
+        #expect(commandPresses.count == 8)
+        #expect(scenario.steps.contains {
+            $0.action == .press && $0.text == "Show output for sh check-value.sh incorrect"
+                && $0.within == "chat.transcript" && $0.optional == true
+        })
         #expect(commandPresses.allSatisfy { $0.within == "chat.transcript" && $0.optional != true })
         #expect(scenario.steps.contains { $0.action == .press && $0.identifier == "chat.sidebar.$chat1" })
     }

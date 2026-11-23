@@ -1327,6 +1327,19 @@ AITVARAS_SELF_DRIVE_PROVIDER=codex AITVARAS_SELF_DRIVE_TEMPLATE="$PWD/UITests/se
 The optional provider override selects the provider for the first composer
 in the isolated driver, so the scenario works with the compact provider menu.
 
+The `command-panel` scenario runs two short shell checks, approves each
+command, captures the running and failed views, then checks that a successful
+retry folds away and can be opened again. Run it with Codex and Claude in
+light and dark appearances. While the first command runs, Codex can show
+output before it finishes and Claude shows elapsed time until the result arrives.
+
+```sh
+AITVARAS_SELF_DRIVE_PROVIDER=codex AITVARAS_SELF_DRIVE_TEMPLATE="$PWD/UITests/self-drive/fixtures/command-panel-project" \
+  scripts/run-self-drive.sh command-panel 240
+AITVARAS_SELF_DRIVE_PROVIDER=claude AITVARAS_SELF_DRIVE_TEMPLATE="$PWD/UITests/self-drive/fixtures/command-panel-project" \
+  scripts/run-self-drive.sh command-panel 240 --no-build
+```
+
 Set `AITVARAS_SELF_DRIVE` to a scenario JSON file and
 `AITVARAS_SELF_DRIVE_OUTPUT` to a local artifact directory. Also set
 `AITVARAS_STATE_DIR` to a disposable profile and

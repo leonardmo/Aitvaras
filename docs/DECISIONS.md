@@ -570,7 +570,12 @@ activity panel. The compact view shows a short live update, the latest tool
 call, and counts of confirmed command successes and failures. Expanding the
 timeline shows each tool call in order and groups adjacent model updates. Full
 updates and tool details open on demand. Final replies and approval cards
-remain directly visible.
+remain directly visible. The latest running command has a small inline
+terminal, with rolling output when the provider streams it and elapsed time
+while it waits. A confirmed success collapses to its command and outcome.
+A failed command shows its last lines with the retained output one click
+away. Explicit expansion stays under the reader's control. The panel
+respects Reduce Motion.
 
 On Chat, the activity dock appears only while automatic work is actually running;
 manual chat/provider failures remain inline and do not add dock attention. Other
