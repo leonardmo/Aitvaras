@@ -141,7 +141,8 @@ done()
         try await waitAgentCondition {
             try stores.recentActivity(limit: 20).contains { category($0) == "AgentProcessError.outputLimit" }
         }
-        #expect(try await !manager.state(chatID: chat).isRunning)
+        // The coordinator records the failure before the manager handles the terminal event.
+        try await waitAgentCondition { try await !manager.state(chatID: chat).isRunning }
         try expectNoCanaries(try stores.recentActivity(limit: 20))
         try await manager.shutdown()
     }
