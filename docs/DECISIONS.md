@@ -1250,15 +1250,17 @@ select a composer policy.
 A changed policy takes effect at the next turn boundary. Running tools and
 pending approvals keep the policy of their turn. When required, the app
 closes the old transport and resumes the chat with a new one. The selection
-survives restart. Project defaults and external CLI launches remain
-independent.
+survives restart. The last manual selection in a project, including Full
+access, preselects the policy for new chats in that project. Existing chats
+keep their own policy. External CLI launches use their separate policy.
 
 Auto uses workspace command containment and raises specific approval
 requirements for broader access and known critical effects. Compound shell
 syntax alone has no effect on the decision. The process sandbox handles
 opaque scripts. Auto keeps repo denials and blocking hooks. The MCP policy
-honors project grants bound to the current tool revision for routine calls.
-Unknown tools and known critical actions ask.
+allows routine calls by enabled tools and honors project grants bound to the
+current tool revision. Tools with unclear effects and recognized critical
+actions ask.
 
 Full access combines unrestricted commands and unprompted MCP calls. The
 composer marks it with a warning. Aitvaras continues to enforce project MCP

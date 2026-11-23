@@ -179,7 +179,9 @@ actor CodexRun: AgentRun {
         if AgentToolPolicy.isCommandExecution(tool) {
             return permissions.commands == .ask || (permissions.commands == .auto && critical)
         }
-        if AgentToolPolicy.isMCPTool(tool) { return permissions.mcp == .auto && critical }
+        if AgentToolPolicy.isMCPTool(tool) {
+            return permissions.mcp == .auto && (critical || !AgentToolPolicy.isRoutineMCPTool(tool))
+        }
         return false
     }
 

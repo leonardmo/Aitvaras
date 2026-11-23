@@ -629,12 +629,20 @@ enum ClaudeRunPermissions {
         guard let permissions, !permissions.isPlan else { return existing }
         var settings = JSONValue.parse(existing)?.objectValue ?? [:]
         let sandboxed = permissions.commands != .unrestricted
-        settings["sandbox"] = .object([
+        var sandbox: [String: JSONValue] = [
             "enabled": .bool(sandboxed),
             "failIfUnavailable": .bool(sandboxed),
             "autoAllowBashIfSandboxed": .bool(permissions.commands == .auto),
             "allowUnsandboxedCommands": .bool(sandboxed)
-        ])
+        ]
+        if permissions.commands == .auto {
+            sandbox["network"] = .object([
+                "allowedDomains": .array([.string("github.com:443"), .string("api.github.com:443")]),
+                // gh uses macOS certificate verification even for allowed hosts.
+                "allowMachLookup": .array([.string("com.apple.trustd.agent")])
+            ])
+        }
+        settings["sandbox"] = .object(sandbox)
         if sandboxed {
             settings["permissions"] = .object(["ask": .array([.string("Bash(dangerouslyDisableSandbox:true)")])])
         }

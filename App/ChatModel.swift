@@ -131,7 +131,14 @@ final class ChatModel {
     private var selectedProjectID: UUID?
     @ObservationIgnored private var hasPendingSend = false
     private(set) var newChatID = UUID()
-    var newProjectID: UUID? { didSet { if newProjectID != oldValue { useWorktree = false; invalidateCommandCatalog() } } }
+    var newProjectID: UUID? {
+        didSet {
+            guard newProjectID != oldValue else { return }
+            useWorktree = false
+            invalidateCommandCatalog()
+            if chatID == nil { loadProjectPermissions() }
+        }
+    }
     var useWorktree = false
     private(set) var creatingChat = false
     var didCreateChat: ((UUID) -> Void)?
@@ -198,9 +205,12 @@ final class ChatModel {
     }
     func prepareNew(projectID: UUID?) {
         select(nil)
+        error = nil
         for provider in [AgentProvider.local, .claude, .codex] { composerSelections[newChatID, provider] = .init() }
-        newChatID = UUID(); newProjectID = projectID; useWorktree = false
-        selectedPermissions = nil
+        newChatID = UUID()
+        if newProjectID == projectID { loadProjectPermissions() }
+        else { newProjectID = projectID }
+        useWorktree = false
         setVisibleDraft("")
         reloadProfiles()
         let savedChoice = (try? stores.value(forKey: "agent.lastProfile")).flatMap(AgentProviderChoice.init(id:))
@@ -209,7 +219,7 @@ final class ChatModel {
         else { claudeProfile = "default" }
         selectComposer(nil, provider: ChatSettings.newProvider(lastUsed: saved, localAvailable: localAvailable, statuses: statuses))
         snapshotInlineChoices(); syncSelectedStatus()
-        error = nil; authProvider = nil
+        authProvider = nil
         try? loadSettings()
     }
     #if DEBUG
@@ -575,14 +585,25 @@ final class ChatModel {
         }
     }
     private var selectedPermissions: AgentChatPermissions?
+    private func loadProjectPermissions() {
+        selectedPermissions = nil
+        if let newProjectID {
+            do { selectedPermissions = try stores.agentProjectChatPermissions(projectID: newProjectID) }
+            catch { self.error = "Project chat permissions could not be loaded." }
+        }
+    }
+
     var permissions: AgentChatPermissions {
         get { selectedPermissions ?? AgentChatPermissions(legacy: mode) }
         set {
             do {
-                if let chatID {
-                    try stores.saveAgentChatPermissions(newValue, chatID: chatID)
-                    Task { await manager.permissionsDidChange(chatID: chatID) }
+                let projectID: UUID?
+                if let chatID { projectID = try stores.agentProjectID(chatID: chatID) }
+                else { projectID = newProjectID }
+                if let projectID {
+                    try stores.saveManualAgentChatPermissions(newValue, chatID: chatID, projectID: projectID)
                 }
+                if let chatID { Task { await manager.permissionsDidChange(chatID: chatID) } }
                 selectedPermissions = newValue
                 error = nil
             } catch { self.error = "Chat permissions could not be saved." }
@@ -637,6 +658,7 @@ final class ChatModel {
             snapshotInlineChoices(); syncSelectedStatus()
             try loadSettings()
             if let id { selectedPermissions = try stores.agentChatPermissions(chatID: id) }
+            else { loadProjectPermissions() }
             if let id, state == nil { state = ChatState(chatID: id, entries: try stores.agentEntries(chatID: id)) }
             if let pending = try stores.pendingSend(), pending.session.chatID == id {
                 if pending.expiresAt > .now, pending.session.choice == choice {

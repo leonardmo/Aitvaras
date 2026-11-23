@@ -381,7 +381,7 @@ public actor AgentActionCoordinator: AgentRun {
             // permission request may create a user-facing approval.
             if forbidden(tool) {
                 try await finish(request, response: .deny, decision: "forbidden")
-            } else if let permissions, !permissions.isPlan, let response = try hookPermission(tool, using: permissions) {
+            } else if let permissions, !permissions.isPlan, let response = try hookPermission(tool, using: permissions, provider: request.scope.session?.provider) {
                 try await finish(request, response: response, decision: response == .askHook ? "requires chat approval" : "allowed by chat permissions")
             } else if AgentToolPolicy.requiresExplicitMCPApproval(tool) {
                 try await finish(request, response: .askHook, decision: "requires explicit MCP approval")
@@ -412,7 +412,7 @@ public actor AgentActionCoordinator: AgentRun {
         }
     }
 
-    private func hookPermission(_ tool: AgentTool, using permissions: AgentChatPermissions) throws -> AgentResponse? {
+    private func hookPermission(_ tool: AgentTool, using permissions: AgentChatPermissions, provider: AgentProvider?) throws -> AgentResponse? {
         if permissions.isFullAccess {
             // Plan reviews and questions are conversation interactions.
             return ["AskUserQuestion", "ExitPlanMode"].contains(tool.name) ? .continueHook : .allowHook
@@ -429,9 +429,7 @@ public actor AgentActionCoordinator: AgentRun {
             case .ask: return .askHook
             case .unprompted: return .continueHook
             case .auto:
-                if AgentToolPolicy.criticalApprovalReason(tool) != nil { return .askHook }
-                let hasGrant = try hasProjectGrant(tool, provider: .claude)
-                return risk(tool) == .read || hasGrant ? .continueHook : .askHook
+                return try allowsMCPAutomatically(tool, provider: provider) ? .continueHook : .askHook
             }
         }
         return nil
@@ -444,16 +442,15 @@ public actor AgentActionCoordinator: AgentRun {
         } else if AgentToolPolicy.isCommandExecution(tool) {
             let critical = AgentToolPolicy.criticalApprovalReason(tool) != nil
             let containedLocal = request.scope.session?.profile == OpencodeConfiguration.profile
+            let containedClaude = request.scope.session?.provider == .claude && tool.name == "Bash"
             let alreadyApproved = tool.input["aitvarasWorkspaceApproved"]?.boolValue == true
             shouldAllow = permissions.commands == .unrestricted
-                || (permissions.commands == .auto && containedLocal && (!critical || alreadyApproved))
+                || (permissions.commands == .auto && (containedLocal || containedClaude) && (!critical || alreadyApproved))
         } else if AgentToolPolicy.isMCPTool(tool) {
             switch permissions.mcp {
             case .ask: shouldAllow = false
             case .unprompted: shouldAllow = true
-            case .auto:
-                let hasGrant = try request.scope.session.map { try hasProjectGrant(tool, provider: $0.provider) } ?? false
-                shouldAllow = AgentToolPolicy.criticalApprovalReason(tool) == nil && (risk(tool) == .read || hasGrant)
+            case .auto: shouldAllow = try allowsMCPAutomatically(tool, provider: request.scope.session?.provider)
             }
         } else {
             return false
@@ -464,6 +461,13 @@ public actor AgentActionCoordinator: AgentRun {
             try await offer(request, risk: risk(tool))
         }
         return true
+    }
+
+    private func allowsMCPAutomatically(_ tool: AgentTool, provider: AgentProvider?) throws -> Bool {
+        guard AgentToolPolicy.criticalApprovalReason(tool) == nil else { return false }
+        if AgentToolPolicy.isRoutineMCPTool(tool) { return true }
+        guard let provider else { return false }
+        return try hasProjectGrant(tool, provider: provider)
     }
 
     private func hasProjectGrant(_ tool: AgentTool, provider: AgentProvider) throws -> Bool {
