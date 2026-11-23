@@ -147,6 +147,28 @@ done()
         try await coordinator.shutdown()
     }
 
+    @Test func composerAutoAllowsContainedClaudeCommandsAndAsksForEscalations() async throws {
+        let raw = GrantRun(provider: .claude)
+        let coordinator = AgentActionCoordinator(run: raw, mode: .auto, provenance: .init(chatID: UUID()),
+            permissions: .auto, audit: { _ in })
+        try await coordinator.send(.init(text: "Example"), willDeliver: {})
+
+        let command = JSONValue.string("gh pr view --json number | cat")
+        let sandboxed = AgentTool(name: "Bash", input: .object(["command": command]))
+        let escalated = AgentTool(name: "Bash", input: .object([
+            "command": command, "dangerouslyDisableSandbox": .bool(true)
+        ]))
+        _ = await raw.offer(.permission(sandboxed))
+        try await waitGrant { await raw.responses == [.allow(updatedInput: nil)] }
+
+        _ = await raw.offer(.preToolUse(escalated))
+        try await waitGrant { await raw.responses.last == .askHook }
+        let request = await raw.offer(.permission(escalated))
+        try await waitGrant { await coordinator.pendingRequests() == [request] }
+        try await coordinator.respond(to: request, with: .deny)
+        try await coordinator.shutdown()
+    }
+
     @Test(arguments: [AgentPermissionSource.aitvaras, .repo])
     func autoStillOffersNativeConfirmablePermissionRequests(source: AgentPermissionSource) async throws {
         let raw = GrantRun(provider: .claude)
@@ -366,6 +388,9 @@ private func waitGrant(_ condition: () async throws -> Bool) async throws {
 
 @Test(arguments: [
     ("printf hello | wc -c && git status", false),
+    ("gh pr comment 64 --body-file note.txt", false),
+    ("gh repo delete org/example", true),
+    ("gh api repos/org/example --method DELETE", true),
     ("printf 'nothing && rm -rf sources'", false),
     ("git status && rm -rf sources", true),
     ("git push origin HEAD:refs/heads/main", true),

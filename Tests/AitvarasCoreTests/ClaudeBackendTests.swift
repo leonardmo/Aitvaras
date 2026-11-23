@@ -12,6 +12,8 @@ struct ClaudeBackendTests {
         #expect(json["sandbox"]?["enabled"] == .bool(true))
         #expect(json["sandbox"]?["failIfUnavailable"] == .bool(true))
         #expect(json["sandbox"]?["autoAllowBashIfSandboxed"] == .bool(true))
+        #expect(json["sandbox"]?["network"]?["allowedDomains"] == .array([.string("github.com:443"), .string("api.github.com:443")]))
+        #expect(json["sandbox"]?["network"]?["allowMachLookup"] == .array([.string("com.apple.trustd.agent")]))
         #expect(json["permissions"]?["ask"] == .array([.string("Bash(dangerouslyDisableSandbox:true)")]))
         #expect(ClaudeRunPermissions.nativeMode(.auto, permissions: .auto) == "acceptEdits")
         #expect(ClaudeRunPermissions.nativeMode(.auto, permissions: .fullAccess) == "bypassPermissions")

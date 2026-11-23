@@ -74,6 +74,7 @@ import AitvarasStore
                                                        definitionFingerprint: String(repeating: "a", count: 64))
         let read = try gatewayFixtureTool(name: "list_posts", origin: upstream,
                                           annotations: .init(readOnly: true), trusted: true)
+        let routine = try gatewayFixtureTool(name: "create_pull_request_comment", origin: upstream)
         let destructive = try gatewayFixtureTool(name: "bulkDelete", origin: upstream,
                                                  annotations: .init(readOnly: true), trusted: true)
         let protected = try gatewayFixtureTool(name: "send_mail", origin: upstream)
@@ -87,6 +88,9 @@ import AitvarasStore
         #expect(decision(read, mode: .ask).verdict == .requireConfirmation)
         #expect(decision(read, mode: .auto).verdict == .allow)
         #expect(decision(read, mode: .plan).verdict == .allow)
+        #expect(decision(routine, mode: .auto).verdict == .allow)
+        #expect(decision(routine, mode: .ask).verdict == .requireConfirmation)
+        #expect(decision(routine, mode: .auto, presentation: .outside).verdict == .requireConfirmation)
         #expect(decision(destructive, mode: .plan).forbidden)
         let critical = decision(destructive, mode: .auto)
         #expect(critical.verdict == .requireConfirmation)
@@ -105,8 +109,8 @@ import AitvarasStore
         let approvals = GatewayApprovalBroker()
         let accounting = MCPGatewayTool.Origin.upstream(server: "example", accountID: UUID(),
                                                          definitionFingerprint: String(repeating: "a", count: 64))
-        let unknown = try gatewayFixtureTool(name: "lookup", origin: accounting)
-        let changed = try gatewayFixtureTool(name: "lookup", origin: accounting, annotations: .init(idempotent: true))
+        let unknown = try gatewayFixtureTool(name: "reconcile", origin: accounting)
+        let changed = try gatewayFixtureTool(name: "reconcile", origin: accounting, annotations: .init(idempotent: true))
         @Sendable func call(_ tool: MCPGatewayTool, revalidate: MCPGateway.Authorize = {}) async throws -> MCPGatewayToolResult {
             let invocation = MCPGatewayInvocation(launchID: UUID(),
                 context: .init(client: .claude, projectID: project.id, permissions: .auto),

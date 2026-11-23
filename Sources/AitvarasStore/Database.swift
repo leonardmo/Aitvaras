@@ -1345,6 +1345,21 @@ public final class AitvarasDatabase: Sendable {
                 t.primaryKey(["projectID", "toolRevision"])
             }
         }
+        m.registerMigration("v52-project-chat-permissions") { db in
+            try db.create(table: "agentProjectChatPermissions") { t in
+                t.primaryKey("projectID", .blob).references("workspaceProject", onDelete: .cascade)
+                t.column("policy", .text).notNull()
+            }
+            // Older selections lack timestamps. Seed only where saved chats agree.
+            try db.execute(sql: """
+                INSERT INTO agentProjectChatPermissions (projectID, policy)
+                SELECT chat.projectID, MIN(p.policy)
+                FROM agentChatPermissions p JOIN workspaceChat chat ON chat.id = p.chatID
+                GROUP BY chat.projectID
+                HAVING COUNT(DISTINCT json_array(json_extract(p.policy, '$.commands'),
+                    json_extract(p.policy, '$.mcp'), json_extract(p.policy, '$.isPlan'))) = 1
+                """)
+        }
         return m
     }
 

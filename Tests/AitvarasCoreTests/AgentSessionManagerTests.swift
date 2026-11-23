@@ -1,7 +1,7 @@
 import Foundation
 import Testing
 import AitvarasCore
-import AitvarasStore
+@testable import AitvarasStore
 @testable import AitvarasAgents
 
 @Suite(.timeLimit(.minutes(2))) struct AgentSessionManagerTests {
@@ -20,6 +20,47 @@ import AitvarasStore
         }
         #expect(await backend.totalWrites() == 4)
         try await manager.shutdown()
+    }
+
+    @Test func lastManualPermissionsApplyToNewChatsInTheSameProject() throws {
+        let stores = try inMemoryStores()
+        let project = try stores.createWorkspaceProject(title: "Example")
+        let otherProject = try stores.createWorkspaceProject(title: "Another project")
+        let chat = try stores.createWorkspaceChat(projectID: project.id, title: "First chat")
+        let newChat = try stores.createWorkspaceChat(projectID: project.id, title: "Second chat")
+
+        try stores.saveManualAgentChatPermissions(.fullAccess, chatID: chat.id, projectID: project.id)
+        #expect(try stores.agentChatPermissions(chatID: chat.id) == .fullAccess)
+        #expect(try stores.agentProjectChatPermissions(projectID: project.id) == .fullAccess)
+        #expect(try stores.agentProjectChatPermissions(projectID: otherProject.id) == nil)
+
+        try stores.saveManualAgentChatPermissions(.ask, chatID: nil, projectID: project.id)
+        try stores.saveAgentChatPermissions(.fullAccess, chatID: newChat.id)
+        #expect(try stores.agentChatPermissions(chatID: chat.id) == .fullAccess)
+        #expect(try stores.agentChatPermissions(chatID: newChat.id) == .fullAccess)
+        #expect(try stores.agentProjectChatPermissions(projectID: project.id) == .ask)
+    }
+
+    @Test func projectDefaultsMigrateWhenOlderChatPoliciesAgree() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("state.sqlite")
+        let unanimous: UUID
+        let mixed: UUID
+        do {
+            let old = Stores(db: try AitvarasDatabase(url: url, migrateThrough: "v51-gateway-project-tool-grants"))
+            unanimous = try old.createWorkspaceProject(title: "Unanimous").id
+            mixed = try old.createWorkspaceProject(title: "Mixed").id
+            for (projectID, policy) in [(unanimous, AgentChatPermissions.fullAccess), (unanimous, .fullAccess),
+                                        (mixed, .fullAccess), (mixed, .auto)] {
+                let chat = try old.createWorkspaceChat(projectID: projectID, title: "Example")
+                try old.saveAgentChatPermissions(policy, chatID: chat.id)
+            }
+        }
+        let upgraded = Stores(db: try AitvarasDatabase(url: url))
+        #expect(try upgraded.agentProjectChatPermissions(projectID: unanimous) == .fullAccess)
+        #expect(try upgraded.agentProjectChatPermissions(projectID: mixed) == nil)
     }
 
     @Test func savedChatPermissionsTakeEffectOnTheNextTurn() async throws {

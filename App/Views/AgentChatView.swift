@@ -1153,12 +1153,9 @@ private struct AgentComposerPermissionsControl: View {
 
     private var mcpDetail: String {
         if selection.isPlan { return "Planning limits MCP tools to reads." }
-        if chat.choice.provider == .codex, selection.mcp == .auto {
-            return "Critical or unclassified MCP calls require approval. Project grants apply to Aitvaras-managed tools."
-        }
         switch selection.mcp {
         case .ask: return "MCP calls require approval."
-        case .auto: return "Critical or unclassified MCP calls require approval."
+        case .auto: return "Asks for critical actions and tools with unclear effects."
         case .unprompted: return "MCP tools enabled for this project can run without approval."
         }
     }

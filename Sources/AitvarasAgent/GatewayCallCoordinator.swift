@@ -68,7 +68,8 @@ struct GatewayPolicyDecision: Equatable, Sendable {
         let risk = hardDenial || explicit ? .confirmable : proposed
         let forbidden = hardDenial || (permissions?.isPlan == true && risk != .read)
         let mode = permissions?.isPlan == true ? nil : permissions?.mcp
-        let unprompted = !forbidden && mode == .unprompted
+        let unprompted = !forbidden && (mode == .unprompted || (mode == .auto && !explicit
+            && AgentToolPolicy.isRoutineMCPTool(toolName: tool.definition.name)))
         let grant = GatewayExactGrant(projectID: invocation.context.projectID, tool: tool)
         let canUseGrant = !forbidden && !explicit && mode != .ask && !unprompted && risk == .confirmable
         let exactGrant = canUseGrant && (grant.map(rules.grants.contains) ?? false)
@@ -86,7 +87,7 @@ struct GatewayPolicyDecision: Equatable, Sendable {
         } else if mode == .ask {
             approvalReason = "This chat asks before running MCP tools."
         } else if mode == .auto {
-            approvalReason = criticalReason ?? "This tool has no current project approval or recognized risk classification."
+            approvalReason = criticalReason ?? "The effects of this tool could not be determined."
         } else {
             approvalReason = nil
         }
@@ -127,7 +128,9 @@ struct GatewayCallCoordinator: Sendable {
             guard !initial.forbidden else { throw MCPGatewayCallError.denied }
             try await revalidate()
             if initial.exactGrant { approval = "exactGrant" }
-            if initial.usesUnpromptedMode { approval = "chatUnprompted" }
+            if initial.usesUnpromptedMode {
+                approval = invocation.context.permissions?.mcp == .auto ? "chatAuto" : "chatUnprompted"
+            }
             var approvedByUser = false
             var grant: (chatID: UUID, toolRevision: String)?
             if initial.verdict == .requireConfirmation {

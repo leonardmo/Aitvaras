@@ -59,6 +59,18 @@ public enum AgentToolPolicy {
             })) || (command == "find" && arguments.contains("-delete")) {
                 return "This command can recursively delete files."
             }
+            if command == "gh", let subcommand = arguments.first {
+                let action = arguments.dropFirst().first
+                let deletesViaAPI = subcommand == "api" && (arguments.contains("--method=DELETE")
+                    || arguments.contains("-XDELETE")
+                    || zip(arguments, arguments.dropFirst()).contains { option, value in
+                        ["--method", "-X"].contains(option) && value == "DELETE"
+                    })
+                if deletesViaAPI || (["repo", "release"].contains(subcommand) && action == "delete")
+                    || (subcommand == "repo" && action == "archive") {
+                    return "This command can delete or archive data on GitHub."
+                }
+            }
             if command == "git" {
                 let subcommand = gitInvocation(arguments)
                 let options = subcommand.dropFirst().prefix(while: { $0 != "--" })
@@ -90,9 +102,7 @@ public enum AgentToolPolicy {
     }
 
     public static func criticalMCPApprovalReason(toolName: String) -> String? {
-        let words = toolName
-            .replacingOccurrences(of: "([a-z0-9])([A-Z])", with: "$1_$2", options: .regularExpression)
-            .lowercased().split { !$0.isLetter && !$0.isNumber }
+        let words = toolNameWords(toolName)
         let readVerbs: Set<Substring> = ["get", "list", "read", "search", "find", "fetch", "view"]
         let deleteVerbs: Set<Substring> = ["delete", "remove", "purge", "destroy", "truncate"]
         let outboundVerbs: Set<Substring> = ["send", "reply", "forward", "post", "publish", "share"]
@@ -110,6 +120,22 @@ public enum AgentToolPolicy {
             return "This tool can change permissions or credentials."
         }
         return nil
+    }
+
+    static func isRoutineMCPTool(_ tool: AgentTool) -> Bool {
+        let toolName = tool.name.components(separatedBy: "__").last ?? ""
+        return tool.providerReportsReadOnly || isRoutineMCPTool(toolName: toolName)
+    }
+
+    public static func isRoutineMCPTool(toolName: String) -> Bool {
+        guard let verb = toolNameWords(toolName).first else { return false }
+        return ["get", "list", "read", "search", "find", "fetch", "view", "lookup", "check",
+                "create", "add", "edit", "update", "comment"].contains(verb)
+    }
+
+    private static func toolNameWords(_ name: String) -> [Substring] {
+        name.replacingOccurrences(of: "([a-z0-9])([A-Z])", with: "$1_$2", options: .regularExpression)
+            .lowercased().split { !$0.isLetter && !$0.isNumber }
     }
 
     private static func commandSegments(_ command: String) -> [[String]] {
