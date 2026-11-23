@@ -25,13 +25,16 @@ public struct AgentEventScope: Sendable, Equatable {
     public let inputID: UUID?
     public let turnID: String?
     public let itemID: String?
+    /// The provider marked this assistant message as a progress update.
+    public let isCommentary: Bool
     /// Claude may complete several written inputs with one native result.
     public let completedInputIDs: [UUID]
 
     public init(runID: UUID, session: AgentSessionID? = nil, inputID: UUID? = nil,
-                turnID: String? = nil, itemID: String? = nil, completedInputIDs: [UUID] = []) {
+                turnID: String? = nil, itemID: String? = nil, completedInputIDs: [UUID] = [], isCommentary: Bool = false) {
         self.runID = runID; self.session = session; self.inputID = inputID
         self.turnID = turnID; self.itemID = itemID; self.completedInputIDs = completedInputIDs
+        self.isCommentary = isCommentary
     }
 }
 

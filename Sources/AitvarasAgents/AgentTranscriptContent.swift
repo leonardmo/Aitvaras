@@ -1,5 +1,67 @@
 import Foundation
 
+/// Groups neighboring model updates without moving tool rows or actionable cards.
+public enum AgentTranscriptRow: Identifiable, Equatable {
+    case entry(AgentTranscriptEntry)
+    case activity(id: UUID, entries: [AgentTranscriptEntry], isLive: Bool)
+
+    public enum ID: Hashable {
+        case entry(UUID)
+        case activity(UUID)
+    }
+
+    public var id: ID {
+        switch self {
+        case .entry(let entry): .entry(entry.id)
+        case .activity(let id, _, _): .activity(id)
+        }
+    }
+
+    public static func rows(_ entries: [AgentTranscriptEntry], activeInputID: UUID?) -> [Self] {
+        var rows: [Self] = []
+        var activity: [AgentTranscriptEntry] = []
+        // Automatic continuation becomes visible only after the provider starts work.
+        var isLive = entries.contains { $0.id == activeInputID }
+        var canShowFinalReply = !isLive
+
+        func flushActivity() {
+            guard let first = activity.last else { return }
+            rows.append(.activity(id: first.id, entries: Array(activity.reversed()), isLive: isLive))
+            activity.removeAll()
+        }
+
+        for entry in entries.reversed() {
+            switch entry.kind {
+            case "thinking", "assistant":
+                guard !entry.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
+                let isCommentary = entry.payloadJSON.flatMap(JSONValue.parse)?["commentary"]?.boolValue == true
+                if entry.kind == "assistant", !isLive, !isCommentary, canShowFinalReply {
+                    flushActivity()
+                    rows.append(.entry(entry))
+                } else {
+                    activity.append(entry)
+                }
+                if !isCommentary { canShowFinalReply = false }
+            default:
+                flushActivity()
+                rows.append(.entry(entry))
+                switch entry.kind {
+                case "user", "wakeup", "continued", "automaticContinuation":
+                    // A queued follow-up can be visible before the current turn ends.
+                    if entry.id == activeInputID { isLive = false }
+                    canShowFinalReply = !isLive
+                case "tool", "stopped":
+                    canShowFinalReply = false
+                default:
+                    break
+                }
+            }
+        }
+        flushActivity()
+        return rows.reversed()
+    }
+}
+
 /// Presentation limits apply only to transcript copies, never provider replies.
 public enum AgentTranscriptContent {
     public static let maximumBytes = 32_768

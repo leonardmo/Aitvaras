@@ -78,7 +78,12 @@ struct AgentTranscriptView: View {
                 hookRow(payload ?? .null)
             } else if entry.kind == "importedHistory" {
                 importedHistory
-            } else if ["handover", "thinking", "tool"].contains(entry.kind) {
+            } else if entry.kind == "thinking" {
+                Text(verbatim: entry.text.trimmingCharacters(in: .whitespacesAndNewlines))
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+            } else if ["handover", "tool"].contains(entry.kind) {
                 DisclosureGroup(isExpanded: $expanded) {
                     ScrollView {
                         VStack(alignment: .leading, spacing: 10) {
@@ -235,7 +240,6 @@ struct AgentTranscriptView: View {
     private var payload: JSONValue? { entry.payloadJSON.flatMap(JSONValue.parse) }
     private var title: String {
         if entry.kind == "handover" { return "Context sent to \(entry.provider.rawValue.capitalized)" }
-        if entry.kind == "thinking" { return "Thinking" }
         if entry.kind == "tool", entry.text.isEmpty, let hook = payload?["hooks"]?.arrayValue?.first {
             return hook["name"]?.stringValue ?? "Hook"
         }

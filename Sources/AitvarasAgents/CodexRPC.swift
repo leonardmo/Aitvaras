@@ -40,11 +40,11 @@ actor CodexRun: AgentRun {
     }
     func started() { emit(.sessionStarted(session)) }
     func setup(_ snapshot: AgentSetupSnapshot) { emit(.setupReported(snapshot)) }
-    private func scope(item: String? = nil) -> AgentEventScope {
-        AgentEventScope(runID: id, session: session, inputID: input, turnID: turn, itemID: item)
+    private func scope(item: String? = nil, isCommentary: Bool = false) -> AgentEventScope {
+        AgentEventScope(runID: id, session: session, inputID: input, turnID: turn, itemID: item, isCommentary: isCommentary)
     }
-    private func emit(_ kind: AgentEvent.Kind, item: String? = nil, report: AgentFailureReport? = nil) {
-        switch continuation.yield(AgentEvent(scope: scope(item: item), kind: kind, failureReport: report)) {
+    private func emit(_ kind: AgentEvent.Kind, item: String? = nil, report: AgentFailureReport? = nil, isCommentary: Bool = false) {
+        switch continuation.yield(AgentEvent(scope: scope(item: item, isCommentary: isCommentary), kind: kind, failureReport: report)) {
         case .enqueued: break
         case .dropped, .terminated:
             continuation.finish(throwing: AgentFailure.invalidTransition)
@@ -278,7 +278,8 @@ actor CodexRun: AgentRun {
             emit(.message(id: nativeID, role: "assistant", text: item["text"]?.stringValue ?? ""), item: nativeID)
         case "agentMessage":
             let text = item["text"]?.stringValue ?? ""
-            emit(.message(id: nativeID, role: "assistant", text: text), item: nativeID)
+            emit(.message(id: nativeID, role: "assistant", text: text), item: nativeID,
+                 isCommentary: item["phase"]?.stringValue == "commentary")
         case "userMessage":
             let text = (item["content"]?.arrayValue ?? []).compactMap { $0["text"]?.stringValue }.joined(separator: "\n")
             // Native user items may arrive for a steer while output remains

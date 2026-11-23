@@ -565,6 +565,11 @@ including when provider startup subsequently requires sign-in. Sign-in retries
 restore that saved input, never the current draft. Restored chat/provider settings
 are checked against the cached provider catalog on selection and before Send.
 
+The transcript puts live reasoning and progress messages in tinted activity
+panels. Empty reasoning blocks take no space. By default, activity opens while the
+turn is running and collapses when it ends. The disclosure control can reopen it.
+Final replies, tool rows and approval cards remain directly visible.
+
 On Chat, the activity dock appears only while automatic work is actually running;
 manual chat/provider failures remain inline and do not add dock attention. Other
 tabs retain their activity presentation. The dock reserves real layout height so

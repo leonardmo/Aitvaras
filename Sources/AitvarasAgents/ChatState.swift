@@ -151,6 +151,7 @@ public struct ChatState: Sendable, Equatable {
             case .thinkingDelta(let text):
                 putThinking(text, item: event.scope.itemID, complete: false, newEntryID: newEntryID)
             case .thinkingCompleted(let text):
+                guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
                 putThinking(text, item: event.scope.itemID, complete: true, newEntryID: newEntryID)
             case .message(let nativeID, let role, let text):
                 if role == "user", automaticInputID == inputID, text == AgentAutoContinue.prompt { break }
@@ -166,10 +167,11 @@ public struct ChatState: Sendable, Equatable {
                     put(id: id, kind: role, text: text, nativeID: nativeID)
                     if role == "assistant" { textIDs[key] = id; outputID = nil }
                 }
-                if let turnID = event.scope.turnID,
+                if event.scope.turnID != nil || event.scope.isCommentary,
                    let index = entries.firstIndex(where: { $0.sessionID == sessionID && $0.nativeMessageID == nativeID }) {
                     var payload = entries[index].payloadJSON.flatMap(JSONValue.parse)?.objectValue ?? [:]
-                    payload["nativeTurnID"] = .string(turnID)
+                    if let turnID = event.scope.turnID { payload["nativeTurnID"] = .string(turnID) }
+                    if event.scope.isCommentary { payload["commentary"] = .bool(true) }
                     entries[index].payloadJSON = JSONValue.object(payload).jsonString
                 }
                 if role == "assistant" { streamingText = "" }
