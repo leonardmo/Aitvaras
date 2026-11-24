@@ -289,6 +289,7 @@ import AitvarasVoice
     private func settingsValue(_ id: String, source: SettingsProposalSource, stores: Stores) throws -> JSONValue? {
         switch id {
         case "appearance.mode": .string(AppAppearance.shared.mode.rawValue)
+        case AppMotion.overrideKey: .bool(AppAppearance.shared.alwaysAnimate)
         case "companion.presentation": .string(companionPresentation.rawValue)
         case "companion.character": .string(AitvarasPreferences.current.string(forKey: "avatar.style") ?? "creature")
         case "voice.language": .string(AitvarasPreferences.current.string(forKey: "voice.locale") ?? "en-US")
@@ -376,6 +377,9 @@ import AitvarasVoice
             case "appearance.mode":
                 guard let mode = AppAppearanceMode(rawValue: text) else { throw SettingsToolError.invalidValue }
                 AppAppearance.shared.select(mode)
+            case AppMotion.overrideKey:
+                guard let alwaysAnimate = value.boolValue else { throw SettingsToolError.invalidValue }
+                AppAppearance.shared.selectAnimations(alwaysAnimate: alwaysAnimate)
             case "companion.presentation":
                 guard let mode = CompanionPresentation(rawValue: text) else { throw SettingsToolError.invalidValue }
                 companionPresentation = mode

@@ -1,4 +1,5 @@
 import Foundation
+import AitvarasCore
 
 /// Stable public setting IDs. A destination is a page or project section in
 /// the app's Settings window. Storage keys are deliberately independent.
@@ -62,6 +63,8 @@ public struct AitvarasSetting: Sendable, Equatable, Identifiable {
 public enum SettingsRegistry {
     public static let entries: [AitvarasSetting] = [
         .setting("appearance.mode", "Appearance", "avatar", .choice(["system", "light", "dark"]), risk: .normal, editable: true),
+        .setting(AppMotion.overrideKey, "Always animate in Aitvaras", "avatar", .boolean, risk: .normal, editable: true,
+                 hint: "Overrides macOS Reduce Motion for Aitvaras animations."),
         .setting("companion.presentation", "Companion display", "avatar", .choice(["avatar", "minimal"]), risk: .normal, editable: true),
         .setting("companion.character", "Companion character", "avatar", .choice(["creature", "human"]), risk: .normal, editable: true),
         .setting("companion.customAvatar", "Custom avatar", "avatar", .action),

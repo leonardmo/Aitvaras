@@ -64,11 +64,16 @@ enum SettingsDestination: Equatable {
 
     static let shared = SettingsNavigation()
     private(set) var request: Request?
-    private(set) var highlightedID: String?
+    struct Highlight: Equatable {
+        let id = UUID()
+        let settingID: String
+    }
+
+    private(set) var highlight: Highlight?
+    var highlightedID: String? { highlight?.settingID }
     @ObservationIgnored private var presentedRequestID: UUID?
 
     static func open(_ destination: SettingsDestination, settingID: String? = nil) {
-        shared.highlightedID = settingID
         shared.request = .init(destination: destination, settingID: settingID)
     }
 
@@ -78,7 +83,7 @@ enum SettingsDestination: Equatable {
         return true
     }
 
-    func clearHighlight() { highlightedID = nil }
+    func highlightSetting(_ id: String?) { highlight = id.map { Highlight(settingID: $0) } }
 }
 
 extension View {
@@ -110,7 +115,10 @@ struct SettingsWorkspaceView: View {
     @State private var seenRequest: UUID?
     @State private var showHiddenProjects = false
     @State private var projectHasUnsavedChanges = false
-    @State private var pendingDestination: SettingsDestination?
+    @State private var pendingSelection: (destination: SettingsDestination, settingID: String?)?
+    @State private var navigationRevision = UUID()
+    @State private var searchText = ""
+    @FocusState private var searchFocused: Bool
 
     init(initialDestination: SettingsDestination? = nil) {
         let lastPane = AitvarasPreferences.current.string(forKey: "settings.lastPane").flatMap(SettingsPage.init(rawValue:)) ?? .overview
@@ -119,40 +127,7 @@ struct SettingsWorkspaceView: View {
 
     var body: some View {
         HStack(spacing: 0) {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 4) {
-                pageRow(.overview)
-                navigationGroup("AI", pages: [.providers, .models, .cloud])
-                navigationGroup("Integrations", pages: [.connections, .routines, .background])
-                navigationGroup("You", pages: [.avatar, .voice, .capture, .memory])
-                navigationGroup("System", pages: [.access, .usage])
-                if !model.workspaceProjects.isEmpty {
-                    VStack(alignment: .leading, spacing: 4) {
-                        sidebarHeading("Projects")
-                        ForEach(model.workspaceProjects.filter(\.isVisible)) { project in projectRow(project) }
-                        let hidden = model.workspaceProjects.filter { !$0.isVisible }
-                        if !hidden.isEmpty {
-                            Button {
-                                showHiddenProjects.toggle()
-                            } label: {
-                                Label("Hidden projects", systemImage: showHiddenProjects ? "chevron.down" : "chevron.right")
-                            }
-                            .buttonStyle(.plain)
-                            .accessibilityValue(showHiddenProjects ? "Expanded" : "Collapsed")
-                            .accessibilityIdentifier("settings.projects.hidden")
-                            if showHiddenProjects {
-                                ForEach(hidden) { project in projectRow(project) }
-                            }
-                        }
-                    }
-                }
-                }
-                .padding(8)
-            }
-            .background(.bar)
-            .frame(width: 190)
-            .accessibilityElement(children: .contain)
-            .accessibilityIdentifier("settings.sidebar")
+            sidebar
 
             Divider()
 
@@ -163,9 +138,10 @@ struct SettingsWorkspaceView: View {
                         .lineLimit(1)
                         .accessibilityAddTraits(.isHeader)
                     Spacer()
-                    Button("Ask Aitvaras", systemImage: "bubble.left.and.sparkles", action: askAitvaras)
-                        .labelStyle(.iconOnly)
-                        .help("Ask Aitvaras about these settings")
+                    Button("Ask Aitvaras", systemImage: "bubble.left", action: askAitvaras)
+                        .labelStyle(.titleAndIcon)
+                        .buttonStyle(.bordered)
+                        .help("Open a chat draft about these settings")
                         .disabled(!canAskAitvaras)
                         .accessibilityIdentifier("settings.askAitvaras")
                 }
@@ -183,21 +159,146 @@ struct SettingsWorkspaceView: View {
         .onChange(of: SettingsNavigation.shared.request, initial: true) { _, request in
             guard let request, seenRequest != request.id else { return }
             seenRequest = request.id
-            select(request.destination, fromLink: true)
+            select(request.destination, settingID: request.settingID)
         }
         .confirmationDialog("Discard unsaved project edits?", isPresented: Binding(
-            get: { pendingDestination != nil },
-            set: { if !$0 { pendingDestination = nil } }
+            get: { pendingSelection != nil },
+            set: { if !$0 { pendingSelection = nil } }
         ), titleVisibility: .visible) {
             Button("Discard edits", role: .destructive) {
-                guard let next = pendingDestination else { return }
-                pendingDestination = nil
+                guard let next = pendingSelection else { return }
+                pendingSelection = nil
                 projectHasUnsavedChanges = false
-                select(next)
+                select(next.destination, settingID: next.settingID)
             }
-            Button("Keep editing", role: .cancel) { pendingDestination = nil }
+            Button("Keep editing", role: .cancel) { pendingSelection = nil }
         }
         .task { model.refreshWorkspaces() }
+    }
+
+    private var sidebar: some View {
+        VStack(spacing: 0) {
+            searchField.padding(8)
+            Divider()
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 4) {
+                    if searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        sidebarNavigation
+                    } else {
+                        let results = searchResults
+                        if results.isEmpty {
+                            Text("No matching settings")
+                                .font(.callout).foregroundStyle(.secondary)
+                                .padding(.horizontal, 7).padding(.vertical, 12)
+                        } else {
+                            ForEach(results, content: searchRow)
+                        }
+                    }
+                }
+                .padding(8)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+        .background(.bar)
+        .frame(width: 190)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("settings.sidebar")
+    }
+
+    private var searchField: some View {
+        HStack(spacing: 6) {
+            Button { searchFocused = true } label: {
+                Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+            .keyboardShortcut("f", modifiers: .command)
+            .accessibilityLabel("Focus Settings search")
+            TextField("Search settings", text: $searchText)
+                .textFieldStyle(.plain)
+                .focused($searchFocused)
+                .accessibilityIdentifier("settings.search")
+                .onSubmit { if let first = searchResults.first { openResult(first) } }
+                .onKeyPress(.escape) {
+                    guard !searchText.isEmpty else { return .ignored }
+                    searchText = ""
+                    return .handled
+                }
+            if !searchText.isEmpty {
+                Button {
+                    searchText = ""
+                    searchFocused = true
+                } label: {
+                    Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Clear Settings search")
+                .accessibilityIdentifier("settings.search.clear")
+            }
+        }
+        .padding(.horizontal, 7)
+        .frame(height: 27)
+        .background(.quaternary, in: RoundedRectangle(cornerRadius: 6))
+    }
+
+    private var searchResults: [SettingsSearchResult] {
+        SettingsSearchResult.results(for: searchText, projects: model.workspaceProjects, currentProject: activeProjectID)
+    }
+
+    private func openResult(_ result: SettingsSearchResult) {
+        searchFocused = false
+        select(result.destination, settingID: result.settingID)
+    }
+
+    private func searchRow(_ result: SettingsSearchResult) -> some View {
+        Button { openResult(result) } label: {
+            HStack(alignment: .top, spacing: 7) {
+                Image(systemName: result.icon).foregroundStyle(.secondary)
+                    .frame(width: 16)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(result.title).lineLimit(2)
+                    if let context = result.context {
+                        Text(context).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                    }
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(6)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .background {
+            if destination == result.destination
+                && SettingsNavigation.shared.highlightedID == result.settingID {
+                RoundedRectangle(cornerRadius: 6).fill(Color.accentColor.opacity(0.15))
+            }
+        }
+        .accessibilityIdentifier("settings.search.result.\(result.id)")
+    }
+
+    @ViewBuilder private var sidebarNavigation: some View {
+        pageRow(.overview)
+        navigationGroup("AI", pages: [.providers, .models, .cloud])
+        navigationGroup("Integrations", pages: [.connections, .routines, .background])
+        navigationGroup("You", pages: [.avatar, .voice, .capture, .memory])
+        navigationGroup("System", pages: [.access, .usage])
+        if !model.workspaceProjects.isEmpty {
+            sidebarHeading("Projects")
+            ForEach(model.workspaceProjects.filter(\.isVisible)) { project in projectRow(project) }
+            let hidden = model.workspaceProjects.filter { !$0.isVisible }
+            if !hidden.isEmpty {
+                Button {
+                    showHiddenProjects.toggle()
+                } label: {
+                    Label("Hidden projects", systemImage: showHiddenProjects ? "chevron.down" : "chevron.right")
+                }
+                .buttonStyle(.plain)
+                .accessibilityValue(showHiddenProjects ? "Expanded" : "Collapsed")
+                .accessibilityIdentifier("settings.projects.hidden")
+                if showHiddenProjects {
+                    ForEach(hidden) { project in projectRow(project) }
+                }
+            }
+        }
     }
 
     private func navigationGroup(_ name: String, pages: [SettingsPage]) -> some View {
@@ -261,16 +362,17 @@ struct SettingsWorkspaceView: View {
         }
     }
 
-    private func select(_ value: SettingsDestination, fromLink: Bool = false) {
+    private func select(_ value: SettingsDestination, settingID: String? = nil) {
         if projectHasUnsavedChanges {
             if case .project(let id, _) = value, id == activeProjectID {
                 // Moving between sections leaves the shared project form in place.
             } else {
-                pendingDestination = value
+                pendingSelection = (value, settingID)
                 return
             }
         }
-        if !fromLink { SettingsNavigation.shared.clearHighlight() }
+        SettingsNavigation.shared.highlightSetting(settingID)
+        navigationRevision = UUID()
         destination = value
         switch value {
         case .page(let page): AitvarasPreferences.current.set(page.rawValue, forKey: "settings.lastPane")
@@ -300,7 +402,7 @@ struct SettingsWorkspaceView: View {
                 .id(setupPage)
             }
         case .project(let id, let section):
-            WorkspaceBoundaryReviewView(projectID: id, section: section, embedded: true, navigationRevision: seenRequest) { changed in
+            WorkspaceBoundaryReviewView(projectID: id, section: section, embedded: true, navigationRevision: navigationRevision) { changed in
                 projectHasUnsavedChanges = changed
             }
             .id(id)

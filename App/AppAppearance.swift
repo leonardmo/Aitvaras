@@ -9,6 +9,12 @@ import AitvarasCore
 final class AppAppearance {
     static let shared = AppAppearance()
     private(set) var mode = AppAppearanceMode.load()
+    private(set) var alwaysAnimate = AppMotion.load()
+
+    func selectAnimations(alwaysAnimate: Bool) {
+        self.alwaysAnimate = alwaysAnimate
+        AppMotion.save(alwaysAnimate)
+    }
 
     func select(_ mode: AppAppearanceMode) {
         self.mode = mode
@@ -28,6 +34,18 @@ final class AppAppearance {
         // the previous effective appearance in an already hosted SwiftUI view.
         // New windows inherit the app override; System clears both levels.
         for window in NSApp.windows { window.appearance = override }
+    }
+}
+
+/// Shared policy for Aitvaras-controlled animations, including those hosted
+/// outside the main window.
+@MainActor @propertyWrapper
+struct AppReduceMotion: DynamicProperty {
+    @Environment(\.accessibilityReduceMotion) private var systemReduceMotion
+    @State private var appearance = AppAppearance.shared
+
+    var wrappedValue: Bool {
+        AppMotion.shouldReduceMotion(system: systemReduceMotion, alwaysAnimate: appearance.alwaysAnimate)
     }
 }
 

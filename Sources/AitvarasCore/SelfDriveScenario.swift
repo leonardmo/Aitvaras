@@ -16,7 +16,7 @@ public struct SelfDriveScenario: Decodable, Sendable {
 }
 
 public struct SelfDriveStep: Codable, Sendable {
-    public enum Action: String, Codable, Sendable { case press, type, waitFor, screenshot, dumpTree }
+    public enum Action: String, Codable, Sendable { case press, type, waitFor, screenshot, dumpTree, drag }
     public let action: Action
     public var identifier: String?
     /// A wait succeeds when any identifier is present; press uses the first
@@ -36,6 +36,8 @@ public struct SelfDriveStep: Codable, Sendable {
     /// Restrict a wait to this accessibility subtree.
     public var within: String?
     public let caseSensitive: Bool?
+    /// Vertical mouse travel in screen points. Positive is up.
+    public let verticalBy: Double?
 
     public func matchesIdentifier(_ value: String?) -> Bool {
         guard let value else { return false }
@@ -58,7 +60,11 @@ public struct SelfDriveStep: Codable, Sendable {
                 throw invalid("anyOf needs 1...16 distinct nonempty identifiers on waitFor or press")
             }
         }
+        if verticalBy != nil && action != .drag { throw invalid("verticalBy requires drag") }
         switch action {
+        case .drag:
+            guard let identifier, !identifier.isEmpty, let verticalBy, verticalBy.isFinite,
+                  (3...500).contains(abs(verticalBy)) else { throw invalid("drag needs an identifier and verticalBy of 3...500 points") }
         case .press:
             guard [identifier != nil, anyOf != nil, text != nil].filter({ $0 }).count == 1,
                   identifier?.isEmpty != true, text?.isEmpty != true else {

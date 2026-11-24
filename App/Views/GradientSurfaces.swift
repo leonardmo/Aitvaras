@@ -75,13 +75,14 @@ struct GradientTileSurface: View {
     let ramp: ColorRamp
     let cornerRadius: CGFloat
     var prominent = false
+    var outlined = true
 
     var body: some View {
         let dark = colorScheme == .dark
         let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
         if contrast == .increased || reduceTransparency {
             shape.fill(Color(nsColor: .windowBackgroundColor))
-                .overlay { shape.strokeBorder(Color.primary.opacity(0.52), lineWidth: 1) }
+                .overlay { if outlined { shape.strokeBorder(Color.primary.opacity(0.52), lineWidth: 1) } }
         } else {
             let strength = prominent ? (dark ? 0.54 : 0.24) : (dark ? 0.40 : 0.18)
             shape.fill(ramp.wash(opacity: strength))
@@ -93,7 +94,9 @@ struct GradientTileSurface: View {
                     ], startPoint: .topLeading, endPoint: .bottomTrailing))
                 }
                 .overlay {
-                    shape.strokeBorder(ramp.wash(opacity: dark ? 0.58 : 0.33), lineWidth: 1)
+                    if outlined {
+                        shape.strokeBorder(ramp.wash(opacity: dark ? 0.58 : 0.33), lineWidth: 1)
+                    }
                 }
         }
     }

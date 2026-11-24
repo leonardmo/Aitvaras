@@ -9,7 +9,7 @@ struct AgentCommandTerminal<Details: View>: View {
     let hasDetails: Bool
     @ViewBuilder var details: () -> Details
 
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @AppReduceMotion private var reduceMotion
     @Environment(\.colorScheme) private var colorScheme
     @State private var showsRunningOutput = false
     @State private var expandedByUser: Bool?

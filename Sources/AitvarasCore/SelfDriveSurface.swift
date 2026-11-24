@@ -94,9 +94,30 @@ import AppKit
         return "Dispatched local window mouse events; verify effect with waitFor"
     }
 
-    func type(_ text: String) throws -> String {
-        guard let input = try find("chat.composer.input"), input.enabled else {
-            throw SelfDriveFailure("Enabled composer unavailable")
+    private func drag(_ identifier: String, verticalBy distance: Double) throws -> String {
+        guard let element = try find(identifier), element.enabled, !element.frame.isEmpty else {
+            throw SelfDriveFailure("Drag target unavailable: \(identifier)")
+        }
+        let start = window.convertPoint(fromScreen: NSPoint(x: element.frame.midX, y: element.frame.midY))
+        let events: [(NSEvent.EventType, Double)] = [
+            (.leftMouseDown, 0), (.leftMouseDragged, 0.24), (.leftMouseDragged, 0.60),
+            (.leftMouseDragged, 1), (.leftMouseUp, 1)
+        ]
+        for (type, fraction) in events {
+            let point = NSPoint(x: start.x, y: start.y + distance * fraction)
+            guard let event = NSEvent.mouseEvent(with: type, location: point, modifierFlags: [],
+                timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
+                context: nil, eventNumber: 0, clickCount: 1, pressure: type == .leftMouseUp ? 0 : 1) else {
+                throw SelfDriveFailure("Could not create local drag event")
+            }
+            window.sendEvent(event)
+        }
+        return "Dispatched local vertical drag"
+    }
+
+    func type(_ text: String, into identifier: String) throws -> String {
+        guard let input = try find(identifier), input.enabled else {
+            throw SelfDriveFailure("Enabled text input unavailable: \(identifier)")
         }
         // The accessibility setter changes the field but skips SwiftUI's binding, so the
         // text goes through the field's own editor. A non-key window can still hold a
@@ -111,20 +132,24 @@ import AppKit
             return onScreen.intersects(frame) ? view : nil
         }
         guard let content = window.contentView, let field = editable(in: content) else {
-            throw SelfDriveFailure("No editable view behind the composer")
+            throw SelfDriveFailure("No editable view for \(identifier)")
         }
-        guard window.makeFirstResponder(field) else { throw SelfDriveFailure("Composer refused first responder") }
+        guard window.makeFirstResponder(field) else { throw SelfDriveFailure("Text input refused first responder: \(identifier)") }
         let editor = (field as? NSTextView) ?? (field as? NSTextField)?.currentEditor() as? NSTextView
-        guard let editor else { throw SelfDriveFailure("Composer has no field editor") }
+        guard let editor else { throw SelfDriveFailure("Text input has no field editor: \(identifier)") }
         editor.insertText(text, replacementRange: NSRange(location: editor.string.utf16.count, length: 0))
         guard (input.value ?? "").contains(text) else {
-            throw SelfDriveFailure("Composer did not show the typed text")
+            throw SelfDriveFailure("Text input did not show the typed text: \(identifier)")
         }
         return "Inserted through the field editor"
     }
 
     public func perform(_ step: SelfDriveStep, directory: URL) async throws -> String {
         switch step.action {
+        case .drag:
+            let reason = try drag(step.identifier!, verticalBy: step.verticalBy!)
+            await Task.yield()
+            return reason
         case .press:
             if let text = step.text {
                 let root = try step.within.flatMap(find)
@@ -152,7 +177,7 @@ import AppKit
             await Task.yield()
             return reason
         case .type:
-            let reason = try type(step.text!)
+            let reason = try type(step.text!, into: step.identifier ?? "chat.composer.input")
             await Task.yield()
             return reason
         case .waitFor:

@@ -48,8 +48,8 @@ struct OnboardingView: View {
             } else {
                 ScrollViewReader { proxy in
                     settingsForm
-                        .onChange(of: SettingsNavigation.shared.highlightedID, initial: true) { _, id in
-                            if let id { proxy.scrollTo(id, anchor: .center) }
+                        .onChange(of: SettingsNavigation.shared.highlight, initial: true) { _, highlight in
+                            if let id = highlight?.settingID { proxy.scrollTo(id, anchor: .center) }
                         }
                 }
             }
@@ -260,6 +260,20 @@ struct OnboardingView: View {
             }
             .pickerStyle(.segmented)
             .settingsAnchor("appearance.mode")
+            LabeledContent {
+                Toggle("Always animate in Aitvaras", isOn: Binding(
+                    get: { AppAppearance.shared.alwaysAnimate },
+                    set: { AppAppearance.shared.selectAnimations(alwaysAnimate: $0) }))
+                    .labelsHidden()
+                    .toggleStyle(.switch)
+            } label: {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Always animate in Aitvaras")
+                    Text("Show animations even when Reduce Motion is on in macOS.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            .settingsAnchor(AppMotion.overrideKey)
         }
         Section("Floating companion") {
             Picker("Display", selection: Binding(

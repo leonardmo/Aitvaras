@@ -7,6 +7,7 @@ import AitvarasStore
 /// stored usage counters. Nothing here calls a model or a provider.
 struct ChatMeterBar: View {
     @Environment(AppModel.self) private var model
+    @AppReduceMotion private var reduceMotion
     @State private var local = LocalModelUsageSummary.empty
     @State private var cloud = CloudUsageSummary.empty
     @State private var detailShown = false
@@ -38,7 +39,7 @@ struct ChatMeterBar: View {
             .accessibilityLabel("Usage details")
             .help(usageSummary)
         }
-        .animation(.easeInOut(duration: 0.35), value: percent)
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.35), value: percent)
         .popover(isPresented: $detailShown, arrowEdge: .bottom) { detail }
         .task(id: model.messages.count) { await reload() }
     }
