@@ -17,8 +17,7 @@ struct AgentComposerPicker: View {
 
     var body: some View {
         Button { isPresented.toggle() } label: {
-            ComposerControlLabel(title: summary, icon: "cpu", iconOnly: iconOnly, maximumTitleWidth: 175)
-                .fixedSize(horizontal: true, vertical: false)
+            ComposerControlLabel(title: summary, icon: "cpu", iconOnly: iconOnly, maximumTitleWidth: 220)
         }
         .buttonStyle(.plain)
         .help(summary)

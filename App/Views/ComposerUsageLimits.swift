@@ -30,7 +30,7 @@ struct ComposerUsageLimits: View {
                             rounded: false)
                     }
                 }
-                .frame(height: 16)
+                .frame(height: ComposerMeterTrack.compactRowHeight)
                 .contentShape(Rectangle())
             } else {
                 HStack(spacing: 0) {

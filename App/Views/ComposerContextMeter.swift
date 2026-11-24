@@ -19,7 +19,7 @@ struct ComposerContextMeter: View {
         Group {
             if compact {
                 ComposerMeterTrack(fraction: fraction, ramp: ramp, rounded: false)
-                    .frame(height: 16)
+                    .frame(height: ComposerMeterTrack.compactRowHeight)
             } else {
                 Image(systemName: "text.alignleft")
                     .font(.system(size: 11, weight: .medium))
@@ -39,6 +39,8 @@ struct ComposerContextMeter: View {
 
 /// The gradient grows inside a fixed-size track and respects the app's motion preference.
 struct ComposerMeterTrack: View {
+    static let compactRowHeight: CGFloat = 12.5
+
     @AppReduceMotion private var reduceMotion
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.colorSchemeContrast) private var contrast

@@ -843,7 +843,7 @@ private struct AgentChatComposer: View {
                 }
                 context
             }
-            .frame(width: 72)
+            .frame(width: 28)
             .compositingGroup()
             .clipShape(Capsule(style: .circular))
         } else {
