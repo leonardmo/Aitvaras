@@ -802,12 +802,7 @@ private struct AgentChatComposer: View {
 
     private func composerActions(narrow: Bool) -> some View {
         HStack(spacing: 8) {
-            if narrow {
-                VStack(spacing: 0) { composerMeters(narrow: true) }
-                    .frame(width: 62)
-            } else {
-                HStack(spacing: 8) { composerMeters(narrow: false) }
-            }
+            composerMeters(narrow: narrow)
             if chat.state?.isRunning == true {
                 Button { Task { await chat.stop() } } label: {
                     Image(systemName: "stop.fill").font(.system(size: 13, weight: .semibold))
@@ -821,9 +816,9 @@ private struct AgentChatComposer: View {
             if chat.state?.isRunning != true || chat.hasInput {
                 Button { Task { await chat.send() } } label: {
                     Image(systemName: chat.editingQueuedMessage ? "checkmark" : chat.willQueueMessage ? "tray.and.arrow.down" : "arrow.up")
-                        .font(.system(size: 17, weight: .semibold))
+                        .font(.system(size: 20, weight: .semibold))
                         .foregroundStyle(sendEnabled ? Color.white : Color.secondary)
-                        .frame(width: narrow ? 32 : 34, height: narrow ? 32 : 34)
+                        .frame(width: 42, height: 42)
                         .background(sendEnabled ? Color.accentColor : Color.secondary.opacity(0.16), in: Circle())
                 }
                 .buttonStyle(.plain)
@@ -836,10 +831,26 @@ private struct AgentChatComposer: View {
     }
 
     @ViewBuilder private func composerMeters(narrow: Bool) -> some View {
-        let usageWindows = chat.composerUsageWindows
-        ComposerContextMeter(usage: chat.currentContextUsage, compact: narrow)
-        if !usageWindows.isEmpty || chat.provider != .local {
-            ComposerUsageLimits(windows: usageWindows, narrow: narrow, chat: chat)
+        let windows = chat.composerUsageWindows
+        let showsUsage = !windows.isEmpty || chat.provider != .local
+        let context = ComposerContextMeter(usage: chat.currentContextUsage, compact: narrow)
+        if narrow {
+            VStack(spacing: 0) {
+                if showsUsage {
+                    ComposerUsageLimits(windows: windows, narrow: true, chat: chat)
+                    Rectangle().fill(.primary.opacity(0.18))
+                        .frame(height: 1).accessibilityHidden(true)
+                }
+                context
+            }
+            .frame(width: 72)
+            .compositingGroup()
+            .clipShape(Capsule(style: .circular))
+        } else {
+            HStack(spacing: 8) {
+                context
+                if showsUsage { ComposerUsageLimits(windows: windows, narrow: false, chat: chat) }
+            }
         }
     }
 

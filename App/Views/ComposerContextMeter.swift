@@ -18,8 +18,7 @@ struct ComposerContextMeter: View {
         let ramp = ColorRamp.context(fraction ?? 0)
         Group {
             if compact {
-                ComposerMeterTrack(fraction: fraction, ramp: ramp)
-                    .frame(height: 7)
+                ComposerMeterTrack(fraction: fraction, ramp: ramp, rounded: false)
                     .frame(height: 16)
             } else {
                 Image(systemName: "text.alignleft")
@@ -46,11 +45,12 @@ struct ComposerMeterTrack: View {
     let fraction: Double?
     let ramp: ColorRamp
     var behindText = false
+    var rounded = true
 
     var body: some View {
         GeometryReader { proxy in
             let dark = colorScheme == .dark
-            Capsule().fill(Color.primary.opacity(behindText ? 0.055 : 0.15))
+            Rectangle().fill(Color.primary.opacity(behindText ? 0.055 : 0.15))
                 .overlay(alignment: .leading) {
                     Rectangle()
                         .fill(contrast == .increased
@@ -60,7 +60,7 @@ struct ComposerMeterTrack: View {
                         .frame(width: proxy.size.width * (fraction ?? 0))
                 }
                 .compositingGroup()
-                .clipShape(Capsule(style: .circular))
+                .clipShape(.rect(cornerRadius: rounded ? proxy.size.height / 2 : 0, style: .circular))
                 .animation(reduceMotion ? nil : .easeInOut(duration: 0.28), value: fraction)
         }
         .accessibilityHidden(true)

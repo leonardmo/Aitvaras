@@ -15,17 +15,21 @@ struct ComposerUsageLimits: View {
         let limits = ProviderUsageLimit.displayed(windows)
         Button { showsDetails.toggle() } label: {
             if narrow {
-                HStack(spacing: 3) {
+                HStack(spacing: 0) {
                     if limits.isEmpty {
-                        ComposerMeterTrack(fraction: nil, ramp: .idle)
+                        ComposerMeterTrack(fraction: nil, ramp: .idle, rounded: false)
                     }
                     ForEach(limits) { limit in
+                        if limit.id != limits.first?.id {
+                            Rectangle().fill(.primary.opacity(0.18))
+                                .frame(width: 1).accessibilityHidden(true)
+                        }
                         let ramp = ColorRamp.usage(limit.used ?? 0)
                         ComposerMeterTrack(fraction: limit.used,
-                            ramp: limit.id == "week" ? ramp.mixed(with: .idle, by: 0.36) : ramp)
+                            ramp: limit.id == "week" ? ramp.mixed(with: .idle, by: 0.36) : ramp,
+                            rounded: false)
                     }
                 }
-                .frame(height: 7)
                 .frame(height: 16)
                 .contentShape(Rectangle())
             } else {
