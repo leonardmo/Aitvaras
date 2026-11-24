@@ -12,7 +12,8 @@ public struct GatewayExactGrant: Hashable, Sendable {
     public let toolRevision: String
 
     public init?(projectID: UUID?, tool: MCPGatewayTool) {
-        guard let projectID, GatewayPolicyDecision.criticalReason(tool) == nil else { return nil }
+        guard let projectID, !GatewayUpstreamToolSafety.isForbidden(tool),
+              GatewayPolicyDecision.criticalReason(tool) == nil else { return nil }
         self.projectID = projectID
         toolRevision = tool.revision
     }
@@ -21,11 +22,14 @@ public struct GatewayExactGrant: Hashable, Sendable {
 public struct GatewayPolicyRules: Sendable {
     public let overrides: [String: ActionRisk]
     public let grants: Set<GatewayExactGrant>
+    public let serverMode: GatewayServerApprovalMode?
 
     /// Override keys are exact tool revisions, including the upstream account and definition.
-    public init(overrides: [String: ActionRisk] = [:], grants: Set<GatewayExactGrant> = []) {
+    public init(overrides: [String: ActionRisk] = [:], grants: Set<GatewayExactGrant> = [],
+                serverMode: GatewayServerApprovalMode? = nil) {
         self.overrides = overrides
         self.grants = grants
+        self.serverMode = serverMode
     }
 }
 
@@ -37,29 +41,39 @@ struct GatewayPolicyDecision: Equatable, Sendable {
     let approvalReason: String?
     let canAlwaysAllow: Bool
     let usesUnpromptedMode: Bool
+    let serverMode: GatewayServerApprovalMode?
+    let usesServerMode: Bool
+    let classification: ActionRisk?
 
     init(tool: MCPGatewayTool, invocation: MCPGatewayInvocation, rules: GatewayPolicyRules, policy: AutonomyPolicy) {
-        let protectedService = ["mail", "smtp", "outlook", "calendar", "reminder"].contains {
-            tool.name.lowercased().contains($0)
-        }
         let hardDenial: Bool
+        let serverMode: GatewayServerApprovalMode?
+        let override: ActionRisk?
         switch tool.origin {
         case .aitvaras(.mail):
             hardDenial = !["recent_messages", "search_messages", "get_message"].contains(tool.definition.name) || tool.definition.risk != .read
-        case .aitvaras: hardDenial = false
+            serverMode = nil
+            override = nil
+        case .aitvaras:
+            hardDenial = false
+            serverMode = nil
+            override = nil
         case .upstream:
-            // Generic upstreams cannot prove mail safety or EventKit ownership.
-            hardDenial = protectedService || AgentToolPolicy.isCommandExecution(.init(name: tool.definition.name, input: .null))
+            hardDenial = GatewayUpstreamToolSafety.isForbidden(tool)
+            serverMode = rules.serverMode
+            override = rules.overrides[tool.revision]
         }
         let permissions: AgentChatPermissions?
         if case .inline = invocation.presentation { permissions = invocation.context.permissions }
         else { permissions = nil }
         let criticalReason = Self.criticalReason(tool)
-        // External launches retain the existing gateway approval policy.
-        let explicit = permissions == nil ? Self.requiresExplicitApproval(tool) : criticalReason != nil
+        let mandatoryUpstreamAsk = GatewayUpstreamToolSafety.confirmationReason(tool) != nil
+        // Legacy outside launches retain the original explicit-approval checks.
+        let explicit = permissions == nil && serverMode == nil
+            ? Self.requiresExplicitApproval(tool) || mandatoryUpstreamAsk : criticalReason != nil
         let proposed: ActionRisk
         if case .aitvaras = tool.origin { proposed = tool.definition.risk }
-        else if let override = rules.overrides[tool.revision] { proposed = override }
+        else if let override { proposed = override }
         else if tool.trusted, tool.annotations.readOnly == true, tool.annotations.destructive != true { proposed = .read }
         else if tool.trusted, tool.annotations.destructive == false, tool.annotations.idempotent == true {
             proposed = .reversibleWrite
@@ -68,26 +82,39 @@ struct GatewayPolicyDecision: Equatable, Sendable {
         let risk = hardDenial || explicit ? .confirmable : proposed
         let forbidden = hardDenial || (permissions?.isPlan == true && risk != .read)
         let mode = permissions?.isPlan == true ? nil : permissions?.mcp
-        let unprompted = !forbidden && (mode == .unprompted || (mode == .auto && !explicit
+        let mustAsk = forbidden || mandatoryUpstreamAsk || mode == .ask || override == .confirmable
+        let unprompted = serverMode == nil && !mustAsk && (mode == .unprompted || (mode == .auto && !explicit
             && AgentToolPolicy.isRoutineMCPTool(toolName: tool.definition.name)))
+        let allowByServer = !mustAsk && !explicit && (serverMode == .fullAuto || (serverMode == .autoAllowReads && risk == .read))
         let grant = GatewayExactGrant(projectID: invocation.context.projectID, tool: tool)
-        let canUseGrant = !forbidden && !explicit && mode != .ask && !unprompted && risk == .confirmable
+        let canUseGrant = !mustAsk && !explicit && !unprompted && !allowByServer && (serverMode != nil || risk == .confirmable)
         let exactGrant = canUseGrant && (grant.map(rules.grants.contains) ?? false)
-        let verdict = policy.verdict(for: risk, hasExactGrant: exactGrant || unprompted,
-            requiresExplicitConfirmation: forbidden || mode == .ask || (explicit && !unprompted))
+        let serverRequiresConfirmation = serverMode != nil && !allowByServer && !exactGrant
+        let verdict = policy.verdict(for: risk, hasExactGrant: exactGrant || unprompted || allowByServer,
+            requiresExplicitConfirmation: mustAsk || serverRequiresConfirmation || (explicit && !unprompted))
 
         self.risk = risk
         self.forbidden = forbidden
         self.exactGrant = exactGrant
         self.verdict = verdict
+        self.serverMode = serverMode
+        classification = override
         usesUnpromptedMode = unprompted
-        canAlwaysAllow = !forbidden && mode == .auto && verdict == .requireConfirmation && grant != nil
+        usesServerMode = allowByServer
+        canAlwaysAllow = canUseGrant && (mode == .auto || serverMode != nil) && verdict == .requireConfirmation && grant != nil
         if verdict != .requireConfirmation || forbidden {
             approvalReason = nil
         } else if mode == .ask {
             approvalReason = "This chat asks before running MCP tools."
+        } else if let criticalReason {
+            approvalReason = criticalReason
+        } else if override == .confirmable {
+            approvalReason = "This project asks before running this tool."
+        } else if let serverMode {
+            approvalReason = serverMode == .ask
+                ? "This project asks before using this server." : "This project only auto-allows reads for this server."
         } else if mode == .auto {
-            approvalReason = criticalReason ?? "The effects of this tool could not be determined."
+            approvalReason = "The effects of this tool could not be determined."
         } else {
             approvalReason = nil
         }
@@ -100,6 +127,7 @@ struct GatewayPolicyDecision: Equatable, Sendable {
     }
 
     static func criticalReason(_ tool: MCPGatewayTool) -> String? {
+        if case .upstream = tool.origin { return GatewayUpstreamToolSafety.confirmationReason(tool) }
         if tool.annotations.destructive == true { return "This tool is declared destructive." }
         return AgentToolPolicy.criticalMCPApprovalReason(toolName: tool.definition.name)
     }
@@ -131,8 +159,11 @@ struct GatewayCallCoordinator: Sendable {
             if initial.usesUnpromptedMode {
                 approval = invocation.context.permissions?.mcp == .auto ? "chatAuto" : "chatUnprompted"
             }
+            if initial.usesServerMode {
+                approval = initial.serverMode == .fullAuto ? "serverFullAuto" : "serverAutoAllowReads"
+            }
             var approvedByUser = false
-            var grant: (chatID: UUID, toolRevision: String)?
+            var grant: (chatID: UUID?, toolRevision: String)?
             if initial.verdict == .requireConfirmation {
                 approval = "pending"
                 try write(audit, decision: current, approval: approval, outcome: "awaitingApproval", since: start, kind: .suggestionOffered)
@@ -144,11 +175,12 @@ struct GatewayCallCoordinator: Sendable {
                 switch outcome {
                 case .approved: approvedByUser = true
                 case .approvedForProject:
-                    guard initial.canAlwaysAllow, case .inline(let chatID) = invocation.presentation else {
-                        throw MCPGatewayCallError.denied
-                    }
+                    guard initial.canAlwaysAllow else { throw MCPGatewayCallError.denied }
                     approvedByUser = true
-                    grant = (chatID, tool.revision)
+                    switch invocation.presentation {
+                    case .inline(let chatID): grant = (chatID, tool.revision)
+                    case .outside: grant = (nil, tool.revision)
+                    }
                 case .denied: throw MCPGatewayCallError.denied
                 case .timedOut: throw MCPGatewayCallError.timedOut
                 case .cancelled: throw CancellationError()
@@ -159,10 +191,11 @@ struct GatewayCallCoordinator: Sendable {
             let refreshed = try await decision()
             let grantedByAnotherCall = approvedByUser && initial.canAlwaysAllow
                 && refreshed.exactGrant && !refreshed.forbidden && refreshed.risk == initial.risk
+                && refreshed.serverMode == initial.serverMode && refreshed.classification == initial.classification
             guard refreshed == initial || grantedByAnotherCall else { throw MCPGatewayCallError.stale }
             try Task.checkCancellation()
             // A durable pre-dispatch record is required before any operation.
-            try write(audit, decision: current, approval: approval, outcome: "dispatching", since: start, grant: grant)
+            try write(audit, decision: current, approval: approval, outcome: "dispatching", since: start, grant: grant, gatewayTool: tool)
             try Task.checkCancellation()
             dispatched = true
             let result = try await operation()
@@ -196,12 +229,13 @@ struct GatewayCallCoordinator: Sendable {
 
     private func write(_ audit: GatewayCallAudit, decision: GatewayPolicyDecision?, approval: String, outcome: String,
                        since start: ContinuousClock.Instant, kind: ActivityEvent.Kind = .toolExecuted,
-                       grant: (chatID: UUID, toolRevision: String)? = nil) throws {
+                       grant: (chatID: UUID?, toolRevision: String)? = nil,
+                       gatewayTool: MCPGatewayTool? = nil) throws {
         do {
             let duration = start.duration(to: .now).components
             let elapsed = Double(duration.seconds) * 1_000 + Double(duration.attoseconds) / 1e15
             try stores.recordGatewayActivity(audit.event(decision: decision, approval: approval, outcome: outcome,
-                elapsed: elapsed, kind: kind), projectID: audit.invocation.context.projectID, grant: grant)
+                elapsed: elapsed, kind: kind), projectID: audit.invocation.context.projectID, grant: grant, gatewayTool: gatewayTool)
         } catch {
             throw MCPGatewayCallError.auditUnavailable
         }

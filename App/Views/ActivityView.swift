@@ -64,7 +64,10 @@ struct ActivityView: View {
                     Divider()
                     AttentionUndoBar().padding(14)
                 }
-            } else { ordinaryList }
+            } else {
+                SettingsProposalHistory()
+                ordinaryList
+            }
         }
     }
 

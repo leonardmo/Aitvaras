@@ -174,10 +174,12 @@ From the maintainer's feedback; a violation fails review.
   only from the toolbar's changed-file count.
 - Chat with no selection and New Chat open the empty unified transcript and ready
   composer immediately. First Send creates the chat; there is no creation dialog.
-- The flat project menu (`chat.project`) sits beside the provider/model controls.
-  Selection order: explicitly requested project, optional default, most recently
-  used visible project. “Add project…” is the last item and opens the folder picker.
-  With no projects: “Choose project”, disabled Send, one short explanation.
+- The project picker (`chat.project`) covers new chats, with the worktree option
+  inside it for Git projects. Selection order follows the requested project, the
+  default project, and then the most recently used visible project. “Add project…”
+  opens the folder picker. With no projects, show “Choose project”, disable Send,
+  and explain what is needed. An existing chat shows its project and worktree
+  in the header. Its project name opens the project's page in Settings.
 - Default project starts unset, is stored per profile and has one project context
   item (“Set as default” / “Remove as default”) and a small row marker. Hiding or
   removing it silently unsets it.
@@ -189,13 +191,12 @@ From the maintainer's feedback; a violation fails review.
 - Old project-less conversations are only reached through the bottom “Earlier
   chats” reader group, collapsed behind “Show more” and hidden when empty. Keep
   `LocalChatView`, voice and the companion.
-- Composer holds everything per-chat: provider switcher (Claude, Codex, Local),
-  model, effort, permission mode, gauges for context and usage. One rounded card
-  puts input above a fixed row: attach, project, provider, model, effort, mode on
-  the left; reserved gauge slots and Send/Stop on the right. Provider segments
-  collapse to a menu at narrow widths, then project becomes an icon menu, then
-  effort and mode become icon menus. Controls stay on one row without scrolling.
-  Send stays beside Stop whenever there is input.
+- The composer groups the current provider, profile, model, and effort in one
+  Agent popover (`chat.agent`). It links to Providers in Settings. Attach and
+  per-chat Permissions remain beside it, with context and usage gauges and
+  Send/Stop on the right. Show current values as text at normal widths and use
+  accessible icon buttons when the row is narrow. Controls stay on one row
+  without scrolling. Send stays beside Stop whenever there is input.
   Changes stays closed until the toolbar count (`chat.changes`) is pressed.
   Transcript and card share a centred maximum width. Assistant text has no bubble;
   static gauges have a full track and a small percentage number.

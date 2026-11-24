@@ -27,6 +27,7 @@ public struct GatewayUpstreamAccount: Codable, Sendable, Equatable, Identifiable
     public fileprivate(set) var label: String? = nil
     public let authKind: GatewayUpstreamAuthKind
     public let headerName: String?
+    public fileprivate(set) var approvalDefaultsToAsk = false
 
     public var displayName: String { label ?? "\(serverName) · \(id.uuidString.prefix(8))" }
 }
@@ -131,7 +132,8 @@ extension Stores {
             let makeDefault = try projectID == nil && Self.gatewayDefault(serverName, in: dbc) == nil
             let account = GatewayUpstreamAccount(id: id, serverName: serverName, definitionProjectID: projectID,
                 definitionFingerprint: try definition.fingerprint(), globallyAvailable: projectID == nil,
-                isGlobalDefault: makeDefault, label: label, authKind: authKind, headerName: header)
+                isGlobalDefault: makeDefault, label: label, authKind: authKind, headerName: header,
+                approvalDefaultsToAsk: true)
             try account.insert(dbc)
             if let projectID, try GatewayProjectUpstreamSelection
                 .filter(Column("projectID") == projectID && Column("serverName") == serverName).fetchOne(dbc) == nil {
@@ -191,7 +193,8 @@ extension Stores {
             }
             let account = GatewayUpstreamAccount(id: UUID(), serverName: serverName, definitionProjectID: definitionProjectID,
                 definitionFingerprint: try definition.fingerprint(), globallyAvailable: globallyAvailable,
-                isGlobalDefault: makeGlobalDefault, authKind: .oauth, headerName: nil)
+                isGlobalDefault: makeGlobalDefault, authKind: .oauth, headerName: nil,
+                approvalDefaultsToAsk: true)
             try account.insert(dbc)
             try Self.recordGatewaySetting("Register upstream account", projectID: definitionProjectID, in: dbc)
             return account
@@ -313,7 +316,7 @@ extension Stores {
         return definition
     }
 
-    private static func resolveGatewayAccount(_ account: GatewayUpstreamAccount, in dbc: Database) throws -> GatewayUpstream {
+    static func resolveGatewayAccount(_ account: GatewayUpstreamAccount, in dbc: Database) throws -> GatewayUpstream {
         let definition = try gatewayDefinition(account.serverName, projectID: account.definitionProjectID,
                                                authKind: account.authKind, in: dbc)
         guard try definition.fingerprint() == account.definitionFingerprint else { throw GatewayUpstreamError.definitionChanged }
@@ -324,14 +327,17 @@ extension Stores {
         guard try WorkspaceProject.fetchOne(dbc, key: id)?.isVisible == true else { throw WorkspaceStoreError.projectNotFound }
     }
 
-    static func recordGatewaySetting(_ summary: String, projectID: UUID?, in dbc: Database) throws {
+    static func recordGatewaySetting(_ summary: String, projectID: UUID?,
+                                     detail: [String: JSONValue] = [:], in dbc: Database) throws {
         let tool = ToolDefinition(name: "saveSettings", description: summary, parametersJSON: "{}", risk: .reversibleWrite)
         let connector = "agent.gateway"
         guard AutonomyPolicy().verdict(for: tool, connectorID: connector) == .allow else {
             throw AgentMCPError.invalidConfiguration
         }
+        var metadata = detail
+        metadata["projectID"] = projectID.map { .string($0.uuidString) } ?? .null
+        metadata["risk"] = .string(tool.risk.rawValue)
         try ActivityEvent(kind: .toolExecuted, connectorID: connector, summary: summary,
-            detailJSON: JSONValue.object(["projectID": projectID.map { .string($0.uuidString) } ?? .null,
-                "risk": .string(tool.risk.rawValue)]).jsonString).insert(dbc)
+            detailJSON: JSONValue.object(metadata).jsonString).insert(dbc)
     }
 }

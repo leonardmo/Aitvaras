@@ -1281,3 +1281,24 @@ access to the directories shown on the approval card. Follow-ups already
 delivered to a provider stay with that provider run's policy.
 
 Issue #59. Related to #53 and #16.
+
+## D44 — One Settings home and reviewed agent setup
+
+Settings uses a visible sidebar and a single native window. Project routes
+open one form with General, Folders, Agent setup, MCP servers, Codex link and
+Aitvaras tool scopes. Small context controls link to the same window, and
+choices for a single chat stay in Chat. Changing registered folders marks the
+linked Codex project for review and invalidates stale native authorization.
+
+The settings registry defines stable IDs, types, scope, one route, and the
+Normal, Sensitive and User only classes. Agents can draft a value change or
+connection. Mutations always require explicit user approval; sensitive values
+have a separate review step. The audit records proposals, decisions and
+results by ID. Credentials enter through user-facing secure fields or OAuth
+into the profile Keychain. Agents never receive credentials from Settings.
+
+Gateway approval modes are per project and selected server account. New
+accounts ask, and existing configurations inherit their previous policy
+until reviewed. Chat Ask and Plan can narrow access. Explicit tool
+classifications and reusable grants bind to the exact definition revision.
+Protected services and protected tool actions keep their restrictions.

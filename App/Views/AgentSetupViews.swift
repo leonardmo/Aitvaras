@@ -5,11 +5,15 @@ struct AgentSetupSection: View {
     @Environment(AppModel.self) private var model
     var projectID: UUID?
     var directory: URL? = nil
+    var showsServerDefinitions = true
+    var serversOnly = false
     @State private var setup: AgentSetupModel?
 
     var body: some View {
         Group {
-            if let setup { AgentSetupContent(setup: setup) }
+            if let setup {
+                AgentSetupContent(setup: setup, showsServerDefinitions: showsServerDefinitions, serversOnly: serversOnly)
+            }
             else { ProgressView().controlSize(.small).accessibilityLabel("Loading agent setup") }
         }
         .task(id: "\(projectID?.uuidString ?? "global").\(directory?.path ?? "").\(model.agentSetupCoordinator != nil).\(model.chatModel?.claudeProfile ?? "default")") {
@@ -27,7 +31,9 @@ struct AgentSetupSection: View {
 
 private struct AgentSetupContent: View {
     @Bindable var setup: AgentSetupModel
-    @State private var addingServer = false
+    let showsServerDefinitions: Bool
+    let serversOnly: Bool
+    @State private var removingServer: AgentSetupServerRow?
     @State private var expandedCommandGroups = Set(AgentCommand.Group.allCases.filter(\.initiallyExpanded))
 
     var body: some View {
@@ -41,31 +47,29 @@ private struct AgentSetupContent: View {
                     .accessibilityIdentifier("agent.setup.provider")
             }
             HStack {
-                Text("MCP servers").font(.headline)
+                Text(showsServerDefinitions ? "Provider-managed servers" : "Provider state").font(.headline)
                 Spacer()
                 if setup.busy { ProgressView().controlSize(.small) }
                 if setup.projectID != nil {
                     Button("Check now", systemImage: "arrow.clockwise") { setup.checkNow() }
                         .disabled(setup.busy).accessibilityIdentifier("agent.setup.check")
                 }
-                if setup.provider != .codex {
-                    Button("Add server…", systemImage: "plus") { addingServer = true }
-                        .disabled(setup.busy).accessibilityIdentifier("agent.setup.add")
+            }
+            if showsServerDefinitions {
+                if setup.state?.servers.isEmpty == true {
+                    Text(setup.provider == .codex ? "Check now to discover provider MCP servers." : "No provider-managed servers.")
+                        .font(.caption).foregroundStyle(.secondary)
                 }
-            }
-            if setup.state?.servers.isEmpty == true {
-                Text(setup.provider == .codex ? "Check now to discover provider MCP servers." : "No MCP servers defined.")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
-            ForEach(setup.state?.servers ?? []) { row in serverRow(row) }
-            if setup.signingIn {
-                Button("Cancel sign-in") { setup.cancelOperation() }.accessibilityIdentifier("agent.setup.cancelSignIn")
+                ForEach(setup.state?.servers ?? []) { row in serverRow(row) }
+                if setup.signingIn {
+                    Button("Cancel sign-in") { setup.cancelOperation() }.accessibilityIdentifier("agent.setup.cancelSignIn")
+                }
             }
             ForEach(setup.state?.notices ?? [], id: \.self) { notice in
                 Label(notice, systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.orange)
             }
             if let message = setup.message { Text(message).font(.caption).foregroundStyle(.orange) }
-            if let state = setup.state, setup.projectID != nil {
+            if !serversOnly, let state = setup.state, setup.projectID != nil {
                 Divider()
                 policy(state)
                 if setup.provider == .claude { metadata(state.snapshot); catalog(state.snapshot) }
@@ -73,51 +77,64 @@ private struct AgentSetupContent: View {
         }
         .accessibilityIdentifier("agent.setup")
         .task(id: setup.provider) { await setup.load() }
-        .sheet(isPresented: $addingServer) { AgentMCPServerForm(setup: setup) }
+        .confirmationDialog("Remove MCP server?",
+                            isPresented: Binding(get: { removingServer != nil }, set: { if !$0 { removingServer = nil } }),
+                            presenting: removingServer) { row in
+            Button("Remove server", role: .destructive) { setup.remove(row) }
+        } message: { row in
+            Text("Remove \(row.name) from Aitvaras-managed server settings.")
+        }
     }
 
     private func serverRow(_ row: AgentSetupServerRow) -> some View {
-        HStack(alignment: .top, spacing: 10) {
-            AgentSetupStatusIndicator(status: row.indicator).padding(.top, 5)
-            VStack(alignment: .leading, spacing: 3) {
-                Text(row.name).font(.callout.weight(.medium)).lineLimit(2)
-                Text(row.sourceLabel).font(.caption).foregroundStyle(.secondary)
-                if let detail = row.detail { Text(detail).font(.caption).foregroundStyle(.secondary) }
-                if row.source == .project || row.source == .global, let reason = row.signInUnavailable {
-                    Text(reason).font(.caption).foregroundStyle(.secondary)
-                }
-            }.frame(maxWidth: .infinity, alignment: .leading)
-            if row.canManageOnClaudeAI {
-                Button("Manage on claude.ai") { setup.manageOnClaudeAI(row) }
-                    .disabled(setup.busy)
-                    .accessibilityIdentifier("agentSetup.manageOnClaudeAI.\(row.name)")
-            } else {
-                if row.indicator == .needsSignIn, row.canSignIn {
-                    Button("Sign in") { setup.signIn(row) }
-                        .disabled(setup.busy)
-                        .accessibilityIdentifier("agentSetup.signIn.\(row.name)")
-                }
-                Menu {
-                    if row.isApproved { Button("Revoke approval") { setup.edit(.revoke(name: row.name)) } }
-                    if row.canApprove, let fingerprint = row.fingerprint {
-                        Button("Approve") { setup.edit(.approve(name: row.name, fingerprint: fingerprint)) }
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .top, spacing: 10) {
+                AgentSetupStatusIndicator(status: row.indicator).padding(.top, 5)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(row.name).font(.callout.weight(.medium)).lineLimit(2)
+                    Text(row.sourceLabel).font(.caption).foregroundStyle(.secondary)
+                    if let detail = row.detail { Text(detail).font(.caption).foregroundStyle(.secondary) }
+                    if row.source == .project || row.source == .global, let reason = row.signInUnavailable {
+                        Text(reason).font(.caption).foregroundStyle(.secondary)
                     }
-                    if row.canDeny { Button("Deny") { setup.edit(.deny(name: row.name)) } }
-                    Button("Sign in") { setup.signIn(row) }.disabled(!row.canSignIn)
-                        .help(row.signInUnavailable ?? "Sign in using the provider CLI")
-                    if row.source == .global, setup.projectID != nil {
-                        Button(row.isOffInProject ? "On in this project" : "Off in this project") {
-                            setup.edit(.globalEnabled(name: row.name, enabled: row.isOffInProject))
-                        }
-                    }
-                    if row.canRemove { Button("Remove", role: .destructive) { setup.remove(row) } }
-                } label: { Image(systemName: "ellipsis.circle").accessibilityLabel("Actions for \(row.name)") }
-                    .menuStyle(.borderlessButton).fixedSize().disabled(setup.busy)
-                    .accessibilityIdentifier("agent.setup.server.\(row.id).actions")
+                }.frame(maxWidth: .infinity, alignment: .leading)
             }
+            HStack(spacing: 7) {
+                serverActions(row)
+            }
+            .controlSize(.small)
+            .disabled(setup.busy)
+            .padding(.leading, 18)
         }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("agent.setup.server.\(row.id)")
+    }
+
+    @ViewBuilder private func serverActions(_ row: AgentSetupServerRow) -> some View {
+        if row.canManageOnClaudeAI {
+            Button("Manage on claude.ai") { setup.manageOnClaudeAI(row) }
+                .accessibilityIdentifier("agentSetup.manageOnClaudeAI.\(row.name)")
+        } else {
+            if row.canSignIn {
+                Button("Sign in") { setup.signIn(row) }
+                    .accessibilityIdentifier("agentSetup.signIn.\(row.name)")
+            }
+            if row.isApproved { Button("Revoke approval") { setup.edit(.revoke(name: row.name)) } }
+            if row.canApprove, let fingerprint = row.fingerprint {
+                Button("Approve") { setup.edit(.approve(name: row.name, fingerprint: fingerprint)) }
+            }
+            if row.canDeny { Button("Deny") { setup.edit(.deny(name: row.name)) } }
+            if row.source == .global, setup.projectID != nil {
+                Button(row.isOffInProject ? "Enable in this project" : "Disable in this project") {
+                    setup.edit(.globalEnabled(name: row.name, enabled: row.isOffInProject))
+                }
+                Button("Shared server settings", systemImage: "arrow.up.right") {
+                    SettingsNavigation.open(.page(.connections), settingID: "connections.servers")
+                }.buttonStyle(.link)
+            } else if row.canRemove {
+                Button("Remove", role: .destructive) { removingServer = row }
+            }
+        }
     }
 
     @ViewBuilder private func policy(_ state: AgentSetupState) -> some View {
@@ -204,63 +221,5 @@ private struct AgentSetupStatusIndicator: View {
     }
     var body: some View {
         Circle().fill(color).frame(width: 8, height: 8).accessibilityLabel(label).help(label)
-    }
-}
-
-private struct AgentMCPServerForm: View {
-    @Environment(\.dismiss) private var dismiss
-    @Bindable var setup: AgentSetupModel
-    @State private var draft = AgentMCPServerDraft()
-    @State private var saving: Task<Void, Never>?
-    var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Text("Add MCP server").font(.title2.weight(.semibold))
-            ScrollView {
-                VStack(alignment: .leading, spacing: 10) {
-                    TextField("Server name", text: $draft.name)
-                    Picker("Transport", selection: $draft.transport) {
-                        Text("stdio").tag(AgentMCPServer.Transport.stdio)
-                        Text("HTTP").tag(AgentMCPServer.Transport.http)
-                        Text("SSE").tag(AgentMCPServer.Transport.sse)
-                    }.pickerStyle(.menu)
-                    if draft.transport == .stdio {
-                        TextField("Command", text: $draft.command)
-                        Text("Arguments · one per line").font(.caption).foregroundStyle(.secondary)
-                        TextEditor(text: $draft.arguments).font(.body.monospaced()).frame(height: 70)
-                        Text("Environment").font(.headline)
-                    } else {
-                        TextField("URL", text: $draft.url)
-                        Text("Headers").font(.headline)
-                    }
-                    ForEach($draft.fields) { $field in
-                        HStack(alignment: .center, spacing: 8) {
-                            TextField("Name", text: $field.name).frame(width: 125)
-                            if field.secret { SecureField("Value", text: $field.value) }
-                            else { TextField("Value", text: $field.value) }
-                            Toggle("Secret", isOn: $field.secret).toggleStyle(.switch).controlSize(.small)
-                            Button { draft.fields.removeAll { $0.id == field.id } } label: { Image(systemName: "minus.circle") }
-                                .buttonStyle(.plain).accessibilityLabel("Remove field")
-                        }
-                    }
-                    Button(draft.transport == .stdio ? "Add environment variable" : "Add header") { draft.fields.append(.init()) }
-                    Text("Secret values are stored in this profile's Keychain. Put credentials in secret fields, not in the URL, command or arguments.")
-                        .font(.caption).foregroundStyle(.secondary)
-                    if let message = setup.message { Text(message).font(.caption).foregroundStyle(.orange) }
-                }.textFieldStyle(.roundedBorder).padding(2)
-            }.disabled(setup.busy)
-            HStack {
-                if setup.busy { ProgressView().controlSize(.small) }
-                Spacer()
-                Button("Cancel") { saving?.cancel(); draft = .init(); dismiss() }.keyboardShortcut(.cancelAction)
-                Button("Save") {
-                    saving = Task { if await setup.save(draft) { draft = .init(); dismiss() }; saving = nil }
-                }.buttonStyle(.borderedProminent).disabled(setup.busy).keyboardShortcut(.defaultAction)
-            }
-        }.padding(20).frame(width: 580, height: 490)
-            .accessibilityIdentifier("agent.setup.serverForm")
-            .onChange(of: draft.transport) { old, new in
-                if (old == .stdio) != (new == .stdio) { draft.fields = []; draft.command = ""; draft.arguments = ""; draft.url = "" }
-            }
-            .onDisappear { saving?.cancel(); draft = .init() }
     }
 }

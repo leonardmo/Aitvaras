@@ -2,7 +2,7 @@ import Foundation
 import AitvarasCore
 
 public enum GatewayToolScope: String, Codable, Sendable, CaseIterable, Identifiable {
-    case memory, knowledge, calendar, reminders, mail, goals, activity
+    case memory, knowledge, calendar, reminders, mail, goals, activity, settings
 
     public var id: Self { self }
 }

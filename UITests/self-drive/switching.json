@@ -10,6 +10,16 @@
     },
     {
       "action": "waitFor",
+      "identifier": "chat.agent",
+      "enabled": true,
+      "timeout": 300
+    },
+    {
+      "action": "press",
+      "identifier": "chat.agent"
+    },
+    {
+      "action": "waitFor",
       "identifier": "chat.provider.codex",
       "enabled": true,
       "timeout": 180
@@ -17,6 +27,10 @@
     {
       "action": "press",
       "identifier": "chat.provider.codex"
+    },
+    {
+      "action": "press",
+      "identifier": "chat.agent.done"
     },
     {
       "action": "waitFor",
@@ -58,8 +72,22 @@
       "delay": 3
     },
     {
+      "action": "waitFor",
+      "identifier": "chat.agent",
+      "enabled": true,
+      "timeout": 300
+    },
+    {
+      "action": "press",
+      "identifier": "chat.agent"
+    },
+    {
       "action": "press",
       "identifier": "chat.provider.local"
+    },
+    {
+      "action": "press",
+      "identifier": "chat.agent.done"
     },
     {
       "action": "waitFor",
@@ -214,8 +242,22 @@
       "timeout": 300
     },
     {
+      "action": "waitFor",
+      "identifier": "chat.agent",
+      "enabled": true,
+      "timeout": 300
+    },
+    {
+      "action": "press",
+      "identifier": "chat.agent"
+    },
+    {
       "action": "press",
       "identifier": "chat.provider.claude"
+    },
+    {
+      "action": "press",
+      "identifier": "chat.agent.done"
     },
     {
       "action": "waitFor",

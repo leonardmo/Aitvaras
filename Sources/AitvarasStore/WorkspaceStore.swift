@@ -515,6 +515,7 @@ extension Stores {
             if values.sorted(by: { $0.path < $1.path }) != before.folders.sorted(by: { $0.path < $1.path }) {
                 try WorkspaceFolder.filter(Column("projectID") == projectID).deleteAll(dbc)
                 for value in values { try value.insert(dbc) }
+                try Self.invalidateCodexReviewForFolderChange(projectID: projectID, in: dbc)
             }
             let updated = try Self.policyReview(projectID: projectID, in: dbc)
             let policy = try Self.saveWorkspacePolicy(projectID: projectID, allowedProviders: allowedProviders,
@@ -551,6 +552,9 @@ extension Stores {
             }
             try WorkspaceFolder.filter(Column("projectID") == projectID).deleteAll(dbc)
             for value in values { try value.insert(dbc) }
+            if values.sorted(by: { $0.path < $1.path }) != existing.sorted(by: { $0.path < $1.path }) {
+                try Self.invalidateCodexReviewForFolderChange(projectID: projectID, in: dbc)
+            }
         }
     }
 

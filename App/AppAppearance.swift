@@ -41,6 +41,10 @@ struct AppearanceQuickControl: View {
                     Label(mode.title, systemImage: appearance.mode == mode ? "checkmark" : icon(for: mode))
                 }
             }
+            Divider()
+            Button("Open Appearance Settings…", systemImage: "arrow.up.right") {
+                SettingsNavigation.open(.page(.avatar), settingID: "appearance.mode")
+            }
         } label: {
             Image(systemName: icon(for: appearance.mode))
                 .font(.system(size: 15, weight: .medium))

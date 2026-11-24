@@ -96,7 +96,7 @@ import AitvarasStore
         #expect(critical.verdict == .requireConfirmation)
         #expect(critical.approvalReason != nil)
         #expect(!critical.canAlwaysAllow)
-        #expect(decision(destructive, mode: .fullAccess).verdict == .allow)
+        #expect(decision(destructive, mode: .fullAccess).verdict == .requireConfirmation)
         #expect(decision(protected, mode: .fullAccess).forbidden)
         #expect(decision(destructive, mode: .fullAccess, presentation: .outside).verdict == .requireConfirmation)
     }

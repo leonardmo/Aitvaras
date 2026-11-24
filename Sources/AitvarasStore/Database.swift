@@ -1360,6 +1360,29 @@ public final class AitvarasDatabase: Sendable {
                     json_extract(p.policy, '$.mcp'), json_extract(p.policy, '$.isPlan'))) = 1
                 """)
         }
+        m.registerMigration("v53-gateway-server-approval") { db in
+            try db.alter(table: "gatewayUpstreamAccount") { t in
+                t.add(column: "approvalDefaultsToAsk", .boolean).notNull().defaults(to: false)
+            }
+            try db.alter(table: "gatewayProjectToolGrant") { t in
+                t.add(column: "accountID", .blob).references("gatewayUpstreamAccount", onDelete: .cascade)
+                t.add(column: "toolName", .text)
+            }
+            try db.create(table: "gatewayProjectServerApproval") { t in
+                t.column("projectID", .blob).notNull().references("workspaceProject", onDelete: .cascade)
+                t.column("accountID", .blob).notNull().references("gatewayUpstreamAccount", onDelete: .cascade)
+                t.column("mode", .text).notNull()
+                t.primaryKey(["projectID", "accountID"])
+            }
+            try db.create(table: "gatewayProjectToolOverride") { t in
+                t.column("projectID", .blob).notNull().references("workspaceProject", onDelete: .cascade)
+                t.column("accountID", .blob).notNull().references("gatewayUpstreamAccount", onDelete: .cascade)
+                t.column("toolRevision", .text).notNull()
+                t.column("toolName", .text).notNull()
+                t.column("risk", .text).notNull()
+                t.primaryKey(["projectID", "toolRevision"])
+            }
+        }
         return m
     }
 

@@ -71,8 +71,7 @@ import AppKit
     private func press(_ element: SelfDriveNode, target identifier: String) throws -> String {
         guard element.enabled else { throw SelfDriveFailure("Control disabled: \(identifier)") }
         // AppKit menu tracking can depend on real focus and run a modal loop.
-        guard !["chat.model", "chat.effort", "chat.project"].contains(identifier),
-              !["AXPopUpButton", "AXMenuButton", "AXMenuItem"].contains(element.role ?? "") else {
+        guard !["AXPopUpButton", "AXMenuButton", "AXMenuItem"].contains(element.role ?? "") else {
             throw SelfDriveFailure("Native menu tracking requires XCUITest: \(identifier)")
         }
         if element.pressAction() { return "accessibilityPerformPress accepted" }

@@ -46,6 +46,7 @@ import AitvarasStore
 
         try await approvedCall("issues_list_issues", on: claude, approvals: approvals)
         try stores.setGatewayUpstreamTrust(id: account.id, trusted: true)
+        try stores.setGatewayServerApprovalMode(projectID: project.id, accountID: account.id, mode: .autoAllowReads)
         await sessions.routingChanged()
         let read = gatewayText(await gatewayCall(codex, name: "issues_list_issues"))
         #expect(read == "Example issue")

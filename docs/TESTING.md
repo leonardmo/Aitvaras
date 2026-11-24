@@ -1340,6 +1340,20 @@ AITVARAS_SELF_DRIVE_PROVIDER=claude AITVARAS_SELF_DRIVE_TEMPLATE="$PWD/UITests/s
   scripts/run-self-drive.sh command-panel 240 --no-build
 ```
 
+The Settings navigation fixture exercises the real settings sidebar and
+project editor in the isolated self-drive window. It opens the same settings
+view as the native Settings window, registers the fixture's second folder,
+reopens the project editor, removes the original folder, and saves again.
+
+```sh
+AITVARAS_SELF_DRIVE_FOLDERS=1 AITVARAS_SELF_DRIVE_TEMPLATE="$PWD/UITests/self-drive/fixtures/settings-project" \
+  scripts/run-self-drive.sh settings-navigation 120
+```
+
+The folder fixture supplies the directory that an Open panel would return. It
+uses only the isolated project's `sample-folder`; the production Open panel
+uses the same normalization and draft editor.
+
 Set `AITVARAS_SELF_DRIVE` to a scenario JSON file and
 `AITVARAS_SELF_DRIVE_OUTPUT` to a local artifact directory. Also set
 `AITVARAS_STATE_DIR` to a disposable profile and

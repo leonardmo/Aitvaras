@@ -9,8 +9,7 @@ struct WorkspaceRailView: View {
     @Environment(AppModel.self) private var model
     @State private var expandedProjects: Set<UUID> = []
     @State private var earlierExpanded = false
-    @State private var showingProjectManager = false
-    @State private var editingProject: WorkspaceProject?
+    @State private var showingHiddenProjects = false
     @State private var renamingChat: WorkspaceChat?
     @State private var newTitle = ""
     @State private var assigningConversation: Conversation?
@@ -25,6 +24,8 @@ struct WorkspaceRailView: View {
                     ForEach(model.workspaceProjects.filter(\.isVisible)) { project in
                         projectGroup(project)
                     }
+                    let hidden = model.workspaceProjects.filter { !$0.isVisible }
+                    if !hidden.isEmpty { hiddenProjects(hidden) }
                     if !model.unassignedChatConversations.isEmpty {
                         VStack(alignment: .leading, spacing: 5) {
                             Text("Earlier chats").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
@@ -59,11 +60,6 @@ struct WorkspaceRailView: View {
                 .disabled(model.chatModel?.discoveringNativeSessions == true)
                 .help(model.chatModel?.nativeDiscoveryError ?? "Refresh native chats")
                 .accessibilityIdentifier("chat.native.refresh")
-                Menu {
-                    Button("Manage projects…") { showingProjectManager = true }
-                } label: { Image(systemName: "ellipsis") }
-                .accessibilityLabel("Projects").accessibilityIdentifier("chat.projects.menu")
-                .menuStyle(.borderlessButton).fixedSize()
             }.buttonStyle(.borderless).labelStyle(.iconOnly).padding(10)
         }
         .disabled(model.isWorkspaceSelectionBusy || model.chatModel?.creatingChat == true)
@@ -71,13 +67,6 @@ struct WorkspaceRailView: View {
         .task(id: model.workspaceProjects.map { "\($0.id):\($0.updatedAt)" }.joined() + String(model.chatModel != nil)) {
             await refreshNativeChats()
         }
-        .sheet(item: $editingProject) { project in
-            WorkspaceProjectEditor(project: project) { title, instructions, _ in
-                var updated = project; updated.title = title; updated.instructions = instructions
-                return model.updateWorkspaceProject(updated)
-            }
-        }
-        .sheet(isPresented: $showingProjectManager) { WorkspaceProjectManager() }
         .sheet(item: $assigningConversation) { WorkspaceConversationAssignmentEditor(conversation: $0) }
         .alert("Rename chat", isPresented: Binding(get: { renamingChat != nil }, set: { if !$0 { renamingChat = nil } })) {
             TextField("Title", text: $newTitle)
@@ -112,6 +101,12 @@ struct WorkspaceRailView: View {
                         .accessibilityLabel("Default project")
                 }
                 Spacer(minLength: 0)
+                Button("Project settings", systemImage: "gearshape") {
+                    SettingsNavigation.open(.project(project.id, section: .general))
+                }
+                .labelStyle(.iconOnly).buttonStyle(.borderless)
+                .help("Project settings")
+                .accessibilityIdentifier("chat.project.settings.\(project.id)")
                 Button("New Chat", systemImage: "plus") {
                     model.startNewAgentChat(projectID: project.id)
                 }
@@ -120,11 +115,9 @@ struct WorkspaceRailView: View {
             }
             .foregroundStyle(.secondary)
             .contextMenu {
-                Button(model.defaultChatProjectID == project.id ? "Remove as default" : "Set as default") {
-                    model.setDefaultChatProject(model.defaultChatProjectID == project.id ? nil : project.id)
+                Button("Project settings…") {
+                    SettingsNavigation.open(.project(project.id, section: .general))
                 }
-                Button("Edit project…") { editingProject = project }
-                Button("Hide project") { var updated = project; updated.isVisible = false; model.updateWorkspaceProject(updated) }
             }
             ForEach(visible) { chat in chatRow(chat) }
             if all.count > visible.count || expandedProjects.contains(project.id) {
@@ -136,6 +129,33 @@ struct WorkspaceRailView: View {
             }
         }
     }
+    private func hiddenProjects(_ projects: [WorkspaceProject]) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Button {
+                showingHiddenProjects.toggle()
+            } label: {
+                Label("Hidden projects", systemImage: showingHiddenProjects ? "chevron.down" : "chevron.right")
+                    .font(.caption.weight(.semibold))
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.secondary)
+            .accessibilityValue(showingHiddenProjects ? "Expanded" : "Collapsed")
+            .accessibilityIdentifier("chat.projects.hidden")
+            if showingHiddenProjects {
+                ForEach(projects) { project in
+                    Button {
+                        SettingsNavigation.open(.project(project.id, section: .general))
+                    } label: {
+                        Label(project.title, systemImage: "folder")
+                            .font(.callout).lineLimit(1)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("chat.projects.hidden.\(project.id)")
+                }
+            }
+        }
+    }
+
     private func chatRow(_ chat: WorkspaceChat) -> some View {
         SidebarChatRow(chat: chat, selected: model.selectedWorkspaceChatID == chat.id,
                        status: model.chatModel?.sidebarStatus(chat.id) ?? .idle,
@@ -279,153 +299,6 @@ struct ProjectChatWorkspaceView: View {
             WorkspaceRailView(initialRecent: recent).frame(width: 240)
             Divider()
             ChatDetailView()
-        }
-    }
-}
-
-private struct WorkspaceProjectEditor: View {
-    @Environment(\.dismiss) private var dismiss
-    @State private var title: String
-    @State private var instructions: String
-    @State private var folderURLs: [URL] = []
-    private let existingProject: WorkspaceProject?
-    let save: (String, String, [URL]) -> Bool
-
-    init(project: WorkspaceProject? = nil, save: @escaping (String, String, [URL]) -> Bool) {
-        existingProject = project
-        _title = State(initialValue: project?.title ?? "")
-        _instructions = State(initialValue: project?.instructions ?? "")
-        self.save = save
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Text(existingProject == nil ? "New project" : "Edit project").font(.title2.weight(.semibold))
-            TextField("Project title", text: $title).textFieldStyle(.roundedBorder)
-            VStack(alignment: .leading, spacing: 6) {
-                Text("Project instructions").font(.headline)
-                TextEditor(text: $instructions)
-                    .font(.body)
-                    .frame(height: 115)
-                    .overlay(RoundedRectangle(cornerRadius: 5).stroke(.quaternary))
-                Text("Used for chats in this project.")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
-            if existingProject == nil {
-                VStack(alignment: .leading, spacing: 7) {
-                    Button("Register folder…", systemImage: "folder.badge.plus", action: chooseFolders)
-                    ForEach(folderURLs, id: \.self) { url in
-                        HStack {
-                            Text(url.path).lineLimit(1).truncationMode(.middle)
-                            Spacer()
-                            Button("Remove", systemImage: "xmark.circle") { folderURLs.removeAll { $0 == url } }
-                                .labelStyle(.iconOnly).buttonStyle(.plain)
-                        }.font(.caption)
-                    }
-                    Text("Optional working folders for this project.")
-                        .font(.caption).foregroundStyle(.secondary)
-                }
-            }
-            WorkspaceValidationMessage()
-            HStack {
-                Spacer()
-                Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
-                Button(existingProject == nil ? "Create project" : "Save") {
-                    if save(title.trimmingCharacters(in: .whitespacesAndNewlines), instructions, folderURLs) {
-                        dismiss()
-                    }
-                }
-                .keyboardShortcut(.defaultAction)
-                .disabled(title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-            }
-        }
-        .padding(24)
-        .frame(width: 460)
-    }
-
-    private func chooseFolders() {
-        let panel = NSOpenPanel()
-        panel.canChooseFiles = false
-        panel.canChooseDirectories = true
-        panel.allowsMultipleSelection = true
-        panel.prompt = "Register"
-        if panel.runModal() == .OK {
-            for url in panel.urls where !folderURLs.contains(url) { folderURLs.append(url) }
-        }
-    }
-}
-
-private struct WorkspaceProjectManager: View {
-    @Environment(AppModel.self) private var model
-    @Environment(\.dismiss) private var dismiss
-    @State private var reviewingProject: WorkspaceProject?
-
-    var body: some View {
-        if let project = reviewingProject {
-            WorkspaceProjectEditor(project: project) { title, instructions, _ in
-                var updated = project; updated.title = title; updated.instructions = instructions
-                let saved = model.updateWorkspaceProject(updated)
-                if saved { reviewingProject = nil }
-                return saved
-            }
-        } else {
-            VStack(alignment: .leading, spacing: 16) {
-                Text("Manage projects").font(.title2.weight(.semibold))
-                Text("Hidden projects keep their chats and folders.")
-                    .font(.callout).foregroundStyle(.secondary)
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 14) {
-                        if model.workspaceProjects.isEmpty {
-                            Text("No projects yet.")
-                                .foregroundStyle(.secondary)
-                        }
-                        ForEach(model.workspaceProjects) { project in
-                            VStack(alignment: .leading, spacing: 8) {
-                                HStack {
-                                    Label(project.title, systemImage: "folder").font(.headline)
-                                    Spacer()
-                                    Button("Settings") { reviewingProject = project }
-                                    Button(project.isVisible ? "Hide" : "Show") {
-                                        var updated = project
-                                        updated.isVisible.toggle()
-                                        model.updateWorkspaceProject(updated)
-                                    }
-                                }
-                                if !project.instructions.isEmpty {
-                                    Text(project.instructions).font(.caption).foregroundStyle(.secondary).lineLimit(3)
-                                }
-                                let registration = folderRegistration(projectID: project.id)
-                                if registration.loadFailed {
-                                    Label("Could not read folder registration.", systemImage: "exclamationmark.triangle")
-                                        .font(.caption).foregroundStyle(.orange)
-                                } else if registration.paths.isEmpty {
-                                    Text("No registered folders").font(.caption).foregroundStyle(.tertiary)
-                                } else {
-                                    ForEach(registration.paths, id: \.self) { path in
-                                        Label(path, systemImage: "folder")
-                                            .font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
-                                    }
-                                }
-                            }
-                            .padding(12)
-                            .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 8))
-                        }
-                    }
-                }
-                WorkspaceValidationMessage()
-                HStack { Spacer(); Button("Done") { dismiss() }.keyboardShortcut(.cancelAction) }
-            }
-            .padding(24)
-            .frame(width: 560, height: 450)
-        }
-    }
-
-    private func folderRegistration(projectID: UUID) -> (paths: [String], loadFailed: Bool) {
-        guard let stores = model.stores else { return ([], true) }
-        do {
-            return (try stores.workspaceFolders(projectID: projectID).map(\.path), false)
-        } catch {
-            return ([], true)
         }
     }
 }

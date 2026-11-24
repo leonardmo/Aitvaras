@@ -403,13 +403,19 @@ public actor ConnectorHub {
 
     private func gatewayDecision(_ tool: MCPGatewayTool, invocation: MCPGatewayInvocation,
                                  rules: GatewayPolicyRules) throws -> GatewayPolicyDecision {
-        var rules = rules
-        if case .inline = invocation.presentation, invocation.context.permissions?.mcp == .auto,
-           let grant = GatewayExactGrant(projectID: invocation.context.projectID, tool: tool),
-           try stores.hasGatewayToolGrant(projectID: grant.projectID, toolRevision: grant.toolRevision) {
-            rules = .init(overrides: rules.overrides, grants: rules.grants.union([grant]))
+        let saved = try stores.gatewayToolApprovalRule(projectID: invocation.context.projectID, tool: tool)
+        var overrides = rules.overrides
+        if let override = saved.override { overrides[tool.revision] = override }
+        var grants = rules.grants
+        if saved.granted, let grant = GatewayExactGrant(projectID: invocation.context.projectID, tool: tool) {
+            if case .inline = invocation.presentation, invocation.context.permissions?.mcp == .auto {
+                grants.insert(grant)
+            } else if saved.mode != nil {
+                grants.insert(grant)
+            }
         }
-        return GatewayPolicyDecision(tool: tool, invocation: invocation, rules: rules, policy: policy)
+        return GatewayPolicyDecision(tool: tool, invocation: invocation,
+            rules: .init(overrides: overrides, grants: grants, serverMode: saved.mode ?? rules.serverMode), policy: policy)
     }
 
     /// Only used by the scoped adapter inside a policy-authorized gateway call.

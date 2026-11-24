@@ -84,6 +84,7 @@ struct GatewayAttentionCards: View {
     @Environment(AppModel.self) private var model
 
     var body: some View {
+        SettingsProposalCards(chatID: nil)
         ForEach(model.gatewayOutsideApprovals) { request in
             VStack(alignment: .leading, spacing: 8) {
                 Text("Allow \(request.toolName)?").font(.callout.weight(.semibold))
@@ -98,6 +99,11 @@ struct GatewayAttentionCards: View {
                 HStack {
                     Button("Allow") { Task { await model.decideGatewayApproval(request, allow: true) } }
                         .buttonStyle(.borderedProminent)
+                    if request.canAlwaysAllow {
+                        Button("Always allow in this project") {
+                            Task { await model.decideGatewayApproval(request, allow: true, forProject: true) }
+                        }
+                    }
                     Button("Deny") { Task { await model.decideGatewayApproval(request, allow: false) } }
                 }
             }

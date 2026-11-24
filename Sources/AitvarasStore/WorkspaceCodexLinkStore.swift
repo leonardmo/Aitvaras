@@ -190,9 +190,7 @@ extension Stores {
         try db.queue.write { dbc in
             let old = try Self.codexProjectLink(id: linkID, in: dbc)
             try Self.requireCodexRevision(old, expectedRevision)
-            try dbc.execute(sql: "UPDATE workspaceCodexProjectLink SET state = 'reviewRequired', revision = revision + 1, updatedAt = ? WHERE id = ?",
-                            arguments: [now, linkID])
-            try Self.clearCodexAuthorizations(projectLinkID: linkID, in: dbc)
+            try Self.markCodexProjectForReview(linkID: linkID, now: now, in: dbc)
             return try Self.codexProjectLink(id: linkID, in: dbc)
         }
     }
@@ -327,6 +325,20 @@ extension Stores {
 
     private static func requireCodexRevision(_ link: WorkspaceCodexProjectLink, _ expected: Int) throws {
         guard link.revision == expected else { throw WorkspaceCodexLinkError.staleRevision }
+    }
+
+    /// Called in the folder update transaction so the new folder set cannot
+    /// become visible alongside consent for an older set.
+    static func invalidateCodexReviewForFolderChange(projectID: UUID, in db: Database, now: Date = .now) throws {
+        guard let linkID = try UUID.fetchOne(db, sql: "SELECT id FROM workspaceCodexProjectLink WHERE projectID = ?",
+                                             arguments: [projectID]) else { return }
+        try markCodexProjectForReview(linkID: linkID, now: now, in: db)
+    }
+
+    private static func markCodexProjectForReview(linkID: UUID, now: Date, in db: Database) throws {
+        try db.execute(sql: "UPDATE workspaceCodexProjectLink SET state = 'reviewRequired', revision = revision + 1, updatedAt = ? WHERE id = ?",
+                       arguments: [now, linkID])
+        try clearCodexAuthorizations(projectLinkID: linkID, in: db)
     }
 
     private static func clearCodexAuthorizations(projectLinkID: UUID, in db: Database) throws {

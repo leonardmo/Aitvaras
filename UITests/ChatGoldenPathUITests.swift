@@ -34,6 +34,22 @@ final class ChatGoldenPathUITests: XCTestCase {
         if element("chat.composer.send").exists { element("chat.composer.send").click() }
     }
 
+    private func selectProvider(_ provider: String) {
+        let picker = element("chat.agent")
+        guard picker.waitForExistence(timeout: 10), picker.isEnabled else {
+            XCTFail("Agent picker is unavailable")
+            return
+        }
+        picker.click()
+        let choice = element("chat.provider.\(provider)")
+        guard choice.waitForExistence(timeout: 10) else {
+            XCTFail("Provider is missing from the Agent picker")
+            return
+        }
+        choice.click()
+        element("chat.agent.done").click()
+    }
+
     func testGoldenPath() throws {
         continueAfterFailure = true
         app = E2EApp.launch(environment: ["AITVARAS_AGENT_TEST_PROVIDERS": "real"])
@@ -64,7 +80,7 @@ final class ChatGoldenPathUITests: XCTestCase {
         }
 
         // Claude: a real reply through the real login.
-        if element("chat.provider.claude").exists { element("chat.provider.claude").click() }
+        selectProvider("claude")
         sleep(2)
         shot("04-claude-selected")
         send("Reply with only this word spelled backwards: nacilep")
@@ -75,8 +91,8 @@ final class ChatGoldenPathUITests: XCTestCase {
         shot("06-claude-replied")
         dump("06-claude-tree")
 
-        // Codex: one click, and it knows the earlier conversation.
-        if element("chat.provider.codex").exists { element("chat.provider.codex").click() }
+        // Codex can continue with the earlier conversation.
+        selectProvider("codex")
         sleep(2)
         shot("07-codex-selected")
         send("Which word did you just reply with? Reply with only that word, in capitals.")
@@ -105,11 +121,11 @@ final class ChatGoldenPathUITests: XCTestCase {
         sleep(5)
         shot("12-stopped")
 
-        if element("chat.provider.local").exists { element("chat.provider.local").click() }
+        selectProvider("local")
         sleep(2)
         shot("13-local-selected")
 
-        for menu in ["chat.model", "chat.mode", "chat.effort"] where element(menu).exists {
+        for menu in ["chat.agent", "chat.mode"] where element(menu).exists {
             element(menu).click()
             sleep(1)
             shot("14-menu-\(menu)")

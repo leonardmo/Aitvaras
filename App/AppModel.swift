@@ -76,8 +76,13 @@ final class AppModel {
     @ObservationIgnored private var gatewayApprovalBroker: GatewayApprovalBroker?
     @ObservationIgnored private var gatewayApprovalObserver: Task<Void, Never>?
     private(set) var gatewayInlineApprovals: [GatewayApprovalRequest] = []
+    var settingsProposals: [SettingsProposal] = []
+    var editingSettingsProposal: SettingsProposal?
     private(set) var gatewayOutsideApprovals: [GatewayApprovalRequest] = []
-    var gatewayAttentionCount: Int { gatewayOutsideApprovals.count + gatewaySignInRequests.count }
+    var gatewayAttentionCount: Int {
+        gatewayOutsideApprovals.count + gatewaySignInRequests.count
+            + settingsProposals.count { [.waiting, .installed].contains($0.status) && $0.source.chatID == nil }
+    }
     @ObservationIgnored private var gatewayUpstreamSessions: GatewayUpstreamSessions?
     @ObservationIgnored private var gatewaySignInTask: Task<Void, Never>?
     private(set) var gatewaySignInRequests: [GatewayUpstreamSessions.SignIn] = []
@@ -365,6 +370,11 @@ final class AppModel {
                 stores: stores, keychain: keychain, hub: hub, router: router, reporter: reporter)
             self.integrations = integrations
             await integrations.registerAll()
+            try loadSettingsProposals()
+            await hub.register(SettingsConnector { [weak self] name, arguments, source in
+                guard let self else { throw SettingsToolError.unavailable }
+                return try await self.executeSettingsTool(name, arguments: arguments, source: source)
+            })
             await startGatewaySocket(stores: stores, hub: hub)
 
             // Both wrappers resolve their feature setting at call time. Keep
@@ -549,11 +559,16 @@ final class AppModel {
         return AsyncThrowingStream { continuation in
             let task = Task { [weak self] in
                 defer { self?.localAgentReplyActive = false }
-                // A nonnil project context preserves the existing tool-free,
-                // no-shared-memory project path. Catch-up is already in input.
-                let stream = await ActivityTaskContext.$runID.withValue(input.id) {
-                    await agentLoop.run(history: [], userMessage: input.text,
-                        referenceID: input.id.uuidString, projectTextContext: configuration.instructions)
+                // Preserve project-isolated recall and pass only the verified
+                // journal owner and project to the settings tooling.
+                let turn = try? self?.stores?.agentTurn(id: input.id)
+                let scope = SettingsProposalSource(projectID: configuration.projectID,
+                    chatID: turn?.chatID, channel: "local")
+                let stream = await SettingsConnector.$source.withValue(scope) {
+                    await ActivityTaskContext.$runID.withValue(input.id) {
+                        await agentLoop.run(history: [], userMessage: input.text, referenceID: input.id.uuidString,
+                            projectTextContext: configuration.instructions, allowSettingsTools: true)
+                    }
                 }
                 for await update in stream {
                     if Task.isCancelled { break }
@@ -585,7 +600,11 @@ final class AppModel {
                 save: { key, value in try storage.set(value, forKey: key) }, delete: { try storage.delete($0) }),
                 needsAttention: { [weak self] in await self?.refreshGatewaySignInRequests() })
             let tools = GatewayToolService(stores: stores, hub: hub, approvals: approvals,
-                                           knowledgeEmbedder: OllamaEmbedder(), upstreams: upstreams)
+                                           knowledgeEmbedder: OllamaEmbedder(), upstreams: upstreams,
+                                           settings: { [weak self] name, arguments, source in
+                guard let self else { throw SettingsToolError.unavailable }
+                return try await self.executeSettingsTool(name, arguments: arguments, source: source)
+            })
             let service = GatewaySocketService(endpoint: endpoint, registry: registry,
                 verifyLauncher: { identity.matches($0) },
                 resolveContext: { peer, client in
@@ -692,6 +711,92 @@ final class AppModel {
         guard let stores, let gatewayUpstreamSessions else { throw GatewayTransportError.rejected }
         _ = try await gatewayUpstreamSessions.addStaticUpstream(stores: stores, serverName: serverName, label: label,
             endpoint: endpoint, projectID: projectID, headerName: headerName, token: token)
+    }
+
+    func testSettingsGatewayAccount(_ id: UUID) async throws -> [MCPGatewayTool] {
+        guard let stores, let gatewayUpstreamSessions else { throw SettingsToolError.unavailable }
+        let route = try stores.gatewayUpstream(id: id)
+        try await gatewayUpstreamSessions.requireSignInIfNeeded(route)
+        return try await gatewayUpstreamSessions.catalog(route)
+    }
+
+    func testNativeSettingsMCP(_ draft: SettingsMCPDraft, projectID: UUID?) async throws -> [String] {
+        guard let stores else { throw SettingsToolError.unavailable }
+        let servers: [String: AgentMCPServer]
+        let directory: URL
+        if !draft.global, let projectID {
+            let setup = try stores.workspaceAgentSetup(projectID: projectID)
+            servers = try AgentMCPConfiguration.decodeServers(setup.extraServersJSON)
+            directory = try stores.workspaceFolders(projectID: projectID).first.map {
+                URL(fileURLWithPath: $0.path, isDirectory: true)
+            } ?? FileManager.default.temporaryDirectory
+        } else {
+            servers = try stores.globalAgentMCPServers()
+            directory = FileManager.default.temporaryDirectory
+        }
+        guard let server = servers[draft.name] else { throw SettingsToolError.unavailable }
+        let environment = try await ProviderEnvironment.resolve(inherited: ProcessInfo.processInfo.environment)
+        let storage = keychain
+        return try await NativeMCPSetupProbe.test(server: server, directory: directory, providerEnvironment: environment) {
+            try storage.get($0)
+        }
+    }
+
+    /// Called by the manual editor or the human approval button. Secure field
+    /// values exist only in this call and the profile-scoped Keychain.
+    func installSettingsMCPDraft(_ candidate: SettingsMCPDraft, projectID: UUID?,
+                                 secrets: [String: String]) async throws -> UUID? {
+        guard let stores else { throw SettingsToolError.unavailable }
+        var draft = candidate
+        try draft.validate()
+        let scope = draft.global ? nil : projectID
+        guard draft.global || scope != nil else { throw SettingsToolError.unavailable }
+        let slots = Set(draft.secretEnvironment + draft.secretHeaders)
+        guard slots == Set(secrets.keys), secrets.values.allSatisfy({ !$0.isEmpty })
+        else { throw SettingsToolError.invalidDraft }
+        switch draft.auth {
+        case .oauth:
+            guard let endpoint = draft.url else { throw SettingsToolError.invalidDraft }
+            let account = try stores.addGatewayUpstream(serverName: draft.name, label: draft.label,
+                                                         endpoint: endpoint, projectID: scope)
+            await refreshGatewayRouting()
+            return account.id
+        case .header:
+            guard let endpoint = draft.url, let field = draft.secretHeaders.first,
+                  let token = secrets[field], let gatewayUpstreamSessions else { throw SettingsToolError.invalidDraft }
+            let account = try await gatewayUpstreamSessions.addStaticUpstream(stores: stores,
+                serverName: draft.name, label: draft.label, endpoint: endpoint,
+                projectID: scope, headerName: field.lowercased() == "authorization" ? nil : field, token: token)
+            return account.id
+        case .none:
+            var keys: [String] = []
+            do {
+                let server = try draft.server { field in
+                    guard let secret = secrets[field] else { throw SettingsToolError.invalidDraft }
+                    let key = "agent.mcp." + UUID().uuidString
+                    try keychain.set(secret, forKey: key)
+                    keys.append(key)
+                    return key
+                }
+                if let scope {
+                    var setup = try stores.workspaceAgentSetup(projectID: scope)
+                    var servers = try AgentMCPConfiguration.decodeServers(setup.extraServersJSON)
+                    guard servers[draft.name] == nil else { throw AgentMCPError.nameCollision }
+                    servers[draft.name] = server
+                    setup.extraServersJSON = try AgentMCPConfiguration.encode(servers)
+                    try stores.saveWorkspaceAgentSetup(setup)
+                } else {
+                    var servers = try stores.globalAgentMCPServers()
+                    guard servers[draft.name] == nil else { throw AgentMCPError.nameCollision }
+                    servers[draft.name] = server
+                    try stores.saveGlobalAgentMCPServers(servers)
+                }
+            } catch {
+                for key in keys { try? keychain.delete(key) }
+                throw error
+            }
+            return nil
+        }
     }
 
     func replaceGatewayToken(_ id: UUID, token: String) async throws {

@@ -15,6 +15,16 @@
   },
   {
    "action": "waitFor",
+   "identifier": "chat.agent",
+   "enabled": true,
+   "timeout": 300
+  },
+  {
+   "action": "press",
+   "identifier": "chat.agent"
+  },
+  {
+   "action": "waitFor",
    "identifier": "chat.provider.claude",
    "enabled": true,
    "timeout": 180,
@@ -29,6 +39,10 @@
    "text": "Haiku",
    "within": "chat.model",
    "timeout": 30
+  },
+  {
+   "action": "press",
+   "identifier": "chat.agent.done"
   },
   {
    "action": "waitFor",

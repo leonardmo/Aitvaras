@@ -72,6 +72,33 @@ func removeWorkspaceCodexLinkMigrationForTest(_ db: Database) throws {
         #expect(try stores.workspaceProject(id: project.id)?.allowsCloud == false)
     }
 
+    @Test func folderSettingsChangeInvalidatesCodexReviewWithoutMovingLinkedChat() throws {
+        let stores = try inMemoryStores()
+        let (project, chat, link, nativeChat) = try setup(stores)
+        _ = try stores.authorizeWorkspaceCodexNativeTools(chatLinkID: nativeChat.id, expectedProjectRevision: link.revision,
+            expectedChatRevision: nativeChat.revision, effectiveConfigurationFingerprint: "synthetic-config-v1",
+            reviewedPolicySummary: "Synthetic approved tool settings", reviewed: true)
+
+        let initial = try stores.workspacePolicyReview(projectID: project.id)
+        let policy = try stores.saveWorkspaceProjectSettings(projectID: project.id, title: project.title, instructions: "Synthetic notes",
+            folders: [], allowedProviders: [.local], expectedContextRevision: initial.revision, expectedPolicyRevision: nil,
+            expectedProjectTitle: project.title)
+        #expect(try stores.workspaceCodexProjectLink(projectID: project.id)?.revision == link.revision)
+        #expect(try stores.workspaceCodexNativeAuthorization(chatLinkID: nativeChat.id) != nil)
+
+        let review = try stores.workspacePolicyReview(projectID: project.id)
+        _ = try stores.saveWorkspaceProjectSettings(projectID: project.id, title: project.title, instructions: "Synthetic notes",
+            folders: [.init(path: "/synthetic/new")], allowedProviders: [.local], expectedContextRevision: review.revision,
+            expectedPolicyRevision: policy.revision, expectedProjectTitle: project.title)
+        let updated = try #require(try stores.workspaceCodexProjectLink(projectID: project.id))
+        #expect(updated.state == .reviewRequired)
+        #expect(updated.revision == link.revision + 1)
+        #expect(try stores.workspaceCodexNativeAuthorization(chatLinkID: nativeChat.id) == nil)
+        #expect(try stores.workspaceCodexChatLink(chatID: chat.id)?.workingDirectory == nativeChat.workingDirectory)
+        try stores.replaceWorkspaceFolders(projectID: project.id, folders: [.init(path: "/synthetic/new")])
+        #expect(try stores.workspaceCodexProjectLink(projectID: project.id)?.revision == updated.revision)
+    }
+
     @Test func explicitReviewAndExactOrderedRootsAreRequired() throws {
         let stores = try inMemoryStores(), native = snapshot()
         let project = try stores.createWorkspaceProject(title: "Synthetic")
