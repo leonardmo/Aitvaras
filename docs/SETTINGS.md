@@ -2,6 +2,8 @@
 
 Open Settings with Command–comma. The sidebar shows profile pages and projects. Project settings open here from the Chat header or project sidebar. The display, project and agent shortcuts link to their full settings destination when they touch persistent settings.
 
+The chat composer shows five-hour and weekly quota percentages when the selected account reports those windows. Hover over either percentage for the reset time, when available. Use the Preview Markdown button to render a draft in place and the pencil to return to editing. Paste an image into the message field to attach it in Claude or Codex chats.
+
 ## Menu inventory
 
 | Former control | Home |

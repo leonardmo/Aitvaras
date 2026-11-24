@@ -666,17 +666,23 @@ private struct AgentChatComposer: View {
     @State private var completionAcceptance = 0
     @State private var composerTextSelection: TextSelection?
     @State private var showingCompletion = false
+    @State private var previewingMarkdown = false
 
     var body: some View {
-        let command = chat.composerSelection.command
-        let hint = command?.argumentPlaceholder(in: chat.draft)
-        return VStack(spacing: 8) {
+        VStack(spacing: 8) {
             if !chat.composerSelection.attachments.isEmpty {
                 ScrollView(.horizontal) {
                     HStack(spacing: 6) {
                         ForEach(chat.composerSelection.attachments) { file in
                             HStack(spacing: 4) {
-                                Image(systemName: file.kind == .image ? "photo" : "doc")
+                                if file.kind == .image, let thumbnail = NSImage(data: file.data) {
+                                    Image(nsImage: thumbnail).resizable().scaledToFit()
+                                        .frame(width: 24, height: 18)
+                                        .clipShape(.rect(cornerRadius: 3))
+                                        .accessibilityHidden(true)
+                                } else {
+                                    Image(systemName: file.kind == .image ? "photo" : "doc")
+                                }
                                 Text(file.name).lineLimit(1).truncationMode(.middle).frame(maxWidth: 160)
                                 Button { chat.composerSelection.attachments.removeAll { $0.id == file.id } } label: {
                                     Image(systemName: "xmark")
@@ -691,7 +697,60 @@ private struct AgentChatComposer: View {
                     }
                 }.scrollIndicators(.hidden).accessibilityIdentifier("chat.attachments")
             }
-            TextField("Message", text: Binding(get: { chat.draft }, set: { chat.editDraft($0) }),
+            HStack(alignment: .top, spacing: 6) {
+                if previewingMarkdown {
+                    ScrollView {
+                        ChatMarkdown(text: chat.draft)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .frame(minHeight: 34, maxHeight: 160)
+                    .accessibilityIdentifier("chat.composer.markdown")
+                } else {
+                    composerEditor
+                }
+                if !chat.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    Button {
+                        previewingMarkdown.toggle()
+                        if previewingMarkdown { showingCompletion = false }
+                        else { composerFocused.wrappedValue = true }
+                    } label: {
+                        Image(systemName: previewingMarkdown ? "pencil" : "doc.richtext")
+                            .font(.system(size: 13, weight: .medium))
+                            .foregroundStyle(composerMessageColor.opacity(0.7))
+                            .frame(width: 24, height: 24)
+                    }
+                    .buttonStyle(.plain)
+                    .help(previewingMarkdown ? "Edit Markdown" : "Preview Markdown")
+                    .accessibilityLabel(previewingMarkdown ? "Edit Markdown" : "Preview Markdown")
+                    .accessibilityIdentifier("chat.composer.preview")
+                }
+            }
+            ViewThatFits(in: .horizontal) {
+                composerBar(iconOnly: false)
+                composerBar(iconOnly: true)
+            }
+        }
+        .onDrop(of: [.fileURL, .image], isTargeted: nil, perform: receiveAttachments)
+        .fileImporter(isPresented: $choosingAttachments, allowedContentTypes: [.item], allowsMultipleSelection: true) { result in
+            defer { attachmentTarget = nil }
+            guard case .success(let urls) = result, let target = attachmentTarget else { return }
+            Task { for url in urls { await chat.attach(url, chatID: target.chatID, provider: target.provider) } }
+        }
+        .onChange(of: chatID) { resetEditor() }
+        .onChange(of: chat.choice) { resetEditor() }
+        .onChange(of: chat.draft) { if chat.draft.isEmpty { previewingMarkdown = false } }
+        .task(id: chat.composerInsertionRevision) { await focusComposerAfterInsertion() }
+        .onChange(of: showingCompletion) {
+            if !showingCompletion && !previewingMarkdown {
+                Task { await focusComposerAfterInsertion() }
+            }
+        }
+    }
+
+    private var composerEditor: some View {
+        let command = chat.composerSelection.command
+        let hint = command?.argumentPlaceholder(in: chat.draft)
+        return TextField("Message", text: Binding(get: { chat.draft }, set: { chat.editDraft($0) }),
                       selection: $composerTextSelection, axis: .vertical)
                 .lineLimit(2...6).textFieldStyle(.plain)
                 .focused(composerFocused)
@@ -706,7 +765,17 @@ private struct AgentChatComposer: View {
                 }
                 .accessibilityIdentifier("chat.composer.input")
                 .accessibilityHint(hint ?? "")
-                .onPasteCommand(of: [.fileURL, .png, .jpeg, .tiff]) { providers in _ = receiveAttachments(providers) }
+                .onPasteCommand(of: [.fileURL, .image]) { providers in _ = receiveAttachments(providers) }
+                .background {
+                    ComposerImagePasteMonitor {
+                        guard canSend, composerFocused.wrappedValue, chat.provider != .local,
+                              (NSApp.keyWindow?.firstResponder as? NSTextView)?.hasMarkedText() != true else { return false }
+                        let images = ComposerClipboardImage.read(from: .general)
+                        guard !images.isEmpty else { return false }
+                        prepareImages(images)
+                        return true
+                    }.frame(width: 0, height: 0)
+                }
                 .onChange(of: chat.draft) {
                     completion = chat.provider == .local ? nil : AgentComposerTrigger.detect(chat.draft)
                     showingCompletion = completion != nil
@@ -728,25 +797,12 @@ private struct AgentChatComposer: View {
                     if chat.canSubmit && canSend && chat.hasInput { Task { await chat.send() } }
                     return .handled
                 }
-            ViewThatFits(in: .horizontal) {
-                composerBar(iconOnly: false)
-                composerBar(iconOnly: true)
-            }
-        }
-        .onDrop(of: [.fileURL, .png, .jpeg, .tiff], isTargeted: nil, perform: receiveAttachments)
-        .fileImporter(isPresented: $choosingAttachments, allowedContentTypes: [.item], allowsMultipleSelection: true) { result in
-            defer { attachmentTarget = nil }
-            guard case .success(let urls) = result, let target = attachmentTarget else { return }
-            Task { for url in urls { await chat.attach(url, chatID: target.chatID, provider: target.provider) } }
-        }
-        .onChange(of: chatID) { showingCompletion = false; completion = nil; placeComposerCaret() }
-        .onChange(of: chat.choice) { showingCompletion = false; completion = nil; placeComposerCaret() }
-        .task(id: chat.composerInsertionRevision) { await focusComposerAfterInsertion() }
-        .onChange(of: showingCompletion) {
-            if !showingCompletion {
-                Task { await focusComposerAfterInsertion() }
-            }
-        }
+    }
+    private func resetEditor() {
+        previewingMarkdown = false
+        showingCompletion = false
+        completion = nil
+        placeComposerCaret()
     }
     private func insertComposerNewline() {
         let selected: NSRange?
@@ -763,6 +819,7 @@ private struct AgentChatComposer: View {
         // Clear the old binding before focus: TextField can select the entire
         // externally replaced value when its field editor becomes first responder.
         composerTextSelection = nil
+        previewingMarkdown = false
         composerFocused.wrappedValue = true
         await Task.yield()
         guard !Task.isCancelled, !showingCompletion,
@@ -788,7 +845,9 @@ private struct AgentChatComposer: View {
     private func composerActions(narrow: Bool) -> some View {
         HStack(spacing: narrow ? 2 : 8) {
             gaugeSlot(contextValue, title: "Context", identifier: "chat.gauge.context", narrow: narrow)
-            gaugeSlot(usageValue, title: "Usage", identifier: "chat.gauge.usage", narrow: narrow)
+            if let windows = chat.profileLimits[chat.choice], !windows.isEmpty {
+                ComposerUsageLimits(windows: windows, narrow: narrow)
+            }
             if chat.state?.isRunning == true {
                 Button { Task { await chat.stop() } } label: {
                     Image(systemName: "stop.fill").font(.system(size: 13, weight: .semibold))
@@ -882,9 +941,6 @@ private struct AgentChatComposer: View {
     private var contextValue: Double? {
         chat.currentContextFraction
     }
-    private var usageValue: Double? {
-        chat.profileLimits[chat.choice]?.compactMap(\.utilization).filter(\.isFinite).max()
-    }
     private func gaugeSlot(_ value: Double?, title: String, identifier: String, narrow: Bool) -> some View {
         Group {
             if let value { ChatGauge(value: value, title: title, identifier: identifier) }
@@ -920,25 +976,26 @@ private struct AgentChatComposer: View {
                     }
                     Task { @MainActor in await chat.attach(url, chatID: owner, provider: provider) }
                 }
-            } else if let type = [UTType.png, .jpeg, .tiff].first(where: { item.hasItemConformingToTypeIdentifier($0.identifier) }) {
+            } else if let type = ComposerClipboardImage.types.first(where: { item.hasItemConformingToTypeIdentifier($0.identifier) })
+                ?? (item.hasItemConformingToTypeIdentifier(UTType.image.identifier) ? .image : nil) {
                 _ = item.loadDataRepresentation(forTypeIdentifier: type.identifier) { data, _ in
                     guard let data else {
                         Task { @MainActor in chat.attachmentLoadFailed(chatID: owner, provider: provider) }; return
                     }
                     Task { @MainActor in
-                        if type == .tiff {
-                            guard let png = NSBitmapImageRep(data: data)?.representation(using: .png, properties: [:]) else {
-                                chat.attachmentLoadFailed(chatID: owner, provider: provider); return
-                            }
-                            chat.attach(data: png, name: "Image.png", chatID: owner, provider: provider)
-                        } else {
-                            chat.attach(data: data, name: type == .png ? "Image.png" : "Image.jpg", chatID: owner, provider: provider)
-                        }
+                        await chat.attachImage(data, chatID: owner, provider: provider)
                     }
                 }
             }
         }
         return true
+    }
+    private func prepareImages(_ images: [Data]) {
+        let owner = chat.composerOwnerID
+        let provider = chat.provider
+        Task {
+            for data in images { await chat.attachImage(data, chatID: owner, provider: provider) }
+        }
     }
     private var composerMessageColor: Color {
         colorScheme == .dark ? Color(white: 0.92) : Color(white: 0.12)
@@ -946,6 +1003,7 @@ private struct AgentChatComposer: View {
 }
 
 private struct AgentComposerPermissionsControl: View {
+    @Environment(\.colorScheme) private var colorScheme
     @Bindable var chat: ChatModel
     let iconOnly: Bool
 
@@ -961,6 +1019,7 @@ private struct AgentComposerPermissionsControl: View {
     }
 
     var body: some View {
+        let ink = colorScheme == .dark ? Color(white: 0.92) : Color(white: 0.15)
         Button {
             if !isPresented { showsIntegrationHelp = false }
             isPresented.toggle()
@@ -971,19 +1030,20 @@ private struct AgentComposerPermissionsControl: View {
                         .symbolRenderingMode(.monochrome)
                         .foregroundStyle(Color.orange)
                 } else {
-                    Image(systemName: symbol).foregroundStyle(.secondary)
+                    Image(systemName: symbol).foregroundStyle(ink.opacity(0.72))
                 }
                 if !iconOnly { Text(title(selection)).lineLimit(1) }
                 if !iconOnly || chat.permissionsApplyNextTurn {
                     Image(systemName: chat.permissionsApplyNextTurn ? "clock" : "chevron.down")
                         .font(.system(size: 8, weight: .semibold))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(ink.opacity(0.66))
                 }
             }
             .font(.caption)
+            .foregroundStyle(ink)
             .padding(.horizontal, 8)
             .frame(minHeight: 26)
-            .background(isFullAccessVisible ? Color.orange.opacity(0.22) : Color.primary.opacity(0.05), in: Capsule())
+            .background(isFullAccessVisible ? Color.orange.opacity(0.22) : ink.opacity(0.05), in: Capsule())
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)

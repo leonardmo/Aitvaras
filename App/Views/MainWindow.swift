@@ -212,10 +212,7 @@ struct MainWindow: View {
             }
         }
         .containerBackground(for: .window) {
-            ZStack {
-                Color(nsColor: .windowBackgroundColor)
-                LinearGradient(colors: [Color.accentColor.opacity(0.06), .clear], startPoint: .topLeading, endPoint: .bottomTrailing)
-            }
+            WindowGradientBackground()
         }
         .onChange(of: selection, initial: true) { previous, next in
             if next.primaryRoute == .setup && !embedsSettings {

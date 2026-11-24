@@ -319,16 +319,17 @@ private struct NewsArticleRow: View {
     }
 }
 
-private struct NewsImagePlaceholder: View {
+struct NewsImagePlaceholder: View {
+    @Environment(\.colorScheme) private var colorScheme
+
     var body: some View {
+        let dark = colorScheme == .dark
         ZStack {
-            LinearGradient(
-                colors: [Color.accentColor.opacity(0.25), Color.indigo.opacity(0.16)],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing)
+            Color(nsColor: .windowBackgroundColor)
+            ColorRamp.news.wash(opacity: dark ? 0.58 : 0.25)
             Image(systemName: "newspaper.fill")
-                .font(.system(size: 52))
-                .foregroundStyle(.secondary)
+                .font(.system(size: 46, weight: .light))
+                .foregroundStyle(dark ? Color(white: 0.96) : Color(red: 0.20, green: 0.20, blue: 0.37))
         }
     }
 }

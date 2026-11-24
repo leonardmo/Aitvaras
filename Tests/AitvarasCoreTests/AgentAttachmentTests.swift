@@ -1,10 +1,41 @@
 import Foundation
+import ImageIO
 import Testing
+import UniformTypeIdentifiers
 import AitvarasStore
 @testable import AitvarasAgents
 
 @Suite(.timeLimit(.minutes(2)))
 struct AgentAttachmentTests {
+    @Test func pastedImagesPreservePNGAndFitLargeClipboardTIFF() throws {
+        let png = try AgentAttachment.pastedImage(from: attachmentPNG)
+        #expect(png.mediaType == "image/png")
+        #expect(png.data == attachmentPNG)
+        #expect(throws: AgentAttachmentError.unsupportedType) {
+            try AgentAttachment.pastedImage(from: Data("Clipboard text".utf8))
+        }
+
+        let bitmap = try #require(CGContext(data: nil, width: 800, height: 600, bitsPerComponent: 8,
+            bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+        bitmap.setFillColor(red: 0.1, green: 0.4, blue: 0.7, alpha: 1)
+        bitmap.fill(CGRect(x: 0, y: 0, width: 400, height: 600))
+        let image = try #require(bitmap.makeImage())
+        let tiff = NSMutableData()
+        let writer = try #require(CGImageDestinationCreateWithData(tiff, UTType.tiff.identifier as CFString, 1, nil))
+        CGImageDestinationAddImage(writer, image, [kCGImagePropertyTIFFDictionary: [
+            kCGImagePropertyTIFFCompression: 1
+        ]] as CFDictionary)
+        try #require(CGImageDestinationFinalize(writer))
+        try #require(tiff.length > AgentAttachment.maximumBytes)
+
+        let converted = try AgentAttachment.pastedImage(from: tiff as Data)
+        #expect(converted.kind == .image)
+        #expect(converted.mediaType == "image/png")
+        #expect(converted.data.count <= AgentAttachment.maximumBytes)
+        let source = try #require(CGImageSourceCreateWithData(converted.data as CFData, nil))
+        #expect(CGImageSourceCreateImageAtIndex(source, 0, nil) != nil)
+    }
+
     @Test func snapshotsBytesAndRejectsMissingLargeAndBinaryFiles() throws {
         let fixture = try BackendExecutableFixture(script: "done()")
         defer { fixture.remove() }

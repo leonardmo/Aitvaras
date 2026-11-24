@@ -25,18 +25,14 @@ enum ActivityGlassStyle: String, CaseIterable {
         }
     }
 
-    var colors: [Color] {
+    var ramp: ColorRamp {
         switch self {
-        case .idle: [ActivityGlassPalette.slate, ActivityGlassPalette.violet, .cyan]
-        case .working: [ActivityGlassPalette.slate, ActivityGlassPalette.violet, ActivityGlassPalette.ember]
-        case .attention: [.yellow, ActivityGlassPalette.attention, ActivityGlassPalette.ember]
-        case .recording: [Color(red: 0.91, green: 0.32, blue: 0.45), .red, ActivityGlassPalette.ember]
+        case .idle: .idle
+        case .working: .working
+        case .attention: .attention
+        case .recording: .recording
         }
     }
-
-    /// The colour wash sweeps around the panel, so the first colour is repeated
-    /// to close the circle without a visible seam.
-    var sweep: [Color] { colors + colors.dropLast().reversed() + [colors[0]] }
 }
 
 /// Static gradients with a finite crossfade on semantic state changes only.
@@ -60,27 +56,18 @@ private struct ActivityGlass: ViewModifier {
                     ZStack {
                         shape.fill(Color(nsColor: .windowBackgroundColor).opacity(dark ? 0.58 : 0.80))
                             .glassEffect(.regular.tint(style.accent.opacity(dark ? 0.20 : 0.15)), in: shape)
-                        // A sweep plus a leading glow, so each state reads as its
-                        // own hue instead of a faintly tinted grey.
-                        shape.fill(AngularGradient(gradient: Gradient(colors: style.sweep),
-                                                   center: .center, angle: .degrees(-35)))
-                            .opacity(dark ? 0.34 : 0.22)
-                        shape.fill(RadialGradient(gradient: Gradient(colors: [style.accent.opacity(dark ? 0.46 : 0.30), .clear]),
-                                                  center: .topLeading, startRadius: 1,
-                                                  endRadius: max(cornerRadius * 12, 170)))
-                        shape.fill(LinearGradient(colors: [.white.opacity(dark ? 0.10 : 0.24), .clear],
-                                                  startPoint: .top, endPoint: .center))
-                        shape.strokeBorder(LinearGradient(colors: [.white.opacity(0.42), style.accent.opacity(0.45), .white.opacity(0.05)],
-                                                          startPoint: .topLeading, endPoint: .bottomTrailing), lineWidth: 1)
+                        GradientTileSurface(ramp: style.ramp, cornerRadius: cornerRadius)
                     }
                     .id(style)
                     .transition(.opacity)
                 }
             }
             .overlay {
-                shape.strokeBorder(contrast == .increased ? Color.primary.opacity(0.65) : style.accent.opacity(0.42), lineWidth: 1)
+                if reduceTransparency || contrast == .increased {
+                    shape.strokeBorder(Color.primary.opacity(0.65), lineWidth: 1)
+                }
             }
-            .shadow(color: reduceTransparency ? .clear : style.accent.opacity(dark ? 0.26 : 0.16), radius: 12, y: 3)
+            .shadow(color: reduceTransparency ? .clear : style.accent.opacity(dark ? 0.21 : 0.13), radius: 12, y: 3)
             .animation(reduceMotion ? nil : .easeInOut(duration: 0.55), value: style)
     }
 }
@@ -104,8 +91,11 @@ private struct NeutralGlass: ViewModifier {
                     ZStack {
                         shape.fill(Color(nsColor: .windowBackgroundColor).opacity(dark ? 0.34 : 0.58))
                             .glassEffect(.regular, in: shape)
-                        shape.fill(LinearGradient(colors: [.white.opacity(dark ? 0.08 : 0.20), .clear],
-                                                  startPoint: .top, endPoint: .center))
+                        shape.fill(LinearGradient(colors: [
+                            .white.opacity(dark ? 0.14 : 0.28),
+                            .white.opacity(dark ? 0.05 : 0.10),
+                            .white.opacity(0)
+                        ], startPoint: .topLeading, endPoint: .bottomTrailing))
                     }
                 }
             }
@@ -373,9 +363,9 @@ struct DragonActivityMenuLabel: View {
         return source
     }()
     // Cached artwork, drawn only when AppKit requests an image representation.
-    private static let activeImage = gradientDragon([NSColor(ActivityGlassPalette.slate), NSColor(ActivityGlassPalette.violet), NSColor(ActivityGlassPalette.ember)])
-    private static let attentionImage = gradientDragon([.systemYellow, .systemOrange, NSColor(ActivityGlassPalette.ember)])
-    private static let recordingImage = gradientDragon([.systemPink, .systemRed, NSColor(ActivityGlassPalette.ember)])
+    private static let activeImage = gradientDragon(ActivityGlassStyle.working.ramp.nativeColors)
+    private static let attentionImage = gradientDragon(ActivityGlassStyle.attention.ramp.nativeColors)
+    private static let recordingImage = gradientDragon(ActivityGlassStyle.recording.ramp.nativeColors)
     private static func gradientDragon(_ colors: [NSColor]) -> NSImage {
         guard let source = NSImage(named: "DragonMenu") else { return NSImage() }
         let image = NSImage(size: NSSize(width: menuSide, height: menuSide), flipped: false) { rect in

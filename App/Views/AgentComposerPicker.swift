@@ -150,28 +150,31 @@ struct AgentComposerPicker: View {
 }
 
 struct ComposerControlLabel: View {
+    @Environment(\.colorScheme) private var colorScheme
     let title: String
     let icon: String
     let iconOnly: Bool
     var maximumTitleWidth: CGFloat? = nil
 
     var body: some View {
+        let ink = colorScheme == .dark ? Color(white: 0.92) : Color(white: 0.15)
         HStack(spacing: 5) {
-            Image(systemName: icon).foregroundStyle(.secondary)
+            Image(systemName: icon).foregroundStyle(ink.opacity(0.72))
             if !iconOnly {
                 ViewThatFits(in: .horizontal) {
                     Text(title).lineLimit(1).fixedSize(horizontal: true, vertical: false)
                     Text(title).lineLimit(1).truncationMode(.middle)
                 }
                 .frame(maxWidth: maximumTitleWidth, alignment: .leading)
+                .foregroundStyle(ink)
                 Image(systemName: "chevron.down").font(.system(size: 8, weight: .semibold))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(ink.opacity(0.66))
             }
         }
         .font(.caption)
         .padding(.horizontal, 8)
         .frame(minHeight: 26)
-        .background(Color.primary.opacity(0.05), in: Capsule())
+        .background(ink.opacity(0.05), in: Capsule())
         .contentShape(.rect)
     }
 }
