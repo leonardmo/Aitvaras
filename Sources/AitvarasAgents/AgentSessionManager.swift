@@ -45,6 +45,8 @@ public actor AgentSessionManager {
     private var continuationSubscribers: [UUID: AsyncStream<Void>.Continuation] = [:]
     private var wakeTickRunning = false
     private var closing = false
+    private var queueTasks: [UUID: Task<Void, Never>] = [:]
+    private var stopAndSendChats = Set<UUID>()
     private var recovering = Set<UUID>()
     private struct RecoveryDelivery {
         let stoppedEntryID: UUID
@@ -77,6 +79,7 @@ public actor AgentSessionManager {
             slot.startup?.cancel()
             if let coordinator = slot.coordinator { Task { try? await coordinator.shutdown() } }
         }
+        queueTasks.values.forEach { $0.cancel() }
         approvalSubscribers.values.forEach { $0.finish() }
         subscribers.values.forEach { $0.values.forEach { $0.finish() } }
     }
@@ -122,6 +125,18 @@ public actor AgentSessionManager {
         }
         if let turn = try persistence.latestAgentTurn(chatID: chatID) {
             value.restore(turn: turn)
+        }
+        if let store = queueStore {
+            var queue = try store.messageQueue(chatID: chatID)
+            if !queue.messages.isEmpty {
+                queue.messages = try queue.messages.filter { try persistence.agentTurn(id: $0.id) == nil }
+                queue.editingID = nil
+                queue.dispatchingID = nil
+                if !queue.messages.isEmpty { queue.pause = queue.pause == .quota ? .quota : .restarted }
+                else { queue.pause = nil }
+                try store.saveMessageQueue(queue, chatID: chatID)
+            }
+            value.messageQueue = queue
         }
         states[chatID] = value; return value
     }
@@ -226,7 +241,8 @@ public actor AgentSessionManager {
     }
 
     public func send(chatID: UUID, provider: AgentProvider, input: AgentInput,
-                     onAccepted: @escaping @Sendable () async -> Void = {}) async throws {
+                     allowFollowup: Bool = true, onAccepted: @escaping @Sendable () async -> Void = {}) async throws {
+        if !allowFollowup, live[chatID]?.isRunning == true { throw AgentSessionManagerError.chatBusy }
         if !input.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !input.attachments.isEmpty || input.command != nil {
             try continuationPersistence?.noteNewInput(chatID: chatID, now: continuationClock.now())
             continuationChanged()
@@ -364,6 +380,7 @@ public actor AgentSessionManager {
                          recovery: RecoveryDelivery? = nil,
                          autonomousReason: AgentAutonomousReason? = nil,
                          autonomousSession: AgentChatSession? = nil,
+                         queuedSessionID: UUID? = nil,
                          claimDelivery: (@Sendable (UUID) async throws -> Void)? = nil,
                          onAccepted: @Sendable () async -> Void = {}, automatic: AgentAutoContinue? = nil) async throws {
         var authorization = automatic
@@ -386,7 +403,13 @@ public actor AgentSessionManager {
             throw AgentSessionManagerError.chatBusy
         }
         let selectedSession = try automatic.flatMap { pending in try persistence.agentSessions(chatID: chatID).first { $0.id == pending.sessionID } }
-        guard var session = try selectedSession ?? recovery?.session ?? autonomousSession ?? persistence.agentSession(chatID: chatID, provider: provider) else {
+        let queuedSession = try queuedSessionID.map { id in
+            guard let session = try persistence.agentSessions(chatID: chatID).first(where: { $0.id == id }) else {
+                throw AgentSessionManagerError.missingSession
+            }
+            return session
+        }
+        guard var session = try selectedSession ?? recovery?.session ?? autonomousSession ?? queuedSession ?? persistence.agentSession(chatID: chatID, provider: provider) else {
             throw AgentSessionManagerError.missingSession
         }
         if let automatic {
@@ -574,6 +597,7 @@ public actor AgentSessionManager {
             event = .init(scope: incoming.scope, kind: .message(id: session.canonicalMessageID(id, turnID: incoming.scope.turnID), role: role, text: text))
         }
         guard let slot = live[chatID], slot.token == token, slot.coordinator?.id == event.scope.runID else { return }
+        let hadPendingApproval = states[chatID]?.pendingCards.isEmpty == false
         if case .claudeCommandResult(let nativeID, let command, let output) = event.kind {
             guard let input = event.scope.inputID, UUID(uuidString: nativeID) == input,
                   slot.session.provider == .claude, !slot.stopping,
@@ -730,6 +754,9 @@ public actor AgentSessionManager {
                 states[chatID]?.pendingCards = []
                 continuationChanged()
                 armIdle(chatID, token: token); publish(chatID)
+                updateQueueAfterTurn(chatID, outcome: outcome, automatic: slot.automatic != nil, hadPendingApproval: hadPendingApproval)
+                await permissionsDidChange(chatID: chatID)
+                scheduleQueue(chatID)
                 return
             }
             if let intentID = slot.automatic, let continuationPersistence,
@@ -796,7 +823,14 @@ public actor AgentSessionManager {
                 states[chatID]?.updatePendingCards(pending, observedAt: .now)
             }
             publish(chatID)
-            if case .turnEnded = event.kind { await permissionsDidChange(chatID: chatID) }
+            if case .turnEnded(let outcome) = event.kind, event.scope.inputID == slot.inputID {
+                updateQueueAfterTurn(chatID, outcome: slot.stopping ? .interrupted : outcome,
+                    automatic: slot.automatic != nil, hadPendingApproval: hadPendingApproval)
+            }
+            if case .turnEnded = event.kind {
+                await permissionsDidChange(chatID: chatID)
+                scheduleQueue(chatID)
+            }
             if case .turnEnded(.failed(let failure)) = event.kind {
                 let report = event.failureReport ?? AgentFailureDiagnostics.capture(failure)
                 _ = await report.recording(chatID: chatID, inputID: event.scope.inputID, audit: audit)
@@ -920,6 +954,7 @@ public actor AgentSessionManager {
         }
         guard let slot = live[chatID], !slot.stopping,
               slot.inputID != nil || !slot.followups.isEmpty || slot.sendingFollowup else { return }
+        if !stopAndSendChats.contains(chatID) { pauseQueue(chatID, reason: .stopped) }
         live[chatID]?.stopping = true
         let clock = ContinuousClock(), deadline = clock.now + .milliseconds(1400)
         let interrupt = Task { try? await slot.coordinator?.interrupt() }
@@ -956,6 +991,7 @@ public actor AgentSessionManager {
             states[chat]?.markFollowup(id, status: "interrupted")
         }
         states[chat]?.end(outcome)
+        updateQueueAfterTurn(chat, outcome: outcome, automatic: slot.automatic != nil)
         do { try persistEntries(chat) }
         catch { failures.append((slot.inputID, AgentFailureDiagnostics.capture(error))) }
         publish(chat)
@@ -1127,6 +1163,7 @@ extension AgentSessionManager {
                 if let failure { waiter.resume(throwing: failure) }
                 else { waiter.resume() }
             }
+            scheduleQueue(chatID)
         }
         do { try await refreshNativeHistory(chatID: chatID, store: store, token: token) }
         catch { failure = error; throw error }
@@ -1231,6 +1268,7 @@ extension AgentSessionManager {
     func canStartAutonomousTurn(chatID: UUID) -> Bool {
         !closing && !refreshing.contains(chatID) && live[chatID]?.isRunning != true
             && states[chatID]?.pendingCards.isEmpty != false
+            && !queueCanRun(chatID) && queueTasks[chatID] == nil
             && live.values.filter(\.isRunning).count < Self.maximumRunningChats
     }
 
@@ -1248,7 +1286,8 @@ extension AgentSessionManager {
     }
     private func startAutonomousTurn(session: AgentChatSession, reason: AgentAutonomousReason, input: AgentInput,
                                      claimDelivery: (@Sendable (UUID) async throws -> Void)? = nil) async throws {
-        guard live[session.chatID]?.isRunning != true, states[session.chatID]?.pendingCards.isEmpty != false else {
+        guard live[session.chatID]?.isRunning != true, states[session.chatID]?.pendingCards.isEmpty != false,
+              !queueCanRun(session.chatID), queueTasks[session.chatID] == nil else {
             throw AgentSessionManagerError.chatBusy
         }
         guard try persistence.agentSessions(chatID: session.chatID).contains(session) else {
@@ -1275,6 +1314,10 @@ extension AgentSessionManager {
             guard !closing, !Task.isCancelled else { return }
             guard pending.survivesTransport, pending.isAppOwned(at: now),
                   pending.fireAt.map({ $0 <= now }) == true, live[pending.chatID]?.isRunning != true else { continue }
+            if queueCanRun(pending.chatID) {
+                scheduleQueue(pending.chatID)
+                continue
+            }
             do { try persistence.requireAgentChatAvailable(chatID: pending.chatID) }
             catch AgentSessionManagerError.chatUnavailable { continue }
             guard let session = try persistence.agentSessions(chatID: pending.chatID).first(where: { $0.id == pending.sessionID }) else { continue }
@@ -1386,5 +1429,214 @@ extension AgentSessionManager {
             if let id = wakeNativeID(child["text"] ?? child) { return id }
         }
         return nil
+    }
+}
+
+extension AgentSessionManager {
+    private var queueStore: (any AgentMessageQueuePersistence)? {
+        persistence as? any AgentMessageQueuePersistence
+    }
+
+    public func shouldQueueMessage(chatID: UUID) throws -> Bool {
+        if queueTasks[chatID] != nil || live[chatID]?.isRunning == true { return true }
+        return try !state(chatID: chatID).messageQueue.messages.isEmpty
+    }
+
+    public func enqueueMessage(chatID: UUID, choice: AgentProviderChoice, input: AgentInput) throws {
+        guard !closing else { throw AgentSessionManagerError.shuttingDown }
+        try persistence.requireAgentChatAvailable(chatID: chatID)
+        try input.validateComposerInput(provider: choice.provider)
+        guard !input.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !input.attachments.isEmpty || input.command != nil,
+              let session = try persistence.agentSessions(chatID: chatID).first(where: { $0.choice == choice })
+                    ?? live[chatID].flatMap({ $0.session.choice == choice ? $0.session : nil }) else {
+            throw AgentSessionManagerError.missingSession
+        }
+        var queue = try state(chatID: chatID).messageQueue
+        guard queue.messages.count < 32 else { throw AgentFailure.invalidTransition }
+        queue.messages.append(.init(input: input, session: session))
+        try storeQueue(queue, chatID: chatID)
+        scheduleQueue(chatID)
+    }
+
+    public func beginQueuedEdit(chatID: UUID, messageID: UUID) throws -> AgentQueuedMessage {
+        var queue = try state(chatID: chatID).messageQueue
+        guard queue.editingID == nil, queue.dispatchingID != messageID,
+              let message = queue.messages.first(where: { $0.id == messageID }) else { throw AgentFailure.invalidTransition }
+        queue.editingID = messageID
+        try storeQueue(queue, chatID: chatID)
+        return message
+    }
+
+    public func endQueuedEdit(chatID: UUID, messageID: UUID, replacement: AgentInput?) throws {
+        var queue = try state(chatID: chatID).messageQueue
+        guard queue.editingID == messageID,
+              let index = queue.messages.firstIndex(where: { $0.id == messageID }) else { throw AgentFailure.invalidTransition }
+        if let replacement {
+            let message = queue.messages[index]
+            guard replacement.id == messageID,
+                  !replacement.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !replacement.attachments.isEmpty else {
+                throw AgentFailure.invalidRequest
+            }
+            try replacement.validateComposerInput(provider: message.provider)
+            queue.messages[index] = .init(input: replacement, sessionID: message.sessionID, provider: message.provider)
+        }
+        queue.editingID = nil
+        try storeQueue(queue, chatID: chatID)
+        scheduleQueue(chatID)
+    }
+
+    public func removeQueuedMessage(chatID: UUID, messageID: UUID) throws {
+        var queue = try state(chatID: chatID).messageQueue
+        guard queue.editingID != messageID, queue.dispatchingID != messageID,
+              let index = queue.messages.firstIndex(where: { $0.id == messageID }) else { throw AgentFailure.invalidTransition }
+        queue.messages.remove(at: index)
+        try storeQueue(queue, chatID: chatID)
+        scheduleQueue(chatID)
+    }
+
+    public func moveQueuedMessage(chatID: UUID, messageID: UUID, to targetID: UUID) throws {
+        var queue = try state(chatID: chatID).messageQueue
+        guard messageID != targetID, queue.dispatchingID == nil, queue.editingID == nil,
+              let source = queue.messages.firstIndex(where: { $0.id == messageID }),
+              let target = queue.messages.firstIndex(where: { $0.id == targetID }) else { return }
+        let message = queue.messages.remove(at: source)
+        queue.messages.insert(message, at: target)
+        try storeQueue(queue, chatID: chatID)
+        scheduleQueue(chatID)
+    }
+
+    public func resumeMessageQueue(chatID: UUID) throws {
+        var queue = try state(chatID: chatID).messageQueue
+        queue.pause = nil
+        try storeQueue(queue, chatID: chatID)
+        scheduleQueue(chatID)
+    }
+
+    public func sendQueuedMessageNow(chatID: UUID, messageID: UUID) async throws {
+        var queue = try state(chatID: chatID).messageQueue
+        guard !closing, queue.dispatchingID == nil, queue.editingID == nil,
+              let message = queue.messages.first(where: { $0.id == messageID }) else { throw AgentFailure.invalidTransition }
+        let input = try message.restoredInput()
+        if let slot = live[chatID], slot.isRunning {
+            guard slot.session.id == message.sessionID else { throw AgentFailure.invalidTransition }
+            if slot.session.provider == .local {
+                stopAndSendChats.insert(chatID)
+                defer { stopAndSendChats.remove(chatID) }
+                queue.dispatchingID = messageID
+                try storeQueue(queue, chatID: chatID)
+                do { try await stop(chatID: chatID) }
+                catch { finishQueueDispatch(chatID, messageID: messageID, failed: true); throw error }
+                finishQueueDispatch(chatID, messageID: messageID, failed: false)
+            } else {
+                queue.dispatchingID = messageID
+                try storeQueue(queue, chatID: chatID)
+                do {
+                    try await send(chatID: chatID, provider: message.provider, input: input, onAccepted: { [weak self] in
+                        await self?.acceptQueuedMessage(chatID, messageID: messageID)
+                    })
+                    finishQueueDispatch(chatID, messageID: messageID, failed: false)
+                } catch { finishQueueDispatch(chatID, messageID: messageID, failed: true); throw error }
+                scheduleQueue(chatID)
+                return
+            }
+        }
+        try await dispatchQueuedTurn(chatID, messageID: messageID)
+        scheduleQueue(chatID)
+    }
+
+    private func storeQueue(_ value: AgentMessageQueue, chatID: UUID) throws {
+        guard let store = queueStore else { throw AgentSessionManagerError.persistence }
+        var queue = value
+        if queue.messages.isEmpty { queue.pause = nil; queue.editingID = nil; queue.dispatchingID = nil }
+        try store.saveMessageQueue(queue, chatID: chatID)
+        states[chatID]?.messageQueue = queue
+        publish(chatID)
+    }
+
+    private func queueCanRun(_ chatID: UUID) -> Bool {
+        guard !closing, live[chatID]?.isRunning != true, !refreshing.contains(chatID),
+              let state = states[chatID], state.pendingCards.isEmpty,
+              let head = state.messageQueue.messages.first else { return false }
+        return state.messageQueue.pause == nil && state.messageQueue.editingID != head.id
+            && state.messageQueue.dispatchingID == nil
+    }
+
+    private func scheduleQueue(_ chatID: UUID) {
+        guard queueTasks[chatID] == nil, queueCanRun(chatID) else { return }
+        queueTasks[chatID] = Task { [weak self] in await self?.drainQueue(chatID) }
+    }
+
+    private func drainQueue(_ chatID: UUID) async {
+        guard queueCanRun(chatID), let id = states[chatID]?.messageQueue.messages.first?.id else {
+            queueTasks[chatID] = nil
+            return
+        }
+        do {
+            try await dispatchQueuedTurn(chatID, messageID: id)
+            queueTasks[chatID] = nil
+            scheduleQueue(chatID)
+        } catch {
+            queueTasks[chatID] = nil
+            if states[chatID]?.messageQueue.pause == nil { pauseQueue(chatID, reason: .delivery) }
+        }
+    }
+
+    private func dispatchQueuedTurn(_ chatID: UUID, messageID: UUID) async throws {
+        var queue = try state(chatID: chatID).messageQueue
+        guard live[chatID]?.isRunning != true, queue.dispatchingID == nil, queue.editingID != messageID,
+              let message = queue.messages.first(where: { $0.id == messageID }) else {
+            throw AgentFailure.invalidTransition
+        }
+        let input = try message.restoredInput()
+        queue.dispatchingID = messageID
+        try storeQueue(queue, chatID: chatID)
+        do {
+            try continuationPersistence?.noteNewInput(chatID: chatID, now: continuationClock.now())
+            continuationChanged()
+            try await deliver(chatID: chatID, provider: message.provider, input: input, retry: false, queuedSessionID: message.sessionID,
+                              onAccepted: { [weak self] in await self?.acceptQueuedMessage(chatID, messageID: messageID) })
+            finishQueueDispatch(chatID, messageID: messageID, failed: false)
+        } catch {
+            finishQueueDispatch(chatID, messageID: messageID, failed: true)
+            throw error
+        }
+    }
+
+    private func acceptQueuedMessage(_ chatID: UUID, messageID: UUID) {
+        guard var queue = states[chatID]?.messageQueue, queue.dispatchingID == messageID else { return }
+        queue.messages.removeAll { $0.id == messageID }
+        try? storeQueue(queue, chatID: chatID)
+    }
+
+    private func finishQueueDispatch(_ chatID: UUID, messageID: UUID, failed: Bool) {
+        guard var queue = states[chatID]?.messageQueue, queue.dispatchingID == messageID else { return }
+        if (try? persistence.agentTurn(id: messageID)) != nil {
+            queue.messages.removeAll { $0.id == messageID }
+        }
+        queue.dispatchingID = nil
+        if failed, queue.pause == nil { queue.pause = .delivery }
+        try? storeQueue(queue, chatID: chatID)
+    }
+
+    private func pauseQueue(_ chatID: UUID, reason: AgentMessageQueue.Pause) {
+        guard var queue = states[chatID]?.messageQueue, !queue.messages.isEmpty else { return }
+        queue.pause = reason
+        try? storeQueue(queue, chatID: chatID)
+    }
+
+    private func updateQueueAfterTurn(_ chatID: UUID, outcome: AgentTurnOutcome, automatic: Bool,
+                                      hadPendingApproval: Bool = false) {
+        guard !stopAndSendChats.contains(chatID), var queue = states[chatID]?.messageQueue,
+              !queue.messages.isEmpty else { return }
+        switch outcome {
+        case .completed:
+            if hadPendingApproval || states[chatID]?.pendingCards.isEmpty == false { queue.pause = .approval }
+            else if automatic && queue.pause == .quota { queue.pause = nil }
+        case .interrupted: queue.pause = .stopped
+        case .failed(let failure):
+            if case .quota = failure { queue.pause = .quota }
+            else { queue.pause = .failed }
+        }
+        try? storeQueue(queue, chatID: chatID)
     }
 }

@@ -20,6 +20,9 @@ public struct ChatSelectionState: Sendable {
         try persist()
         select(chatID, provider: provider)
     }
+    public mutating func setDraft(_ text: String, chatID: UUID) {
+        drafts[chatID] = text
+    }
     public mutating func clearDraft(chatID: UUID, ifUnchanged text: String) {
         if drafts[chatID] == text { drafts[chatID] = "" }
     }

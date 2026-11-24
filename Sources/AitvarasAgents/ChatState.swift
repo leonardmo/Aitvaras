@@ -25,6 +25,7 @@ public struct ChatState: Sendable, Equatable {
     public private(set) var thinking = ""
     public private(set) var tools: [AgentToolState] = []
     public var pendingCards: [AgentRequest] = []
+    public internal(set) var messageQueue = AgentMessageQueue()
     public var mcpSetup: AgentMCPLaunchStatus?
     public private(set) var agentSetup: AgentSetupSnapshot?
     public private(set) var usage: AgentUsage?

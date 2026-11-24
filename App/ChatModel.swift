@@ -128,6 +128,15 @@ final class ChatModel {
     private var selectionRevision = 0
     private var draftRevision = 0
     private(set) var resourceScope = ChatResourceScope()
+    private struct QueueDraftEdit {
+        let id: UUID
+        let originalDraft: String
+        let originalComposition: AgentComposerSelection
+        let originalChoice: AgentProviderChoice
+        let editingProvider: AgentProvider
+    }
+    private var queueEdits: [UUID: QueueDraftEdit] = [:]
+    private var queueChanges = Set<UUID>()
     private var selectedProjectID: UUID?
     @ObservationIgnored private var hasPendingSend = false
     private(set) var newChatID = UUID()
@@ -549,7 +558,7 @@ final class ChatModel {
         guard selectedSignInProvider == nil else { return false }
         guard let id = chatID else { return !terminating && !creatingChat && newProjectID != nil && signingIn == nil }
         return !terminating && !gitBusy && !stopping.contains(id) && sending[id] == nil && !submittedText.contains(id) && signingIn == nil
-            && (!isBusy || (!permissionsApplyNextTurn && statuses[provider]?.capabilities.contains(.followups) == true))
+            && !queueChanges.contains(id)
     }
     private var settingsKey: String { "\(composerOwnerID.uuidString).\(choice.id)" }
     var localProviderDetail: String {
@@ -686,7 +695,7 @@ final class ChatModel {
         setChoice(.init(provider: value, profile: value == .claude ? claudeProfile : "default"))
     }
     func setChoice(_ value: AgentProviderChoice) {
-        guard !isBusy, !creatingChat, signingIn == nil, value != choice, allChoices.contains(value) else { return }
+        guard !isBusy, !editingQueuedMessage, !creatingChat, signingIn == nil, value != choice, allChoices.contains(value) else { return }
         do {
             try stores.selectAgentChoice(value, chatID: chatID)
             selectComposer(chatID, provider: value.provider)
@@ -1026,11 +1035,134 @@ final class ChatModel {
         return true
     }
 
-    func send() async {
+    var messageQueue: AgentMessageQueue { state?.messageQueue ?? .init() }
+    var editingQueuedMessage: Bool { chatID.flatMap { queueEdits[$0] } != nil }
+    var willQueueMessage: Bool { !editingQueuedMessage && (isBusy || !messageQueue.messages.isEmpty) }
+    var canSendQueuedNow: Bool {
+        !editingQueuedMessage && messageQueue.dispatchingID == nil && !terminating
+            && (!isBusy || provider == .local || (!permissionsApplyNextTurn && statuses[provider]?.capabilities.contains(.followups) == true))
+    }
+
+    func editQueuedMessage(_ message: AgentQueuedMessage) async {
+        guard let id = chatID, queueEdits[id] == nil, queueChanges.insert(id).inserted else { return }
+        defer { queueChanges.remove(id) }
+        let originalChoice = choice
+        let originalDraft = draft
+        do {
+            guard let session = try stores.agentSessions(chatID: id).first(where: { $0.id == message.sessionID }) else {
+                throw AgentSessionManagerError.missingSession
+            }
+            if session.choice != choice { setChoice(session.choice) }
+            guard session.choice == choice else { throw AgentFailure.invalidTransition }
+            let initial = composerSelection
+            let message = try await manager.beginQueuedEdit(chatID: id, messageID: message.id)
+            guard chatID == id, choice == session.choice else {
+                try await manager.endQueuedEdit(chatID: id, messageID: message.id, replacement: nil)
+                return
+            }
+            do {
+                let input = try message.restoredInput()
+                queueEdits[id] = .init(id: message.id, originalDraft: originalDraft, originalComposition: initial,
+                                      originalChoice: originalChoice, editingProvider: provider)
+                var composition = AgentComposerSelection()
+                composition.attachments = input.attachments
+                composition.mentions = input.mentions
+                composition.command = input.command
+                composerSelection = composition
+                draft = input.text
+                composerInsertionRevision = UUID()
+            } catch {
+                try? await manager.endQueuedEdit(chatID: id, messageID: message.id, replacement: nil)
+                throw error
+            }
+        } catch {
+            if chatID == id {
+                if choice != originalChoice { setChoice(originalChoice) }
+                self.error = "Queued message could not be opened for editing."
+            }
+        }
+    }
+
+    func finishQueuedEdit(save: Bool) async {
+        guard let id = chatID, let editing = queueEdits[id], queueChanges.insert(id).inserted else { return }
+        defer { queueChanges.remove(id) }
+        let composition = composerSelection
+        let replacement = save ? AgentInput(id: editing.id, text: draft, attachments: composition.attachments,
+                                           mentions: composition.mentions, command: composition.command) : nil
+        do {
+            try await manager.endQueuedEdit(chatID: id, messageID: editing.id, replacement: replacement)
+            queueEdits[id] = nil
+            composerSelections[id, editing.editingProvider] = editing.originalComposition
+            selection.setDraft(editing.originalDraft, chatID: id)
+            if chatID == id {
+                draftRevision &+= 1
+                composerInsertionRevision = UUID()
+                if choice != editing.originalChoice { setChoice(editing.originalChoice) }
+            }
+        } catch {
+            if chatID == id { self.error = "Queued message could not be saved." }
+        }
+    }
+
+    func removeQueuedMessage(_ message: AgentQueuedMessage) async {
+        guard let id = chatID else { return }
+        do { try await manager.removeQueuedMessage(chatID: id, messageID: message.id) }
+        catch { if chatID == id { self.error = "Queued message could not be removed." } }
+    }
+
+    func moveQueuedMessage(_ messageID: UUID, to targetID: UUID, chatID id: UUID) async {
+        guard id == chatID else { return }
+        do { try await manager.moveQueuedMessage(chatID: id, messageID: messageID, to: targetID) }
+        catch { if chatID == id { self.error = "Queued messages could not be reordered." } }
+    }
+
+    func resumeMessageQueue() async {
+        guard let id = chatID else { return }
+        do { try await manager.resumeMessageQueue(chatID: id) }
+        catch { if chatID == id { self.error = "Queue could not be resumed." } }
+    }
+
+    func sendQueuedMessageNow(_ message: AgentQueuedMessage) async {
+        guard let id = chatID, canSendQueuedNow else { return }
+        do { try await manager.sendQueuedMessageNow(chatID: id, messageID: message.id) }
+        catch { if chatID == id { self.error = AgentFailure.sendMessage(for: error, provider: message.provider) } }
+    }
+
+    func send(immediately: Bool = false) async {
+        if editingQueuedMessage {
+            if hasInput { await finishQueuedEdit(save: true) }
+            return
+        }
         guard hasInput else { return }
         if let question = AgentConversationText.sideQuestion(in: draft) {
             askSideQuestion(question)
             return
+        }
+        guard canSubmit else { return }
+        if let id = chatID {
+            let queued = (try? await manager.shouldQueueMessage(chatID: id)) == true
+            guard chatID == id, canSubmit, hasInput else { return }
+            let localStopAndSend = immediately && provider == .local && isBusy
+            if (queued && !immediately) || localStopAndSend {
+                let selected = choice
+                let composition = composerSelection
+                let input = AgentInput(text: draft, attachments: composition.attachments,
+                                       mentions: composition.mentions, command: composition.command)
+                queueChanges.insert(id)
+                defer { queueChanges.remove(id) }
+                do {
+                    try await manager.enqueueMessage(chatID: id, choice: selected, input: input)
+                    accepted(input, chatID: id, provider: selected.provider)
+                    if localStopAndSend { try await manager.sendQueuedMessageNow(chatID: id, messageID: input.id) }
+                } catch {
+                    if chatID == id { self.error = "Message could not be queued or sent." }
+                }
+                return
+            }
+            if immediately, isBusy, !canSendQueuedNow {
+                error = "Use Queue while the current turn is running."
+                return
+            }
         }
         #if DEBUG
         if provider == .codex, let selfDriveCodexModel {
@@ -1108,7 +1240,7 @@ final class ChatModel {
             guard let chat = try stores.workspaceChat(id: id), chat.archivedAt == nil,
                   let project = try stores.workspaceProject(id: chat.projectID), project.isVisible else { throw AgentFailure.invalidRequest }
             if followup {
-                try await manager.send(chatID: id, provider: provider, input: input, onAccepted: { [weak self] in
+                try await manager.send(chatID: id, provider: provider, input: input, allowFollowup: immediately, onAccepted: { [weak self] in
                     await self?.accepted(input, chatID: id, provider: provider)
                 })
                 attempts.removeValue(forKey: input.id)
@@ -1140,10 +1272,21 @@ final class ChatModel {
             guard !stoppedSends.contains(input.id) else { return }
             try stores.selectAgentChoice(sentChoice, chatID: id, rememberRecent: true)
             // Starting the manager first guarantees auth failures have a journal.
-            try await manager.send(chatID: id, provider: provider, input: input, onAccepted: { [weak self] in
+            try await manager.send(chatID: id, provider: provider, input: input, allowFollowup: immediately, onAccepted: { [weak self] in
                 await self?.accepted(input, chatID: id, provider: provider)
             })
         } catch {
+            if !immediately, !stoppedSends.contains(input.id),
+               (error as? AgentSessionManagerError) == .chatBusy,
+               (try? stores.agentTurn(id: input.id)) == nil,
+               (try? await manager.shouldQueueMessage(chatID: id)) == true {
+                do {
+                    try await manager.enqueueMessage(chatID: id, choice: sentChoice, input: input)
+                    accepted(input, chatID: id, provider: provider)
+                    attempts.removeValue(forKey: input.id)
+                    return
+                } catch { /* Report the original send failure below. */ }
+            }
             if !stoppedSends.contains(input.id) {
                 if (error as? AgentSessionManagerError) == .runningChatLimit {
                     attempts.removeValue(forKey: input.id)

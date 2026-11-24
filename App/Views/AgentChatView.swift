@@ -677,12 +677,30 @@ private struct AgentChatComposer: View {
     private let minimumHeight: CGFloat = 38
     private var automaticLimit: CGFloat { compact ? 94 : 136 }
     private var editorHeight: CGFloat {
-        min(heightLimit, max(minimumHeight, manualHeight ?? min(contentHeight, automaticLimit)))
+        min(editorHeightLimit, max(minimumHeight, manualHeight ?? min(contentHeight, automaticLimit)))
+    }
+    private var editorHeightLimit: CGFloat {
+        max(minimumHeight, heightLimit - (chat.messageQueue.messages.isEmpty ? 0 : 115))
     }
 
     var body: some View {
         VStack(spacing: 8) {
             resizeHandle
+            AgentMessageQueueView(chat: chat)
+            if chat.editingQueuedMessage {
+                HStack {
+                    Label("Editing queued message", systemImage: "pencil").font(.caption)
+                        .foregroundStyle(composerMessageColor)
+                    Spacer(minLength: 0)
+                    Button("Cancel") { Task { await chat.finishQueuedEdit(save: false) } }
+                        .buttonStyle(.plain)
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(composerMessageColor.opacity(0.78))
+                        .padding(.horizontal, 6).padding(.vertical, 3)
+                        .background(composerMessageColor.opacity(0.07), in: Capsule())
+                        .accessibilityIdentifier("chat.queue.cancelEdit")
+                }
+            }
             if !chat.composerSelection.attachments.isEmpty {
                 ScrollView(.horizontal) {
                     HStack(spacing: 6) {
@@ -737,7 +755,7 @@ private struct AgentChatComposer: View {
                 .onChanged { value in
                     let start = dragStartHeight ?? editorHeight
                     dragStartHeight = start
-                    manualHeight = min(heightLimit, max(minimumHeight, start - value.translation.height))
+                    manualHeight = min(editorHeightLimit, max(minimumHeight, start - value.translation.height))
                 }
                 .onEnded { _ in dragStartHeight = nil })
             .onTapGesture(count: 2) { manualHeight = nil }
@@ -748,7 +766,7 @@ private struct AgentChatComposer: View {
             .accessibilityValue("\(Int(editorHeight)) points")
             .accessibilityAdjustableAction { direction in
                 switch direction {
-                case .increment: manualHeight = min(heightLimit, editorHeight + 24)
+                case .increment: manualHeight = min(editorHeightLimit, editorHeight + 24)
                 case .decrement: manualHeight = max(minimumHeight, editorHeight - 24)
                 @unknown default: break
                 }
@@ -780,7 +798,7 @@ private struct AgentChatComposer: View {
             if showingCompletion { completionAcceptance += 1; return true }
             if hasMarkdownEdit { return false }
         }
-        if chat.canSubmit && canSend && chat.hasInput { Task { await chat.send() } }
+        if chat.canSubmit && canSend && chat.hasInput { Task { await chat.send(immediately: send) } }
         return true
     }
 
@@ -803,7 +821,7 @@ private struct AgentChatComposer: View {
         HStack(spacing: iconOnly ? 4 : 8) {
             attachButton(narrow: iconOnly)
             if chat.chatID == nil { projectControl(iconOnly: iconOnly) }
-            AgentComposerPicker(chat: chat, iconOnly: iconOnly)
+            AgentComposerPicker(chat: chat, iconOnly: iconOnly).disabled(chat.editingQueuedMessage)
             AgentComposerPermissionsControl(chat: chat, iconOnly: iconOnly)
             Spacer(minLength: 4)
             composerActions(narrow: iconOnly)
@@ -829,15 +847,17 @@ private struct AgentChatComposer: View {
             }
             if chat.state?.isRunning != true || chat.hasInput {
                 Button { Task { await chat.send() } } label: {
-                    Image(systemName: "arrow.up").font(.system(size: 16, weight: .semibold))
+                    Image(systemName: chat.editingQueuedMessage ? "checkmark" : chat.willQueueMessage ? "tray.and.arrow.down" : "arrow.up")
+                        .font(.system(size: 16, weight: .semibold))
                         .foregroundStyle(sendEnabled ? Color.white : Color.secondary)
                         .frame(width: narrow ? 24 : 30, height: narrow ? 24 : 30)
                         .background(sendEnabled ? Color.accentColor : Color.secondary.opacity(0.16), in: Circle())
                 }
                 .buttonStyle(.plain)
-                .keyboardShortcut(.return, modifiers: .command)
                 .disabled(!sendEnabled)
-                .accessibilityLabel("Send").accessibilityIdentifier("chat.composer.send")
+                .help(chat.editingQueuedMessage ? "Save queued edit" : chat.willQueueMessage ? "Queue message (Command–Return to send now)" : "Send")
+                .accessibilityLabel(chat.editingQueuedMessage ? "Save queued edit" : chat.willQueueMessage ? "Queue message" : "Send")
+                .accessibilityIdentifier("chat.composer.send")
             }
         }.fixedSize()
     }

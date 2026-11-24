@@ -250,6 +250,12 @@ final class ComposerSourceTextView: NSTextView, @preconcurrency NSLayoutManagerD
         return glyphRange.length
     }
 
+    override func keyDown(with event: NSEvent) {
+        if (event.keyCode == 36 || event.keyCode == 76), event.modifierFlags.contains(.command),
+           !hasMarkedText(), onReturn?(event.modifierFlags, false) == true { return }
+        super.keyDown(with: event)
+    }
+
     override func doCommand(by selector: Selector) {
         if ["insertNewline:", "insertNewlineIgnoringFieldEditor:"].contains(NSStringFromSelector(selector)), !hasMarkedText() {
             let flags = NSApp.currentEvent?.modifierFlags ?? []
