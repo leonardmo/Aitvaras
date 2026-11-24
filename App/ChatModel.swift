@@ -40,6 +40,10 @@ final class ChatModel {
     private(set) var inlineChoices: [AgentProviderChoice] = []
     private(set) var profileStatuses: [AgentProviderChoice: AgentStatus] = [:]
     private(set) var profileLimits: [AgentProviderChoice: [AgentRateLimitWindow]] = [:]
+    private(set) var codexResetBalance: CodexUsageResetBalance?
+    private(set) var codexResetMessage: String?
+    private(set) var redeemingCodexReset = false
+    private(set) var refreshingCodexUsage = false
     private(set) var profileError: String?
     private(set) var signingInChoice: AgentProviderChoice?
     var choice: AgentProviderChoice { .init(provider: provider, profile: claudeProfile) }
@@ -961,10 +965,7 @@ final class ChatModel {
             let backend = backend(for: entry)
             profileStatuses[entry] = try? await backend?.status()
             if entry == choice || entry.provider != .claude { statuses[entry.provider] = profileStatuses[entry] }
-            if let codex = backend as? CodexBackend {
-                profileLimits[entry] = try? await codex.rateLimits()
-                providerLimits[entry.provider] = profileLimits[entry]
-            }
+            if entry.provider == .codex { await refreshCodexUsage() }
         }
         if backends[.local] is LocalBackend {
             let assigned = MLXEngine.assignedModel(for: .chat)
@@ -983,6 +984,48 @@ final class ChatModel {
             selectComposer(nil, provider: value); try? loadSettings()
         }
     }
+    func refreshCodexUsage() async {
+        let choice = AgentProviderChoice(provider: .codex)
+        guard !refreshingCodexUsage, !redeemingCodexReset, let codex = backend(for: choice) as? CodexBackend else { return }
+        refreshingCodexUsage = true
+        defer { refreshingCodexUsage = false }
+        await loadCodexUsage(codex, choice: choice)
+    }
+
+    private func loadCodexUsage(_ codex: CodexBackend, choice: AgentProviderChoice) async {
+        let usage = try? await codex.usageSnapshot()
+        codexResetBalance = usage?.resets
+        if let usage {
+            profileLimits[choice] = usage.windows
+            providerLimits[.codex] = usage.windows
+        } else if profileStatuses[choice]?.authentication != .subscription {
+            profileLimits[choice] = nil
+            providerLimits[.codex] = nil
+        }
+    }
+
+    func redeemCodexReset(_ credit: CodexUsageResetCredit) async {
+        let choice = AgentProviderChoice(provider: .codex)
+        guard !refreshingCodexUsage, !redeemingCodexReset, codexResetBalance?.credits.contains(credit) == true,
+              let codex = backend(for: choice) as? CodexBackend else { return }
+        redeemingCodexReset = true
+        defer { redeemingCodexReset = false }
+        codexResetMessage = nil
+        do {
+            let outcome = try await codex.redeemUsageReset(credit, confirmed: true, audit: { [stores] event in
+                _ = try stores.record(event)
+            })
+            switch outcome {
+            case .reset, .alreadyRedeemed: codexResetMessage = "Codex reset applied."
+            case .nothingToReset: codexResetMessage = "None of the covered limits needs a reset yet."
+            case .noCredit: codexResetMessage = "This reset is no longer available."
+            }
+        } catch {
+            codexResetMessage = "Couldn’t verify the reset. Check Codex Usage before trying again."
+        }
+        await loadCodexUsage(codex, choice: choice)
+    }
+
     func loadModels() async {
         let selected = choice
         if catalogs[selected] != nil { restoreModelSelection(); return }

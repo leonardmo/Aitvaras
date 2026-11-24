@@ -804,7 +804,7 @@ private struct AgentChatComposer: View {
         let usageWindows = chat.composerUsageWindows
         return HStack(spacing: narrow ? 2 : 8) {
             gaugeSlot(contextValue, title: "Context", identifier: "chat.gauge.context", narrow: narrow)
-            if !usageWindows.isEmpty {
+            if !usageWindows.isEmpty || chat.provider != .local {
                 ComposerUsageLimits(windows: usageWindows, narrow: narrow, chat: chat)
             }
             if chat.state?.isRunning == true {

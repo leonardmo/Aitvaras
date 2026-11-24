@@ -1,0 +1,12 @@
+{
+  "steps": [
+    { "action": "press", "identifier": "bubble.left.and.text.bubble.right", "delay": 1 },
+    { "action": "waitFor", "identifier": "chat.usage.details" },
+    { "action": "press", "identifier": "chat.usage.details" },
+    { "action": "waitFor", "identifier": "usage.manualResets.provider", "enabled": true },
+    { "action": "waitFor", "text": "Open Claude Usage", "within": "chat.usage.popover" },
+    { "action": "press", "identifier": "chat.usage.settings" },
+    { "action": "waitFor", "identifier": "settings.option.usage.providerLimits" },
+    { "action": "waitFor", "identifier": "usage.manualResets.provider", "enabled": true }
+  ]
+}

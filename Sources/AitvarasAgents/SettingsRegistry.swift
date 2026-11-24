@@ -109,7 +109,7 @@ public enum SettingsRegistry {
         .setting("access.reminders", "Reminders access", "access", .action),
         .setting("access.mail", "Read-only Mail access", "access", .action),
         .setting("usage.providerLimits", "Provider usage limits", "usage", .collection,
-                 hint: "Shows the usage and quota reset times reported for a Codex or Claude account."),
+                 hint: "Shows quota windows and reset times. You can redeem a banked Codex reset or open Claude Usage to redeem a Claude reset."),
         .setting("usage.history", "Usage and history", "usage", .action),
         .setting("project.name", "Project name", "general", .text(maximum: 200), scope: .project, risk: .normal, editable: true),
         .setting("project.visibility", "Project sidebar visibility", "general", .boolean, scope: .project),

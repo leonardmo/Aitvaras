@@ -1315,6 +1315,14 @@ With those same environment variables, run `scripts/run-self-drive.sh usage-rese
 to check both reset windows, the controls for a quota-stopped chat, and the
 shortcut to the provider limits section of Usage Settings.
 
+Run `scripts/run-self-drive.sh manual-usage-reset 120 --no-build` with the same
+fixture to review and cancel a banked Codex reset, redeem it explicitly, and
+verify that the balance and both usage windows refresh. The fixture uses
+only synthetic resets and does not redeem anything on a provider account.
+Run `scripts/run-self-drive.sh manual-usage-reset-claude 120 --no-build` with
+`AITVARAS_SELF_DRIVE_PROVIDER=claude` to check that the browser link appears
+even before Claude reports a usage window.
+
 Run `scripts/run-self-drive.sh transcript-scroll 120 --no-build` with the same
 Codex fixture to check transcript scrolling. It sends local wheel events
 during a streaming reply, checks the viewport offset through later updates

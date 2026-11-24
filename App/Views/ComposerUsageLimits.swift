@@ -15,6 +15,12 @@ struct ComposerUsageLimits: View {
         let limits = ProviderUsageLimit.displayed(windows)
         Button { showsDetails.toggle() } label: {
             HStack(spacing: 0) {
+                if limits.isEmpty {
+                    Label("Usage", systemImage: "chevron.down").labelStyle(.titleAndIcon)
+                        .font(.system(size: 10, weight: .medium))
+                        .padding(.horizontal, narrow ? 6 : 9)
+                        .frame(height: 26)
+                }
                 ForEach(limits) { limit in
                     if limit.id != limits.first?.id {
                         Rectangle().fill(ink.opacity(0.24))
@@ -29,7 +35,7 @@ struct ComposerUsageLimits: View {
             .fixedSize()
         }
         .buttonStyle(.plain)
-        .help("Show usage and reset times")
+        .help("Show usage and available resets")
         .accessibilityLabel("Usage limits")
         .accessibilityValue(limits.map { "\($0.title), \($0.status)" }.joined(separator: "; "))
         .accessibilityIdentifier("chat.usage.details")
@@ -42,6 +48,7 @@ struct ComposerUsageLimits: View {
         HStack(spacing: 3) {
             Text(limit.shortTitle).foregroundStyle(ink.opacity(0.8))
             Text(limit.percent.map { "\($0)%" } ?? "—").fontWeight(.semibold).monospacedDigit().foregroundStyle(ink)
+                .frame(width: 28, alignment: .trailing)
             if showsChevron {
                 Image(systemName: "chevron.down")
                     .font(.system(size: 7, weight: .semibold))
@@ -70,6 +77,12 @@ struct ComposerUsageLimits: View {
                 if limit.id != limits.first?.id { Divider() }
                 ProviderUsageLimitRow(limit: limit)
                     .accessibilityIdentifier("chat.gauge.usage.\(limit.id)")
+            }
+            if let chat {
+                Divider()
+                ProviderResetControls(chat: chat, choice: chat.choice)
+                    .id(chat.choice)
+                    .task(id: chat.choice) { if chat.choice.provider == .codex { await chat.refreshCodexUsage() } }
             }
             if let chat, let entry = chat.currentQuotaStop, let continuation = chat.autoContinueRow(entry) {
                 Divider()
@@ -126,6 +139,8 @@ struct ProviderUsageSettings: View {
                         .accessibilityIdentifier("settings.usage.limit.\(limit.id)")
                         .id(selection.wrappedValue.id + "." + limit.id)
                 }
+                ProviderResetControls(chat: chat, choice: selection.wrappedValue)
+                    .id(selection.wrappedValue)
             }
             .onChange(of: SettingsNavigation.shared.highlight) { _, highlight in
                 if highlight?.settingID == Self.settingID { selectedChoice = nil }
@@ -136,6 +151,113 @@ struct ProviderUsageSettings: View {
     private func defaultChoice(in accounts: [AgentProviderChoice]) -> AgentProviderChoice? {
         if accounts.contains(chat.choice) { return chat.choice }
         return accounts.first { chat.profileLimits[$0]?.isEmpty == false } ?? accounts.first
+    }
+}
+
+private struct ProviderResetControls: View {
+    let chat: ChatModel
+    let choice: AgentProviderChoice
+    @State private var pendingCredit: CodexUsageResetCredit?
+
+    var body: some View {
+        if choice.provider != .local {
+            VStack(alignment: .leading, spacing: 8) {
+                Label("Manual resets", systemImage: "arrow.counterclockwise")
+                    .font(.callout.weight(.medium))
+                if choice.provider == .claude {
+                    providerLink("Open Claude Usage", at: "https://claude.ai/settings/usage")
+                        .help("Use Reset for free under Limit resets in Claude.")
+                } else {
+                    codexControls
+                }
+            }
+            .accessibilityElement(children: .contain)
+            .accessibilityIdentifier("usage.manualResets")
+        }
+    }
+
+    @ViewBuilder private var codexControls: some View {
+        if let balance = chat.codexResetBalance {
+            Text(balance.availableCount == 1 ? "1 banked reset available" : "\(balance.availableCount) banked resets available")
+                .font(.caption).foregroundStyle(.secondary)
+                .accessibilityIdentifier("usage.manualResets.balance")
+            if let credit = pendingCredit, balance.credits.contains(credit) {
+                VStack(alignment: .leading, spacing: 8) {
+                    creditDetails(credit)
+                    Text("Use one banked reset now? This can’t be undone.")
+                        .font(.caption).foregroundStyle(.secondary)
+                    HStack {
+                        Button("Cancel") { pendingCredit = nil }
+                            .accessibilityIdentifier("usage.manualResets.cancel")
+                        Button("Use reset") {
+                            pendingCredit = nil
+                            Task { await chat.redeemCodexReset(credit) }
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(chat.refreshingCodexUsage || chat.redeemingCodexReset)
+                        .accessibilityIdentifier("usage.manualResets.confirm")
+                    }
+                }
+                .padding(10)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(.quaternary, in: RoundedRectangle(cornerRadius: 8))
+            } else {
+                if balance.credits.count > 3 {
+                    ScrollView { creditRows(balance.credits) }.frame(height: 144)
+                } else {
+                    creditRows(balance.credits)
+                }
+                if balance.availableCount > balance.credits.count { openCodexUsage }
+            }
+        } else if chat.refreshingCodexUsage {
+            ProgressView("Checking banked resets…").controlSize(.small)
+        } else {
+            openCodexUsage
+        }
+        if chat.redeemingCodexReset {
+            ProgressView("Applying reset…").controlSize(.small)
+        } else if let message = chat.codexResetMessage {
+            Text(message).font(.caption).foregroundStyle(.secondary)
+                .accessibilityIdentifier("usage.manualResets.result")
+        }
+    }
+
+    private func creditRows(_ credits: [CodexUsageResetCredit]) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            ForEach(Array(credits.enumerated()), id: \.element.id) { index, credit in
+                HStack(spacing: 10) {
+                    creditDetails(credit)
+                    Spacer(minLength: 0)
+                    Button("Review") { pendingCredit = credit }
+                        .buttonStyle(.bordered)
+                        .disabled(chat.refreshingCodexUsage || chat.redeemingCodexReset)
+                        .accessibilityLabel("Review \(credit.title)")
+                        .accessibilityIdentifier("usage.manualResets.review.\(index)")
+                }
+            }
+        }
+    }
+
+    private func creditDetails(_ credit: CodexUsageResetCredit) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(verbatim: credit.title).font(.caption.weight(.medium))
+            if let date = credit.expiresAt {
+                Text("Expires \(date.formatted(.dateTime.month(.abbreviated).day().year().hour().minute().timeZone(.specificName(.short))))")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private var openCodexUsage: some View {
+        providerLink("Open Codex Usage", at: "https://chatgpt.com/codex/settings/usage")
+    }
+
+    @ViewBuilder private func providerLink(_ title: String, at address: String) -> some View {
+        if let url = URL(string: address) {
+            Link(destination: url) { Label(title, systemImage: "arrow.up.right.square") }
+                .font(.caption)
+                .accessibilityIdentifier("usage.manualResets.provider")
+        }
     }
 }
 
