@@ -20,6 +20,15 @@
     {
       "action": "press",
       "identifier": "chat.project"
+    },
+    {
+      "action": "waitFor",
+      "identifier": "chat.project.options",
+      "timeout": 10
+    },
+    {
+      "action": "dumpTree",
+      "name": "project-picker-tree"
     }
   ]
 }

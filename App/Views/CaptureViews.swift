@@ -88,7 +88,6 @@ struct CaptureSetupView: View {
     @State private var starting = false
     @State private var startupTask: Task<Void, Never>?
     @State private var captureSettings = CaptureSettings.load()
-    @State private var showSettings = false
     @State private var speechAssets = SpeechAssetReadiness.shared
     @State private var targetProjects: [WorkspaceProject] = []
     @State private var targetChats: [UUID: [WorkspaceChat]] = [:]
@@ -169,8 +168,11 @@ struct CaptureSetupView: View {
                 Text("Lokale Zusammenfassung + Transkript").tag(CapturePostprocessing.localSummary)
                 Text("Nur Transkript · ohne Zusammenfassungsmodell").tag(CapturePostprocessing.transcriptOnly)
             }
-            Button("Transkriptions- und Modelleinstellungen…") { showSettings = true }
-                .controlSize(.small)
+            Button("Aufnahmeeinstellungen öffnen…", systemImage: "arrow.up.right") {
+                SettingsNavigation.open(.page(.capture))
+            }
+            .controlSize(.small)
+            .accessibilityIdentifier("capture.settings.open")
             Divider()
 
             CaptureAudioRetentionOptions(retention: $captureSettings.audioRetention)
@@ -226,18 +228,8 @@ struct CaptureSetupView: View {
             loadCaptureTargets()
             await speechAssets.refresh()
         }
-        .disabled(showSettings)
-        .accessibilityHidden(showSettings)
-        .overlay {
-            if showSettings {
-            VStack(spacing: 0) {
-                Form { CaptureSettingsView() }.formStyle(.grouped)
-                HStack { Spacer(); Button("Zurück zur Aufnahme") { showSettings = false; captureSettings = CaptureSettings.load() }.keyboardShortcut(.defaultAction) }
-                    .padding()
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .background(Color(nsColor: .windowBackgroundColor))
-            }
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) { _ in
+            captureSettings = CaptureSettings.load()
         }
     }
 

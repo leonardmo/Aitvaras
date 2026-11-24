@@ -4,7 +4,7 @@ import Foundation
 /// Debug-only wire format shared by the in-process driver and package tests.
 public struct SelfDriveScenario: Decodable, Sendable {
     /// Fixture sets the driver seeds into its isolated profile after bootstrap.
-    public enum Seed: String, Decodable, Sendable { case homeAttention }
+    public enum Seed: String, Decodable, Sendable { case homeAttention, settingsProposals }
     public let steps: [SelfDriveStep]
     public var seed: [Seed]?
 

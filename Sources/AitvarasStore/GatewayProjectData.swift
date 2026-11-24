@@ -30,10 +30,13 @@ private struct GatewayActivityProject: Codable, FetchableRecord, PersistableReco
     let projectID: UUID
 }
 
-private struct GatewayProjectToolGrant: Codable, FetchableRecord, PersistableRecord {
-    static let databaseTableName = "gatewayProjectToolGrant"
+public struct GatewayProjectToolGrant: Codable, Sendable, Equatable, Identifiable, FetchableRecord, PersistableRecord {
+    public static let databaseTableName = "gatewayProjectToolGrant"
     let projectID: UUID
-    let toolRevision: String
+    public let toolRevision: String
+    let accountID: UUID?
+    public let toolName: String?
+    public var id: String { toolRevision }
 }
 
 extension Stores {
@@ -77,17 +80,37 @@ extension Stores {
     }
 
     public func recordGatewayActivity(_ event: ActivityEvent, projectID: UUID?,
-                                      grant: (chatID: UUID, toolRevision: String)? = nil) throws {
+                                      grant: (chatID: UUID?, toolRevision: String)? = nil,
+                                      gatewayTool: MCPGatewayTool? = nil) throws {
         try db.queue.write { dbc in
             if let grant {
                 guard let projectID,
-                      let chat = try WorkspaceChat.fetchOne(dbc, key: grant.chatID),
-                      chat.projectID == projectID, chat.archivedAt == nil,
                       grant.toolRevision.utf8.count == 64,
                       grant.toolRevision.utf8.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) })
                 else { throw AgentFailure.invalidRequest }
                 try Self.requireGatewayProject(projectID, in: dbc)
-                try GatewayProjectToolGrant(projectID: projectID, toolRevision: grant.toolRevision).save(dbc)
+                if let chatID = grant.chatID {
+                    guard let chat = try WorkspaceChat.fetchOne(dbc, key: chatID),
+                          chat.projectID == projectID, chat.archivedAt == nil else { throw AgentFailure.invalidRequest }
+                }
+                var managedAccountID: UUID?
+                if let gatewayTool {
+                    guard gatewayTool.revision == grant.toolRevision,
+                          !GatewayUpstreamToolSafety.isForbidden(gatewayTool),
+                          GatewayUpstreamToolSafety.confirmationReason(gatewayTool) == nil
+                    else { throw AgentFailure.invalidRequest }
+                    if case .upstream(let server, let accountID, let fingerprint) = gatewayTool.origin,
+                       let account = try GatewayUpstreamAccount.fetchOne(dbc, key: accountID) {
+                        guard account.serverName == server, account.definitionFingerprint == fingerprint,
+                              (account.definitionProjectID == nil || account.definitionProjectID == projectID),
+                              account.trusted == gatewayTool.trusted else { throw AgentFailure.invalidRequest }
+                        _ = try Self.resolveGatewayAccount(account, in: dbc)
+                        managedAccountID = accountID
+                    }
+                }
+                guard grant.chatID != nil || managedAccountID != nil else { throw AgentFailure.invalidRequest }
+                try GatewayProjectToolGrant(projectID: projectID, toolRevision: grant.toolRevision,
+                    accountID: managedAccountID, toolName: gatewayTool?.definition.name).save(dbc)
             }
             try event.insert(dbc)
             if let projectID, try WorkspaceProject.fetchOne(dbc, key: projectID) != nil {

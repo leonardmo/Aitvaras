@@ -79,6 +79,19 @@ import AitvarasStore
                 AppModel.shared.refreshSidebandData()
                 AppModel.shared.refreshMonitoring()
             }
+            if scenario.seed?.contains(.settingsProposals) == true {
+                _ = try AppModel.shared.executeSettingsTool("propose", arguments: .object([
+                    "reason": .string("Use a lower speaking volume."),
+                    "changes": .object(["voice.volume": .number(0.6)])
+                ]), source: .init(channel: "fixture"))
+                do {
+                    _ = try AppModel.shared.executeSettingsTool("propose", arguments: .object([
+                        "reason": .string("Request a protected permission."),
+                        "changes": .object(["access.mail": .bool(true)])
+                    ]), source: .init(channel: "fixture"))
+                    throw SelfDriveFailure("A protected setting accepted a proposal")
+                } catch SettingsToolError.userOnly {}
+            }
             // Bootstrap applies the profile preference to existing windows first.
             // Only this driver's window gets the explicit test override.
             if let appearance { window.appearance = appearance }

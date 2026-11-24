@@ -6,11 +6,6 @@ import AitvarasAgent
 import AitvarasStore
 import AitvarasCore
 
-private struct AgentSetupDestination: Identifiable {
-    let id: UUID
-    let directory: URL?
-}
-
 /// One transcript and composer, observing the application-owned chat manager.
 struct AgentChatView: View {
     @Environment(AppModel.self) private var model
@@ -22,10 +17,9 @@ struct AgentChatView: View {
     var workspaceError: String? = nil
     var compact = false
 
-    @State private var showingProfiles = false
     @State private var showingChanges = false
     @State private var editingMessage: AgentTranscriptEntry?
-    @State private var agentSetupDestination: AgentSetupDestination?
+    @State private var displayedWorktree: AgentWorktree?
     @State private var visibilityID = UUID()
     @State private var gitProject = false
     @State private var atBottom = true
@@ -46,7 +40,14 @@ struct AgentChatView: View {
         }
         .environment(\.chatResourceScope, chat.resourceScope)
         .safeAreaInset(edge: .top, spacing: 0) {
-            if !compact { GatewaySuggestionBar() }
+            if !compact {
+                VStack(spacing: 0) {
+                    if let project = currentProject, model.selectedWorkspaceChatID == chatID {
+                        projectHeader(project)
+                    }
+                    GatewaySuggestionBar()
+                }
+            }
         }
         .toolbar {
             AgentWakeBadge(manager: model.agentSessionManager, chatID: chatID)
@@ -81,6 +82,10 @@ struct AgentChatView: View {
                 do { try await Task.sleep(for: .seconds(2)) } catch { return }
             }
         }
+        .task(id: model.selectedWorkspaceChatID) {
+            displayedWorktree = model.selectedWorkspaceChatID == chatID
+                ? (try? model.stores?.agentWorktree(chatID: chatID)) : nil
+        }
         .onAppear { chat.showChat(chat.chatID, surface: visibilityID); if compact { composerFocused = true } }
         .onDisappear { chat.showChat(nil, surface: visibilityID) }
         .onChange(of: chatID) { chat.showChat(chat.chatID, surface: visibilityID) }
@@ -99,10 +104,6 @@ struct AgentChatView: View {
                 Task { await chat.refreshNativePreview() }
             }
         }
-        .sheet(item: $agentSetupDestination) { destination in
-            WorkspaceBoundaryReviewView(projectID: destination.id, agentDirectory: destination.directory, initialTab: "agent")
-                .environment(model)
-        }
         .sheet(item: $editingMessage) { entry in
             AgentEditMessageSheet(text: entry.displayText) { text in
                 let completed = await chat.fork(entry, editedText: text)
@@ -110,6 +111,45 @@ struct AgentChatView: View {
                 return completed
             }
         }
+    }
+
+    private var currentProject: WorkspaceProject? {
+        guard let projectID = model.selectedWorkspaceChat?.projectID else { return nil }
+        return model.workspaceProjects.first { $0.id == projectID }
+    }
+
+    private func projectHeader(_ project: WorkspaceProject) -> some View {
+        HStack(spacing: 12) {
+            Button {
+                SettingsNavigation.open(.project(project.id, section: .general))
+            } label: {
+                Label(project.title, systemImage: "folder")
+                    .lineLimit(1).truncationMode(.middle)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Project settings")
+            .accessibilityValue(project.title)
+            .accessibilityIdentifier("chat.header.project")
+            .help("Open Project Settings for \(project.title)")
+
+            if let worktree = displayedWorktree, worktree.chatID == chatID {
+                Label(worktree.branch, systemImage: "arrow.triangle.branch")
+                    .lineLimit(1).truncationMode(.middle)
+                    .foregroundStyle(.secondary)
+                    .accessibilityLabel("Worktree")
+                    .accessibilityValue(worktree.branch)
+                    .accessibilityIdentifier("chat.header.worktree")
+                    .help(worktree.worktreePath)
+            }
+            Spacer(minLength: 0)
+        }
+        .font(.caption)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 7)
+        .frame(maxWidth: 760)
+        .frame(maxWidth: .infinity)
+        .background(.bar)
+        .overlay(alignment: .bottom) { Divider() }
     }
 
     private var transcript: some View {
@@ -171,6 +211,7 @@ struct AgentChatView: View {
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 8))
                         }
+                        SettingsProposalCards(chatID: chatID)
                         Color.clear.frame(height: 1).id("chat.end")
                     }
                     .frame(maxWidth: 760, alignment: .leading)
@@ -198,6 +239,9 @@ struct AgentChatView: View {
                 .onChange(of: gatewayApprovals.map(\.id)) {
                     if atBottom { proxy.scrollTo("chat.end", anchor: .bottom) }
                 }
+                .onChange(of: model.settingsProposals.filter { $0.source.chatID == chatID }.map(\.id)) {
+                    if atBottom { proxy.scrollTo("chat.end", anchor: .bottom) }
+                }
                 .onChange(of: chatID) { atBottom = true; proxy.scrollTo("chat.end", anchor: .bottom) }
             }
             VStack(spacing: 6) {
@@ -223,8 +267,7 @@ struct AgentChatView: View {
                         .accessibilityIdentifier("chat.sideQuestion.panel")
                 }
                 AgentChatComposer(chat: chat, chatID: chatID, canSend: canSend, gitProject: gitProject,
-                                  composerFocused: $composerFocused, showingProfiles: $showingProfiles,
-                                  agentSetupDestination: $agentSetupDestination)
+                                  composerFocused: $composerFocused)
                 if composerMessage != nil || !canSend {
                     HStack(spacing: 8) {
                         if let error = composerMessage {
@@ -270,7 +313,6 @@ struct AgentChatView: View {
             .frame(maxWidth: .infinity)
         }
         .task(id: chatID) { await chat.refreshStatus() }
-        .sheet(isPresented: $showingProfiles) { AgentProviderSettingsView(chat: chat).frame(minWidth: 560, minHeight: 400) }
         .task(id: "\(chatID).\(chat.choice.id).\(chat.signingIn == nil)") { await chat.loadModels() }
     }
     private func transcriptRow(_ entry: AgentTranscriptEntry, streaming: Bool,
@@ -617,25 +659,30 @@ private struct AgentChatComposer: View {
     let canSend: Bool
     let gitProject: Bool
     let composerFocused: FocusState<Bool>.Binding
-    @Binding var showingProfiles: Bool
-    @Binding var agentSetupDestination: AgentSetupDestination?
+    @State private var choosingProject = false
     @State private var choosingAttachments = false
     @State private var attachmentTarget: (chatID: UUID, provider: AgentProvider)?
     @State private var completion: AgentComposerTrigger?
     @State private var completionAcceptance = 0
     @State private var composerTextSelection: TextSelection?
     @State private var showingCompletion = false
+    @State private var previewingMarkdown = false
 
     var body: some View {
-        let command = chat.composerSelection.command
-        let hint = command?.argumentPlaceholder(in: chat.draft)
-        return VStack(spacing: 8) {
+        VStack(spacing: 8) {
             if !chat.composerSelection.attachments.isEmpty {
                 ScrollView(.horizontal) {
                     HStack(spacing: 6) {
                         ForEach(chat.composerSelection.attachments) { file in
                             HStack(spacing: 4) {
-                                Image(systemName: file.kind == .image ? "photo" : "doc")
+                                if file.kind == .image, let thumbnail = NSImage(data: file.data) {
+                                    Image(nsImage: thumbnail).resizable().scaledToFit()
+                                        .frame(width: 24, height: 18)
+                                        .clipShape(.rect(cornerRadius: 3))
+                                        .accessibilityHidden(true)
+                                } else {
+                                    Image(systemName: file.kind == .image ? "photo" : "doc")
+                                }
                                 Text(file.name).lineLimit(1).truncationMode(.middle).frame(maxWidth: 160)
                                 Button { chat.composerSelection.attachments.removeAll { $0.id == file.id } } label: {
                                     Image(systemName: "xmark")
@@ -650,7 +697,60 @@ private struct AgentChatComposer: View {
                     }
                 }.scrollIndicators(.hidden).accessibilityIdentifier("chat.attachments")
             }
-            TextField("Message", text: Binding(get: { chat.draft }, set: { chat.editDraft($0) }),
+            HStack(alignment: .top, spacing: 6) {
+                if previewingMarkdown {
+                    ScrollView {
+                        ChatMarkdown(text: chat.draft)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .frame(minHeight: 34, maxHeight: 160)
+                    .accessibilityIdentifier("chat.composer.markdown")
+                } else {
+                    composerEditor
+                }
+                if !chat.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    Button {
+                        previewingMarkdown.toggle()
+                        if previewingMarkdown { showingCompletion = false }
+                        else { composerFocused.wrappedValue = true }
+                    } label: {
+                        Image(systemName: previewingMarkdown ? "pencil" : "doc.richtext")
+                            .font(.system(size: 13, weight: .medium))
+                            .foregroundStyle(composerMessageColor.opacity(0.7))
+                            .frame(width: 24, height: 24)
+                    }
+                    .buttonStyle(.plain)
+                    .help(previewingMarkdown ? "Edit Markdown" : "Preview Markdown")
+                    .accessibilityLabel(previewingMarkdown ? "Edit Markdown" : "Preview Markdown")
+                    .accessibilityIdentifier("chat.composer.preview")
+                }
+            }
+            ViewThatFits(in: .horizontal) {
+                composerBar(iconOnly: false)
+                composerBar(iconOnly: true)
+            }
+        }
+        .onDrop(of: [.fileURL, .image], isTargeted: nil, perform: receiveAttachments)
+        .fileImporter(isPresented: $choosingAttachments, allowedContentTypes: [.item], allowsMultipleSelection: true) { result in
+            defer { attachmentTarget = nil }
+            guard case .success(let urls) = result, let target = attachmentTarget else { return }
+            Task { for url in urls { await chat.attach(url, chatID: target.chatID, provider: target.provider) } }
+        }
+        .onChange(of: chatID) { resetEditor() }
+        .onChange(of: chat.choice) { resetEditor() }
+        .onChange(of: chat.draft) { if chat.draft.isEmpty { previewingMarkdown = false } }
+        .task(id: chat.composerInsertionRevision) { await focusComposerAfterInsertion() }
+        .onChange(of: showingCompletion) {
+            if !showingCompletion && !previewingMarkdown {
+                Task { await focusComposerAfterInsertion() }
+            }
+        }
+    }
+
+    private var composerEditor: some View {
+        let command = chat.composerSelection.command
+        let hint = command?.argumentPlaceholder(in: chat.draft)
+        return TextField("Message", text: Binding(get: { chat.draft }, set: { chat.editDraft($0) }),
                       selection: $composerTextSelection, axis: .vertical)
                 .lineLimit(2...6).textFieldStyle(.plain)
                 .focused(composerFocused)
@@ -665,7 +765,17 @@ private struct AgentChatComposer: View {
                 }
                 .accessibilityIdentifier("chat.composer.input")
                 .accessibilityHint(hint ?? "")
-                .onPasteCommand(of: [.fileURL, .png, .jpeg, .tiff]) { providers in _ = receiveAttachments(providers) }
+                .onPasteCommand(of: [.fileURL, .image]) { providers in _ = receiveAttachments(providers) }
+                .background {
+                    ComposerImagePasteMonitor {
+                        guard canSend, composerFocused.wrappedValue, chat.provider != .local,
+                              (NSApp.keyWindow?.firstResponder as? NSTextView)?.hasMarkedText() != true else { return false }
+                        let images = ComposerClipboardImage.read(from: .general)
+                        guard !images.isEmpty else { return false }
+                        prepareImages(images)
+                        return true
+                    }.frame(width: 0, height: 0)
+                }
                 .onChange(of: chat.draft) {
                     completion = chat.provider == .local ? nil : AgentComposerTrigger.detect(chat.draft)
                     showingCompletion = completion != nil
@@ -687,27 +797,12 @@ private struct AgentChatComposer: View {
                     if chat.canSubmit && canSend && chat.hasInput { Task { await chat.send() } }
                     return .handled
                 }
-            ViewThatFits(in: .horizontal) {
-                composerBar(compactProvider: false, compactProject: false, compactDetails: false)
-                composerBar(compactProvider: true, compactProject: false, compactDetails: false)
-                composerBar(compactProvider: true, compactProject: true, compactDetails: false)
-                composerBar(compactProvider: true, compactProject: true, compactDetails: true)
-            }
-        }
-        .onDrop(of: [.fileURL, .png, .jpeg, .tiff], isTargeted: nil, perform: receiveAttachments)
-        .fileImporter(isPresented: $choosingAttachments, allowedContentTypes: [.item], allowsMultipleSelection: true) { result in
-            defer { attachmentTarget = nil }
-            guard case .success(let urls) = result, let target = attachmentTarget else { return }
-            Task { for url in urls { await chat.attach(url, chatID: target.chatID, provider: target.provider) } }
-        }
-        .onChange(of: chatID) { showingCompletion = false; completion = nil; placeComposerCaret() }
-        .onChange(of: chat.choice) { showingCompletion = false; completion = nil; placeComposerCaret() }
-        .task(id: chat.composerInsertionRevision) { await focusComposerAfterInsertion() }
-        .onChange(of: showingCompletion) {
-            if !showingCompletion {
-                Task { await focusComposerAfterInsertion() }
-            }
-        }
+    }
+    private func resetEditor() {
+        previewingMarkdown = false
+        showingCompletion = false
+        completion = nil
+        placeComposerCaret()
     }
     private func insertComposerNewline() {
         let selected: NSRange?
@@ -724,6 +819,7 @@ private struct AgentChatComposer: View {
         // Clear the old binding before focus: TextField can select the entire
         // externally replaced value when its field editor becomes first responder.
         composerTextSelection = nil
+        previewingMarkdown = false
         composerFocused.wrappedValue = true
         await Task.yield()
         guard !Task.isCancelled, !showingCompletion,
@@ -734,24 +830,24 @@ private struct AgentChatComposer: View {
         let range = AgentComposerCaret.afterInsertion(chat.draft)
         composerTextSelection = TextSelection(insertionPoint: String.Index(utf16Offset: range.location, in: chat.draft))
     }
-    private func composerBar(compactProvider: Bool, compactProject: Bool, compactDetails: Bool) -> some View {
-        HStack(spacing: compactDetails ? 2 : 10) {
-            HStack(spacing: compactDetails ? 2 : 6) {
-                attachButton(narrow: compactDetails)
-                projectControls(iconOnly: compactProject)
-                providerControl(compact: compactProvider, narrow: compactDetails)
-                modelControls(iconOnly: compactDetails)
-            }.fixedSize(horizontal: !compactDetails, vertical: false)
-            Spacer(minLength: 0)
-            composerActions(narrow: compactDetails)
+    private func composerBar(iconOnly: Bool) -> some View {
+        HStack(spacing: iconOnly ? 4 : 8) {
+            attachButton(narrow: iconOnly)
+            if chat.chatID == nil { projectControl(iconOnly: iconOnly) }
+            AgentComposerPicker(chat: chat, iconOnly: iconOnly)
+            AgentComposerPermissionsControl(chat: chat, iconOnly: iconOnly)
+            Spacer(minLength: 4)
+            composerActions(narrow: iconOnly)
         }
-        .controlSize(.small).menuStyle(.borderlessButton)
+        .controlSize(.small)
     }
 
     private func composerActions(narrow: Bool) -> some View {
         HStack(spacing: narrow ? 2 : 8) {
             gaugeSlot(contextValue, title: "Context", identifier: "chat.gauge.context", narrow: narrow)
-            gaugeSlot(usageValue, title: "Usage", identifier: "chat.gauge.usage", narrow: narrow)
+            if let windows = chat.profileLimits[chat.choice], !windows.isEmpty {
+                ComposerUsageLimits(windows: windows, narrow: narrow)
+            }
             if chat.state?.isRunning == true {
                 Button { Task { await chat.stop() } } label: {
                     Image(systemName: "stop.fill").font(.system(size: 13, weight: .semibold))
@@ -777,150 +873,73 @@ private struct AgentChatComposer: View {
         }.fixedSize()
     }
 
-    private func projectControls(iconOnly: Bool) -> some View {
-        HStack(spacing: 3) {
-            Menu {
-                ForEach(model.workspaceProjects.filter(\.isVisible)) { project in
-                    Button { chat.newProjectID = project.id } label: {
-                        if chat.currentProjectID == project.id { Label(project.title, systemImage: "checkmark") }
-                        else { Text(project.title) }
-                    }
-                    .disabled(chat.chatID != nil || chat.creatingChat)
-                }
-                Divider()
-                Button("Add project…") { model.chooseChatProjectFolder() }
-                    .disabled(chat.chatID != nil || chat.creatingChat)
-                Button("Agent setup…") {
-                    if let projectID = chat.currentProjectID { agentSetupDestination = .init(id: projectID, directory: chat.projectDirectory) }
-                }
-                    .disabled(chat.currentProjectID == nil)
-                    .accessibilityIdentifier("chat.project.agentSetup")
-                if iconOnly, chat.chatID == nil, gitProject {
-                    Toggle("Use worktree", isOn: $chat.useWorktree)
-                        .disabled(chat.creatingChat)
-                        .accessibilityIdentifier("chat.new.worktree")
-                }
-            } label: {
-                HStack(spacing: 4) {
-                    if iconOnly { Image(systemName: chat.useWorktree ? "arrow.triangle.branch" : "folder") }
-                    else {
-                        if chat.useWorktree { Image(systemName: "arrow.triangle.branch") }
-                        Text(projectTitle).lineLimit(1)
-                    }
-                }
-            }
-            .menuStyle(.borderlessButton).buttonStyle(.plain)
-            .menuIndicator(.visible)
-            .frame(width: iconOnly ? 32 : 100).help(projectTitle)
-            .accessibilityLabel("Project").accessibilityValue(projectTitle)
-            .accessibilityIdentifier("chat.project")
-            if !iconOnly {
-                Button { chat.useWorktree.toggle() } label: {
-                    Image(systemName: "arrow.triangle.branch")
-                        .font(.system(size: 13, weight: .medium)).frame(width: 24, height: 26)
-                }
-                .buttonStyle(.plain)
-                .foregroundStyle(chat.useWorktree ? Color.accentColor : Color.secondary)
-                .background(chat.useWorktree ? Color.accentColor.opacity(0.14) : .clear, in: RoundedRectangle(cornerRadius: 5))
-                .help("Use worktree").accessibilityLabel("Use worktree")
-                .accessibilityValue(chat.useWorktree ? "On" : "Off")
-                .accessibilityIdentifier("chat.new.worktree")
-                .opacity(chat.chatID == nil && gitProject ? 1 : 0)
-                .disabled(chat.chatID != nil || !gitProject || chat.creatingChat)
-                .accessibilityHidden(chat.chatID != nil || !gitProject)
-            }
-        }.frame(width: iconOnly ? 32 : 127)
+    private func projectControl(iconOnly: Bool) -> some View {
+        Button { choosingProject.toggle() } label: {
+            ComposerControlLabel(
+                title: projectTitle,
+                icon: chat.useWorktree ? "arrow.triangle.branch" : "folder",
+                iconOnly: iconOnly,
+                maximumTitleWidth: 135
+            )
+        }
+        .buttonStyle(.plain)
+        .disabled(chat.creatingChat)
+        .help(chat.useWorktree ? "\(projectTitle) · new worktree" : projectTitle)
+        .accessibilityLabel("Project")
+        .accessibilityValue(chat.useWorktree ? "\(projectTitle), new worktree" : projectTitle)
+        .accessibilityIdentifier("chat.project")
+        .popover(isPresented: $choosingProject, arrowEdge: .top) { projectPicker }
+        .onChange(of: chat.composerOwnerID) { choosingProject = false }
     }
-    @ViewBuilder private var providerMenuEntries: some View {
-        ForEach([AgentProvider.claude, .codex, .local], id: \.self) { provider in
-            Section(provider.rawValue.capitalized) {
-                ForEach(Array(chat.allChoices.enumerated()).filter { $0.element.provider == provider }, id: \.element.id) { index, entry in
-                    if index < 9 {
-                        profileMenuButton(entry)
-                            .keyboardShortcut(KeyEquivalent(Character(String(index + 1))), modifiers: [.control, .command])
-                    } else { profileMenuButton(entry) }
+
+    private var projectPicker: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Project").font(.headline)
+            let projects = model.workspaceProjects.filter(\.isVisible)
+            if !projects.isEmpty {
+                ScrollView {
+                    VStack(spacing: 2) {
+                        ForEach(projects) { project in
+                            ComposerPickerRow(title: project.title, selected: chat.newProjectID == project.id,
+                                              icon: "folder") {
+                                chat.newProjectID = project.id
+                                choosingProject = false
+                            }
+                            .accessibilityIdentifier("chat.project.choose.\(project.id)")
+                        }
+                    }
+                }.frame(maxHeight: 180)
+            }
+            if gitProject {
+                Toggle("Use a worktree", systemImage: "arrow.triangle.branch", isOn: $chat.useWorktree)
+                    .toggleStyle(.checkbox)
+                    .help("Create a separate checkout for this chat when you send the first message.")
+                    .accessibilityIdentifier("chat.new.worktree")
+            }
+            Divider()
+            Button("Add project…", systemImage: "plus") {
+                choosingProject = false
+                model.chooseChatProjectFolder()
+            }.buttonStyle(.link)
+            if let projectID = chat.newProjectID {
+                Button("Project Settings", systemImage: "gearshape") {
+                    choosingProject = false
+                    SettingsNavigation.open(.project(projectID, section: .general))
                 }
+                .buttonStyle(.link)
+                .accessibilityIdentifier("chat.project.settings")
             }
         }
-        Divider()
-        Button("Edit profiles…") { showingProfiles = true }
+        .controlSize(.regular)
+        .padding(14)
+        .frame(width: 275)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("chat.project.options")
     }
-    private func profileMenuButton(_ entry: AgentProviderChoice) -> some View {
-        Button { chat.setChoice(entry) } label: {
-            Label("\(chat.title(entry)) · \(chat.statusLabel(entry))", systemImage: entry == chat.choice ? "checkmark" : "person.crop.circle")
-        }.accessibilityIdentifier("chat.provider.\(entry.id)")
-    }
-    @ViewBuilder private func providerControl(compact: Bool, narrow: Bool) -> some View {
-        if compact {
-            Menu { providerMenuEntries } label: { Text(chat.title(chat.choice)).lineLimit(1) }
-                .frame(width: narrow ? 62 : 76)
-                .menuIndicator(.visible).help(chat.title(chat.choice))
-                .accessibilityIdentifier("chat.provider")
-                .accessibilityLabel("Provider profile").accessibilityValue(chat.title(chat.choice))
-                .disabled(chat.isBusy || chat.creatingChat).controlSize(.small).menuStyle(.borderlessButton)
-        } else {
-            HStack(spacing: 1) {
-                ForEach(chat.inlineChoices) { entry in
-                    Button { chat.setChoice(entry) } label: {
-                        Text(chat.title(entry)).font(.caption).lineLimit(1).frame(maxWidth: .infinity).frame(height: 22)
-                            .background(entry == chat.choice ? Color.accentColor.opacity(0.25) : .clear, in: RoundedRectangle(cornerRadius: 4))
-                    }.buttonStyle(.plain).help(chat.title(entry))
-                        .accessibilityIdentifier("chat.provider.\(entry.id)")
-                        .accessibilityAddTraits(entry == chat.choice ? .isSelected : [])
-                }
-                Menu { providerMenuEntries } label: { Text("More").font(.caption) }
-                    .menuIndicator(.hidden).fixedSize()
-            }.padding(2).background(.quaternary, in: RoundedRectangle(cornerRadius: 6)).frame(width: 190)
-                // Keep each segment's own identifier; the container one would replace them.
-                .accessibilityElement(children: .contain)
-                .accessibilityIdentifier("chat.provider").accessibilityValue(chat.title(chat.choice))
-                .disabled(chat.isBusy || chat.creatingChat)
-        }
-    }
-    private func modelControls(iconOnly: Bool) -> some View {
-        HStack(spacing: iconOnly ? 2 : 6) {
-            Menu {
-                Picker("Model", selection: $chat.model) {
-                    ForEach(chat.models, id: \.id) { Text(chat.modelTitle($0)).tag($0.id) }
-                }.pickerStyle(.inline)
-            } label: {
-                Text(chat.modelTitle).lineLimit(1).truncationMode(.middle)
-            }
-            .frame(minWidth: iconOnly ? 60 : 100, idealWidth: 100, maxWidth: 100)
-            .menuIndicator(.visible)
-            .help(chat.modelTitle)
-            .accessibilityLabel("Model").accessibilityValue(chat.modelTitle)
-            .accessibilityIdentifier("chat.model")
-            .disabled(chat.isBusy || chat.creatingChat || chat.models.isEmpty)
-            Group {
-                if let model = chat.selectedModel, !model.efforts.isEmpty, chat.provider != .local {
-                    Menu {
-                        Picker("Effort", selection: $chat.effort) {
-                            Text("Default").tag("")
-                            ForEach(model.efforts, id: \.self) { Text($0.capitalized).tag($0) }
-                        }.pickerStyle(.inline)
-                    } label: {
-                        if iconOnly { Image(systemName: "brain") }
-                        else { Text(chat.effort.isEmpty ? "Effort" : chat.effort.capitalized).lineLimit(1) }
-                    }
-                    .menuIndicator(.visible)
-                    .frame(maxWidth: .infinity)
-                    .help("Effort: \(chat.effort.isEmpty ? "Default" : chat.effort.capitalized)")
-                    .accessibilityLabel("Effort").accessibilityValue(chat.effort.isEmpty ? "Default" : chat.effort.capitalized)
-                    .accessibilityIdentifier("chat.effort").disabled(chat.isBusy || chat.creatingChat)
-                } else { Color.clear.frame(height: 16).accessibilityHidden(true) }
-            }.frame(width: iconOnly ? 32 : 54)
-            AgentComposerPermissionsControl(chat: chat, iconOnly: iconOnly)
-                .frame(width: iconOnly ? 32 : 104)
-        }
-        .controlSize(.small).menuStyle(.borderlessButton)
-    }
+
     private var sendEnabled: Bool { canSend && chat.canSubmit }
     private var contextValue: Double? {
         chat.currentContextFraction
-    }
-    private var usageValue: Double? {
-        chat.profileLimits[chat.choice]?.compactMap(\.utilization).filter(\.isFinite).max()
     }
     private func gaugeSlot(_ value: Double?, title: String, identifier: String, narrow: Bool) -> some View {
         Group {
@@ -943,8 +962,7 @@ private struct AgentChatComposer: View {
         .accessibilityIdentifier("chat.composer.attach")
     }
     private var projectTitle: String {
-        let id = model.selectedWorkspaceChat?.projectID ?? chat.newProjectID
-        return model.workspaceProjects.first { $0.id == id }?.title ?? "Choose project"
+        model.workspaceProjects.first { $0.id == chat.newProjectID }?.title ?? "Choose project"
     }
     private func receiveAttachments(_ providers: [NSItemProvider]) -> Bool {
         guard canSend, chat.provider != .local else { return false }
@@ -958,25 +976,26 @@ private struct AgentChatComposer: View {
                     }
                     Task { @MainActor in await chat.attach(url, chatID: owner, provider: provider) }
                 }
-            } else if let type = [UTType.png, .jpeg, .tiff].first(where: { item.hasItemConformingToTypeIdentifier($0.identifier) }) {
+            } else if let type = ComposerClipboardImage.types.first(where: { item.hasItemConformingToTypeIdentifier($0.identifier) })
+                ?? (item.hasItemConformingToTypeIdentifier(UTType.image.identifier) ? .image : nil) {
                 _ = item.loadDataRepresentation(forTypeIdentifier: type.identifier) { data, _ in
                     guard let data else {
                         Task { @MainActor in chat.attachmentLoadFailed(chatID: owner, provider: provider) }; return
                     }
                     Task { @MainActor in
-                        if type == .tiff {
-                            guard let png = NSBitmapImageRep(data: data)?.representation(using: .png, properties: [:]) else {
-                                chat.attachmentLoadFailed(chatID: owner, provider: provider); return
-                            }
-                            chat.attach(data: png, name: "Image.png", chatID: owner, provider: provider)
-                        } else {
-                            chat.attach(data: data, name: type == .png ? "Image.png" : "Image.jpg", chatID: owner, provider: provider)
-                        }
+                        await chat.attachImage(data, chatID: owner, provider: provider)
                     }
                 }
             }
         }
         return true
+    }
+    private func prepareImages(_ images: [Data]) {
+        let owner = chat.composerOwnerID
+        let provider = chat.provider
+        Task {
+            for data in images { await chat.attachImage(data, chatID: owner, provider: provider) }
+        }
     }
     private var composerMessageColor: Color {
         colorScheme == .dark ? Color(white: 0.92) : Color(white: 0.12)
@@ -984,10 +1003,12 @@ private struct AgentChatComposer: View {
 }
 
 private struct AgentComposerPermissionsControl: View {
+    @Environment(\.colorScheme) private var colorScheme
     @Bindable var chat: ChatModel
     let iconOnly: Bool
 
     @State private var isPresented = false
+    @State private var showsIntegrationHelp = false
 
     private var selection: AgentChatPermissions { chat.permissions }
     private var isFullAccessVisible: Bool {
@@ -998,7 +1019,9 @@ private struct AgentComposerPermissionsControl: View {
     }
 
     var body: some View {
+        let ink = colorScheme == .dark ? Color(white: 0.92) : Color(white: 0.15)
         Button {
+            if !isPresented { showsIntegrationHelp = false }
             isPresented.toggle()
         } label: {
             HStack(spacing: 4) {
@@ -1006,19 +1029,21 @@ private struct AgentComposerPermissionsControl: View {
                     Image(systemName: "exclamationmark.triangle")
                         .symbolRenderingMode(.monochrome)
                         .foregroundStyle(Color.orange)
-                } else if iconOnly {
-                    Image(systemName: symbol)
+                } else {
+                    Image(systemName: symbol).foregroundStyle(ink.opacity(0.72))
                 }
                 if !iconOnly { Text(title(selection)).lineLimit(1) }
                 if !iconOnly || chat.permissionsApplyNextTurn {
                     Image(systemName: chat.permissionsApplyNextTurn ? "clock" : "chevron.down")
                         .font(.system(size: 8, weight: .semibold))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(ink.opacity(0.66))
                 }
             }
             .font(.caption)
-            .frame(maxWidth: .infinity, minHeight: 24)
-            .background(isFullAccessVisible ? Color.orange.opacity(0.22) : .clear, in: Capsule())
+            .foregroundStyle(ink)
+            .padding(.horizontal, 8)
+            .frame(minHeight: 26)
+            .background(isFullAccessVisible ? Color.orange.opacity(0.22) : ink.opacity(0.05), in: Capsule())
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -1047,7 +1072,7 @@ private struct AgentComposerPermissionsControl: View {
                 }
             }
             if isFullAccessVisible {
-                Label("Full access runs commands outside the workspace sandbox and skips tool approvals.",
+                Label("Full access permits commands outside the workspace sandbox. Project and safety rules can still require approval.",
                       systemImage: "exclamationmark.triangle.fill")
                     .font(.caption)
                     .foregroundStyle(.orange)
@@ -1069,7 +1094,24 @@ private struct AgentComposerPermissionsControl: View {
                 }
             }.accessibilityElement(children: .contain).accessibilityLabel("Commands")
             VStack(alignment: .leading, spacing: 6) {
-                Text("MCP tools").font(.subheadline.weight(.semibold))
+                HStack(spacing: 5) {
+                    Text("MCP tools").font(.subheadline.weight(.semibold))
+                    Button { showsIntegrationHelp.toggle() } label: {
+                        Image(systemName: showsIntegrationHelp ? "info.circle.fill" : "info.circle")
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .help("About MCP tool permissions")
+                    .accessibilityLabel("About MCP tool permissions")
+                    .accessibilityValue(showsIntegrationHelp ? "Expanded" : "Collapsed")
+                    .accessibilityIdentifier("chat.permissions.mcp.help")
+                }
+                if showsIntegrationHelp {
+                    Text("An MCP integration can give an agent tools from another app. Project and safety rules still apply.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
                 HStack(spacing: 6) {
                     permissionOption("Ask", id: "mcp.ask", selected: !selection.isPlan && selection.mcp == .ask) {
                         customize { $0.mcp = .ask }
@@ -1077,7 +1119,7 @@ private struct AgentComposerPermissionsControl: View {
                     permissionOption("Auto", id: "mcp.auto", selected: !selection.isPlan && selection.mcp == .auto) {
                         customize { $0.mcp = .auto }
                     }
-                    permissionOption("No approval prompts", id: "mcp.unprompted", selected: !selection.isPlan && selection.mcp == .unprompted) {
+                    permissionOption("Unprompted", id: "mcp.unprompted", selected: !selection.isPlan && selection.mcp == .unprompted) {
                         customize { $0.mcp = .unprompted }
                     }
                 }
@@ -1171,7 +1213,7 @@ private struct AgentComposerPermissionsControl: View {
         switch selection.mcp {
         case .ask: return "MCP calls require approval."
         case .auto: return "Asks for critical actions and tools with unclear effects."
-        case .unprompted: return "MCP tools enabled for this project can run without approval."
+        case .unprompted: return "Enabled tools can run without approval where project and safety rules allow."
         }
     }
 

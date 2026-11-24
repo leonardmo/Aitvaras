@@ -1,0 +1,14 @@
+{
+  "seed": ["settingsProposals"],
+  "steps": [
+    {"action":"press","identifier":"bubble.left.and.text.bubble.right","delay":1},
+    {"action":"waitFor","text":"Use a lower speaking volume.","timeout":10},
+    {"action":"screenshot","name":"01-settings-proposal"},
+    {"action":"press","text":"Apply"},
+    {"action":"waitFor","text":"Use a lower speaking volume.","absent":true,"timeout":10},
+    {"action":"press","identifier":"clock.arrow.circlepath"},
+    {"action":"waitFor","text":"Settings changes","timeout":10},
+    {"action":"press","text":"Undo"},
+    {"action":"waitFor","text":"Settings changes","absent":true,"timeout":10}
+  ]
+}

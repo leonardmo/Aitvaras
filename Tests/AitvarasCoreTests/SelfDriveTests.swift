@@ -198,7 +198,7 @@ import AitvarasCore
         #expect(scenario.steps[claudeShot - 1].action == .waitFor
             && scenario.steps[claudeShot - 1].identifier == "chat.changes.refresh"
             && scenario.steps[claudeShot - 1].absent == true)
-        #expect(scenario.steps.contains { $0.action == .press && $0.identifier == "cpu" })
+        #expect(scenario.steps.contains { $0.action == .press && $0.identifier == "settings.providers" })
         #expect(scenario.steps.contains { $0.action == .waitFor && $0.identifier == "settings.providers.page" })
         #expect(approval < claude)
         #expect(scenario.steps[..<approval].contains { $0.action == .waitFor && $0.identifier == "chat.request.0.allow" })
@@ -213,7 +213,12 @@ import AitvarasCore
         })
         #expect(!scenario.steps[(freshShellChat + 1)..<shell].contains { $0.action == .type || $0.identifier == "chat.composer.send" })
         #expect(scenario.steps[shell..<approval].contains { $0.identifier == "chat.needsYou" })
-        #expect(scenario.steps[claude - 1].identifier == "chat.new.$project")
+        let newClaudeChat = try #require(scenario.steps[..<claude].lastIndex {
+            $0.action == .press && $0.identifier == "chat.new.$project"
+        })
+        #expect(scenario.steps[(newClaudeChat + 1)..<claude].contains {
+            $0.action == .press && $0.identifier == "chat.agent"
+        })
         #expect(scenario.steps[(claude + 1)...].contains {
             $0.action == .waitFor && $0.text == "Sign in to Claude" && $0.within == "chat.error"
         })
@@ -256,7 +261,7 @@ import AitvarasCore
         }
     }
 
-    @Test func layoutScenarioKeepsNarrowScreenshotsWithoutProviderSegments() throws {
+    @Test func layoutScenarioUsesAgentPopoverWithSidebarVisible() throws {
         let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
         let scenario = try SelfDriveScenario.parse(Data(contentsOf: root.appendingPathComponent("UITests/self-drive/layout.json")))
         let golden = try SelfDriveScenario.parse(Data(contentsOf: root.appendingPathComponent("UITests/self-drive/golden-path.json")))
@@ -275,17 +280,16 @@ import AitvarasCore
         #expect(scenario.steps[signIn + 1].name == "layout-03-claude-signin")
         #expect(reply < signIn)
         var typed: String?
-        var sidebarVisible = true
+        #expect(!scenario.steps.contains { $0.identifier == "sidebar.left" })
         for (index, step) in scenario.steps.enumerated() {
-            if step.action == .press, step.identifier == "sidebar.left" { sidebarVisible.toggle() }
-            if step.action == .screenshot { #expect(sidebarVisible) }
-            if step.action == .press, let identifier = step.identifier,
-               ["chat.provider.codex", "chat.provider.claude"].contains(identifier) {
-                #expect(!sidebarVisible)
+            if step.action == .press, let identifier = step.identifier, identifier.hasPrefix("chat.provider.") {
+                #expect(scenario.steps[index - 2].identifier == "chat.agent")
+                #expect(scenario.steps[index + 1].identifier == "chat.agent.done")
             }
-            let needsProviderSegments = ["chat.provider.codex", "chat.provider.claude", "chat.signin"].contains(step.identifier ?? "")
+            let optionalProviderStep = ["chat.agent", "chat.agent.done", "chat.provider.codex", "chat.provider.claude",
+                                        "chat.signin"].contains(step.identifier ?? "")
                 || step.text == "pelican" || step.text == "Sign in to Claude"
-            #expect((step.optional == true) == needsProviderSegments)
+            #expect((step.optional == true) == optionalProviderStep)
             if step.action == .type { typed = step.text }
             if step.action == .press, step.identifier == "chat.composer.send" {
                 let check = try #require(scenario.steps.dropFirst(index + 1).first)

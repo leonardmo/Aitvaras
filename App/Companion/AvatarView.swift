@@ -332,9 +332,7 @@ final class AvatarController {
         // hour (the window sets the mood; interior lamps carry the light).
         let wall = SCNNode(geometry: SCNPlane(width: 3.4, height: 2.8))
         let wallMat = SCNMaterial()
-        wallMat.diffuse.contents = Self.verticalGradientImage(
-            top: NSColor(calibratedRed: 0.50, green: 0.46, blue: 0.64, alpha: 1),
-            bottom: NSColor(calibratedRed: 0.32, green: 0.29, blue: 0.44, alpha: 1))
+        wallMat.diffuse.contents = AvatarGradientTextures.roomWall
         wallMat.lightingModel = .constant
         wallMat.transparency = 0.34
         wallMat.blendMode = .alpha
@@ -568,52 +566,9 @@ final class AvatarController {
         }
     }
 
-    /// Simple vertical gradient texture (for walls / lighting environment).
-    static func verticalGradientImage(top: NSColor, bottom: NSColor) -> NSImage {
-        let size = NSSize(width: 64, height: 256)
-        let image = NSImage(size: size)
-        image.lockFocus()
-        NSGradient(starting: bottom, ending: top)?
-            .draw(in: NSRect(origin: .zero, size: size), angle: 90)
-        image.unlockFocus()
-        return image
-    }
-
-    /// Soft radial shadow texture (dark center fading to clear).
-    static func radialShadowImage() -> NSImage {
-        let size = NSSize(width: 128, height: 128)
-        let image = NSImage(size: size)
-        image.lockFocus()
-        let gradient = NSGradient(colors: [
-            NSColor.black.withAlphaComponent(0.4),
-            NSColor.black.withAlphaComponent(0.0)
-        ])
-        gradient?.draw(in: NSBezierPath(ovalIn: NSRect(origin: .zero, size: size)),
-                       relativeCenterPosition: .zero)
-        image.unlockFocus()
-        return image
-    }
-
-    /// Soft colored radial glow for the dragon's mood aura.
-    static func radialGlowImage(_ color: NSColor) -> NSImage {
-        let size = NSSize(width: 128, height: 128)
-        let image = NSImage(size: size)
-        image.lockFocus()
-        let gradient = NSGradient(colors: [
-            color.withAlphaComponent(0.85),
-            color.withAlphaComponent(0.0)
-        ])
-        gradient?.draw(in: NSBezierPath(ovalIn: NSRect(origin: .zero, size: size)),
-                       relativeCenterPosition: .zero)
-        image.unlockFocus()
-        return image
-    }
-
     private func setupLights(_ scene: SCNScene) {
         // Environment reflections make the PBR shells look alive.
-        scene.lightingEnvironment.contents = Self.verticalGradientImage(
-            top: NSColor(calibratedRed: 0.7, green: 0.75, blue: 0.85, alpha: 1),
-            bottom: NSColor(calibratedRed: 0.25, green: 0.22, blue: 0.28, alpha: 1))
+        scene.lightingEnvironment.contents = AvatarGradientTextures.roomLighting
         scene.lightingEnvironment.intensity = 0.045
 
         let key = SCNNode()
@@ -782,9 +737,7 @@ final class AvatarController {
 
         // One environment and two diffuse sources: no shadow-map pass,
         // screen-space AO, bloom, ray tracing or dynamic reflection probes.
-        scene.lightingEnvironment.contents = Self.verticalGradientImage(
-            top: NSColor(calibratedRed: 0.82, green: 0.87, blue: 1, alpha: 1),
-            bottom: NSColor(calibratedRed: 0.22, green: 0.24, blue: 0.30, alpha: 1))
+        scene.lightingEnvironment.contents = AvatarGradientTextures.dragonLighting
         scene.lightingEnvironment.intensity = 1.1
         for (position, intensity, color) in [
             (SCNVector3(-2, 3, 4), CGFloat(900), NSColor(calibratedRed: 1, green: 0.88, blue: 0.76, alpha: 1)),
@@ -804,7 +757,7 @@ final class AvatarController {
         let contact = SCNNode(geometry: SCNPlane(width: CGFloat(width * 0.70), height: CGFloat(width * 0.26)))
         let mat = SCNMaterial()
         mat.lightingModel = .constant
-        mat.diffuse.contents = Self.radialShadowImage()
+        mat.diffuse.contents = AvatarGradientTextures.contactShadow
         mat.isDoubleSided = true
         mat.writesToDepthBuffer = false
         contact.geometry?.materials = [mat]
@@ -956,15 +909,13 @@ final class AvatarController {
         rim.eulerAngles = SCNVector3(0.25, .pi - 0.55, 0)
         rootContainer.addChildNode(rim)
 
-        scene?.lightingEnvironment.contents = Self.verticalGradientImage(
-            top: NSColor(calibratedRed: 0.95, green: 0.97, blue: 1, alpha: 1),
-            bottom: NSColor(calibratedRed: 0.08, green: 0.10, blue: 0.18, alpha: 1))
+        scene?.lightingEnvironment.contents = AvatarGradientTextures.standaloneLighting
         scene?.lightingEnvironment.intensity = 0.025
 
         let aura = SCNNode(geometry: SCNPlane(width: 0.62, height: 0.42))
         let auraMaterial = SCNMaterial()
         auraMaterial.lightingModel = .constant
-        auraMaterial.diffuse.contents = Self.radialGlowImage(Self.cWing)
+        auraMaterial.diffuse.contents = AvatarGradientTextures.aura(Self.cWing)
         auraMaterial.blendMode = .add
         auraMaterial.isDoubleSided = true
         auraMaterial.writesToDepthBuffer = false
@@ -979,7 +930,7 @@ final class AvatarController {
         let contact = SCNNode(geometry: SCNPlane(width: 0.5, height: 0.34))
         let contactMaterial = SCNMaterial()
         contactMaterial.lightingModel = .constant
-        contactMaterial.diffuse.contents = Self.radialShadowImage()
+        contactMaterial.diffuse.contents = AvatarGradientTextures.contactShadow
         contactMaterial.isDoubleSided = true
         contactMaterial.blendMode = .alpha
         contact.geometry!.materials = [contactMaterial]
@@ -1058,7 +1009,7 @@ final class AvatarController {
             iris.geometry?.firstMaterial?.emission.intensity = 0.14
         }
         for c in creatureCheeks { c.opacity = cheek }
-        dragonAura?.geometry?.firstMaterial?.diffuse.contents = Self.radialGlowImage(auraColor)
+        dragonAura?.geometry?.firstMaterial?.diffuse.contents = AvatarGradientTextures.aura(auraColor)
         creatureHead?.eulerAngles = headEuler
         SCNTransaction.commit()
     }

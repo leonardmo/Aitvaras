@@ -20,12 +20,14 @@ public struct GatewayToolService: Sendable {
     private let upstreamCall: UpstreamCall
     private let upstreams: GatewayUpstreamSessions?
     private let rules: Rules
+    private let settings: SettingsConnector.Execute?
 
     public init(stores: Stores, hub: ConnectorHub, approvals: GatewayApprovalBroker,
                 knowledgeEmbedder: (any EmbeddingEngine)? = nil,
                 upstreamCatalog: @escaping UpstreamCatalog = { _ in [] },
                 upstreamCall: @escaping UpstreamCall = { _, _, _ in throw MCPGatewayCallError.unavailable },
-                rules: @escaping Rules = { _, _ in .init() }, upstreams: GatewayUpstreamSessions? = nil) {
+                rules: @escaping Rules = { _, _ in .init() }, upstreams: GatewayUpstreamSessions? = nil,
+                settings: SettingsConnector.Execute? = nil) {
         self.stores = stores
         self.hub = hub
         self.approvals = approvals
@@ -34,6 +36,7 @@ public struct GatewayToolService: Sendable {
         self.upstreamCall = upstreamCall
         self.upstreams = upstreams
         self.rules = rules
+        self.settings = settings
     }
 
     public func connect(invocation: MCPGatewayInvocation, authorize: @escaping MCPGateway.Authorize) -> MCPGateway {
@@ -48,12 +51,18 @@ public struct GatewayToolService: Sendable {
     private func catalog(for launch: GatewayLaunchContext) async throws -> [MCPGatewayTool] {
         let own = try await ownTools(for: launch)
         var tools = try own.map { try MCPGatewayTool(origin: .aitvaras($0.scope), definition: $0.definition) }
+        if settings != nil {
+            tools += try SettingsAgentTools.definitions.map { try MCPGatewayTool(origin: .aitvaras(.settings), definition: $0) }
+        }
         for route in try stores.gatewayUpstreams(for: launch) {
             let upstream: [MCPGatewayTool]
             if let upstreams { upstream = try await upstreams.catalog(route) }
             else { upstream = try await upstreamCatalog(route) }
             guard upstream.count <= 256 - tools.count, upstream.allSatisfy({ $0.origin == Self.origin(for: route) }) else {
                 throw MCPGatewayCallError.unavailable
+            }
+            if let projectID = launch.projectID, !upstream.isEmpty {
+                try stores.expireChangedGatewayToolRules(projectID: projectID, tools: upstream)
             }
             tools += upstream
         }
@@ -102,6 +111,23 @@ public struct GatewayToolService: Sendable {
                     }
                     return try await upstreamCall(route, tool, arguments)
                 }
+        case .aitvaras(.settings):
+            guard let settings, SettingsAgentTools.definitions.contains(tool.definition) else {
+                throw MCPGatewayCallError.denied
+            }
+            try await revalidate()
+            let chatID: UUID?
+            if case .inline(let id) = invocation.presentation { chatID = id }
+            else { chatID = nil }
+            let source = SettingsProposalSource(projectID: invocation.context.projectID, chatID: chatID,
+                                                channel: invocation.context.client.rawValue)
+            do {
+                return .init(text: try await settings(tool.definition.name, arguments, source))
+            } catch let error as SettingsToolError {
+                return .init(text: error.localizedDescription, isError: true)
+            } catch {
+                return .init(text: "Aitvaras could not prepare this request.", isError: true)
+            }
         case .aitvaras(let scope):
             guard let local = try await ownTools(for: invocation.context).first(where: { $0.scope == scope && $0.definition == tool.definition }),
                   let projectID = invocation.context.projectID else { throw MCPGatewayCallError.denied }

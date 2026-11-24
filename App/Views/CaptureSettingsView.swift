@@ -106,6 +106,7 @@ struct CaptureSettingsView: View {
                     Text(language.displayName).tag(language)
                 }
             }
+            .settingsAnchor("capture.language")
             DisclosureGroup("Transcription details") {
                 Text("Apple's on-device speech recognition provides live capture captions. Audio is discarded by default; optional source retention below enables a later local second pass. No audio is sent to a cloud transcription service.")
                 Text("Applies to the next capture, independently of the companion's EN/DE conversation language.")
@@ -116,14 +117,17 @@ struct CaptureSettingsView: View {
             }
             Button("Refresh speech readiness") { Task { await speechAssets.refresh() } }
                 .controlSize(.small)
+                .settingsAnchor("capture.speechAssets")
         }
         Section("After capture") {
             Picker("Processing", selection: $settings.postprocessing) {
                 Text("Local summary + transcript").tag(CapturePostprocessing.localSummary)
                 Text("Transcript only · no summary inference").tag(CapturePostprocessing.transcriptOnly)
             }
+            .settingsAnchor("capture.postprocessing")
             if settings.postprocessing == .localSummary {
                 LabeledContent("Local summary model", value: summaryModel)
+                    .settingsAnchor("capture.summaryModel")
                 if summaryAvailable == false {
                     Label("No local summary model is available. The transcript can still be saved; its summary can be retried later.", systemImage: "exclamationmark.triangle")
                         .font(.caption).foregroundStyle(.orange)
@@ -142,8 +146,13 @@ struct CaptureSettingsView: View {
             .font(.caption).foregroundStyle(.secondary)
         }
         Section("Optional source audio") {
-            CaptureAudioRetentionOptions(retention: $settings.audioRetention)
+            HStack {
+                CaptureAudioRetentionOptions(retention: $settings.audioRetention)
+                SettingsHint("Source audio is retained locally only when you select this option. You can remove saved audio separately.")
+            }
+            .settingsAnchor("capture.audioRetention")
             Button("Manage retained audio…") { manageAudio = true }
+                .settingsAnchor("capture.audioArchive")
         }
         Section("Local second-pass transcription") {
             Text("Optional models refine retained audio on this Mac without changing live captions.")

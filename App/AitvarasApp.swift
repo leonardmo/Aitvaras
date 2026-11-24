@@ -49,8 +49,10 @@ struct AitvarasApp: App {
             }
         }
         Settings {
-            SettingsWorkspaceView(initialRoute: .setup).environment(AppModel.shared)
-                .frame(width: 820, height: 680)
+            SettingsWorkspaceView()
+                .environment(AppModel.shared)
+                .frame(minWidth: 800, idealWidth: 900, minHeight: 500, idealHeight: 680)
+                .task { await AppModel.shared.bootstrapIfNeeded() }
         }
         MenuBarExtra {
             VStack(spacing: 0) {

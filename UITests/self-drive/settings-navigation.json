@@ -1,0 +1,127 @@
+{
+  "steps": [
+    {
+      "action": "press",
+      "identifier": "gearshape"
+    },
+    {
+      "action": "waitFor",
+      "identifier": "settings.sidebar",
+      "timeout": 10
+    },
+    {
+      "action": "screenshot",
+      "name": "01-settings-sidebar",
+      "delay": 0.3
+    },
+    {
+      "action": "press",
+      "identifier": "settings.providers"
+    },
+    {
+      "action": "waitFor",
+      "identifier": "settings.providers.page",
+      "timeout": 10
+    },
+    {
+      "action": "press",
+      "identifier": "bubble.left.and.text.bubble.right"
+    },
+    {
+      "action": "press",
+      "identifier": "chat.project.settings.$project"
+    },
+    {
+      "action": "waitFor",
+      "identifier": "workspace.settings",
+      "timeout": 10
+    },
+    {
+      "action": "waitFor",
+      "identifier": "workspace.settings.folder.add",
+      "timeout": 10
+    },
+    {
+      "action": "screenshot",
+      "name": "02-project-settings",
+      "delay": 0.3
+    },
+    {
+      "action": "press",
+      "identifier": "workspace.settings.folder.add"
+    },
+    {
+      "action": "waitFor",
+      "text": "sample-folder",
+      "timeout": 10
+    },
+    {
+      "action": "waitFor",
+      "identifier": "workspace.settings.save",
+      "timeout": 10,
+      "enabled": true
+    },
+    {
+      "action": "press",
+      "identifier": "workspace.settings.save"
+    },
+    {
+      "action": "waitFor",
+      "text": "Project settings saved.",
+      "timeout": 10
+    },
+    {
+      "action": "press",
+      "identifier": "bubble.left.and.text.bubble.right"
+    },
+    {
+      "action": "press",
+      "identifier": "chat.project.settings.$project"
+    },
+    {
+      "action": "waitFor",
+      "identifier": "workspace.settings",
+      "timeout": 10
+    },
+    {
+      "action": "waitFor",
+      "text": "sample-folder",
+      "timeout": 10
+    },
+    {
+      "action": "press",
+      "identifier": "workspace.settings.folder.remove.0"
+    },
+    {
+      "action": "waitFor",
+      "identifier": "workspace.settings.save",
+      "timeout": 10,
+      "enabled": true
+    },
+    {
+      "action": "press",
+      "identifier": "workspace.settings.save"
+    },
+    {
+      "action": "waitFor",
+      "text": "Project settings saved.",
+      "timeout": 10
+    },
+    {
+      "action": "waitFor",
+      "identifier": "workspace.settings.folder.remove.1",
+      "timeout": 10,
+      "absent": true
+    },
+    {
+      "action": "waitFor",
+      "text": "sample-folder",
+      "timeout": 10
+    },
+    {
+      "action": "screenshot",
+      "name": "03-project-folder-saved",
+      "delay": 0.3
+    }
+  ]
+}

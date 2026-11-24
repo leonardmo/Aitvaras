@@ -112,6 +112,7 @@ struct ModelsSection: View {
                     }
                 }
             }
+            .settingsAnchor("models.assignments")
             Text("Models load when needed; memory is managed automatically. Chat favors depth, Voice favors speed, and Background handles mail triage and automations.")
                 .font(.caption)
                 .foregroundStyle(.tertiary)
@@ -194,6 +195,7 @@ struct ModelsSection: View {
                     .foregroundStyle(.secondary)
             }
 
+            .settingsAnchor("cloud.dataSharing")
             ForEach(CloudAgentFeature.allCases, id: \.self) { feature in
                 VStack(alignment: .leading, spacing: 5) {
                     Picker(
@@ -221,6 +223,7 @@ struct ModelsSection: View {
                 .padding(.vertical, 3)
             }
 
+            .settingsAnchor("cloud.featureRouting")
             Text("Changes apply to the next call immediately. Enabling routine review also checks existing unreviewed candidates.")
                 .font(.caption)
                 .foregroundStyle(.tertiary)
@@ -233,6 +236,7 @@ struct ModelsSection: View {
                 value: $monthlyCallLimit,
                 in: 0...500,
                 step: 10)
+                .settingsAnchor("cloud.monthlyCallLimit")
                 .onChange(of: monthlyCallLimit) {
                     CloudAgentSettings.setMonthlyCallLimit(monthlyCallLimit)
                 }
@@ -330,11 +334,13 @@ struct ModelsSection: View {
                 }
             }
 
+            .settingsAnchor("memory.schedule.mode")
             if nightlySettings.mode == .automatic {
                 DatePicker(
                     "Earliest time",
                     selection: nightlyTimeBinding(\.earliestMinute),
                     displayedComponents: .hourAndMinute)
+                    .settingsAnchor("memory.schedule.earliestMinute")
                 Text("Recommended: Aitvaras treats this as a daily boundary. If the Mac is asleep, the update catches up after the next launch or wake.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -343,6 +349,7 @@ struct ModelsSection: View {
                     "Scheduled time",
                     selection: nightlyTimeBinding(\.fixedMinute),
                     displayedComponents: .hourAndMinute)
+                    .settingsAnchor("memory.schedule.fixedMinute")
                 Text("A sleeping Mac is not force-woken. A missed fixed time catches up after the next launch or wake.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -352,20 +359,23 @@ struct ModelsSection: View {
                 Stepper(
                     "Delay after launch or wake: \(nightlySettings.wakeDelayMinutes) min",
                     value: $nightlySettings.wakeDelayMinutes,
-                    in: 0...60,
+                    in: 0...120,
                     step: 5)
+                    .settingsAnchor("memory.schedule.wakeDelay")
 
                 Picker("Run on battery", selection: $nightlySettings.powerPolicy) {
                     ForEach(NightlyPowerPolicy.allCases, id: \.self) {
                         Text($0.displayName).tag($0)
                     }
                 }
+                .settingsAnchor("memory.schedule.power")
                 if nightlySettings.powerPolicy == .batteryAboveThreshold {
                     Stepper(
                         "Minimum battery: \(nightlySettings.batteryThreshold)%",
                         value: $nightlySettings.batteryThreshold,
                         in: 5...100,
                         step: 5)
+                        .settingsAnchor("memory.schedule.batteryThreshold")
                 }
             }
 

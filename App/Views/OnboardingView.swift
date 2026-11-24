@@ -21,69 +21,43 @@ struct OnboardingView: View {
     @State private var voiceTestText = "Hello! I'm Aitvaras. It's good to see you."
     @State private var neuralLog = ""
     @State private var voiceTestRunning = false
-    @State private var selectedPage: SetupPage
+    private let selectedPage: SetupPage
     @State private var selectedAvatar = AvatarLocator.style
     @State private var localModelCount = MLXEngine.installedModels().count
     @State private var voiceVolume = Double(VoiceVolume.gain)
+    @State private var listeningLanguage = AitvarasPreferences.current.string(forKey: "voice.locale") ?? "en-US"
 
     var openProviders: (() -> Void)?
-    @State private var showingProviders = false
+    var openPage: ((SetupPage) -> Void)?
 
     private let eventStore = EKEventStore()
     private static let dragonPreview = Bundle.main.url(forResource: "AitvarasDragonPreview", withExtension: "png")
         .flatMap { NSImage(contentsOf: $0) }
 
-    init(initialPage: SetupPage = .overview, openProviders: (() -> Void)? = nil) {
+    init(initialPage: SetupPage = .overview, openProviders: (() -> Void)? = nil,
+         openPage: ((SetupPage) -> Void)? = nil) {
+        selectedPage = initialPage
         self.openProviders = openProviders
-        _selectedPage = State(initialValue: initialPage)
+        self.openPage = openPage
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            VStack(alignment: .leading, spacing: 16) {
-                HStack {
-                    Text("Setup").font(.largeTitle.weight(.semibold))
-                    Spacer()
-                    Label("Changes save automatically", systemImage: "checkmark.circle")
-                        .font(.caption).foregroundStyle(.secondary)
-                }
-                Picker("Section", selection: $selectedPage) {
-                    ForEach(SetupPage.allCases) { page in Text(page.title).tag(page) }
-                }
-                .pickerStyle(.menu)
-                .frame(maxWidth: 300, alignment: .leading)
-                .accessibilityLabel("Setup section")
-            }
-            .padding(24)
-            Divider()
+        Group {
             if selectedPage == .overview {
                 overview
             } else {
-                VStack(alignment: .leading, spacing: 0) {
-                    VStack(alignment: .leading, spacing: 5) {
-                        Label(selectedPage.title, systemImage: selectedPage.icon)
-                            .font(.title2.weight(.semibold))
-                        Text(selectedPage.detail).font(.callout).foregroundStyle(.secondary)
-                    }
-                    .padding(.horizontal, 24).padding(.top, 22).padding(.bottom, 4)
+                ScrollViewReader { proxy in
                     settingsForm
-                        .id(selectedPage)
+                        .onChange(of: SettingsNavigation.shared.highlightedID, initial: true) { _, id in
+                            if let id { proxy.scrollTo(id, anchor: .center) }
+                        }
                 }
             }
         }
         .background(Color(nsColor: .windowBackgroundColor))
-        .navigationTitle("Setup")
-        .sheet(isPresented: $showingProviders) {
-            if let chat = model.chatModel { AgentProviderSettingsView(chat: chat).frame(width: 560, height: 320) }
-        }
         .onChange(of: selectedAvatar) { AvatarLocator.style = selectedAvatar }
-        .onChange(of: selectedPage) {
-            if selectedPage == .overview {
-                localModelCount = MLXEngine.installedModels().count
-                refreshPermissions()
-            }
-        }
         .onChange(of: voiceVolume) { VoiceVolume.gain = Float(voiceVolume) }
+        .onChange(of: listeningLanguage) { model.setVoiceLanguage(listeningLanguage) }
         .onChange(of: model.modelDownloads.completionRevision) {
             localModelCount = MLXEngine.installedModels().count
         }
@@ -91,7 +65,13 @@ struct OnboardingView: View {
             refreshPermissions()
             selectedAvatar = AvatarLocator.style
             voiceVolume = Double(VoiceVolume.gain)
+            listeningLanguage = AitvarasPreferences.current.string(forKey: "voice.locale") ?? "en-US"
         }
+    }
+
+    private func navigate(_ page: SetupPage) {
+        if let openPage { openPage(page) }
+        else if let route = SettingsPage(rawValue: page.rawValue) { SettingsNavigation.open(.page(route)) }
     }
 
     private var overview: some View {
@@ -114,14 +94,14 @@ struct OnboardingView: View {
                     }
                     Spacer()
                     Button(model.modelDownloads.activeModelID != nil ? "View download"
-                           : intelligenceAvailable ? "Manage models" : "Choose a model") { selectedPage = .models }
+                           : intelligenceAvailable ? "Manage models" : "Choose a model") { navigate(.models) }
                         .buttonStyle(.borderedProminent)
                 }
                 .padding(16)
                 .background(Color.accentColor.opacity(0.07), in: RoundedRectangle(cornerRadius: 14))
 
                 Button {
-                    if let openProviders { openProviders() } else { showingProviders = true }
+                    if let openProviders { openProviders() } else { SettingsNavigation.open(.page(.providers)) }
                 } label: {
                     HStack(spacing: 12) {
                         Image(systemName: "cpu").foregroundStyle(Color.accentColor)
@@ -133,7 +113,7 @@ struct OnboardingView: View {
                         Image(systemName: "chevron.right")
                     }.padding(16).background(.quaternary, in: RoundedRectangle(cornerRadius: 12))
                 }
-                .buttonStyle(.plain).accessibilityIdentifier("settings.providers")
+                .buttonStyle(.plain).accessibilityIdentifier("settings.overview.providers")
                 Text("Explore your settings").font(.headline)
                 LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
                     overviewCard(.capture, status: "Apple on-device · language, assets & summaries")
@@ -160,7 +140,7 @@ struct OnboardingView: View {
     }
 
     private func overviewCard(_ page: SetupPage, status: String) -> some View {
-        Button { selectedPage = page } label: {
+        Button { navigate(page) } label: {
             HStack(alignment: .top, spacing: 12) {
                 Image(systemName: page.icon)
                     .font(.title3).foregroundStyle(Color.accentColor).frame(width: 26)
@@ -210,17 +190,24 @@ struct OnboardingView: View {
                 Task { @MainActor in micGranted = granted }
             }
         }
+        .settingsAnchor("access.microphone")
         row(done: speechGranted, title: "Speech recognition", detail: "Transcribe your speech on this Mac") {
             Task { speechGranted = await TranscriberSession.requestAuthorization() }
         }
+        .settingsAnchor("access.speechRecognition")
     }
 
     @ViewBuilder private var voiceSettings: some View {
         Section("Listening") {
-            voicePermissions
+            Button("Microphone and speech permissions") { navigate(.access) }
             Text("The EN/DE button on the companion chooses the language it listens for.")
                 .font(.caption).foregroundStyle(.secondary)
-            Button("Manage English / German speech assets") { selectedPage = .capture }
+            Picker("Listening language", selection: $listeningLanguage) {
+                Text("English").tag("en-US")
+                Text("German").tag("de-DE")
+            }
+            .settingsAnchor("voice.language")
+            Button("Manage English / German speech assets") { navigate(.capture) }
             Text("Voice and capture share Apple's on-device speech assets, but keep separate language selections.")
                 .font(.caption).foregroundStyle(.secondary)
         }
@@ -245,6 +232,7 @@ struct OnboardingView: View {
                 Text(model.neuralVoiceInstaller.status).font(.caption).foregroundStyle(.secondary)
             }
             LabeledContent("Volume") { Slider(value: $voiceVolume, in: 0...2).frame(maxWidth: 260) }
+                .settingsAnchor("voice.volume")
             Text("Spoken replies stay in English, independently of the language you speak. Apple voices are the fallback when the neural voice is unavailable.")
                 .font(.caption).foregroundStyle(.secondary)
         }
@@ -264,6 +252,15 @@ struct OnboardingView: View {
     }
 
     @ViewBuilder private var avatarSettings: some View {
+        Section("Appearance") {
+            Picker("Appearance", selection: Binding(
+                get: { AppAppearance.shared.mode },
+                set: { AppAppearance.shared.select($0) })) {
+                ForEach(AppAppearanceMode.allCases) { mode in Text(mode.title).tag(mode) }
+            }
+            .pickerStyle(.segmented)
+            .settingsAnchor("appearance.mode")
+        }
         Section("Floating companion") {
             Picker("Display", selection: Binding(
                 get: { model.companionPresentation },
@@ -271,6 +268,7 @@ struct OnboardingView: View {
                 Text("Avatar").tag(CompanionPresentation.avatar)
                 Text("Minimal overlay").tag(CompanionPresentation.minimal)
             }.pickerStyle(.segmented)
+                .settingsAnchor("companion.presentation")
             Text(model.companionPresentation.usesAvatar
                  ? "Show your character with controls on hover."
                  : "A compact, draggable overlay with voice, typing and volume controls. The avatar is not loaded or rendered.")
@@ -288,6 +286,7 @@ struct OnboardingView: View {
             Text("Fire-drake companion").tag(AvatarStyle.creature)
             Text("Human avatar").tag(AvatarStyle.human)
         }.pickerStyle(.segmented)
+            .settingsAnchor("companion.character")
         HStack(spacing: 18) {
             if selectedAvatar == .creature, let preview = Self.dragonPreview {
                 Image(nsImage: preview).resizable().scaledToFit().frame(width: 100, height: 120)
@@ -321,9 +320,11 @@ struct OnboardingView: View {
             row(done: calendarGranted, title: "Calendar", detail: "Read events and create Aitvaras's own events") {
                 eventStore.requestFullAccessToEvents { granted, _ in Task { @MainActor in calendarGranted = granted } }
             }
+            .settingsAnchor("access.calendar")
             row(done: remindersGranted, title: "Reminders", detail: "Read reminders and create tasks") {
                 eventStore.requestFullAccessToReminders { granted, _ in Task { @MainActor in remindersGranted = granted } }
             }
+            .settingsAnchor("access.reminders")
             HStack {
                 Image(systemName: mailStatus == "ok" ? "checkmark.circle.fill" : "circle")
                     .foregroundStyle(mailStatus == "ok" ? .green : .secondary)
@@ -335,6 +336,7 @@ struct OnboardingView: View {
                 Spacer()
                 Button("Test access") { testMail() }
             }
+            .settingsAnchor("access.mail")
             Text("Mail access is read-only. This test does not send mail.")
                 .font(.caption).foregroundStyle(.secondary)
         }

@@ -60,9 +60,10 @@ enum SidebarItem: String, CaseIterable, Identifiable {
 
 struct MainWindow: View {
     @Environment(AppModel.self) private var model
+    @Environment(\.openSettings) private var openSettings
     @State private var selection: SidebarItem = Self.initialSelection
     @State private var showArchivedNewsNote = CommandLine.arguments.contains("--open-news")
-    @State private var settingsBackgroundRequested = CommandLine.arguments.contains("--open-background-review")
+    @State private var embeddedSettingsDestination: SettingsDestination?
     @State private var activityDockPlacement = ActivityDockPlacement.load()
     @State private var sidebarVisible = !CommandLine.arguments.contains("--hide-sidebar-fixture")
     private var resolvedDockPlacement: ActivityDockPlacement {
@@ -85,7 +86,10 @@ struct MainWindow: View {
     /// own hue, so the rail stays readable at this width.
     private func sidebarRow(_ item: SidebarItem) -> some View {
         let selected = selection.primaryRoute == item
-        return Button { selection = item } label: {
+        return Button {
+            if item == .setup { showSettings() }
+            else { selection = item }
+        } label: {
             Image(systemName: item.icon)
                 .font(.system(size: 15, weight: .medium))
                 .foregroundStyle(selected ? item.tint : Color.secondary)
@@ -208,12 +212,25 @@ struct MainWindow: View {
             }
         }
         .containerBackground(for: .window) {
-            ZStack {
-                Color(nsColor: .windowBackgroundColor)
-                LinearGradient(colors: [Color.accentColor.opacity(0.06), .clear], startPoint: .topLeading, endPoint: .bottomTrailing)
+            WindowGradientBackground()
+        }
+        .onChange(of: selection, initial: true) { previous, next in
+            if next.primaryRoute == .setup && !embedsSettings {
+                selection = previous.primaryRoute == .setup ? .today : previous
+                showSettings(settingsDestination(for: next))
+            } else {
+                AitvarasPreferences.current.set(next.rawValue, forKey: "navigation.lastSelection")
             }
         }
-        .onChange(of: selection) { AitvarasPreferences.current.set(selection.rawValue, forKey: "navigation.lastSelection") }
+        .onChange(of: SettingsNavigation.shared.request, initial: true) { _, request in
+            guard let request, SettingsNavigation.shared.claimPresentation(request.id) else { return }
+            if embedsSettings {
+                embeddedSettingsDestination = request.destination
+                selection = .setup
+            } else {
+                openSettings()
+            }
+        }
         .onReceive(NotificationCenter.default.publisher(for: Notification.Name("aitvaras.sidebarCheckRoute"))) { notification in
             guard AitvarasPaths.isIsolated, ProcessInfo.processInfo.environment["AITVARAS_UI_TEST_MODE"] == "1",
                   CommandLine.arguments.contains("--sidebar-window-check"),
@@ -239,16 +256,45 @@ struct MainWindow: View {
             selection = .chat
         }
         .onReceive(NotificationCenter.default.publisher(for: .aitvarasOpenBackgroundReview)) { _ in
-            settingsBackgroundRequested = true
-            selection = .setup
+            showSettings(.page(.background))
         }
         .onChange(of: model.gatewayTokenAccountToEdit, initial: true) { _, accountID in
-            if accountID != nil {
-                settingsBackgroundRequested = false
-                selection = .connectors
+            guard let accountID else { return }
+            let accounts = (try? model.stores?.allGatewayUpstreamAccounts()) ?? []
+            let account = accounts.first { $0.id == accountID }
+            if let projectID = account?.definitionProjectID {
+                showSettings(.project(projectID, section: .servers))
+            } else {
+                showSettings(.page(.connections))
             }
         }
     }
+    // The self-drive host is an NSHostingView and has no SwiftUI Settings scene.
+    private var embedsSettings: Bool {
+        #if DEBUG
+        SelfDriver.requested || UIShot.requestedPath != nil
+        #else
+        false
+        #endif
+    }
+
+    private func settingsDestination(for route: SidebarItem) -> SettingsDestination? {
+        if route == .connectors { return .page(.connections) }
+        if route == .shortcuts { return .page(.routines) }
+        return CommandLine.arguments.contains("--open-background-review") ? .page(.background) : nil
+    }
+
+    private func showSettings(_ destination: SettingsDestination? = nil) {
+        if let destination {
+            SettingsNavigation.open(destination)
+        } else if embedsSettings {
+            embeddedSettingsDestination = nil
+            selection = .setup
+        } else {
+            openSettings()
+        }
+    }
+
     @ViewBuilder private var destination: some View {
         switch selection {
         case .today, .news: TodayView(selection: $selection)
@@ -257,8 +303,11 @@ struct MainWindow: View {
         case .library, .memory, .knowledge: LibraryWorkspaceView(initialKnowledge: selection == .knowledge).id(selection)
         case .activity: ActivityView(selection: $selection, attentionRequested: model.historyAttentionRequested)
         case .setup, .connectors, .shortcuts:
-            SettingsWorkspaceView(initialRoute: selection, initialBackground: settingsBackgroundRequested)
-                .id("\(selection.rawValue).\(settingsBackgroundRequested)")
+            if embedsSettings {
+                SettingsWorkspaceView(initialDestination: embeddedSettingsDestination ?? settingsDestination(for: selection))
+            } else {
+                TodayView(selection: $selection)
+            }
         }
     }
 }
@@ -274,32 +323,6 @@ private struct LibraryWorkspaceView: View {
             }.pickerStyle(.segmented).padding().frame(maxWidth: 400)
             if knowledge { KnowledgeView() } else { MemoryView() }
         }.navigationTitle("Library")
-    }
-}
-
-struct SettingsWorkspaceView: View {
-    @Environment(AppModel.self) private var model
-    @State private var tab: String
-    private let handlesGatewayTokenLinks: Bool
-    init(initialRoute: SidebarItem, initialBackground: Bool = false) {
-        handlesGatewayTokenLinks = initialRoute == .connectors
-        _tab = State(initialValue: initialBackground ? "background" : initialRoute == .connectors ? "connections" : initialRoute == .shortcuts ? "routines" : AitvarasPreferences.current.string(forKey: "settings.lastPane") ?? "setup")
-    }
-    var body: some View {
-        TabView(selection: $tab) {
-            if let chat = model.chatModel {
-                AgentProviderSettingsView(chat: chat).tabItem { Label("Providers", systemImage: "cpu") }.tag("providers").accessibilityIdentifier("settings.providers.page")
-            }
-            OnboardingView(openProviders: { tab = "providers" }).tabItem { Label("Setup", systemImage: "checklist") }.tag("setup")
-            ConnectorsView(handlesGatewayTokenLinks: handlesGatewayTokenLinks)
-                .tabItem { Label("Connections", systemImage: "point.3.connected.trianglepath.dotted") }.tag("connections")
-            CommandRoutinesView(model: model).tabItem { Label("Routines", systemImage: "command") }.tag("routines")
-            BackgroundReviewView().tabItem { Label("Automatic Work", systemImage: "clock") }.tag("background")
-        }.navigationTitle("Settings")
-        .onChange(of: tab) { AitvarasPreferences.current.set(tab, forKey: "settings.lastPane") }
-        .onChange(of: model.gatewayTokenAccountToEdit) { _, accountID in
-            if handlesGatewayTokenLinks, accountID != nil { tab = "connections" }
-        }
     }
 }
 

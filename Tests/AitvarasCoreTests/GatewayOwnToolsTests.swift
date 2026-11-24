@@ -58,10 +58,14 @@ import AitvarasStore
         let shared = try stores.registerGatewayUpstreamAccount(serverName: "linear", globallyAvailable: true, makeGlobalDefault: true)
         let assigned = try stores.registerGatewayUpstreamAccount(serverName: "linear", globallyAvailable: false)
         try stores.selectGatewayUpstreamAccount(projectID: first.id, serverName: "linear", accountID: assigned.id)
+        for (project, account) in [(first, assigned), (second, shared)] {
+            try stores.setGatewayUpstreamTrust(id: account.id, trusted: true)
+            try stores.setGatewayServerApprovalMode(projectID: project.id, accountID: account.id, mode: .autoAllowReads)
+        }
         let service = GatewayToolService(stores: stores, hub: ConnectorHub(stores: stores), approvals: GatewayApprovalBroker(),
             upstreamCatalog: { route in
                 [try gatewayFixtureTool(origin: .upstream(server: route.account.serverName, accountID: route.account.id,
-                    definitionFingerprint: route.account.definitionFingerprint), annotations: .init(readOnly: true), trusted: true)]
+                    definitionFingerprint: route.account.definitionFingerprint), annotations: .init(readOnly: true), trusted: route.account.trusted)]
             }, upstreamCall: { route, _, _ in .init(text: route.account.id.uuidString) })
         let one = service.connect(invocation: gatewayFixtureInvocation(projectID: first.id), authorize: {})
         let two = service.connect(invocation: gatewayFixtureInvocation(projectID: second.id), authorize: {})

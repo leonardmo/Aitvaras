@@ -482,9 +482,12 @@ final class ChatModel {
             try addAttachment(file, chatID: chatID, provider: provider)
         } catch { attachmentFailed(error, chatID: chatID, provider: provider) }
     }
-    func attach(data: Data, name: String, chatID: UUID, provider: AgentProvider) {
-        do { try addAttachment(AgentAttachment(name: name, data: data), chatID: chatID, provider: provider) }
-        catch { attachmentFailed(error, chatID: chatID, provider: provider) }
+    func attachImage(_ data: Data, chatID: UUID, provider: AgentProvider) async {
+        let task = Task.detached(priority: .userInitiated) { try AgentAttachment.pastedImage(from: data) }
+        do {
+            let image = try await withTaskCancellationHandler { try await task.value } onCancel: { task.cancel() }
+            try addAttachment(image, chatID: chatID, provider: provider)
+        } catch { attachmentFailed(error, chatID: chatID, provider: provider) }
     }
     func attachmentLoadFailed(chatID: UUID, provider: AgentProvider) {
         attachmentFailed(AgentAttachmentError.missingFile, chatID: chatID, provider: provider)
