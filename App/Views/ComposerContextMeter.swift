@@ -7,7 +7,6 @@ struct ComposerContextMeter: View {
     let compact: Bool
 
     private var fraction: Double? { ChatSettings.contextFraction(usage) }
-    private var percentage: String { fraction.map { $0.formatted(.percent.precision(.fractionLength(0))) } ?? "—" }
     private var detail: String {
         guard let fraction, let used = usage?.contextTokens, let limit = usage?.contextLimit else {
             return "Context window unavailable"
@@ -20,23 +19,15 @@ struct ComposerContextMeter: View {
         Group {
             if compact {
                 ComposerMeterTrack(fraction: fraction, ramp: ramp)
-                    .frame(width: 41, height: 5)
-                    .frame(height: 26)
+                    .frame(height: 7)
+                    .frame(height: 16)
             } else {
-                HStack(spacing: 4) {
-                    Image(systemName: "text.alignleft").accessibilityHidden(true)
-                    Text("Context")
-                    Text(percentage).fontWeight(.semibold).monospacedDigit()
-                        .lineLimit(1).minimumScaleFactor(0.85)
-                        .frame(width: 30, alignment: .trailing)
-                }
-                .font(.system(size: 10, weight: .medium))
-                .foregroundStyle((colorScheme == .dark ? Color(white: 0.94) : Color(white: 0.13))
-                    .opacity(fraction == nil ? 0.72 : 1))
-                .padding(.horizontal, 8)
-                .frame(height: 26)
-                .background { ComposerMeterTrack(fraction: fraction, ramp: ramp, behindText: true) }
-                .overlay { Capsule().strokeBorder(.primary.opacity(0.18), lineWidth: 1) }
+                Image(systemName: "text.alignleft")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle((colorScheme == .dark ? Color(white: 0.94) : Color(white: 0.13))
+                        .opacity(fraction == nil ? 0.72 : 1))
+                    .frame(width: 44, height: 26)
+                    .background { ComposerMeterTrack(fraction: fraction, ramp: ramp, behindText: true) }
             }
         }
         .contentShape(Rectangle())
@@ -68,7 +59,8 @@ struct ComposerMeterTrack: View {
                                                         from: .leading, to: .trailing)))
                         .frame(width: proxy.size.width * (fraction ?? 0))
                 }
-                .clipShape(Capsule())
+                .compositingGroup()
+                .clipShape(Capsule(style: .circular))
                 .animation(reduceMotion ? nil : .easeInOut(duration: 0.28), value: fraction)
         }
         .accessibilityHidden(true)

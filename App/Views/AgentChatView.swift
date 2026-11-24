@@ -801,11 +801,12 @@ private struct AgentChatComposer: View {
     }
 
     private func composerActions(narrow: Bool) -> some View {
-        let usageWindows = chat.composerUsageWindows
-        return HStack(spacing: narrow ? 6 : 8) {
-            ComposerContextMeter(usage: chat.currentContextUsage, compact: narrow)
-            if !usageWindows.isEmpty || chat.provider != .local {
-                ComposerUsageLimits(windows: usageWindows, narrow: narrow, chat: chat)
+        HStack(spacing: 8) {
+            if narrow {
+                VStack(spacing: 0) { composerMeters(narrow: true) }
+                    .frame(width: 62)
+            } else {
+                HStack(spacing: 8) { composerMeters(narrow: false) }
             }
             if chat.state?.isRunning == true {
                 Button { Task { await chat.stop() } } label: {
@@ -820,9 +821,9 @@ private struct AgentChatComposer: View {
             if chat.state?.isRunning != true || chat.hasInput {
                 Button { Task { await chat.send() } } label: {
                     Image(systemName: chat.editingQueuedMessage ? "checkmark" : chat.willQueueMessage ? "tray.and.arrow.down" : "arrow.up")
-                        .font(.system(size: 16, weight: .semibold))
+                        .font(.system(size: 17, weight: .semibold))
                         .foregroundStyle(sendEnabled ? Color.white : Color.secondary)
-                        .frame(width: narrow ? 24 : 30, height: narrow ? 24 : 30)
+                        .frame(width: narrow ? 32 : 34, height: narrow ? 32 : 34)
                         .background(sendEnabled ? Color.accentColor : Color.secondary.opacity(0.16), in: Circle())
                 }
                 .buttonStyle(.plain)
@@ -832,6 +833,14 @@ private struct AgentChatComposer: View {
                 .accessibilityIdentifier("chat.composer.send")
             }
         }.fixedSize()
+    }
+
+    @ViewBuilder private func composerMeters(narrow: Bool) -> some View {
+        let usageWindows = chat.composerUsageWindows
+        ComposerContextMeter(usage: chat.currentContextUsage, compact: narrow)
+        if !usageWindows.isEmpty || chat.provider != .local {
+            ComposerUsageLimits(windows: usageWindows, narrow: narrow, chat: chat)
+        }
     }
 
     private func projectControl(iconOnly: Bool) -> some View {
