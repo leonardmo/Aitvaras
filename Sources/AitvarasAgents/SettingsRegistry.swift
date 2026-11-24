@@ -108,6 +108,8 @@ public enum SettingsRegistry {
         .setting("access.calendar", "Calendar access", "access", .action),
         .setting("access.reminders", "Reminders access", "access", .action),
         .setting("access.mail", "Read-only Mail access", "access", .action),
+        .setting("usage.providerLimits", "Provider usage limits", "usage", .collection,
+                 hint: "Shows the usage and quota reset times reported for a Codex or Claude account."),
         .setting("usage.history", "Usage and history", "usage", .action),
         .setting("project.name", "Project name", "general", .text(maximum: 200), scope: .project, risk: .normal, editable: true),
         .setting("project.visibility", "Project sidebar visibility", "general", .boolean, scope: .project),

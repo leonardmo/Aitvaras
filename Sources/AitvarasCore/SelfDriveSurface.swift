@@ -115,7 +115,7 @@ import AppKit
         return "Dispatched local vertical drag"
     }
 
-    func type(_ text: String, into identifier: String) throws -> String {
+    private func editableField(for identifier: String) throws -> NSView {
         guard let input = try find(identifier), input.enabled else {
             throw SelfDriveFailure("Enabled text input unavailable: \(identifier)")
         }
@@ -134,11 +134,33 @@ import AppKit
         guard let content = window.contentView, let field = editable(in: content) else {
             throw SelfDriveFailure("No editable view for \(identifier)")
         }
-        guard window.makeFirstResponder(field) else { throw SelfDriveFailure("Text input refused first responder: \(identifier)") }
+        return field
+    }
+
+    private func fieldEditor(for identifier: String, takeFocus: Bool) throws -> NSTextView {
+        let field = try editableField(for: identifier)
+        if takeFocus, !window.makeFirstResponder(field) {
+            throw SelfDriveFailure("Text input refused first responder: \(identifier)")
+        }
         let editor = (field as? NSTextView) ?? (field as? NSTextField)?.currentEditor() as? NSTextView
         guard let editor else { throw SelfDriveFailure("Text input has no field editor: \(identifier)") }
-        editor.insertText(text, replacementRange: NSRange(location: editor.string.utf16.count, length: 0))
-        guard (input.value ?? "").contains(text) else {
+        guard window.firstResponder === editor else { throw SelfDriveFailure("Text input lost focus: \(identifier)") }
+        return editor
+    }
+
+    private func selectText(_ text: String, in identifier: String) throws -> String {
+        let editor = try fieldEditor(for: identifier, takeFocus: true)
+        let range = (editor.string as NSString).range(of: text)
+        guard range.location != NSNotFound else { throw SelfDriveFailure("Selection text unavailable in \(identifier)") }
+        editor.setSelectedRange(range)
+        return "Selected text through the field editor"
+    }
+
+    func type(_ text: String, into identifier: String, atSelection: Bool = false) throws -> String {
+        let editor = try fieldEditor(for: identifier, takeFocus: !atSelection)
+        let range = atSelection ? editor.selectedRange() : NSRange(location: editor.string.utf16.count, length: 0)
+        editor.insertText(text, replacementRange: range)
+        guard editor.string.contains(text) else {
             throw SelfDriveFailure("Text input did not show the typed text: \(identifier)")
         }
         return "Inserted through the field editor"
@@ -177,9 +199,11 @@ import AppKit
             await Task.yield()
             return reason
         case .type:
-            let reason = try type(step.text!, into: step.identifier ?? "chat.composer.input")
+            let reason = try type(step.text!, into: step.identifier ?? "chat.composer.input", atSelection: step.atSelection == true)
             await Task.yield()
             return reason
+        case .selectText:
+            return try selectText(step.text!, in: step.identifier ?? "chat.composer.input")
         case .waitFor:
             let clock = ContinuousClock()
             let deadline = clock.now.advanced(by: .seconds(step.timeout ?? 10))

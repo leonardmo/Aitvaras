@@ -37,7 +37,7 @@ struct ComposerMarkdownEditor: NSViewRepresentable {
         editor.onReturn = onReturn
         editor.onPaste = onPaste
         scroll.onMeasure = measure
-        editor.isEditable = enabled
+        if editor.isEditable != enabled { editor.isEditable = enabled }
         editor.setAccessibilityEnabled(enabled)
         editor.setAccessibilityHelp(hint)
         editor.placeholder = hint ?? "Message"
@@ -83,12 +83,10 @@ final class ComposerEditorScrollView: NSScrollView {
             appliedFocus = focusRequest
             Task { @MainActor [weak self] in
                 guard let self, let window, appliedFocus == focusRequest, editor.isEditable else { return }
+                guard window.firstResponder !== editor else { return }
                 window.makeFirstResponder(editor)
-                editor.setSelectedRange(AgentComposerCaret.afterInsertion(editor.string))
-                editor.scrollRangeToVisible(editor.selectedRange())
             }
         }
-        reportContentHeight()
     }
 
     override func layout() {

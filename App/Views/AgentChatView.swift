@@ -742,8 +742,7 @@ private struct AgentChatComposer: View {
         }
         .onChange(of: chatID) { showingCompletion = false; completion = nil }
         .onChange(of: chat.choice) { showingCompletion = false; completion = nil }
-        .task(id: chat.composerInsertionRevision) { focusRequest = UUID() }
-        .onChange(of: showingCompletion) { if !showingCompletion { focusRequest = UUID() } }
+        .onChange(of: chat.composerInsertionRevision) { focusRequest = UUID() }
     }
 
     private var resizeHandle: some View {
@@ -786,7 +785,10 @@ private struct AgentChatComposer: View {
             .popover(isPresented: $showingCompletion, arrowEdge: .top) {
                 if let completion {
                     AgentComposerCompletionView(chat: chat, trigger: completion,
-                        dismiss: { showingCompletion = false }, acceptanceRequest: completionAcceptance)
+                        dismiss: {
+                            showingCompletion = false
+                            focusRequest = UUID()
+                        }, acceptanceRequest: completionAcceptance)
                 }
             }
     }
@@ -830,10 +832,11 @@ private struct AgentChatComposer: View {
     }
 
     private func composerActions(narrow: Bool) -> some View {
-        HStack(spacing: narrow ? 2 : 8) {
+        let usageWindows = chat.composerUsageWindows
+        return HStack(spacing: narrow ? 2 : 8) {
             gaugeSlot(contextValue, title: "Context", identifier: "chat.gauge.context", narrow: narrow)
-            if let windows = chat.profileLimits[chat.choice], !windows.isEmpty {
-                ComposerUsageLimits(windows: windows, narrow: narrow)
+            if !usageWindows.isEmpty {
+                ComposerUsageLimits(windows: usageWindows, narrow: narrow, chat: chat)
             }
             if chat.state?.isRunning == true {
                 Button { Task { await chat.stop() } } label: {

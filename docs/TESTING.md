@@ -1301,6 +1301,20 @@ the owner's review; M6.1–M6.2 compatibility does not complete the cleanup gate
 On the host, `make ui` runs `scripts/run-self-drive.sh`. Screenshots land in
 `.build-e2e/self-drive/<scenario>`.
 
+The `composer-caret` scenario uses an offline Codex fixture. It replaces selected
+text while a reply streams, then types at the same caret after the queued turn
+finishes. It also checks that dismissing file suggestions preserves the caret.
+
+```sh
+AITVARAS_FAKE_CODEX="$PWD/UITests/self-drive/fixtures/composer-caret/codex" \
+  AITVARAS_SELF_DRIVE_PROVIDER=codex AITVARAS_SELF_DRIVE_CODEX_MODEL=test-model \
+  scripts/run-self-drive.sh composer-caret 120
+```
+
+With those same environment variables, run `scripts/run-self-drive.sh usage-reset 120 --no-build`
+to check both reset windows, the controls for a quota-stopped chat, and the
+shortcut to the provider limits section of Usage Settings.
+
 For a fast check without a local model, run `make ui UI_SCENARIO=cloud-switching`
 (about a minute on a signed-in machine; a few short prompts of Claude and Codex
 usage). In one chat Codex answers the backwards-word prompt, Claude repeats it

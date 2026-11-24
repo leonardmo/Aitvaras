@@ -1,0 +1,63 @@
+#!/usr/bin/python3
+"""Offline Codex app-server fixture for the composer caret scenario."""
+import json
+import sys
+import threading
+import time
+
+thread = "fixture-thread"
+turns = 0
+reset = int(time.time()) + 3600
+output_lock = threading.Lock()
+
+
+def emit(frame):
+    with output_lock:
+        print(json.dumps(frame), flush=True)
+
+
+def notify(method, turn_id, **params):
+    emit({"method": method, "params": {"threadId": thread, "turnId": turn_id, **params}})
+
+
+def schedule(delay, callback, *args, **kwargs):
+    timer = threading.Timer(delay, callback, args, kwargs)
+    timer.daemon = True
+    timer.start()
+
+
+for line in sys.stdin:
+    frame = json.loads(line)
+    if "id" not in frame:
+        continue
+    method = frame.get("method")
+    if method == "initialize":
+        result = {}
+    elif method == "account/read":
+        result = {"account": {"type": "chatgpt", "id": "fixture"}, "requiresOpenaiAuth": True}
+    elif method == "account/rateLimits/read":
+        result = {"rateLimits": {
+            "limitId": "codex",
+            "primary": {"usedPercent": 100, "windowDurationMins": 300, "resetsAt": reset},
+            "secondary": {"usedPercent": 47, "windowDurationMins": 10080, "resetsAt": reset + 86400},
+        }}
+    elif method == "model/list":
+        result = {"data": [{"model": "test-model", "displayName": "Test model", "supportedReasoningEfforts": []}]}
+    elif method in ("thread/start", "thread/resume", "thread/read"):
+        result = {"thread": {"id": thread, "modelProvider": "openai", "turns": []}}
+    elif method == "turn/start":
+        turns += 1
+        turn = str(turns)
+        result = {"turn": {"id": turn}}
+        text = " ".join(item.get("text", "") for item in frame.get("params", {}).get("input", []))
+        if "Stop at the example limit" in text:
+            error = {"message": "Example usage limit", "codexErrorInfo": "usageLimitExceeded", "rateLimitType": "primary"}
+            schedule(0.4, notify, "turn/completed", turn, turn={"id": turn, "status": "failed", "error": error})
+        else:
+            delay = 6 if turns == 1 else 0.2
+            schedule(delay, notify, "item/agentMessage/delta", turn, itemId="reply", delta="Streaming reply")
+            schedule(delay + 0.4, notify, "turn/completed", turn, turn={"id": turn, "status": "completed", "items": []})
+    else:
+        emit({"id": frame["id"], "error": {"code": -32601, "message": "Unsupported in fixture"}})
+        continue
+    emit({"id": frame["id"], "result": result})

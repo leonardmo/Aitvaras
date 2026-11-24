@@ -364,20 +364,20 @@ final class ChatModel {
         let previousDraft = selection.draft
         selection.select(id, provider: provider)
         selectionRevision &+= 1
-        if selection.draft != previousDraft { draftRevision &+= 1 }
+        if !selection.draft.utf8.elementsEqual(previousDraft.utf8) { draftRevision &+= 1 }
     }
 
     private(set) var composerInsertionRevision = UUID()
-    private func setVisibleDraft(_ value: String) {
-        guard value != selection.draft else { return }
+    @discardableResult
+    private func setVisibleDraft(_ value: String) -> Bool {
+        guard !value.utf8.elementsEqual(selection.draft.utf8) else { return false }
         selection.draft = value
         draftRevision &+= 1
+        return true
     }
 
     func editDraft(_ value: String) {
-        guard value != selection.draft else { return }
-        invalidatePending()
-        setVisibleDraft(value)
+        if setVisibleDraft(value) { invalidatePending() }
     }
 
     var draft: String {
@@ -1070,7 +1070,6 @@ final class ChatModel {
                 composition.command = input.command
                 composerSelection = composition
                 draft = input.text
-                composerInsertionRevision = UUID()
             } catch {
                 try? await manager.endQueuedEdit(chatID: id, messageID: message.id, replacement: nil)
                 throw error
@@ -1148,11 +1147,12 @@ final class ChatModel {
                 let composition = composerSelection
                 let input = AgentInput(text: draft, attachments: composition.attachments,
                                        mentions: composition.mentions, command: composition.command)
+                let draftVersion = selection.draftVersion(chatID: id)
                 queueChanges.insert(id)
                 defer { queueChanges.remove(id) }
                 do {
                     try await manager.enqueueMessage(chatID: id, choice: selected, input: input)
-                    accepted(input, chatID: id, provider: selected.provider)
+                    accepted(input, chatID: id, provider: selected.provider, draftVersion: draftVersion)
                     if localStopAndSend { try await manager.sendQueuedMessageNow(chatID: id, messageID: input.id) }
                 } catch {
                     if chatID == id { self.error = "Message could not be queued or sent." }
@@ -1232,6 +1232,7 @@ final class ChatModel {
         let followup = state?.isRunning == true
         let composition = composerSelection
         let input = AgentInput(text: text, attachments: composition.attachments, mentions: composition.mentions, command: composition.command)
+        let draftVersion = selection.draftVersion(chatID: id)
         invalidatePending(); sending[id] = input.id; error = nil; authProvider = nil
         attempts[input.id] = (input, provider, statuses[provider]?.accountID)
         if handledFailures.count > 128 { handledFailures.removeAll() }
@@ -1241,7 +1242,7 @@ final class ChatModel {
                   let project = try stores.workspaceProject(id: chat.projectID), project.isVisible else { throw AgentFailure.invalidRequest }
             if followup {
                 try await manager.send(chatID: id, provider: provider, input: input, allowFollowup: immediately, onAccepted: { [weak self] in
-                    await self?.accepted(input, chatID: id, provider: provider)
+                    await self?.accepted(input, chatID: id, provider: provider, draftVersion: draftVersion)
                 })
                 attempts.removeValue(forKey: input.id)
                 return
@@ -1273,7 +1274,7 @@ final class ChatModel {
             try stores.selectAgentChoice(sentChoice, chatID: id, rememberRecent: true)
             // Starting the manager first guarantees auth failures have a journal.
             try await manager.send(chatID: id, provider: provider, input: input, allowFollowup: immediately, onAccepted: { [weak self] in
-                await self?.accepted(input, chatID: id, provider: provider)
+                await self?.accepted(input, chatID: id, provider: provider, draftVersion: draftVersion)
             })
         } catch {
             if !immediately, !stoppedSends.contains(input.id),
@@ -1282,7 +1283,7 @@ final class ChatModel {
                (try? await manager.shouldQueueMessage(chatID: id)) == true {
                 do {
                     try await manager.enqueueMessage(chatID: id, choice: sentChoice, input: input)
-                    accepted(input, chatID: id, provider: provider)
+                    accepted(input, chatID: id, provider: provider, draftVersion: draftVersion)
                     attempts.removeValue(forKey: input.id)
                     return
                 } catch { /* Report the original send failure below. */ }
@@ -1305,14 +1306,11 @@ final class ChatModel {
             }
         }
     }
-    private func accepted(_ input: AgentInput, chatID: UUID, provider: AgentProvider) {
+    private func accepted(_ input: AgentInput, chatID: UUID, provider: AgentProvider, draftVersion: UUID?) {
         // Clear before provider startup, including auth failure. The durable
         // user entry owns the accepted text; a later draft is independent.
-        let visibleDraft = selection.draft
-        selection.clearDraft(chatID: chatID, ifUnchanged: input.text)
-        if selection.draft != visibleDraft {
+        if selection.clearDraft(chatID: chatID, ifVersion: draftVersion), selection.chatID == chatID {
             draftRevision &+= 1
-            composerInsertionRevision = UUID()
         }
         clearComposer(chatID: chatID, provider: provider, sent: input)
     }
@@ -1369,6 +1367,20 @@ final class ChatModel {
 
     var recoveryErrors: [UUID: String] = [:]
     private var recoveryTasks = Set<UUID>()
+    var currentQuotaStop: AgentTranscriptEntry? {
+        guard let state, case .failed(.quota) = state.outcome else { return nil }
+        return state.entries.reversed().first { entry in
+            guard state.canRecover(entry), let stop = entry.stoppedTurn else { return false }
+            return stop.choice == choice && stop.reason.kind == .quota && stop.recoveryInputID == nil
+        }
+    }
+
+    var composerUsageWindows: [AgentRateLimitWindow] {
+        if let windows = profileLimits[choice], !windows.isEmpty { return windows }
+        guard let stop = currentQuotaStop?.stoppedTurn else { return [] }
+        return [.init(id: stop.quotaContext?.windowID ?? "quota", utilization: nil, resetsAt: stop.reason.resetsAt)]
+    }
+
     func autoContinueRow(_ entry: AgentTranscriptEntry) -> AgentAutoContinueRow? {
         guard autoContinue != nil, let stop = entry.stoppedTurn, stop.reason.kind == .quota else { return nil }
         _ = autoContinueRevision

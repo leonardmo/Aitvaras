@@ -8,6 +8,7 @@ import AitvarasAgents
         var state = ChatSelectionState()
         state.select(first, provider: .claude)
         state.draft = "first draft"
+        let firstVersion = state.draftVersion(chatID: first)
         state.select(second, provider: .local)
         #expect(state.draft.isEmpty)
         state.draft = "second draft"
@@ -19,11 +20,27 @@ import AitvarasAgents
         #expect(state.draft == "second draft")
         state.select(first, provider: .codex)
         #expect(state.draft == "first draft")
-        state.clearDraft(chatID: second, ifUnchanged: "old draft")
+        state.clearDraft(chatID: second, ifVersion: firstVersion)
         state.select(second, provider: .local)
         #expect(state.draft == "second draft")
-        state.clearDraft(chatID: first, ifUnchanged: "first draft")
+        state.clearDraft(chatID: first, ifVersion: firstVersion)
         state.select(first, provider: .codex)
+        #expect(state.draft.isEmpty)
+    }
+
+    @Test func delayedSendAcceptancePreservesAnIndependentlyRetypedDraft() {
+        let chat = UUID()
+        var state = ChatSelectionState()
+        state.select(chat, provider: .codex)
+        state.draft = "Same words"
+        let sentVersion = state.draftVersion(chatID: chat)
+        state.draft = ""
+        state.draft = "Same words"
+        let clearedStale = state.clearDraft(chatID: chat, ifVersion: sentVersion)
+        #expect(!clearedStale)
+        #expect(state.draft == "Same words")
+        let clearedCurrent = state.clearDraft(chatID: chat, ifVersion: state.draftVersion(chatID: chat))
+        #expect(clearedCurrent)
         #expect(state.draft.isEmpty)
     }
 

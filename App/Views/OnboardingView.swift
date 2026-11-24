@@ -174,7 +174,9 @@ struct OnboardingView: View {
                 ModelsSection(pane: .localModels)
             case .cloud: ModelsSection(pane: .cloudAgents)
             case .memory: ModelsSection(pane: .memory)
-            case .usage: ModelsSection(pane: .usage)
+            case .usage:
+                if let chat = model.chatModel { ProviderUsageSettings(chat: chat).task { await chat.refreshStatus() } }
+                ModelsSection(pane: .usage)
             case .voice: voiceSettings
             case .capture: CaptureSettingsView()
             case .avatar: avatarSettings

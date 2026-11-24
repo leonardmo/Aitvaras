@@ -1,0 +1,26 @@
+{
+  "steps": [
+    {"action": "press", "identifier": "bubble.left.and.text.bubble.right", "delay": 1},
+    {"action": "waitFor", "identifier": "chat.composer.input", "enabled": true},
+    {"action": "type", "text": "Start the example turn"},
+    {"action": "press", "identifier": "chat.composer.send"},
+    {"action": "waitFor", "identifier": "chat.stop", "timeout": 20},
+    {"action": "type", "text": "Queue the second turn"},
+    {"action": "press", "identifier": "chat.composer.send"},
+    {"action": "waitFor", "identifier": "chat.queue.row.0"},
+    {"action": "type", "text": "Draft 🌿 with a selected word\n- and a second line"},
+    {"action": "selectText", "text": "selected"},
+    {"action": "waitFor", "text": "Streaming reply", "within": "chat.transcript"},
+    {"action": "type", "text": "changed", "atSelection": true},
+    {"action": "waitFor", "text": "with a changed word", "within": "chat.composer.input"},
+    {"action": "waitFor", "text": "Queue the second turn", "within": "chat.transcript", "timeout": 20},
+    {"action": "waitFor", "identifier": "chat.stop", "absent": true, "timeout": 20},
+    {"action": "type", "text": " and revised", "atSelection": true},
+    {"action": "waitFor", "text": "with a changed and revised word", "within": "chat.composer.input"},
+    {"action": "type", "text": " @example"},
+    {"action": "selectText", "text": "exam", "delay": 0.3},
+    {"action": "type", "text": "\"", "atSelection": true},
+    {"action": "type", "text": "test", "atSelection": true, "delay": 0.3},
+    {"action": "waitFor", "text": "@\"testple", "within": "chat.composer.input"}
+  ]
+}

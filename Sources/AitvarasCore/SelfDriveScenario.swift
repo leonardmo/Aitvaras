@@ -16,7 +16,7 @@ public struct SelfDriveScenario: Decodable, Sendable {
 }
 
 public struct SelfDriveStep: Codable, Sendable {
-    public enum Action: String, Codable, Sendable { case press, type, waitFor, screenshot, dumpTree, drag }
+    public enum Action: String, Codable, Sendable { case press, type, selectText, waitFor, screenshot, dumpTree, drag }
     public let action: Action
     public var identifier: String?
     /// A wait succeeds when any identifier is present; press uses the first
@@ -38,6 +38,8 @@ public struct SelfDriveStep: Codable, Sendable {
     public let caseSensitive: Bool?
     /// Vertical mouse travel in screen points. Positive is up.
     public let verticalBy: Double?
+    /// Insert at the existing selection without taking focus. Defaults to appending.
+    public let atSelection: Bool?
 
     public func matchesIdentifier(_ value: String?) -> Bool {
         guard let value else { return false }
@@ -61,6 +63,7 @@ public struct SelfDriveStep: Codable, Sendable {
             }
         }
         if verticalBy != nil && action != .drag { throw invalid("verticalBy requires drag") }
+        if atSelection != nil && action != .type { throw invalid("atSelection requires type") }
         switch action {
         case .drag:
             guard let identifier, !identifier.isEmpty, let verticalBy, verticalBy.isFinite,
@@ -72,6 +75,8 @@ public struct SelfDriveStep: Codable, Sendable {
             }
         case .type:
             guard text != nil else { throw invalid("type needs text") }
+        case .selectText:
+            guard let text, !text.isEmpty else { throw invalid("selectText needs nonempty text") }
         case .waitFor:
             guard [identifier != nil, text != nil, anyOf != nil].filter({ $0 }).count == 1,
                   identifier?.isEmpty != true, text?.isEmpty != true else {
