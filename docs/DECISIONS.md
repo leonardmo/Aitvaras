@@ -553,7 +553,7 @@ and checkboxes.
 Chat's composer and transcript share a centred column. The composer is one rounded
 card with input above a fixed control row: attach, project, provider, model, effort,
 mode; then reserved gauge slots and Send/Stop on the right. Send remains beside
-Stop whenever there is input, using the existing follow-up delivery. At narrow
+Stop whenever there is input. While a turn runs, Send queues the draft as described in D45. At narrow
 widths the provider segments collapse to a menu, then the project becomes an
 icon menu, then effort and mode become icon menus. Controls stay on one row
 without scrolling. Changes opens only
@@ -639,7 +639,8 @@ revision-aware 16,000-byte catch-up as Claude and Codex, into and out of Local.
 This amends D30/D31's stateless Local rule only for opencode; text-only Local
 still reads completed context each turn. Changing providers sends nothing;
 Send authorizes that chat's catch-up. Native opencode history reconciliation is
-not advertised; the Aitvaras transcript remains authoritative.
+not advertised; the Aitvaras transcript remains authoritative. Local follows
+D45 for queued Send and uses Stop and send for immediate follow-ups.
 
 Host recordings from opencode 2.2.6 establish the HTTP/SSE protocol, Allow,
 Reject and Stop with a local model under a sandbox. They do not establish
@@ -1116,6 +1117,10 @@ relevant observation for that provider account/profile. Both sides of an
 account match must be known. Persist only a lowercase hex SHA-256 key over
 the provider, profile and provider account ID, framed as a JSON array. Raw
 account IDs are transient and never appear in the database, activity or logs.
+When Claude Code reports a subscription member and organization through
+`auth status` without a direct account ID, derive an opaque identity from both.
+A stop recorded without identity can be recovered manually. A new login cannot
+establish who owned that earlier turn.
 Codex also polls its
 CLI's account/rateLimits/read every ten minutes while waiting, without a model
 prompt. With no usable reset, retry intervals are five, ten, twenty, then thirty
@@ -1302,3 +1307,24 @@ accounts ask, and existing configurations inherit their previous policy
 until reviewed. Chat Ask and Plan can narrow access. Explicit tool
 classifications and reusable grants bind to the exact definition revision.
 Protected services and protected tool actions keep their restrictions.
+
+## D45 — Queue user messages while a chat is working (2026-11-24)
+
+While any provider is active, Send puts the draft and attachments in a per-chat
+outbox. A successful turn releases the next message as a separate root turn.
+Messages stay in order even when the chat is in the background. A successful
+turn that scheduled future work still releases the next user message. A ready
+user message takes priority over an app-owned wake.
+
+Editing holds a message in its position and holds the messages behind it.
+The composer restores its previous draft after Save or Cancel. Restart
+retains the last saved queued content and clears the unsaved edit. An
+interrupted, failed, or unresolved approval turn pauses the queue. Restored
+queues wait for Resume. A successful automatic continuation after a usage
+reset releases a queue paused for that limit.
+
+Send now and Command–Return explicitly steer a running Claude or Codex turn.
+For Local, Stop and send interrupts the active turn and sends the selected
+message as a separate turn. Queue entries retain their original session
+identity and are reconciled with the delivery journal after restart to
+prevent duplicate delivery.

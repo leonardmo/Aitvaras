@@ -146,7 +146,8 @@ private struct GradientGallery: View {
                     .init(id: "seven_day", utilization: weekly)
                 ], narrow: false)
                 Spacer(minLength: 0)
-                ChatContextMeter(fill: context)
+                ComposerContextMeter(usage: .init(scope: .lastCall, contextTokens: Int(context * 100_000), contextLimit: 100_000),
+                                     compact: false)
             }
         }
         .padding(12)

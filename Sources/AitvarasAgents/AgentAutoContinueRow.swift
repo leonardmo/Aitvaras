@@ -27,7 +27,12 @@ public struct AgentAutoContinueRow: Sendable, Equatable {
                                          accountKey: intent?.scope.accountKey ?? stop.quotaContext?.accountKey)
         guard scope.hasKnownAccount else {
             enabled = false; keepAwake = false; canToggle = false; canChangeKeepAwake = false
-            status = "Automatic continuation requires a verified provider account."
+            let action = stop.actions.first { $0 == .retry || ($0 == .continueTurn && stop.canContinue) }
+            if isCurrent, let action {
+                status = "The provider account for this turn couldn’t be verified. Use \(action.label) to resume manually."
+            } else {
+                status = "The provider account for this turn couldn’t be verified."
+            }
             return
         }
         let editable = intent.map { $0.state == .pending } ?? current

@@ -1,0 +1,25 @@
+{
+  "steps": [
+    { "action": "press", "identifier": "bubble.left.and.text.bubble.right", "delay": 1 },
+    { "action": "waitFor", "identifier": "chat.usage.details" },
+    { "action": "type", "text": "Stop at the example limit" },
+    { "action": "press", "identifier": "chat.composer.send" },
+    { "action": "waitFor", "text": "Usage limit reached", "within": "chat.transcript", "timeout": 20 },
+    { "action": "press", "identifier": "chat.usage.details" },
+    { "action": "waitFor", "identifier": "chat.usage.popover" },
+    { "action": "waitFor", "identifier": "usage.reset.fiveHour" },
+    { "action": "waitFor", "identifier": "usage.reset.week" },
+    { "action": "waitFor", "identifier": "usage.copyReset.fiveHour", "enabled": true },
+    { "action": "waitFor", "identifier": "chat.usage.continuation.autoContinue", "enabled": true },
+    { "action": "press", "identifier": "chat.usage.continuation.autoContinue" },
+    { "action": "waitFor", "identifier": "chat.usage.continuation.autoContinue", "enabled": true },
+    { "action": "waitFor", "identifier": "chat.usage.continuation.keepAwake", "enabled": false },
+    { "action": "press", "identifier": "chat.usage.continuation.autoContinue" },
+    { "action": "waitFor", "identifier": "chat.usage.continuation.keepAwake", "enabled": true },
+    { "action": "press", "identifier": "chat.usage.settings" },
+    { "action": "waitFor", "identifier": "settings.option.usage.providerLimits" },
+    { "action": "waitFor", "identifier": "settings.usage.limit.fiveHour" },
+    { "action": "waitFor", "identifier": "settings.usage.limit.week" },
+    { "action": "screenshot", "name": "provider-usage-settings" }
+  ]
+}

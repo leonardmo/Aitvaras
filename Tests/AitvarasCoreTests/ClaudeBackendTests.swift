@@ -452,3 +452,76 @@ done()
     }
 
 }
+
+extension ClaudeBackendTests {
+    @Test(arguments: ["same account", "different member", "different organization"])
+    func timedQuotaContinuationUsesTheClaudeMemberAndOrganization(account: String) async throws {
+        let clock = AutoContinueTimerClock()
+        let reset = clock.now.addingTimeInterval(60)
+        let fixture = try BackendExecutableFixture(script: """
+claude_init()
+first = True
+while True:
+    request = read()
+    assert request['type'] == 'user'
+    if first:
+        emit({'type':'system','subtype':'init','apiKeySource':'none','session_id':'00000000-0000-4000-8000-000000000001'})
+        first = False
+    evidence = json.dumps(request['message']['content'])
+    if 'Continue where you stopped.' in evidence:
+        emit({'type':'assistant','session_id':'00000000-0000-4000-8000-000000000001','uuid':'recovered-reply',
+              'message':{'role':'assistant','content':[{'type':'text','text':'Resumed after the example reset'}]}})
+        emit({'type':'result','session_id':'00000000-0000-4000-8000-000000000001','is_error':False})
+        done()
+        break
+    assert 'Example quota turn' in evidence
+    emit({'type':'rate_limit_event','session_id':'00000000-0000-4000-8000-000000000001','rate_limit_info':{
+          'status':'rejected','rateLimitType':'five_hour','resetsAt':\(Int(reset.timeIntervalSince1970))}})
+    emit({'type':'result','session_id':'00000000-0000-4000-8000-000000000001','is_error':True})
+""")
+        defer { fixture.remove() }
+        let auth = fixture.directory.appendingPathComponent("auth-status.json")
+        func writeStatus(email: String, orgID: String) throws {
+            try JSONValue.object([
+                "loggedIn": .bool(true), "authMethod": .string("claude.ai"), "apiProvider": .string("firstParty"),
+                "subscriptionType": .string("max"), "email": .string(email), "orgId": .string(orgID)
+            ]).jsonString.write(to: auth, atomically: true, encoding: .utf8)
+        }
+        try writeStatus(email: "person@example.invalid", orgID: "example-org")
+        let stores = try inMemoryStores()
+        let (chat, _) = try agentStoreChat(stores, provider: .claude, cwd: fixture.directory.path)
+        let persistence = AgentAutoContinueStore(db: stores.db)
+        let backend = ClaudeBackend(executable: fixture.executable, environment: fixture.environment,
+                                    overrides: ["CLAUDE_CONFIG_DIR": fixture.directory.path])
+        let manager = try AgentSessionManager(persistence: stores, backend: { _ in backend },
+            audit: { _ = try stores.record($0) }, autoContinuePersistence: persistence, continuationClock: clock.clock)
+        let scheduler = AgentAutoContinueScheduler(manager: manager, turns: stores, persistence: persistence,
+            backend: { _ in backend }, audit: { _ = try stores.record($0) }, clock: clock.clock)
+        try await scheduler.start()
+        let input = AgentInput(text: "Example quota turn")
+        try await manager.send(chatID: chat.id, provider: .claude, input: input)
+        try await autoWait { try persistence.continuation(failedInputID: input.id)?.state == .pending }
+        let pending = try #require(try persistence.continuation(failedInputID: input.id))
+        #expect(pending.resetsAt == reset)
+        #expect(pending.scope.hasKnownAccount)
+        if account == "different member" { try writeStatus(email: "other@example.invalid", orgID: "example-org") }
+        if account == "different organization" { try writeStatus(email: "person@example.invalid", orgID: "other-org") }
+
+        clock.advance(60.0004)
+        let expected: AgentAutoContinue.State = account == "same account" ? .fired : .cancelled
+        try await autoWait { try persistence.continuation(id: pending.id)?.state == expected }
+        if account == "same account" {
+            try await autoWait {
+                try stores.agentEntries(chatID: chat.id).contains {
+                    $0.kind == "assistant" && $0.text == "Resumed after the example reset"
+                }
+            }
+        }
+        let entries = try stores.agentEntries(chatID: chat.id)
+        #expect(entries.filter { $0.kind == "automaticContinuation" }.count == (account == "same account" ? 1 : 0))
+        #expect(entries.filter { $0.kind == "user" }.map(\.text) == [input.text])
+        if account == "same account" { try fixture.assertComplete() }
+        await scheduler.shutdown()
+        try await manager.shutdown()
+    }
+}

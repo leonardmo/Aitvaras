@@ -1,4 +1,5 @@
 import Foundation
+import AitvarasCore
 
 /// Stable public setting IDs. A destination is a page or project section in
 /// the app's Settings window. Storage keys are deliberately independent.
@@ -62,6 +63,8 @@ public struct AitvarasSetting: Sendable, Equatable, Identifiable {
 public enum SettingsRegistry {
     public static let entries: [AitvarasSetting] = [
         .setting("appearance.mode", "Appearance", "avatar", .choice(["system", "light", "dark"]), risk: .normal, editable: true),
+        .setting(AppMotion.overrideKey, "Always animate in Aitvaras", "avatar", .boolean, risk: .normal, editable: true,
+                 hint: "Overrides macOS Reduce Motion for Aitvaras animations."),
         .setting("companion.presentation", "Companion display", "avatar", .choice(["avatar", "minimal"]), risk: .normal, editable: true),
         .setting("companion.character", "Companion character", "avatar", .choice(["creature", "human"]), risk: .normal, editable: true),
         .setting("companion.customAvatar", "Custom avatar", "avatar", .action),
@@ -105,6 +108,8 @@ public enum SettingsRegistry {
         .setting("access.calendar", "Calendar access", "access", .action),
         .setting("access.reminders", "Reminders access", "access", .action),
         .setting("access.mail", "Read-only Mail access", "access", .action),
+        .setting("usage.providerLimits", "Provider usage limits", "usage", .collection,
+                 hint: "Shows quota windows and reset times. You can redeem a banked Codex reset or open Claude Usage to redeem a Claude reset."),
         .setting("usage.history", "Usage and history", "usage", .action),
         .setting("project.name", "Project name", "general", .text(maximum: 200), scope: .project, risk: .normal, editable: true),
         .setting("project.visibility", "Project sidebar visibility", "general", .boolean, scope: .project),

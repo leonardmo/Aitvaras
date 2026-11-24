@@ -33,6 +33,7 @@ import AppKit
 /// accessibility tree, local press dispatch and composer editing.
 @MainActor public final class SelfDriveSurface {
     let window: NSWindow
+    private var scrollOffsets: [String: CGFloat] = [:]
     public init(window: NSWindow) { self.window = window }
 
     func nodes(root: NSObject? = nil) throws -> [SelfDriveNode] {
@@ -94,9 +95,77 @@ import AppKit
         return "Dispatched local window mouse events; verify effect with waitFor"
     }
 
-    func type(_ text: String) throws -> String {
-        guard let input = try find("chat.composer.input"), input.enabled else {
-            throw SelfDriveFailure("Enabled composer unavailable")
+    private func drag(_ identifier: String, verticalBy distance: Double) throws -> String {
+        guard let element = try find(identifier), element.enabled, !element.frame.isEmpty else {
+            throw SelfDriveFailure("Drag target unavailable: \(identifier)")
+        }
+        let start = window.convertPoint(fromScreen: NSPoint(x: element.frame.midX, y: element.frame.midY))
+        let events: [(NSEvent.EventType, Double)] = [
+            (.leftMouseDown, 0), (.leftMouseDragged, 0.24), (.leftMouseDragged, 0.60),
+            (.leftMouseDragged, 1), (.leftMouseUp, 1)
+        ]
+        for (type, fraction) in events {
+            let point = NSPoint(x: start.x, y: start.y + distance * fraction)
+            guard let event = NSEvent.mouseEvent(with: type, location: point, modifierFlags: [],
+                timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
+                context: nil, eventNumber: 0, clickCount: 1, pressure: type == .leftMouseUp ? 0 : 1) else {
+                throw SelfDriveFailure("Could not create local drag event")
+            }
+            window.sendEvent(event)
+        }
+        return "Dispatched local vertical drag"
+    }
+
+    private func scrollView(for identifier: String) throws -> NSScrollView {
+        guard let frame = try find(identifier)?.frame, !frame.isEmpty, let content = window.contentView else {
+            throw SelfDriveFailure("Scroll target unavailable: \(identifier)")
+        }
+        func scrollViews(in view: NSView) -> [NSScrollView] {
+            let children = view.subviews.flatMap(scrollViews)
+            if let scroll = view as? NSScrollView { return [scroll] + children }
+            return children
+        }
+        func overlap(_ scroll: NSScrollView) -> CGFloat {
+            let bounds = window.convertToScreen(scroll.convert(scroll.bounds, to: nil))
+            let intersection = bounds.intersection(frame)
+            return intersection.isNull ? 0 : intersection.width * intersection.height
+        }
+        guard let scroll = scrollViews(in: content).max(by: { overlap($0) < overlap($1) }),
+              overlap(scroll) > 0 else { throw SelfDriveFailure("No native scroll view for \(identifier)") }
+        return scroll
+    }
+
+    private func scroll(_ identifier: String, verticalBy distance: Double) async throws -> String {
+        let scroll = try scrollView(for: identifier)
+        let before = scroll.contentView.bounds.minY
+        guard let wheel = CGEvent(scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 1,
+                                  wheel1: Int32(distance), wheel2: 0, wheel3: 0)
+        else { throw SelfDriveFailure("Could not create local scroll event") }
+        let point = window.convertPoint(toScreen: scroll.convert(NSPoint(x: scroll.bounds.midX, y: scroll.bounds.midY), to: nil))
+        wheel.location = CGPoint(x: point.x, y: (NSScreen.screens.first?.frame.maxY ?? 0) - point.y)
+        guard let event = NSEvent(cgEvent: wheel) else { throw SelfDriveFailure("Could not bridge local scroll event") }
+        scroll.scrollWheel(with: event)
+        try await Task.sleep(for: .milliseconds(350))
+        let after = scroll.contentView.bounds.minY
+        guard abs(after - before) > 0.5 else {
+            throw SelfDriveFailure("Wheel input did not move \(identifier) at \(before) with document height \(scroll.documentView?.frame.height ?? 0) and viewport height \(scroll.contentSize.height)")
+        }
+        scrollOffsets[identifier] = after
+        return "Wheel input moved the viewport from \(before) to \(after)"
+    }
+
+    private func checkScroll(_ identifier: String) throws -> String {
+        let actual = try scrollView(for: identifier).contentView.bounds.minY
+        guard let expected = scrollOffsets[identifier] else { throw SelfDriveFailure("No recorded scroll offset for \(identifier)") }
+        guard abs(actual - expected) <= 1 else {
+            throw SelfDriveFailure("Viewport moved from \(expected) to \(actual)")
+        }
+        return "Viewport stayed at \(actual)"
+    }
+
+    private func editableField(for identifier: String) throws -> NSView {
+        guard let input = try find(identifier), input.enabled else {
+            throw SelfDriveFailure("Enabled text input unavailable: \(identifier)")
         }
         // The accessibility setter changes the field but skips SwiftUI's binding, so the
         // text goes through the field's own editor. A non-key window can still hold a
@@ -111,20 +180,50 @@ import AppKit
             return onScreen.intersects(frame) ? view : nil
         }
         guard let content = window.contentView, let field = editable(in: content) else {
-            throw SelfDriveFailure("No editable view behind the composer")
+            throw SelfDriveFailure("No editable view for \(identifier)")
         }
-        guard window.makeFirstResponder(field) else { throw SelfDriveFailure("Composer refused first responder") }
+        return field
+    }
+
+    private func fieldEditor(for identifier: String, takeFocus: Bool) throws -> NSTextView {
+        let field = try editableField(for: identifier)
+        if takeFocus, !window.makeFirstResponder(field) {
+            throw SelfDriveFailure("Text input refused first responder: \(identifier)")
+        }
         let editor = (field as? NSTextView) ?? (field as? NSTextField)?.currentEditor() as? NSTextView
-        guard let editor else { throw SelfDriveFailure("Composer has no field editor") }
-        editor.insertText(text, replacementRange: NSRange(location: editor.string.utf16.count, length: 0))
-        guard (input.value ?? "").contains(text) else {
-            throw SelfDriveFailure("Composer did not show the typed text")
+        guard let editor else { throw SelfDriveFailure("Text input has no field editor: \(identifier)") }
+        guard window.firstResponder === editor else { throw SelfDriveFailure("Text input lost focus: \(identifier)") }
+        return editor
+    }
+
+    private func selectText(_ text: String, in identifier: String) throws -> String {
+        let editor = try fieldEditor(for: identifier, takeFocus: true)
+        let range = (editor.string as NSString).range(of: text)
+        guard range.location != NSNotFound else { throw SelfDriveFailure("Selection text unavailable in \(identifier)") }
+        editor.setSelectedRange(range)
+        return "Selected text through the field editor"
+    }
+
+    func type(_ text: String, into identifier: String, atSelection: Bool = false) throws -> String {
+        let editor = try fieldEditor(for: identifier, takeFocus: !atSelection)
+        let range = atSelection ? editor.selectedRange() : NSRange(location: editor.string.utf16.count, length: 0)
+        editor.insertText(text, replacementRange: range)
+        guard editor.string.contains(text) else {
+            throw SelfDriveFailure("Text input did not show the typed text: \(identifier)")
         }
         return "Inserted through the field editor"
     }
 
     public func perform(_ step: SelfDriveStep, directory: URL) async throws -> String {
         switch step.action {
+        case .scroll:
+            return try await scroll(step.identifier!, verticalBy: step.verticalBy!)
+        case .checkScroll:
+            return try checkScroll(step.identifier!)
+        case .drag:
+            let reason = try drag(step.identifier!, verticalBy: step.verticalBy!)
+            await Task.yield()
+            return reason
         case .press:
             if let text = step.text {
                 let root = try step.within.flatMap(find)
@@ -152,9 +251,11 @@ import AppKit
             await Task.yield()
             return reason
         case .type:
-            let reason = try type(step.text!)
+            let reason = try type(step.text!, into: step.identifier ?? "chat.composer.input", atSelection: step.atSelection == true)
             await Task.yield()
             return reason
+        case .selectText:
+            return try selectText(step.text!, in: step.identifier ?? "chat.composer.input")
         case .waitFor:
             let clock = ContinuousClock()
             let deadline = clock.now.advanced(by: .seconds(step.timeout ?? 10))

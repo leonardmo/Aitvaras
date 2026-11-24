@@ -25,9 +25,11 @@ public struct ChatState: Sendable, Equatable {
     public private(set) var thinking = ""
     public private(set) var tools: [AgentToolState] = []
     public var pendingCards: [AgentRequest] = []
+    public internal(set) var messageQueue = AgentMessageQueue()
     public var mcpSetup: AgentMCPLaunchStatus?
     public private(set) var agentSetup: AgentSetupSnapshot?
     public private(set) var usage: AgentUsage?
+    private var lastContextUsage: AgentUsage?
     public private(set) var rateLimits: [AgentRateLimitWindow] = []
     public private(set) var outcome: AgentTurnOutcome?
     public private(set) var isRunning = false
@@ -100,12 +102,18 @@ public struct ChatState: Sendable, Equatable {
             sessionID: sessionID, position: entries.count))
     }
     private mutating func resetTurn(id: UUID, provider: AgentProvider, sessionID: UUID, outputID: UUID?) {
+        if self.sessionID != sessionID { lastContextUsage = nil }
         automaticInputID = nil
         inputID = id; self.outputID = outputID; self.provider = provider; self.sessionID = sessionID
         streamingText = ""; thinking = ""; thinkingIDs = [:]; textIDs = [:]; toolEntryIDs = [:]
         tools = []; pendingCards = []; usage = nil; rateLimits = []; outcome = nil; isRunning = true
         hookEntryIDs = [:]; hooks = [:]; hookOrder = []; hookTools = [:]; finishedToolOrder = []; closedPreHookBatches = []; hookInferredDenials = []
     }
+    public func contextUsage(sessionID: UUID) -> AgentUsage? {
+        guard self.sessionID == sessionID else { return nil }
+        return lastContextUsage
+    }
+
     public func isStreaming(entryID: UUID) -> Bool {
         isRunning && textIDs.values.contains(entryID)
     }
@@ -149,7 +157,9 @@ public struct ChatState: Sendable, Equatable {
             guard event.scope.inputID == nil || event.scope.inputID == inputID else { return }
             acknowledgedMode = mode
         case .rateLimits(let windows): rateLimits = windows
-        case .usage(let value): usage = value
+        case .usage(let value):
+            usage = value
+            if ChatSettings.contextFraction(value) != nil { lastContextUsage = value }
         case .sessionStarted: break
         default:
             guard isRunning, event.scope.inputID == inputID, inputID != nil else { return }

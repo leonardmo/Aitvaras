@@ -558,3 +558,62 @@ done()
     }
 
 }
+
+extension CodexBackendTests {
+    @Test func bankedResetRequiresConfirmationAndSubmitsOnlyTheSelectedCredit() async throws {
+        let fixture = try BackendExecutableFixture(script: #"""
+codex_init()
+credit = {'id':'fixture-credit','resetType':'codexRateLimits','status':'available','title':'Full reset','expiresAt':None}
+def usage(count):
+    r=read()
+    assert r['method']=='account/rateLimits/read'
+    emit({'id':r['id'],'result':{'rateLimits':{'primary':{'usedPercent':100 if count else 0}},
+                                'rateLimitResetCredits':{'availableCount':count,'credits':[credit] if count else []}}})
+usage(1)
+r=read()
+assert r['method']=='account/read'
+account(r)
+usage(1)
+r=read()
+assert r['method']=='account/rateLimitResetCredit/consume'
+assert r['params']['creditId']=='fixture-credit'
+import uuid
+uuid.UUID(r['params']['idempotencyKey'])
+emit({'id':r['id'],'result':{'outcome':'reset'}})
+usage(0)
+done()
+"""#)
+        defer { fixture.remove() }
+        let backend = CodexBackend(executable: fixture.executable, environment: fixture.environment)
+        let first = try await backend.usageSnapshot()
+        let credit = try #require(first.resets?.credits.first)
+        #expect(first.resets?.availableCount == 1)
+        await #expect(throws: AgentFailure.invalidTransition) {
+            try await backend.redeemUsageReset(credit, confirmed: false, audit: { _ in })
+        }
+        let outcome = try await backend.redeemUsageReset(credit, confirmed: true, audit: { _ in })
+        #expect(outcome == .reset)
+        let remaining = try await backend.usageSnapshot()
+        #expect(remaining.resets?.availableCount == 0)
+        #expect(remaining.windows.first?.utilization == 0)
+        try fixture.assertComplete()
+        try await backend.shutdown()
+    }
+
+    @Test func resetBalanceDistinguishesNoCreditsFromUnavailableDetails() throws {
+        #expect(CodexUsageResetBalance(nil) == nil)
+        let countOnly = try #require(JSONValue.parse(#"{"availableCount":2,"credits":null}"#))
+        let balance = try #require(CodexUsageResetBalance(countOnly))
+        #expect(balance.availableCount == 2)
+        #expect(balance.credits.isEmpty)
+        let restricted = try #require(JSONValue.parse(#"""
+        {"availableCount":4,"credits":[
+          {"id":"expired","resetType":"codexRateLimits","status":"available","expiresAt":10},
+          {"id":"in-progress","resetType":"codexRateLimits","status":"redeeming"},
+          {"id":"unknown","resetType":"unknown","status":"available"},
+          {"id":"ready","resetType":"codexRateLimits","status":"available","expiresAt":60}
+        ]}
+        """#))
+        #expect(CodexUsageResetBalance(restricted, now: Date(timeIntervalSince1970: 30))?.credits.map(\.id) == ["ready"])
+    }
+}

@@ -557,7 +557,7 @@ done()
         let input = AgentInput(text: composer.selection.draft)
         await #expect(throws: AgentFailure.authRequired) {
             try await manager.send(chatID: chat.id, provider: .claude, input: input, onAccepted: {
-                await composer.accept(input, chatID: chat.id)
+                await composer.accept(chatID: chat.id)
             })
         }
         #expect(composer.acceptances == 1)
@@ -881,13 +881,15 @@ private actor ManagerTestRun: AgentRun {
 
 @MainActor private final class AcceptedComposer {
     var selection = ChatSelectionState()
+    private let sentVersion: UUID?
     private(set) var acceptances = 0
     init(chatID: UUID, provider: AgentProvider, draft: String) {
         selection.select(chatID, provider: provider); selection.draft = draft
+        sentVersion = selection.draftVersion(chatID: chatID)
     }
-    func accept(_ input: AgentInput, chatID: UUID) {
+    func accept(chatID: UUID) {
         acceptances += 1
-        selection.clearDraft(chatID: chatID, ifUnchanged: input.text)
+        selection.clearDraft(chatID: chatID, ifVersion: sentVersion)
     }
     func countAcceptance() { acceptances += 1 }
 }

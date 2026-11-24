@@ -8,6 +8,7 @@ import AitvarasAgents
         var state = ChatSelectionState()
         state.select(first, provider: .claude)
         state.draft = "first draft"
+        let firstVersion = state.draftVersion(chatID: first)
         state.select(second, provider: .local)
         #expect(state.draft.isEmpty)
         state.draft = "second draft"
@@ -19,11 +20,27 @@ import AitvarasAgents
         #expect(state.draft == "second draft")
         state.select(first, provider: .codex)
         #expect(state.draft == "first draft")
-        state.clearDraft(chatID: second, ifUnchanged: "old draft")
+        state.clearDraft(chatID: second, ifVersion: firstVersion)
         state.select(second, provider: .local)
         #expect(state.draft == "second draft")
-        state.clearDraft(chatID: first, ifUnchanged: "first draft")
+        state.clearDraft(chatID: first, ifVersion: firstVersion)
         state.select(first, provider: .codex)
+        #expect(state.draft.isEmpty)
+    }
+
+    @Test func delayedSendAcceptancePreservesAnIndependentlyRetypedDraft() {
+        let chat = UUID()
+        var state = ChatSelectionState()
+        state.select(chat, provider: .codex)
+        state.draft = "Same words"
+        let sentVersion = state.draftVersion(chatID: chat)
+        state.draft = ""
+        state.draft = "Same words"
+        let clearedStale = state.clearDraft(chatID: chat, ifVersion: sentVersion)
+        #expect(!clearedStale)
+        #expect(state.draft == "Same words")
+        let clearedCurrent = state.clearDraft(chatID: chat, ifVersion: state.draftVersion(chatID: chat))
+        #expect(clearedCurrent)
         #expect(state.draft.isEmpty)
     }
 
@@ -41,6 +58,26 @@ import AitvarasAgents
         selection.draft = ""
         selection.select(saved, provider: .local)
         #expect(selection.draft == "Saved chat draft")
+    }
+
+    @Test func contextWindowKeepsTheLastReadingUntilTheSessionChanges() {
+        let chat = UUID()
+        var state = ChatState(chatID: chat)
+        let codex = AgentChatSession(chatID: chat, provider: .codex, cwd: "/tmp/project", model: "fixture")
+        let claude = AgentChatSession(chatID: chat, provider: .claude, cwd: "/tmp/project", model: "fixture")
+        let input = AgentInput(text: "Example")
+        state.begin(input, session: codex, outputID: UUID())
+        let scope = AgentEventScope(runID: UUID(), inputID: input.id)
+        let reading = AgentUsage(scope: .lastCall, contextTokens: 42, contextLimit: 100)
+        state.reduce(.init(scope: scope, kind: .usage(reading)), newEntryID: UUID())
+        state.end(.completed)
+        state.begin(.init(text: "Continue"), session: codex, outputID: UUID())
+        #expect(state.usage == nil)
+        #expect(state.contextUsage(sessionID: codex.id) == reading)
+        state.end(.completed)
+        state.begin(.init(text: "Switch providers"), session: claude, outputID: UUID())
+        #expect(state.contextUsage(sessionID: claude.id) == nil)
+        #expect(state.contextUsage(sessionID: codex.id) == nil)
     }
 
     @Test func originalMessageIdentitySurvivesWireEchoAndHandoverIsSeparate() throws {

@@ -1383,6 +1383,12 @@ public final class AitvarasDatabase: Sendable {
                 t.primaryKey(["projectID", "toolRevision"])
             }
         }
+        m.registerMigration("v54-agent-message-queue") { db in
+            try db.create(table: "agentMessageQueue") { t in
+                t.column("chatID", .blob).notNull().primaryKey().references("workspaceChat", onDelete: .cascade)
+                t.column("payload", .blob).notNull()
+            }
+        }
         return m
     }
 

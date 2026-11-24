@@ -1,4 +1,5 @@
 import Foundation
+import AitvarasCore
 
 public actor ClaudeBackend: AgentBackend {
     private let environment: [String: String]
@@ -37,7 +38,21 @@ public actor ClaudeBackend: AgentBackend {
             authentication = .subscription
         } else { authentication = .unsupported }
         return AgentStatus(installed: true, authentication: authentication, capabilities: subscriptionCapabilities,
-                           accountID: value["accountUuid"]?.stringValue ?? value["accountId"]?.stringValue)
+                           accountID: authentication == .subscription ? Self.accountIdentity(value) : nil)
+    }
+
+    private static func accountIdentity(_ status: JSONValue) -> String? {
+        if let account = status["accountUuid"]?.stringValue ?? status["accountId"]?.stringValue,
+           !account.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return account
+        }
+        // Claude's subscription status commonly returns a member email and an
+        // organization ID. Neither field on its own identifies this login.
+        guard let email = status["email"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines),
+              email.contains("@"), email.utf8.count <= 320,
+              let organization = status["orgId"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !organization.isEmpty, organization.utf8.count <= 512 else { return nil }
+        return "claude-auth:" + StableIdentifier.digest([email, organization])
     }
 
     public func signIn(onBrowserURL: @escaping @Sendable (URL) async -> Void) async throws {

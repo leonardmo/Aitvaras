@@ -52,21 +52,8 @@ struct AgentTranscriptView: View {
                         }
                     }
                     if let autoContinue {
-                        Toggle("Auto-continue when the limit resets", isOn: Binding(
-                            get: { autoContinue.enabled }, set: { autoContinueChange?(.enabled($0)) }))
-                            .toggleStyle(.checkbox)
-                            .disabled(!autoContinue.canToggle || autoContinueUpdating)
-                            .accessibilityIdentifier("chat.stopped.autoContinue.\(entry.id)")
-                        Toggle("Keep Mac awake until it continues", isOn: Binding(
-                            get: { autoContinue.keepAwake }, set: { autoContinueChange?(.keepAwake($0)) }))
-                            .toggleStyle(.checkbox)
-                            .disabled(!autoContinue.canChangeKeepAwake || autoContinueUpdating)
-                            .help("Keeps the Mac awake while waiting on AC power.")
-                            .accessibilityIdentifier("chat.stopped.keepAwake.\(entry.id)")
-                        if let status = autoContinue.status {
-                            Text(status).foregroundStyle(.secondary)
-                                .accessibilityIdentifier("chat.stopped.autoContinueStatus.\(entry.id)")
-                        }
+                        AgentAutoContinueControls(row: autoContinue, identifier: "chat.stopped",
+                            suffix: entry.id.uuidString, updating: autoContinueUpdating, change: { autoContinueChange?($0) })
                     }
                 }.font(.caption).controlSize(.small)
             } else if entry.kind == "automaticContinuation" {
@@ -282,5 +269,41 @@ struct AgentTranscriptView: View {
             Text(output).font(.caption.monospaced()).textSelection(.enabled)
                 .accessibilityIdentifier("chat.tool.\(entry.id).output")
         }
+    }
+}
+
+struct AgentAutoContinueControls: View {
+    let row: AgentAutoContinueRow
+    let identifier: String
+    var suffix: String? = nil
+    let updating: Bool
+    var error: String? = nil
+    let change: (AgentAutoContinueRowOption) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Toggle("Auto-continue when the limit resets", isOn: Binding(
+                get: { row.enabled }, set: { change(.enabled($0)) }))
+                .toggleStyle(.checkbox)
+                .disabled(!row.canToggle || updating)
+                .accessibilityIdentifier(controlID("autoContinue"))
+            Toggle("Keep Mac awake until it continues", isOn: Binding(
+                get: { row.keepAwake }, set: { change(.keepAwake($0)) }))
+                .toggleStyle(.checkbox)
+                .disabled(!row.canChangeKeepAwake || updating)
+                .help("Keeps the Mac awake while waiting on AC power.")
+                .accessibilityIdentifier(controlID("keepAwake"))
+            if let status = row.status {
+                Text(status).foregroundStyle(.secondary)
+                    .accessibilityIdentifier(controlID("autoContinueStatus"))
+            }
+            if let error { Text(error).foregroundStyle(.orange) }
+        }
+        .font(.caption)
+        .controlSize(.small)
+    }
+
+    private func controlID(_ name: String) -> String {
+        [identifier, name, suffix].compactMap { $0 }.joined(separator: ".")
     }
 }

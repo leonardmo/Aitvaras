@@ -1,8 +1,10 @@
 # Aitvaras Settings
 
-Open Settings with Command–comma. The sidebar shows profile pages and projects. Project settings open here from the Chat header or project sidebar. The display, project and agent shortcuts link to their full settings destination when they touch persistent settings.
+Open Settings with Command–comma. The sidebar shows profile pages and projects. Project settings open here from the Chat header or project sidebar. The display, project and agent shortcuts link to their full settings destination when they touch persistent settings. Use Search settings or Command–F to find a setting, page, or project. Ask Aitvaras opens a chat draft about the current page or selected setting.
 
-The chat composer shows five-hour and weekly quota percentages when the selected account reports those windows. Hover over either percentage for the reset time, when available. Use the Preview Markdown button to render a draft in place and the pencil to return to editing. Paste an image into the message field to attach it in Claude or Codex chats.
+The chat composer shows five-hour and weekly quota percentages in one pill when the selected account reports both windows. Click the usage pill for each available reset date and time. Markdown formats as you type. Return continues a list, Shift–Return adds a line, and Command–Return sends. Drag the handle at the top of the composer to set its height. Double-click it to return to automatic sizing. Paste an image into the message field to attach it in Claude or Codex chats.
+
+Under **Companion → Appearance**, turn on **Always animate in Aitvaras** to play app animations even when macOS Reduce Motion is enabled. The switch is off by default.
 
 ## Menu inventory
 

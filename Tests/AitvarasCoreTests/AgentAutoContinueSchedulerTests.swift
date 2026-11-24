@@ -65,7 +65,7 @@ final class AutoContinueTimerClock: Sendable {
         let stopped = try #require(entry.stoppedTurn)
         let row = try #require(AgentAutoContinueRow(stop: stopped, intent: nil, isCurrent: true))
         #expect(!row.enabled && !row.canToggle)
-        #expect(row.status == "Automatic continuation requires a verified provider account.")
+        #expect(row.status == "The provider account for this turn couldn’t be verified. Use Continue to resume manually.")
         #expect(try AgentAutoContinueStore(db: stores.db).continuation(failedInputID: input.id) == nil)
         try await manager.recover(chatID: chat.id, stoppedEntryID: entry.id, action: .continueTurn)
         #expect(await run.inputs.map(\.text) == [input.text, AgentStoppedTurn.continuationText])

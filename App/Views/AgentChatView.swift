@@ -22,10 +22,8 @@ struct AgentChatView: View {
     @State private var displayedWorktree: AgentWorktree?
     @State private var visibilityID = UUID()
     @State private var gitProject = false
-    @State private var atBottom = true
-    @State private var bottomVisible = true
-    @State private var scrolling = false
-    @FocusState private var composerFocused: Bool
+    @State private var composerFocusRequest: UUID?
+    @State private var transcriptHeight: CGFloat = 0
 
     private var gatewayApprovals: [GatewayApprovalRequest] {
         model.gatewayInlineApprovals.filter { $0.invocation.presentation == .inline(chatID: chatID) }
@@ -63,7 +61,7 @@ struct AgentChatView: View {
                 .accessibilityValue("\(chat.changes?.files.count ?? 0) changed files")
                 .accessibilityIdentifier("chat.changes")
             }
-            Button { chat.prepareSideQuestion(); composerFocused = true } label: {
+            Button { chat.prepareSideQuestion(); composerFocusRequest = UUID() } label: {
                 Label("Side question", systemImage: "questionmark.bubble").labelStyle(.iconOnly)
             }
             .disabled(!chat.canAskSideQuestion)
@@ -86,7 +84,7 @@ struct AgentChatView: View {
             displayedWorktree = model.selectedWorkspaceChatID == chatID
                 ? (try? model.stores?.agentWorktree(chatID: chatID)) : nil
         }
-        .onAppear { chat.showChat(chat.chatID, surface: visibilityID); if compact { composerFocused = true } }
+        .onAppear { chat.showChat(chat.chatID, surface: visibilityID); if compact { composerFocusRequest = UUID() } }
         .onDisappear { chat.showChat(nil, surface: visibilityID) }
         .onChange(of: chatID) { chat.showChat(chat.chatID, surface: visibilityID) }
         .task(id: chat.newProjectID) {
@@ -96,7 +94,7 @@ struct AgentChatView: View {
             gitProject = (try? await GitWorkspace().repository(at: URL(fileURLWithPath: folder.path))) != nil
         }
         .onChange(of: model.companionFocusRequest) {
-            if compact { composerFocused = true }
+            if compact { composerFocusRequest = UUID() }
         }
         .onChange(of: scenePhase) { _, phase in
             if phase == .active {
@@ -163,87 +161,59 @@ struct AgentChatView: View {
         }?.id
         let pendingItemIDs = Set((chat.state?.pendingCards ?? []).compactMap(\.scope.itemID))
         return VStack(spacing: 0) {
-            ScrollViewReader { proxy in
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 18) {
-                        ForEach(rows) { row in
-                            switch row {
-                            case .entry(let entry):
-                                transcriptRow(entry, streaming: chat.state?.isStreaming(entryID: entry.id) == true).id(entry.id)
-                            case .activity(_, let entries, let isLive):
-                                AgentActivityPanel(entries: entries, isLive: isLive, isLatest: row.id == latestActivityID) { entry, featured in
-                                    transcriptRow(entry, streaming: chat.state?.isStreaming(entryID: entry.id) == true,
-                                                  commandFeatured: featured,
-                                                  commandAwaitingApproval: isLive && entry.toolItemID.map(pendingItemIDs.contains) == true)
-                                }
+            ChatTranscriptScroll {
+                LazyVStack(alignment: .leading, spacing: 18) {
+                    ForEach(rows) { row in
+                        switch row {
+                        case .entry(let entry):
+                            transcriptRow(entry, streaming: chat.state?.isStreaming(entryID: entry.id) == true).id(entry.id)
+                        case .activity(_, let entries, let isLive):
+                            AgentActivityPanel(entries: entries, isLive: isLive, isLatest: row.id == latestActivityID) { entry, featured in
+                                transcriptRow(entry, streaming: chat.state?.isStreaming(entryID: entry.id) == true,
+                                              commandFeatured: featured,
+                                              commandAwaitingApproval: isLive && entry.toolItemID.map(pendingItemIDs.contains) == true)
                             }
                         }
-                        if isRunning, case .entry(let last)? = rows.last,
-                           ["user", "wakeup", "continued", "automaticContinuation"].contains(last.kind),
-                           (chat.state?.pendingCards ?? []).isEmpty, gatewayApprovals.isEmpty {
-                            AgentWorkingLabel()
-                        }
-                        ForEach(Array((chat.state?.pendingCards ?? []).enumerated()), id: \.element.identity) { index, request in
-                            requestCard(request, index: index)
-                        }
-                        ForEach(gatewayApprovals) { request in
-                            VStack(alignment: .leading, spacing: 8) {
-                                Text("Allow \(request.toolName)?").font(.headline)
-                                if let reason = request.reason {
-                                    Text(reason).font(.caption).foregroundStyle(.secondary)
-                                }
-                                DisclosureGroup("Arguments") {
-                                    Text(verbatim: request.arguments.jsonString)
-                                        .font(.caption.monospaced()).textSelection(.enabled)
-                                }
-                                HStack {
-                                    Button("Deny") { Task { await model.decideGatewayApproval(request, allow: false) } }
-                                    Button("Allow once") { Task { await model.decideGatewayApproval(request, allow: true) } }
-                                }
-                                if request.canAlwaysAllow {
-                                    Button("Always allow in this project") {
-                                        Task { await model.decideGatewayApproval(request, allow: true, forProject: true) }
-                                    }
-                                    .accessibilityIdentifier("chat.gateway.approval.\(request.id).alwaysAllow")
-                                }
-                            }
-                            .padding(12)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 8))
-                        }
-                        SettingsProposalCards(chatID: chatID)
-                        Color.clear.frame(height: 1).id("chat.end")
                     }
-                    .frame(maxWidth: 760, alignment: .leading)
-                    .padding(.horizontal, 16).padding(.vertical, 20).frame(maxWidth: .infinity)
+                    if isRunning, case .entry(let last)? = rows.last,
+                       ["user", "wakeup", "continued", "automaticContinuation"].contains(last.kind),
+                       (chat.state?.pendingCards ?? []).isEmpty, gatewayApprovals.isEmpty {
+                        AgentWorkingLabel()
+                    }
+                    ForEach(Array((chat.state?.pendingCards ?? []).enumerated()), id: \.element.identity) { index, request in
+                        requestCard(request, index: index)
+                    }
+                    ForEach(gatewayApprovals) { request in
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("Allow \(request.toolName)?").font(.headline)
+                            if let reason = request.reason {
+                                Text(reason).font(.caption).foregroundStyle(.secondary)
+                            }
+                            DisclosureGroup("Arguments") {
+                                Text(verbatim: request.arguments.jsonString)
+                                    .font(.caption.monospaced()).textSelection(.enabled)
+                            }
+                            HStack {
+                                Button("Deny") { Task { await model.decideGatewayApproval(request, allow: false) } }
+                                Button("Allow once") { Task { await model.decideGatewayApproval(request, allow: true) } }
+                            }
+                            if request.canAlwaysAllow {
+                                Button("Always allow in this project") {
+                                    Task { await model.decideGatewayApproval(request, allow: true, forProject: true) }
+                                }
+                                .accessibilityIdentifier("chat.gateway.approval.\(request.id).alwaysAllow")
+                            }
+                        }
+                        .padding(12)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 8))
+                    }
+                    SettingsProposalCards(chatID: chatID)
                 }
-                .defaultScrollAnchor(.bottom, for: .initialOffset)
-                .onScrollGeometryChange(for: Bool.self) { geometry in
-                    geometry.contentSize.height - geometry.contentOffset.y - geometry.containerSize.height < 60
-                } action: { _, value in
-                    bottomVisible = value
-                    if scrolling { atBottom = value }
-                }
-                .onScrollPhaseChange { _, phase in
-                    scrolling = phase != .idle && phase != .animating
-                    if phase == .idle && bottomVisible { atBottom = true }
-                }
-                .accessibilityElement(children: .contain)
-                .accessibilityIdentifier("chat.transcript")
-                .onChange(of: rows) {
-                    if atBottom { proxy.scrollTo("chat.end", anchor: .bottom) }
-                }
-                .onChange(of: chat.state?.pendingCards) {
-                    if atBottom { proxy.scrollTo("chat.end", anchor: .bottom) }
-                }
-                .onChange(of: gatewayApprovals.map(\.id)) {
-                    if atBottom { proxy.scrollTo("chat.end", anchor: .bottom) }
-                }
-                .onChange(of: model.settingsProposals.filter { $0.source.chatID == chatID }.map(\.id)) {
-                    if atBottom { proxy.scrollTo("chat.end", anchor: .bottom) }
-                }
-                .onChange(of: chatID) { atBottom = true; proxy.scrollTo("chat.end", anchor: .bottom) }
+                .frame(maxWidth: 760, alignment: .leading)
+                .padding(.horizontal, 16).padding(.vertical, 20).frame(maxWidth: .infinity)
             }
+            .id(chatID)
             VStack(spacing: 6) {
                 if chat.chatID == nil, model.workspaceProjects.allSatisfy({ !$0.isVisible }) {
                     Text("Choose a project to send a message.").font(.caption).foregroundStyle(composerMessageColor)
@@ -267,7 +237,8 @@ struct AgentChatView: View {
                         .accessibilityIdentifier("chat.sideQuestion.panel")
                 }
                 AgentChatComposer(chat: chat, chatID: chatID, canSend: canSend, gitProject: gitProject,
-                                  composerFocused: $composerFocused)
+                                  focusRequest: $composerFocusRequest,
+                                  heightLimit: max(38, transcriptHeight - (compact ? 100 : 168)), compact: compact)
                 if composerMessage != nil || !canSend {
                     HStack(spacing: 8) {
                         if let error = composerMessage {
@@ -312,6 +283,7 @@ struct AgentChatView: View {
             .padding(.horizontal, 16).padding(.top, 8).padding(.bottom, 16)
             .frame(maxWidth: .infinity)
         }
+        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { transcriptHeight = $0 }
         .task(id: chatID) { await chat.refreshStatus() }
         .task(id: "\(chatID).\(chat.choice.id).\(chat.signingIn == nil)") { await chat.loadModels() }
     }
@@ -331,7 +303,7 @@ struct AgentChatView: View {
             edit = editable ? { editingMessage = entry } : nil
         } else { edit = nil }
         return AgentTranscriptView(entry: entry, streaming: streaming, commandFeatured: commandFeatured,
-            commandAwaitingApproval: commandAwaitingApproval, quote: { chat.replyWithQuote(entry, selection: $0); composerFocused = true },
+            commandAwaitingApproval: commandAwaitingApproval, quote: { chat.replyWithQuote(entry, selection: $0); composerFocusRequest = UUID() },
             fork: fork, forkEnabled: !chat.isBusy && !chat.gitBusy && !chat.conversationBusy && entry.sessionID != nil && entry.nativeMessageID.flatMap(UUID.init(uuidString:)) != nil,
             edit: edit, recovery: { action in chat.recover(entry, action: action) },
             recoveryEnabled: !chat.isBusy && !chat.conversationBusy && chat.signingIn == nil && canSend
@@ -658,18 +630,46 @@ private struct AgentChatComposer: View {
     let chatID: UUID
     let canSend: Bool
     let gitProject: Bool
-    let composerFocused: FocusState<Bool>.Binding
+    @Binding var focusRequest: UUID?
+    let heightLimit: CGFloat
+    let compact: Bool
     @State private var choosingProject = false
     @State private var choosingAttachments = false
     @State private var attachmentTarget: (chatID: UUID, provider: AgentProvider)?
     @State private var completion: AgentComposerTrigger?
     @State private var completionAcceptance = 0
-    @State private var composerTextSelection: TextSelection?
     @State private var showingCompletion = false
-    @State private var previewingMarkdown = false
+    @State private var contentHeight: CGFloat = 38
+    @State private var manualHeight: CGFloat?
+    @State private var dragStartHeight: CGFloat?
+
+    private let minimumHeight: CGFloat = 38
+    private var automaticLimit: CGFloat { compact ? 94 : 136 }
+    private var editorHeight: CGFloat {
+        min(editorHeightLimit, max(minimumHeight, manualHeight ?? min(contentHeight, automaticLimit)))
+    }
+    private var editorHeightLimit: CGFloat {
+        max(minimumHeight, heightLimit - (chat.messageQueue.messages.isEmpty ? 0 : 115))
+    }
 
     var body: some View {
         VStack(spacing: 8) {
+            resizeHandle
+            AgentMessageQueueView(chat: chat)
+            if chat.editingQueuedMessage {
+                HStack {
+                    Label("Editing queued message", systemImage: "pencil").font(.caption)
+                        .foregroundStyle(composerMessageColor)
+                    Spacer(minLength: 0)
+                    Button("Cancel") { Task { await chat.finishQueuedEdit(save: false) } }
+                        .buttonStyle(.plain)
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(composerMessageColor.opacity(0.78))
+                        .padding(.horizontal, 6).padding(.vertical, 3)
+                        .background(composerMessageColor.opacity(0.07), in: Capsule())
+                        .accessibilityIdentifier("chat.queue.cancelEdit")
+                }
+            }
             if !chat.composerSelection.attachments.isEmpty {
                 ScrollView(.horizontal) {
                     HStack(spacing: 6) {
@@ -697,36 +697,9 @@ private struct AgentChatComposer: View {
                     }
                 }.scrollIndicators(.hidden).accessibilityIdentifier("chat.attachments")
             }
-            HStack(alignment: .top, spacing: 6) {
-                if previewingMarkdown {
-                    ScrollView {
-                        ChatMarkdown(text: chat.draft)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    }
-                    .frame(minHeight: 34, maxHeight: 160)
-                    .accessibilityIdentifier("chat.composer.markdown")
-                } else {
-                    composerEditor
-                }
-                if !chat.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    Button {
-                        previewingMarkdown.toggle()
-                        if previewingMarkdown { showingCompletion = false }
-                        else { composerFocused.wrappedValue = true }
-                    } label: {
-                        Image(systemName: previewingMarkdown ? "pencil" : "doc.richtext")
-                            .font(.system(size: 13, weight: .medium))
-                            .foregroundStyle(composerMessageColor.opacity(0.7))
-                            .frame(width: 24, height: 24)
-                    }
-                    .buttonStyle(.plain)
-                    .help(previewingMarkdown ? "Edit Markdown" : "Preview Markdown")
-                    .accessibilityLabel(previewingMarkdown ? "Edit Markdown" : "Preview Markdown")
-                    .accessibilityIdentifier("chat.composer.preview")
-                }
-            }
+            composerEditor.frame(height: editorHeight)
             ViewThatFits(in: .horizontal) {
-                composerBar(iconOnly: false)
+                composerBar(iconOnly: false).frame(minWidth: 520)
                 composerBar(iconOnly: true)
             }
         }
@@ -736,105 +709,90 @@ private struct AgentChatComposer: View {
             guard case .success(let urls) = result, let target = attachmentTarget else { return }
             Task { for url in urls { await chat.attach(url, chatID: target.chatID, provider: target.provider) } }
         }
-        .onChange(of: chatID) { resetEditor() }
-        .onChange(of: chat.choice) { resetEditor() }
-        .onChange(of: chat.draft) { if chat.draft.isEmpty { previewingMarkdown = false } }
-        .task(id: chat.composerInsertionRevision) { await focusComposerAfterInsertion() }
-        .onChange(of: showingCompletion) {
-            if !showingCompletion && !previewingMarkdown {
-                Task { await focusComposerAfterInsertion() }
+        .onChange(of: chatID) { showingCompletion = false; completion = nil }
+        .onChange(of: chat.choice) { showingCompletion = false; completion = nil }
+        .onChange(of: chat.composerInsertionRevision) { focusRequest = UUID() }
+    }
+
+    private var resizeHandle: some View {
+        Capsule().fill(.secondary.opacity(0.45))
+            .frame(width: 30, height: 3)
+            .frame(maxWidth: .infinity).frame(height: 13)
+            .contentShape(Rectangle())
+            .gesture(DragGesture(minimumDistance: 2, coordinateSpace: .global)
+                .onChanged { value in
+                    let start = dragStartHeight ?? editorHeight
+                    dragStartHeight = start
+                    manualHeight = min(editorHeightLimit, max(minimumHeight, start - value.translation.height))
+                }
+                .onEnded { _ in dragStartHeight = nil })
+            .onTapGesture(count: 2) { manualHeight = nil }
+            .help("Drag to resize. Double-click to reset to automatic height.")
+            .accessibilityElement()
+            .accessibilityIdentifier("chat.composer.resize")
+            .accessibilityLabel("Composer height")
+            .accessibilityValue("\(Int(editorHeight)) points")
+            .accessibilityAdjustableAction { direction in
+                switch direction {
+                case .increment: manualHeight = min(editorHeightLimit, editorHeight + 24)
+                case .decrement: manualHeight = max(minimumHeight, editorHeight - 24)
+                @unknown default: break
+                }
             }
-        }
+            .accessibilityAction(named: "Reset automatic height") { manualHeight = nil }
     }
 
     private var composerEditor: some View {
-        let command = chat.composerSelection.command
-        let hint = command?.argumentPlaceholder(in: chat.draft)
-        return TextField("Message", text: Binding(get: { chat.draft }, set: { chat.editDraft($0) }),
-                      selection: $composerTextSelection, axis: .vertical)
-                .lineLimit(2...6).textFieldStyle(.plain)
-                .focused(composerFocused)
-                .disabled(!canSend)
-                .background(alignment: .topLeading) {
-                    if let command, let hint {
-                        HStack(spacing: 0) {
-                            Text(command.insertion + " ").hidden()
-                            Text(hint).foregroundStyle(.tertiary).lineLimit(1)
-                        }.allowsHitTesting(false).accessibilityHidden(true)
-                    }
+        let hint = chat.composerSelection.command?.argumentPlaceholder(in: chat.draft)
+        return ComposerMarkdownEditor(text: chat.draft, enabled: canSend, focusRequest: focusRequest, hint: hint,
+            change: { chat.editDraft($0) }, measure: { contentHeight = $0 },
+            onReturn: handleReturn, onPaste: pasteAttachments)
+            .onChange(of: chat.draft) {
+                completion = chat.provider == .local ? nil : AgentComposerTrigger.detect(chat.draft)
+                showingCompletion = completion != nil
+            }
+            .popover(isPresented: $showingCompletion, arrowEdge: .top) {
+                if let completion {
+                    AgentComposerCompletionView(chat: chat, trigger: completion,
+                        dismiss: {
+                            showingCompletion = false
+                            focusRequest = UUID()
+                        }, acceptanceRequest: completionAcceptance)
                 }
-                .accessibilityIdentifier("chat.composer.input")
-                .accessibilityHint(hint ?? "")
-                .onPasteCommand(of: [.fileURL, .image]) { providers in _ = receiveAttachments(providers) }
-                .background {
-                    ComposerImagePasteMonitor {
-                        guard canSend, composerFocused.wrappedValue, chat.provider != .local,
-                              (NSApp.keyWindow?.firstResponder as? NSTextView)?.hasMarkedText() != true else { return false }
-                        let images = ComposerClipboardImage.read(from: .general)
-                        guard !images.isEmpty else { return false }
-                        prepareImages(images)
-                        return true
-                    }.frame(width: 0, height: 0)
-                }
-                .onChange(of: chat.draft) {
-                    completion = chat.provider == .local ? nil : AgentComposerTrigger.detect(chat.draft)
-                    showingCompletion = completion != nil
-                }
-                .popover(isPresented: $showingCompletion, arrowEdge: .top) {
-                    if let completion {
-                        AgentComposerCompletionView(chat: chat, trigger: completion, dismiss: { showingCompletion = false }, acceptanceRequest: completionAcceptance)
-                    }
-                }
-                .onKeyPress(.return, phases: .down) { press in
-                    // Let the input method commit its marked text first. This
-                    // must precede completion acceptance as well as sending.
-                    if (NSApp.keyWindow?.firstResponder as? NSTextView)?.hasMarkedText() == true { return .ignored }
-                    if press.modifiers.contains(.shift) || press.modifiers.contains(.option) {
-                        insertComposerNewline()
-                        return .handled
-                    }
-                    if showingCompletion { completionAcceptance += 1; return .handled }
-                    if chat.canSubmit && canSend && chat.hasInput { Task { await chat.send() } }
-                    return .handled
-                }
+            }
     }
-    private func resetEditor() {
-        previewingMarkdown = false
-        showingCompletion = false
-        completion = nil
-        placeComposerCaret()
+
+    private func handleReturn(_ modifiers: NSEvent.ModifierFlags, hasMarkdownEdit: Bool) -> Bool {
+        let send = modifiers.contains(.command)
+        if !send {
+            if modifiers.contains(.shift) || modifiers.contains(.option) { return false }
+            if showingCompletion { completionAcceptance += 1; return true }
+            if hasMarkdownEdit { return false }
+        }
+        if chat.canSubmit && canSend && chat.hasInput { Task { await chat.send(immediately: send) } }
+        return true
     }
-    private func insertComposerNewline() {
-        let selected: NSRange?
-        if let selection = composerTextSelection, case .selection(let range) = selection.indices {
-            selected = NSRange(range, in: chat.draft)
-        } else { selected = nil }
-        let edit = AgentComposerCaret.insertingNewline(in: chat.draft, selection: selected)
-        chat.editDraft(edit.text)
-        composerTextSelection = TextSelection(insertionPoint: String.Index(utf16Offset: edit.caret.location, in: edit.text))
+
+    private func pasteAttachments(_ pasteboard: NSPasteboard) -> Bool {
+        guard canSend, chat.provider != .local else { return false }
+        let images = ComposerClipboardImage.read(from: pasteboard)
+        if !images.isEmpty {
+            prepareImages(images)
+            return true
+        }
+        let urls = pasteboard.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL] ?? []
+        guard !urls.isEmpty else { return false }
+        let owner = chat.composerOwnerID
+        let provider = chat.provider
+        Task { for url in urls.prefix(AgentAttachment.maximumCount) { await chat.attach(url, chatID: owner, provider: provider) } }
+        return true
     }
-    @MainActor private func focusComposerAfterInsertion() async {
-        let revision = chat.composerInsertionRevision
-        let draft = chat.draft
-        // Clear the old binding before focus: TextField can select the entire
-        // externally replaced value when its field editor becomes first responder.
-        composerTextSelection = nil
-        previewingMarkdown = false
-        composerFocused.wrappedValue = true
-        await Task.yield()
-        guard !Task.isCancelled, !showingCompletion,
-              revision == chat.composerInsertionRevision, draft == chat.draft else { return }
-        placeComposerCaret()
-    }
-    private func placeComposerCaret() {
-        let range = AgentComposerCaret.afterInsertion(chat.draft)
-        composerTextSelection = TextSelection(insertionPoint: String.Index(utf16Offset: range.location, in: chat.draft))
-    }
+
     private func composerBar(iconOnly: Bool) -> some View {
         HStack(spacing: iconOnly ? 4 : 8) {
             attachButton(narrow: iconOnly)
             if chat.chatID == nil { projectControl(iconOnly: iconOnly) }
-            AgentComposerPicker(chat: chat, iconOnly: iconOnly)
+            AgentComposerPicker(chat: chat, iconOnly: iconOnly).disabled(chat.editingQueuedMessage)
             AgentComposerPermissionsControl(chat: chat, iconOnly: iconOnly)
             Spacer(minLength: 4)
             composerActions(narrow: iconOnly)
@@ -843,11 +801,9 @@ private struct AgentChatComposer: View {
     }
 
     private func composerActions(narrow: Bool) -> some View {
-        HStack(spacing: narrow ? 2 : 8) {
-            gaugeSlot(contextValue, title: "Context", identifier: "chat.gauge.context", narrow: narrow)
-            if let windows = chat.profileLimits[chat.choice], !windows.isEmpty {
-                ComposerUsageLimits(windows: windows, narrow: narrow)
-            }
+        HStack(spacing: 8) {
+            composerMeters(narrow: narrow)
+                .padding(.trailing, 4)
             if chat.state?.isRunning == true {
                 Button { Task { await chat.stop() } } label: {
                     Image(systemName: "stop.fill").font(.system(size: 13, weight: .semibold))
@@ -860,17 +816,43 @@ private struct AgentChatComposer: View {
             }
             if chat.state?.isRunning != true || chat.hasInput {
                 Button { Task { await chat.send() } } label: {
-                    Image(systemName: "arrow.up").font(.system(size: 16, weight: .semibold))
+                    Image(systemName: chat.editingQueuedMessage ? "checkmark" : chat.willQueueMessage ? "tray.and.arrow.down" : "arrow.up")
+                        .font(.system(size: 20, weight: .semibold))
                         .foregroundStyle(sendEnabled ? Color.white : Color.secondary)
-                        .frame(width: narrow ? 24 : 30, height: narrow ? 24 : 30)
+                        .frame(width: 42, height: 42)
                         .background(sendEnabled ? Color.accentColor : Color.secondary.opacity(0.16), in: Circle())
                 }
                 .buttonStyle(.plain)
-                .keyboardShortcut(.return, modifiers: .command)
                 .disabled(!sendEnabled)
-                .accessibilityLabel("Send").accessibilityIdentifier("chat.composer.send")
+                .help(chat.editingQueuedMessage ? "Save queued edit" : chat.willQueueMessage ? "Queue message (Command–Return to send now)" : "Send")
+                .accessibilityLabel(chat.editingQueuedMessage ? "Save queued edit" : chat.willQueueMessage ? "Queue message" : "Send")
+                .accessibilityIdentifier("chat.composer.send")
             }
         }.fixedSize()
+    }
+
+    @ViewBuilder private func composerMeters(narrow: Bool) -> some View {
+        let windows = chat.composerUsageWindows
+        let showsUsage = !windows.isEmpty || chat.provider != .local
+        let context = ComposerContextMeter(usage: chat.currentContextUsage, compact: narrow)
+        if narrow {
+            VStack(spacing: 0) {
+                if showsUsage {
+                    ComposerUsageLimits(windows: windows, narrow: true, chat: chat)
+                    Rectangle().fill(.primary.opacity(0.18))
+                        .frame(height: 1).accessibilityHidden(true)
+                }
+                context
+            }
+            .frame(width: 72)
+            .compositingGroup()
+            .clipShape(Capsule(style: .circular))
+        } else {
+            HStack(spacing: 8) {
+                context
+                if showsUsage { ComposerUsageLimits(windows: windows, narrow: false, chat: chat) }
+            }
+        }
     }
 
     private func projectControl(iconOnly: Bool) -> some View {
@@ -938,15 +920,6 @@ private struct AgentChatComposer: View {
     }
 
     private var sendEnabled: Bool { canSend && chat.canSubmit }
-    private var contextValue: Double? {
-        chat.currentContextFraction
-    }
-    private func gaugeSlot(_ value: Double?, title: String, identifier: String, narrow: Bool) -> some View {
-        Group {
-            if let value { ChatGauge(value: value, title: title, identifier: identifier) }
-            else { Color.clear.accessibilityHidden(true) }
-        }.frame(width: narrow ? 22 : 26, height: 26)
-    }
     private func attachButton(narrow: Bool) -> some View {
         Button {
             attachmentTarget = (chat.composerOwnerID, chat.provider)

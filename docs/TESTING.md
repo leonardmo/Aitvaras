@@ -1301,6 +1301,38 @@ the owner's review; M6.1–M6.2 compatibility does not complete the cleanup gate
 On the host, `make ui` runs `scripts/run-self-drive.sh`. Screenshots land in
 `.build-e2e/self-drive/<scenario>`.
 
+The `composer-caret` scenario uses an offline Codex fixture. It replaces selected
+text while a reply streams, then types at the same caret after the queued turn
+finishes. It also checks that dismissing file suggestions preserves the caret.
+
+```sh
+AITVARAS_FAKE_CODEX="$PWD/UITests/self-drive/fixtures/composer-caret/codex" \
+  AITVARAS_SELF_DRIVE_PROVIDER=codex AITVARAS_SELF_DRIVE_CODEX_MODEL=test-model \
+  scripts/run-self-drive.sh composer-caret 120
+```
+
+With those same environment variables, run `scripts/run-self-drive.sh usage-reset 120 --no-build`
+to check both reset windows, the controls for a quota-stopped chat, and the
+shortcut to the provider limits section of Usage Settings.
+
+Run `scripts/run-self-drive.sh manual-usage-reset 120 --no-build` with the same
+fixture to review and cancel a banked Codex reset, redeem it explicitly, and
+verify that the balance and both usage windows refresh. The fixture uses
+only synthetic resets and does not redeem anything on a provider account.
+Run `scripts/run-self-drive.sh manual-usage-reset-claude 120 --no-build` with
+`AITVARAS_SELF_DRIVE_PROVIDER=claude` to check that the browser link appears
+even before Claude reports a usage window.
+
+Run `scripts/run-self-drive.sh transcript-scroll 120 --no-build` with the same
+Codex fixture to check transcript scrolling. It sends local wheel events
+during a streaming reply, checks the viewport offset through later updates
+and completion, and uses Jump to latest to reach the last message.
+
+Run `scripts/run-self-drive.sh context-meter 120 --no-build` with the same
+fixture at 1080×650 and 800×500. The scenario supplies a 42% context window
+reading, checks the token details in the accessibility tree, and opens usage
+details from both the full pill and the narrow bars.
+
 For a fast check without a local model, run `make ui UI_SCENARIO=cloud-switching`
 (about a minute on a signed-in machine; a few short prompts of Claude and Codex
 usage). In one chat Codex answers the backwards-word prompt, Claude repeats it
@@ -1841,7 +1873,10 @@ clock for source precedence, scope isolation, retry intervals and cutoff boundar
 `AgentAutoContinueSchedulerTests` cover bounded consent without tool grants,
 audit/revocation failures, same-session delivery, atomic delivery barriers,
 identity-based transcript suppression, new-message cancellation, verified quota
-registration, polling, capacity deferral and crash/quit recovery. Timed waits use
+registration, polling, capacity deferral and crash/quit recovery.
+`ClaudeBackendTests` drives an actual backend adapter with a synthetic signed-in
+Claude CLI, advances the quota timer, and verifies that changing either the
+member or organization blocks delivery. Timed waits use
 a manually advanced clock; provider activity uses fakes or offline executables.
 The auto-continue and receipt migrations are appended after the main migrations.
 Quota failures and reset times reuse the Stopped row. Its optional scheduling

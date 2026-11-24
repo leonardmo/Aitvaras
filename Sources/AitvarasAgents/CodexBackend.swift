@@ -1,4 +1,5 @@
 import Foundation
+import AitvarasCore
 
 /// Native metadata uses a shared connection. Gateway Chat runs own their
 /// app-server because MCP configuration and process ancestry are launch-wide.
@@ -25,6 +26,9 @@ public actor CodexBackend: AgentBackend {
     private var observedLimits: [AgentRateLimitWindow] = []
     private var limitSubscribers: [UUID: AsyncStream<[AgentRateLimitWindow]>.Continuation] = [:]
     private var observedAccountID: String?
+    private var accountRevision = UUID()
+    private var redeemingUsageReset = false
+    private var resetAttempt: (creditID: String, key: UUID)?
     private var loginResults: [String: Bool] = [:]
     private var loginInProgress = false
     private var mcpLogin: (name: String, generation: UUID)?
@@ -111,7 +115,10 @@ public actor CodexBackend: AgentBackend {
         let authentication: AgentStatus.Authentication = account == nil || account == .null ? .signedOut
             : account?["type"]?.stringValue == "chatgpt" ? .subscription : .unsupported
         let accountID = account?["chatgptAccountId"]?.stringValue ?? account?["id"]?.stringValue
-        if authentication != .subscription || accountID != observedAccountID { publishRateLimits([]) }
+        if authentication != .subscription || accountID != observedAccountID {
+            accountRevision = UUID()
+            publishRateLimits([])
+        }
         observedAccountID = accountID
         return AgentStatus(installed: true, authentication: authentication, capabilities: subscriptionCapabilities, accountID: accountID)
     }
@@ -129,7 +136,7 @@ public actor CodexBackend: AgentBackend {
                 try Task.checkCancellation()
                 if let success = loginResults[id] {
                     guard success else { throw AgentFailure.authRequired }
-                    publishRateLimits([]); observedAccountID = nil
+                    publishRateLimits([]); observedAccountID = nil; accountRevision = UUID()
                     return
                 }
                 guard wire != nil else { throw AgentFailure.crashed(exitCode: nil) }
@@ -240,14 +247,58 @@ public actor CodexBackend: AgentBackend {
         try await rateLimits(timeout: .seconds(5))
     }
     func rateLimits(timeout: Duration) async throws -> [AgentRateLimitWindow] {
-        let connection = try await connection()
+        try await usageSnapshot(timeout: timeout).windows
+    }
+
+    public func usageSnapshot(timeout: Duration = .seconds(5)) async throws -> CodexUsageSnapshot {
+        try await readUsage(on: connection(), timeout: timeout)
+    }
+
+    private func readUsage(on connection: AgentWire, timeout: Duration) async throws -> CodexUsageSnapshot {
+        let accountRevision = self.accountRevision
         let result: JSONValue
         do { result = try await connection.request("account/rateLimits/read", timeout: timeout, failOnTimeout: false) }
         catch let rejection as AgentUsageLimitRejection { throw AgentFailure.quota(resetsAt: rejection.evidence.resetsAt) }
-        guard wire === connection else { throw AgentFailure.invalidTransition }
+        guard wire === connection, self.accountRevision == accountRevision else { throw AgentFailure.invalidTransition }
         let windows = codexRateLimits(result)
         publishRateLimits(windows)
-        return windows
+        return .init(windows: windows, resets: .init(result["rateLimitResetCredits"]))
+    }
+
+    public func redeemUsageReset(_ credit: CodexUsageResetCredit, confirmed: Bool,
+                                 audit: AgentActionCoordinator.Audit) async throws -> CodexUsageResetOutcome {
+        let risk = ActionRisk.confirmable
+        let verdict = AutonomyPolicy().verdict(for: risk, hasExactGrant: false, requiresExplicitConfirmation: true)
+        guard verdict != .requireConfirmation || confirmed else { throw AgentFailure.invalidTransition }
+        guard !redeemingUsageReset, !loginInProgress else { throw AgentFailure.invalidTransition }
+        redeemingUsageReset = true
+        defer { redeemingUsageReset = false }
+        guard try await status().authentication == .subscription else { throw AgentFailure.authRequired }
+        let connection = try await connection()
+        let accountRevision = self.accountRevision
+        let usage = try await readUsage(on: connection, timeout: .seconds(5))
+        guard usage.resets != nil else { throw AgentFailure.unsupported }
+        guard usage.resets?.credits.contains(credit) == true else { return .noCredit }
+
+        let intent = ActivityEvent(kind: .suggestionAccepted, connectorID: "agent.codex",
+                                   summary: "Approved redemption of a banked Codex usage reset")
+        try await audit(intent)
+        try Task.checkCancellation()
+        guard wire === connection, self.accountRevision == accountRevision, !loginInProgress,
+              credit.expiresAt.map({ $0 > .now }) != false else { throw AgentFailure.invalidTransition }
+
+        let key = resetAttempt.flatMap { $0.creditID == credit.id ? $0.key : nil } ?? UUID()
+        resetAttempt = (credit.id, key)
+        let result = try await connection.request("account/rateLimitResetCredit/consume", .object([
+            "idempotencyKey": .string(key.uuidString), "creditId": .string(credit.id)
+        ]), timeout: .seconds(20), failOnTimeout: false)
+        guard let outcome = result["outcome"]?.stringValue.flatMap(CodexUsageResetOutcome.init(rawValue:)) else {
+            throw AgentFailure.invalidRequest
+        }
+        resetAttempt = nil
+        try? await audit(.init(kind: .toolExecuted, connectorID: "agent.codex",
+                               summary: "Codex usage reset · \(outcome.rawValue)", causedBy: intent.id))
+        return outcome
     }
     public func rateLimitUpdates() async -> AsyncStream<[AgentRateLimitWindow]> {
         let key = UUID()
@@ -440,6 +491,10 @@ public actor CodexBackend: AgentBackend {
             if loginResults.count < 16 { loginResults[loginID] = parameters["success"]?.boolValue ?? false }
             return
         }
+        if method == "account/updated", id == nil {
+            accountRevision = UUID()
+            return
+        }
         if method == "account/rateLimits/updated", id == nil {
             let windows = codexRateLimits(parameters)
             publishRateLimits(windows)
@@ -471,7 +526,7 @@ public actor CodexBackend: AgentBackend {
     private func disconnected(_ error: AgentFailureReport, generation: UUID) async {
         guard generation == self.generation else { return }
         let current = runs; runs.removeAll(); wire = nil; transport = nil
-        publishRateLimits([]); observedAccountID = nil
+        publishRateLimits([]); observedAccountID = nil; accountRevision = UUID()
         availableSetup = .init(provider: .codex); mcpUpdates = [:]; mcpEpoch = 0
         for run in current.values { await run.disconnected(error) }
         await boundGateway?.hook?.socket.close()
@@ -479,7 +534,7 @@ public actor CodexBackend: AgentBackend {
     /// Application-level disposal; shutting down one run leaves other threads alive.
     public func shutdown() async throws {
         generation = UUID()
-        publishRateLimits([]); observedAccountID = nil
+        publishRateLimits([]); observedAccountID = nil; accountRevision = UUID()
         availableSetup = .init(provider: .codex); mcpUpdates = [:]; mcpEpoch = 0
         let active = runs; runs.removeAll()
         let current = transport; wire = nil; transport = nil

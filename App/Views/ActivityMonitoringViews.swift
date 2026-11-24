@@ -39,7 +39,7 @@ enum ActivityGlassStyle: String, CaseIterable {
 /// No timeline, repeating animation, timer, shader, or model work sustains them.
 private struct ActivityGlass: ViewModifier {
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @AppReduceMotion private var reduceMotion
     @Environment(\.colorSchemeContrast) private var contrast
     @Environment(\.colorScheme) private var colorScheme
     let style: ActivityGlassStyle
@@ -328,7 +328,7 @@ struct MonitoringSummaryLabel: View {
 /// Original-color images are required here: a template menu-bar image discards the activity tint.
 struct DragonActivityMenuLabel: View {
     @Environment(AppModel.self) private var model
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @AppReduceMotion private var reduceMotion
     private var status: ActivityPresentation { ActivityPresentation(model: model) }
     var body: some View {
         ZStack {

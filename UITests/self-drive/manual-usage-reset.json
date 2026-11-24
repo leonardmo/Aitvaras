@@ -1,0 +1,23 @@
+{
+  "steps": [
+    { "action": "press", "identifier": "bubble.left.and.text.bubble.right", "delay": 1 },
+    { "action": "waitFor", "identifier": "chat.usage.details" },
+    { "action": "press", "identifier": "chat.usage.details" },
+    { "action": "waitFor", "text": "1 banked reset available", "within": "chat.usage.popover" },
+    { "action": "waitFor", "identifier": "usage.manualResets.review.0", "enabled": true },
+    { "action": "press", "identifier": "usage.manualResets.review.0" },
+    { "action": "waitFor", "identifier": "usage.manualResets.confirm" },
+    { "action": "press", "identifier": "usage.manualResets.cancel" },
+    { "action": "waitFor", "text": "1 banked reset available", "within": "chat.usage.popover" },
+    { "action": "waitFor", "identifier": "usage.manualResets.review.0", "enabled": true },
+    { "action": "press", "identifier": "usage.manualResets.review.0" },
+    { "action": "press", "identifier": "usage.manualResets.confirm" },
+    { "action": "waitFor", "text": "Codex reset applied.", "within": "chat.usage.popover" },
+    { "action": "waitFor", "text": "0 banked resets available", "within": "chat.usage.popover" },
+    { "action": "waitFor", "text": "Five-hour limit, 0% used", "within": "chat.usage.details" },
+    { "action": "waitFor", "text": "Weekly limit, 0% used", "within": "chat.usage.details" },
+    { "action": "press", "identifier": "chat.usage.settings" },
+    { "action": "waitFor", "identifier": "settings.option.usage.providerLimits" },
+    { "action": "waitFor", "identifier": "usage.manualResets.balance" }
+  ]
+}

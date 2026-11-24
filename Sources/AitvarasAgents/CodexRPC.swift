@@ -284,7 +284,7 @@ actor CodexRun: AgentRun {
             emit(.usage(AgentUsage(scope: .lastCall, inputTokens: last["inputTokens"]?.int,
                 outputTokens: last["outputTokens"]?.int, cachedInputTokens: last["cachedInputTokens"]?.int,
                 cacheWriteInputTokens: last["cacheWriteInputTokens"]?.int, thinkingTokens: last["reasoningOutputTokens"]?.int,
-                contextTokens: usage["total"]?["totalTokens"]?.int, contextLimit: usage["modelContextWindow"]?.int)))
+                contextTokens: last["totalTokens"]?.int, contextLimit: usage["modelContextWindow"]?.int)))
         case "error":
             if p["willRetry"]?.boolValue != true {
                 turnFailure = turnError(p["error"] ?? .null)
