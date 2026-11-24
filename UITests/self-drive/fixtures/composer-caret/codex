@@ -53,6 +53,17 @@ for line in sys.stdin:
         if "Stop at the example limit" in text:
             error = {"message": "Example usage limit", "codexErrorInfo": "usageLimitExceeded", "rateLimitType": "primary"}
             schedule(0.4, notify, "turn/completed", turn, turn={"id": turn, "status": "failed", "error": error})
+        elif "Build a long example transcript" in text or "Stream while I read the transcript" in text:
+            reading = "Stream while I read the transcript" in text
+            reply = "\n\n".join(f"Example paragraph {index}. This is fixture text for scrolling through chat history."
+                                  for index in range(1, 42))
+            if reading:
+                for index in range(1, 13):
+                    schedule(index * 0.6, notify, "item/agentMessage/delta", turn, itemId="reply",
+                             delta=f"Streaming update {index}. ")
+            delay = 8 if reading else 1.2
+            schedule(delay, notify, "item/completed", turn, item={"type": "agentMessage", "id": "reply", "text": reply})
+            schedule(delay + 0.1, notify, "turn/completed", turn, turn={"id": turn, "status": "completed", "items": []})
         else:
             delay = 6 if turns == 1 else 0.2
             schedule(delay, notify, "item/agentMessage/delta", turn, itemId="reply", delta="Streaming reply")

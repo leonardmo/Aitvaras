@@ -1315,6 +1315,11 @@ With those same environment variables, run `scripts/run-self-drive.sh usage-rese
 to check both reset windows, the controls for a quota-stopped chat, and the
 shortcut to the provider limits section of Usage Settings.
 
+Run `scripts/run-self-drive.sh transcript-scroll 120 --no-build` with the same
+Codex fixture to check transcript scrolling. It sends local wheel events
+during a streaming reply, checks the viewport offset through later updates
+and completion, and uses Jump to latest to reach the last message.
+
 For a fast check without a local model, run `make ui UI_SCENARIO=cloud-switching`
 (about a minute on a signed-in machine; a few short prompts of Claude and Codex
 usage). In one chat Codex answers the backwards-word prompt, Claude repeats it

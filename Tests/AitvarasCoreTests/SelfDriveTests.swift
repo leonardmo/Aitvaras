@@ -12,10 +12,14 @@ import AitvarasCore
           {"action":"waitFor","text":"Hello","timeout":0.1,"within":"chat.transcript","caseSensitive":true},
           {"action":"waitFor","identifier":"chat.request.1.allow","absent":true,"timeout":0},
           {"action":"screenshot","name":"01-launch","delay":3},
-          {"action":"dumpTree","name":"01-launch-tree"}
+          {"action":"dumpTree","name":"01-launch-tree"},
+          {"action":"scroll","identifier":"chat.transcript","verticalBy":150},
+          {"action":"checkScroll","identifier":"chat.transcript"}
         ]}
         """#.utf8))
-        #expect(scenario.steps.count == 6)
+        #expect(scenario.steps.count == 8)
+        #expect(scenario.steps[6].verticalBy == 150)
+        #expect(scenario.steps[7].action == .checkScroll)
         #expect(scenario.steps[1].text == "Hello 🐉\nsecond line")
         #expect(scenario.steps[3].absent == true)
         #expect(scenario.steps[2].within == "chat.transcript")
@@ -70,6 +74,9 @@ import AitvarasCore
         #"{"steps":[{"action":"press","anyOf":["x"],"identifier":"y"}]}"#,
         #"{"steps":[{"action":"press","anyOf":["x"],"text":"y"}]}"#,
         #"{"steps":[{"action":"type","anyOf":["x"],"text":"y"}]}"#,
+        #"{"steps":[{"action":"scroll","identifier":"chat.transcript"}]}"#,
+        #"{"steps":[{"action":"scroll","identifier":"chat.transcript","verticalBy":501}]}"#,
+        #"{"steps":[{"action":"checkScroll"}]}"#,
         "not json"
     ]) func rejectsMalformedScenarios(json: String) {
         #expect(throws: (any Error).self) { try SelfDriveScenario.parse(Data(json.utf8)) }

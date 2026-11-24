@@ -33,6 +33,7 @@ import AppKit
 /// accessibility tree, local press dispatch and composer editing.
 @MainActor public final class SelfDriveSurface {
     let window: NSWindow
+    private var scrollOffsets: [String: CGFloat] = [:]
     public init(window: NSWindow) { self.window = window }
 
     func nodes(root: NSObject? = nil) throws -> [SelfDriveNode] {
@@ -115,6 +116,53 @@ import AppKit
         return "Dispatched local vertical drag"
     }
 
+    private func scrollView(for identifier: String) throws -> NSScrollView {
+        guard let frame = try find(identifier)?.frame, !frame.isEmpty, let content = window.contentView else {
+            throw SelfDriveFailure("Scroll target unavailable: \(identifier)")
+        }
+        func scrollViews(in view: NSView) -> [NSScrollView] {
+            let children = view.subviews.flatMap(scrollViews)
+            if let scroll = view as? NSScrollView { return [scroll] + children }
+            return children
+        }
+        func overlap(_ scroll: NSScrollView) -> CGFloat {
+            let bounds = window.convertToScreen(scroll.convert(scroll.bounds, to: nil))
+            let intersection = bounds.intersection(frame)
+            return intersection.isNull ? 0 : intersection.width * intersection.height
+        }
+        guard let scroll = scrollViews(in: content).max(by: { overlap($0) < overlap($1) }),
+              overlap(scroll) > 0 else { throw SelfDriveFailure("No native scroll view for \(identifier)") }
+        return scroll
+    }
+
+    private func scroll(_ identifier: String, verticalBy distance: Double) async throws -> String {
+        let scroll = try scrollView(for: identifier)
+        let before = scroll.contentView.bounds.minY
+        guard let wheel = CGEvent(scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 1,
+                                  wheel1: Int32(distance), wheel2: 0, wheel3: 0)
+        else { throw SelfDriveFailure("Could not create local scroll event") }
+        let point = window.convertPoint(toScreen: scroll.convert(NSPoint(x: scroll.bounds.midX, y: scroll.bounds.midY), to: nil))
+        wheel.location = CGPoint(x: point.x, y: (NSScreen.screens.first?.frame.maxY ?? 0) - point.y)
+        guard let event = NSEvent(cgEvent: wheel) else { throw SelfDriveFailure("Could not bridge local scroll event") }
+        scroll.scrollWheel(with: event)
+        try await Task.sleep(for: .milliseconds(350))
+        let after = scroll.contentView.bounds.minY
+        guard abs(after - before) > 0.5 else {
+            throw SelfDriveFailure("Wheel input did not move \(identifier) at \(before) with document height \(scroll.documentView?.frame.height ?? 0) and viewport height \(scroll.contentSize.height)")
+        }
+        scrollOffsets[identifier] = after
+        return "Wheel input moved the viewport from \(before) to \(after)"
+    }
+
+    private func checkScroll(_ identifier: String) throws -> String {
+        let actual = try scrollView(for: identifier).contentView.bounds.minY
+        guard let expected = scrollOffsets[identifier] else { throw SelfDriveFailure("No recorded scroll offset for \(identifier)") }
+        guard abs(actual - expected) <= 1 else {
+            throw SelfDriveFailure("Viewport moved from \(expected) to \(actual)")
+        }
+        return "Viewport stayed at \(actual)"
+    }
+
     private func editableField(for identifier: String) throws -> NSView {
         guard let input = try find(identifier), input.enabled else {
             throw SelfDriveFailure("Enabled text input unavailable: \(identifier)")
@@ -168,6 +216,10 @@ import AppKit
 
     public func perform(_ step: SelfDriveStep, directory: URL) async throws -> String {
         switch step.action {
+        case .scroll:
+            return try await scroll(step.identifier!, verticalBy: step.verticalBy!)
+        case .checkScroll:
+            return try checkScroll(step.identifier!)
         case .drag:
             let reason = try drag(step.identifier!, verticalBy: step.verticalBy!)
             await Task.yield()

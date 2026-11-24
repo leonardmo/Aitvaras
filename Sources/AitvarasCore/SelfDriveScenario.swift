@@ -16,7 +16,7 @@ public struct SelfDriveScenario: Decodable, Sendable {
 }
 
 public struct SelfDriveStep: Codable, Sendable {
-    public enum Action: String, Codable, Sendable { case press, type, selectText, waitFor, screenshot, dumpTree, drag }
+    public enum Action: String, Codable, Sendable { case press, type, selectText, waitFor, screenshot, dumpTree, drag, scroll, checkScroll }
     public let action: Action
     public var identifier: String?
     /// A wait succeeds when any identifier is present; press uses the first
@@ -36,7 +36,7 @@ public struct SelfDriveStep: Codable, Sendable {
     /// Restrict a wait to this accessibility subtree.
     public var within: String?
     public let caseSensitive: Bool?
-    /// Vertical mouse travel in screen points. Positive is up.
+    /// Vertical drag or wheel travel in points. Positive is up.
     public let verticalBy: Double?
     /// Insert at the existing selection without taking focus. Defaults to appending.
     public let atSelection: Bool?
@@ -62,12 +62,16 @@ public struct SelfDriveStep: Codable, Sendable {
                 throw invalid("anyOf needs 1...16 distinct nonempty identifiers on waitFor or press")
             }
         }
-        if verticalBy != nil && action != .drag { throw invalid("verticalBy requires drag") }
+        if verticalBy != nil && action != .drag && action != .scroll { throw invalid("verticalBy requires drag or scroll") }
         if atSelection != nil && action != .type { throw invalid("atSelection requires type") }
         switch action {
-        case .drag:
+        case .drag, .scroll:
             guard let identifier, !identifier.isEmpty, let verticalBy, verticalBy.isFinite,
-                  (3...500).contains(abs(verticalBy)) else { throw invalid("drag needs an identifier and verticalBy of 3...500 points") }
+                  (3...500).contains(abs(verticalBy)) else {
+                throw invalid("Vertical travel needs an identifier and verticalBy of 3...500 points")
+            }
+        case .checkScroll:
+            guard let identifier, !identifier.isEmpty else { throw invalid("checkScroll needs an identifier") }
         case .press:
             guard [identifier != nil, anyOf != nil, text != nil].filter({ $0 }).count == 1,
                   identifier?.isEmpty != true, text?.isEmpty != true else {

@@ -26,26 +26,20 @@ struct LocalChatView: View {
                     }.padding(.horizontal, 16)
                 }
             }
-            ScrollViewReader { proxy in
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 14) {
-                        if model.selectedWorkspaceProjectID != nil {
-                            Text("Choose or create a chat in this project.").foregroundStyle(.secondary)
-                        } else if model.messages.isEmpty {
-                            Text("Hi, I'm Aitvaras.").font(.title2.weight(.semibold))
-                        }
-                        if model.earlierChatMessagesAreHidden {
-                            Text("Earlier messages remain saved locally.").font(.caption).foregroundStyle(.secondary)
-                        }
-                        ForEach(model.messages) { MessageBubble(message: $0).id($0.id) }
-                    }.padding(20).frame(maxWidth: .infinity, alignment: .leading)
-                }
-                .defaultScrollAnchor(.bottom)
-                .accessibilityIdentifier("chat.transcript")
-                .onChange(of: model.messages.last?.text) {
-                    if let id = model.messages.last?.id { proxy.scrollTo(id, anchor: .bottom) }
-                }
+            ChatTranscriptScroll {
+                LazyVStack(alignment: .leading, spacing: 14) {
+                    if model.selectedWorkspaceProjectID != nil {
+                        Text("Choose or create a chat in this project.").foregroundStyle(.secondary)
+                    } else if model.messages.isEmpty {
+                        Text("Hi, I'm Aitvaras.").font(.title2.weight(.semibold))
+                    }
+                    if model.earlierChatMessagesAreHidden {
+                        Text("Earlier messages remain saved locally.").font(.caption).foregroundStyle(.secondary)
+                    }
+                    ForEach(model.messages) { MessageBubble(message: $0).id($0.id) }
+                }.padding(20).frame(maxWidth: .infinity, alignment: .leading)
             }
+            .id(model.selectedChatConversationID)
             if model.selectedUnassignedVoiceHistory {
                 Label("Saved voice history", systemImage: "waveform").font(.caption).foregroundStyle(.secondary).padding(8)
             } else {

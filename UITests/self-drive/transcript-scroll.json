@@ -1,0 +1,22 @@
+{
+  "steps": [
+    { "action": "press", "identifier": "bubble.left.and.text.bubble.right", "delay": 1 },
+    {"action": "type", "text": "Build a long example transcript\n\nReading anchor 1. This saved message stays in the transcript.\n\nReading anchor 2. This saved message stays in the transcript.\n\nReading anchor 3. This saved message stays in the transcript.\n\nReading anchor 4. This saved message stays in the transcript.\n\nReading anchor 5. This saved message stays in the transcript.\n\nReading anchor 6. This saved message stays in the transcript.\n\nReading anchor 7. This saved message stays in the transcript.\n\nReading anchor 8. This saved message stays in the transcript.\n\nReading anchor 9. This saved message stays in the transcript.\n\nReading anchor 10. This saved message stays in the transcript.\n\nReading anchor 11. This saved message stays in the transcript.\n\nReading anchor 12. This saved message stays in the transcript.\n\nReading anchor 13. This saved message stays in the transcript.\n\nReading anchor 14. This saved message stays in the transcript.\n\nReading anchor 15. This saved message stays in the transcript.\n\nReading anchor 16. This saved message stays in the transcript.\n\nReading anchor 17. This saved message stays in the transcript.\n\nReading anchor 18. This saved message stays in the transcript.\n\nReading anchor 19. This saved message stays in the transcript.\n\nReading anchor 20. This saved message stays in the transcript."},
+    { "action": "press", "identifier": "chat.composer.send" },
+    { "action": "waitFor", "identifier": "chat.stop", "timeout": 20 },
+    { "action": "waitFor", "identifier": "chat.stop", "absent": true },
+    { "action": "press", "identifier": "chat.transcript.latest", "delay": 0.5, "optional": true },
+    { "action": "type", "text": "Stream while I read the transcript" },
+    { "action": "press", "identifier": "chat.composer.send" },
+    { "action": "waitFor", "identifier": "chat.stop" },
+    { "action": "scroll", "identifier": "chat.transcript", "verticalBy": 300 },
+    { "action": "waitFor", "identifier": "chat.transcript.latest" },
+    { "action": "checkScroll", "identifier": "chat.transcript", "delay": 1.5 },
+    { "action": "waitFor", "identifier": "chat.stop" },
+    { "action": "scroll", "identifier": "chat.transcript", "verticalBy": -150 },
+    { "action": "waitFor", "identifier": "chat.stop", "absent": true, "timeout": 20 },
+    { "action": "checkScroll", "identifier": "chat.transcript" },
+    { "action": "press", "identifier": "chat.transcript.latest" },
+    { "action": "waitFor", "identifier": "chat.transcript.latest", "absent": true }
+  ]
+}

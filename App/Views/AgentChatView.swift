@@ -22,9 +22,6 @@ struct AgentChatView: View {
     @State private var displayedWorktree: AgentWorktree?
     @State private var visibilityID = UUID()
     @State private var gitProject = false
-    @State private var atBottom = true
-    @State private var bottomVisible = true
-    @State private var scrolling = false
     @State private var composerFocusRequest: UUID?
     @State private var transcriptHeight: CGFloat = 0
 
@@ -164,87 +161,59 @@ struct AgentChatView: View {
         }?.id
         let pendingItemIDs = Set((chat.state?.pendingCards ?? []).compactMap(\.scope.itemID))
         return VStack(spacing: 0) {
-            ScrollViewReader { proxy in
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 18) {
-                        ForEach(rows) { row in
-                            switch row {
-                            case .entry(let entry):
-                                transcriptRow(entry, streaming: chat.state?.isStreaming(entryID: entry.id) == true).id(entry.id)
-                            case .activity(_, let entries, let isLive):
-                                AgentActivityPanel(entries: entries, isLive: isLive, isLatest: row.id == latestActivityID) { entry, featured in
-                                    transcriptRow(entry, streaming: chat.state?.isStreaming(entryID: entry.id) == true,
-                                                  commandFeatured: featured,
-                                                  commandAwaitingApproval: isLive && entry.toolItemID.map(pendingItemIDs.contains) == true)
-                                }
+            ChatTranscriptScroll {
+                LazyVStack(alignment: .leading, spacing: 18) {
+                    ForEach(rows) { row in
+                        switch row {
+                        case .entry(let entry):
+                            transcriptRow(entry, streaming: chat.state?.isStreaming(entryID: entry.id) == true).id(entry.id)
+                        case .activity(_, let entries, let isLive):
+                            AgentActivityPanel(entries: entries, isLive: isLive, isLatest: row.id == latestActivityID) { entry, featured in
+                                transcriptRow(entry, streaming: chat.state?.isStreaming(entryID: entry.id) == true,
+                                              commandFeatured: featured,
+                                              commandAwaitingApproval: isLive && entry.toolItemID.map(pendingItemIDs.contains) == true)
                             }
                         }
-                        if isRunning, case .entry(let last)? = rows.last,
-                           ["user", "wakeup", "continued", "automaticContinuation"].contains(last.kind),
-                           (chat.state?.pendingCards ?? []).isEmpty, gatewayApprovals.isEmpty {
-                            AgentWorkingLabel()
-                        }
-                        ForEach(Array((chat.state?.pendingCards ?? []).enumerated()), id: \.element.identity) { index, request in
-                            requestCard(request, index: index)
-                        }
-                        ForEach(gatewayApprovals) { request in
-                            VStack(alignment: .leading, spacing: 8) {
-                                Text("Allow \(request.toolName)?").font(.headline)
-                                if let reason = request.reason {
-                                    Text(reason).font(.caption).foregroundStyle(.secondary)
-                                }
-                                DisclosureGroup("Arguments") {
-                                    Text(verbatim: request.arguments.jsonString)
-                                        .font(.caption.monospaced()).textSelection(.enabled)
-                                }
-                                HStack {
-                                    Button("Deny") { Task { await model.decideGatewayApproval(request, allow: false) } }
-                                    Button("Allow once") { Task { await model.decideGatewayApproval(request, allow: true) } }
-                                }
-                                if request.canAlwaysAllow {
-                                    Button("Always allow in this project") {
-                                        Task { await model.decideGatewayApproval(request, allow: true, forProject: true) }
-                                    }
-                                    .accessibilityIdentifier("chat.gateway.approval.\(request.id).alwaysAllow")
-                                }
-                            }
-                            .padding(12)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 8))
-                        }
-                        SettingsProposalCards(chatID: chatID)
-                        Color.clear.frame(height: 1).id("chat.end")
                     }
-                    .frame(maxWidth: 760, alignment: .leading)
-                    .padding(.horizontal, 16).padding(.vertical, 20).frame(maxWidth: .infinity)
+                    if isRunning, case .entry(let last)? = rows.last,
+                       ["user", "wakeup", "continued", "automaticContinuation"].contains(last.kind),
+                       (chat.state?.pendingCards ?? []).isEmpty, gatewayApprovals.isEmpty {
+                        AgentWorkingLabel()
+                    }
+                    ForEach(Array((chat.state?.pendingCards ?? []).enumerated()), id: \.element.identity) { index, request in
+                        requestCard(request, index: index)
+                    }
+                    ForEach(gatewayApprovals) { request in
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("Allow \(request.toolName)?").font(.headline)
+                            if let reason = request.reason {
+                                Text(reason).font(.caption).foregroundStyle(.secondary)
+                            }
+                            DisclosureGroup("Arguments") {
+                                Text(verbatim: request.arguments.jsonString)
+                                    .font(.caption.monospaced()).textSelection(.enabled)
+                            }
+                            HStack {
+                                Button("Deny") { Task { await model.decideGatewayApproval(request, allow: false) } }
+                                Button("Allow once") { Task { await model.decideGatewayApproval(request, allow: true) } }
+                            }
+                            if request.canAlwaysAllow {
+                                Button("Always allow in this project") {
+                                    Task { await model.decideGatewayApproval(request, allow: true, forProject: true) }
+                                }
+                                .accessibilityIdentifier("chat.gateway.approval.\(request.id).alwaysAllow")
+                            }
+                        }
+                        .padding(12)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 8))
+                    }
+                    SettingsProposalCards(chatID: chatID)
                 }
-                .defaultScrollAnchor(.bottom, for: .initialOffset)
-                .onScrollGeometryChange(for: Bool.self) { geometry in
-                    geometry.contentSize.height - geometry.contentOffset.y - geometry.containerSize.height < 60
-                } action: { _, value in
-                    bottomVisible = value
-                    if scrolling { atBottom = value }
-                }
-                .onScrollPhaseChange { _, phase in
-                    scrolling = phase != .idle && phase != .animating
-                    if phase == .idle && bottomVisible { atBottom = true }
-                }
-                .accessibilityElement(children: .contain)
-                .accessibilityIdentifier("chat.transcript")
-                .onChange(of: rows) {
-                    if atBottom { proxy.scrollTo("chat.end", anchor: .bottom) }
-                }
-                .onChange(of: chat.state?.pendingCards) {
-                    if atBottom { proxy.scrollTo("chat.end", anchor: .bottom) }
-                }
-                .onChange(of: gatewayApprovals.map(\.id)) {
-                    if atBottom { proxy.scrollTo("chat.end", anchor: .bottom) }
-                }
-                .onChange(of: model.settingsProposals.filter { $0.source.chatID == chatID }.map(\.id)) {
-                    if atBottom { proxy.scrollTo("chat.end", anchor: .bottom) }
-                }
-                .onChange(of: chatID) { atBottom = true; proxy.scrollTo("chat.end", anchor: .bottom) }
+                .frame(maxWidth: 760, alignment: .leading)
+                .padding(.horizontal, 16).padding(.vertical, 20).frame(maxWidth: .infinity)
             }
+            .id(chatID)
             VStack(spacing: 6) {
                 if chat.chatID == nil, model.workspaceProjects.allSatisfy({ !$0.isVisible }) {
                     Text("Choose a project to send a message.").font(.caption).foregroundStyle(composerMessageColor)
