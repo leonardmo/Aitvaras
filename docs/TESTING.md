@@ -1873,7 +1873,10 @@ clock for source precedence, scope isolation, retry intervals and cutoff boundar
 `AgentAutoContinueSchedulerTests` cover bounded consent without tool grants,
 audit/revocation failures, same-session delivery, atomic delivery barriers,
 identity-based transcript suppression, new-message cancellation, verified quota
-registration, polling, capacity deferral and crash/quit recovery. Timed waits use
+registration, polling, capacity deferral and crash/quit recovery.
+`ClaudeBackendTests` drives an actual backend adapter with a synthetic signed-in
+Claude CLI, advances the quota timer, and verifies that changing either the
+member or organization blocks delivery. Timed waits use
 a manually advanced clock; provider activity uses fakes or offline executables.
 The auto-continue and receipt migrations are appended after the main migrations.
 Quota failures and reset times reuse the Stopped row. Its optional scheduling

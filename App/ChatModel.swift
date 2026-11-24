@@ -1430,7 +1430,7 @@ final class ChatModel {
         let store = AgentAutoContinueStore(db: stores.db)
         let intent = try? store.continuation(failedInputID: stop.inputID)
         return AgentAutoContinueRow(stop: stop, intent: intent,
-            isCurrent: state?.canRecover(entry) == true && stop.quotaContext != nil)
+            isCurrent: state?.canRecover(entry) == true)
     }
 
     func setAutoContinue(_ entry: AgentTranscriptEntry, option: AgentAutoContinueRowOption) {

@@ -98,7 +98,7 @@ public struct AgentAutoContinueStore: AgentAutoContinuePersistence {
             saved.lastActivityID = causedBy
             try Self.audit(&saved, status: value.enabled ? "scheduled" : "cancelled", at: value.createdAt, in: dbc)
             try saved.insert(dbc)
-            return saved
+            return try AgentAutoContinue.find(dbc, key: saved.id)
         }
     }
     private func change(_ id: UUID, at now: Date, status: String,
@@ -112,7 +112,8 @@ public struct AgentAutoContinueStore: AgentAutoContinuePersistence {
             value.version += 1; value.updatedAt = now
             try Self.audit(&value, status: status, at: now, in: dbc)
             try value.update(dbc)
-            return value
+            // Delivery compares the full record, including the stored timestamp precision.
+            return try AgentAutoContinue.find(dbc, key: id)
         }
     }
     @discardableResult public func setOptions(id: UUID, enabled: Bool, keepAwake: Bool, now: Date) throws -> AgentAutoContinue {

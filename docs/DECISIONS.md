@@ -1117,6 +1117,10 @@ relevant observation for that provider account/profile. Both sides of an
 account match must be known. Persist only a lowercase hex SHA-256 key over
 the provider, profile and provider account ID, framed as a JSON array. Raw
 account IDs are transient and never appear in the database, activity or logs.
+When Claude Code reports a subscription member and organization through
+`auth status` without a direct account ID, derive an opaque identity from both.
+A stop recorded without identity can be recovered manually. A new login cannot
+establish who owned that earlier turn.
 Codex also polls its
 CLI's account/rateLimits/read every ten minutes while waiting, without a model
 prompt. With no usable reset, retry intervals are five, ten, twenty, then thirty
