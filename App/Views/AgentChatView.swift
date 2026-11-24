@@ -803,6 +803,7 @@ private struct AgentChatComposer: View {
     private func composerActions(narrow: Bool) -> some View {
         HStack(spacing: 8) {
             composerMeters(narrow: narrow)
+                .padding(.trailing, 4)
             if chat.state?.isRunning == true {
                 Button { Task { await chat.stop() } } label: {
                     Image(systemName: "stop.fill").font(.system(size: 13, weight: .semibold))
@@ -843,7 +844,7 @@ private struct AgentChatComposer: View {
                 }
                 context
             }
-            .frame(width: 28)
+            .frame(width: 72)
             .compositingGroup()
             .clipShape(Capsule(style: .circular))
         } else {
