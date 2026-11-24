@@ -1328,6 +1328,11 @@ Codex fixture to check transcript scrolling. It sends local wheel events
 during a streaming reply, checks the viewport offset through later updates
 and completion, and uses Jump to latest to reach the last message.
 
+Run `scripts/run-self-drive.sh context-meter 120 --no-build` with the same
+fixture at 1080×650 and 800×500. The scenario supplies a 42% context window
+reading, checks the token details in the accessibility tree, and opens usage
+details from both the full pill and the narrow bars.
+
 For a fast check without a local model, run `make ui UI_SCENARIO=cloud-switching`
 (about a minute on a signed-in machine; a few short prompts of Claude and Codex
 usage). In one chat Codex answers the backwards-word prompt, Claude repeats it

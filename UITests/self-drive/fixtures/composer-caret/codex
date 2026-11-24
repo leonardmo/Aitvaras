@@ -61,7 +61,13 @@ for line in sys.stdin:
         turn = str(turns)
         result = {"turn": {"id": turn}}
         text = " ".join(item.get("text", "") for item in frame.get("params", {}).get("input", []))
-        if "Stop at the example limit" in text:
+        if "Measure the context window" in text:
+            schedule(0.25, notify, "thread/tokenUsage/updated", turn, tokenUsage={
+                "last": {"inputTokens": 41000, "outputTokens": 1000, "totalTokens": 42000},
+                "total": {"totalTokens": 88000}, "modelContextWindow": 100000,
+            })
+            schedule(0.5, notify, "turn/completed", turn, turn={"id": turn, "status": "completed", "items": []})
+        elif "Stop at the example limit" in text:
             error = {"message": "Example usage limit", "codexErrorInfo": "usageLimitExceeded", "rateLimitType": "primary"}
             schedule(0.4, notify, "turn/completed", turn, turn={"id": turn, "status": "failed", "error": error})
         elif "Build a long example transcript" in text or "Stream while I read the transcript" in text:

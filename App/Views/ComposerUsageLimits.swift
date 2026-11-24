@@ -14,30 +14,46 @@ struct ComposerUsageLimits: View {
     var body: some View {
         let limits = ProviderUsageLimit.displayed(windows)
         Button { showsDetails.toggle() } label: {
-            HStack(spacing: 0) {
-                if limits.isEmpty {
-                    Label("Usage", systemImage: "chevron.down").labelStyle(.titleAndIcon)
-                        .font(.system(size: 10, weight: .medium))
-                        .padding(.horizontal, narrow ? 6 : 9)
-                        .frame(height: 26)
-                }
-                ForEach(limits) { limit in
-                    if limit.id != limits.first?.id {
-                        Rectangle().fill(ink.opacity(0.24))
-                            .frame(width: 1, height: 26).accessibilityHidden(true)
+            if narrow {
+                HStack(spacing: 2) {
+                    if limits.isEmpty {
+                        ComposerMeterTrack(fraction: nil, ramp: .idle)
                     }
-                    indicator(limit, showsChevron: limit.id == limits.last?.id)
+                    ForEach(limits) { limit in
+                        let ramp = ColorRamp.usage(limit.used ?? 0)
+                        ComposerMeterTrack(fraction: limit.used,
+                            ramp: limit.id == "week" ? ramp.mixed(with: .idle, by: 0.36) : ramp)
+                    }
                 }
+                .frame(width: 54, height: 5)
+                .frame(height: 26)
+                .contentShape(Rectangle())
+            } else {
+                HStack(spacing: 0) {
+                    if limits.isEmpty {
+                        Label("Usage", systemImage: "chevron.down").labelStyle(.titleAndIcon)
+                            .font(.system(size: 10, weight: .medium))
+                            .padding(.horizontal, 9)
+                            .frame(height: 26)
+                    }
+                    ForEach(limits) { limit in
+                        if limit.id != limits.first?.id {
+                            Rectangle().fill(ink.opacity(0.24))
+                                .frame(width: 1, height: 26).accessibilityHidden(true)
+                        }
+                        indicator(limit, showsChevron: limit.id == limits.last?.id)
+                    }
+                }
+                .clipShape(Capsule())
+                .overlay { Capsule().strokeBorder(ink.opacity(contrast == .increased ? 0.52 : 0.20), lineWidth: 1) }
+                .contentShape(Capsule())
+                .fixedSize()
             }
-            .clipShape(Capsule())
-            .overlay { Capsule().strokeBorder(ink.opacity(contrast == .increased ? 0.52 : 0.20), lineWidth: 1) }
-            .contentShape(Capsule())
-            .fixedSize()
         }
         .buttonStyle(.plain)
-        .help("Show usage and available resets")
+        .help(limits.isEmpty ? "Show usage and available resets" : limits.map(\.help).joined(separator: "\n"))
         .accessibilityLabel("Usage limits")
-        .accessibilityValue(limits.map { "\($0.title), \($0.status)" }.joined(separator: "; "))
+        .accessibilityValue(limits.map(\.help).joined(separator: "; "))
         .accessibilityIdentifier("chat.usage.details")
         .popover(isPresented: $showsDetails, arrowEdge: .top) { details(limits) }
     }
@@ -48,6 +64,7 @@ struct ComposerUsageLimits: View {
         HStack(spacing: 3) {
             Text(limit.shortTitle).foregroundStyle(ink.opacity(0.8))
             Text(limit.percent.map { "\($0)%" } ?? "—").fontWeight(.semibold).monospacedDigit().foregroundStyle(ink)
+                .lineLimit(1).minimumScaleFactor(0.85)
                 .frame(width: 28, alignment: .trailing)
             if showsChevron {
                 Image(systemName: "chevron.down")
@@ -57,7 +74,7 @@ struct ComposerUsageLimits: View {
             }
         }
         .font(.system(size: 10))
-        .padding(.horizontal, narrow ? 6 : 9)
+        .padding(.horizontal, 9)
         .frame(height: 26)
         .background {
             if let used = limit.used {
@@ -273,6 +290,13 @@ private struct ProviderUsageLimit: Identifiable {
     }
     var percent: Int? { used.map { Int(($0 * 100).rounded()) } }
     var status: String { percent.map { "\($0)% used" } ?? "Usage unavailable" }
+
+    var help: String {
+        if let reset = window.resetsAt {
+            return "\(title), \(status) · resets \(reset.formatted(date: .abbreviated, time: .shortened))"
+        }
+        return "\(title), \(status)"
+    }
 
     static func displayed(_ windows: [AgentRateLimitWindow]) -> [Self] {
         let fiveHours = mostUsed(windows.filter { $0.duration == 5 * 3600 || $0.id == "five_hour" })

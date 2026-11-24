@@ -60,6 +60,26 @@ import AitvarasAgents
         #expect(selection.draft == "Saved chat draft")
     }
 
+    @Test func contextWindowKeepsTheLastReadingUntilTheSessionChanges() {
+        let chat = UUID()
+        var state = ChatState(chatID: chat)
+        let codex = AgentChatSession(chatID: chat, provider: .codex, cwd: "/tmp/project", model: "fixture")
+        let claude = AgentChatSession(chatID: chat, provider: .claude, cwd: "/tmp/project", model: "fixture")
+        let input = AgentInput(text: "Example")
+        state.begin(input, session: codex, outputID: UUID())
+        let scope = AgentEventScope(runID: UUID(), inputID: input.id)
+        let reading = AgentUsage(scope: .lastCall, contextTokens: 42, contextLimit: 100)
+        state.reduce(.init(scope: scope, kind: .usage(reading)), newEntryID: UUID())
+        state.end(.completed)
+        state.begin(.init(text: "Continue"), session: codex, outputID: UUID())
+        #expect(state.usage == nil)
+        #expect(state.contextUsage(sessionID: codex.id) == reading)
+        state.end(.completed)
+        state.begin(.init(text: "Switch providers"), session: claude, outputID: UUID())
+        #expect(state.contextUsage(sessionID: claude.id) == nil)
+        #expect(state.contextUsage(sessionID: codex.id) == nil)
+    }
+
     @Test func originalMessageIdentitySurvivesWireEchoAndHandoverIsSeparate() throws {
         let chat = UUID(), output = UUID()
         let input = AgentInput(text: "original")

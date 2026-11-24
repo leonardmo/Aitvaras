@@ -699,7 +699,7 @@ private struct AgentChatComposer: View {
             }
             composerEditor.frame(height: editorHeight)
             ViewThatFits(in: .horizontal) {
-                composerBar(iconOnly: false)
+                composerBar(iconOnly: false).frame(minWidth: 520)
                 composerBar(iconOnly: true)
             }
         }
@@ -802,8 +802,8 @@ private struct AgentChatComposer: View {
 
     private func composerActions(narrow: Bool) -> some View {
         let usageWindows = chat.composerUsageWindows
-        return HStack(spacing: narrow ? 2 : 8) {
-            gaugeSlot(contextValue, title: "Context", identifier: "chat.gauge.context", narrow: narrow)
+        return HStack(spacing: narrow ? 6 : 8) {
+            ComposerContextMeter(usage: chat.currentContextUsage, compact: narrow)
             if !usageWindows.isEmpty || chat.provider != .local {
                 ComposerUsageLimits(windows: usageWindows, narrow: narrow, chat: chat)
             }
@@ -899,15 +899,6 @@ private struct AgentChatComposer: View {
     }
 
     private var sendEnabled: Bool { canSend && chat.canSubmit }
-    private var contextValue: Double? {
-        chat.currentContextFraction
-    }
-    private func gaugeSlot(_ value: Double?, title: String, identifier: String, narrow: Bool) -> some View {
-        Group {
-            if let value { ChatGauge(value: value, title: title, identifier: identifier) }
-            else { Color.clear.accessibilityHidden(true) }
-        }.frame(width: narrow ? 22 : 26, height: 26)
-    }
     private func attachButton(narrow: Bool) -> some View {
         Button {
             attachmentTarget = (chat.composerOwnerID, chat.provider)

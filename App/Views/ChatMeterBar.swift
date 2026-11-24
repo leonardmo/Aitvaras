@@ -83,17 +83,10 @@ struct ChatMeterBar: View {
 struct ChatContextMeter: View {
     let fill: Double
 
-    private var ramp: ColorRamp {
-        if fill < 0.72 {
-            return .idle.mixed(with: .working, by: min(1, max(0, (fill - 0.35) / 0.37)))
-        }
-        return .working.mixed(with: .attention, by: min(1, (fill - 0.72) / 0.28))
-    }
-
     var body: some View {
         ZStack(alignment: .leading) {
             Capsule().fill(.quaternary).frame(width: 74, height: 5)
-            Capsule().fill(ramp.wash(from: .leading, to: .trailing))
+            Capsule().fill(ColorRamp.context(fill).wash(from: .leading, to: .trailing))
                 .frame(width: max(3, 74 * min(1, fill)), height: 5)
         }
         .accessibilityLabel("Context \(Int((fill * 100).rounded())) percent full")

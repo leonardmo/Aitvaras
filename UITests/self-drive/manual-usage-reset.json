@@ -14,8 +14,8 @@
     { "action": "press", "identifier": "usage.manualResets.confirm" },
     { "action": "waitFor", "text": "Codex reset applied.", "within": "chat.usage.popover" },
     { "action": "waitFor", "text": "0 banked resets available", "within": "chat.usage.popover" },
-    { "action": "waitFor", "text": "0% used", "within": "chat.gauge.usage.fiveHour" },
-    { "action": "waitFor", "text": "0% used", "within": "chat.gauge.usage.week" },
+    { "action": "waitFor", "text": "Five-hour limit, 0% used", "within": "chat.usage.details" },
+    { "action": "waitFor", "text": "Weekly limit, 0% used", "within": "chat.usage.details" },
     { "action": "press", "identifier": "chat.usage.settings" },
     { "action": "waitFor", "identifier": "settings.option.usage.providerLimits" },
     { "action": "waitFor", "identifier": "usage.manualResets.balance" }

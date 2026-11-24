@@ -570,9 +570,9 @@ final class ChatModel {
         if statuses[.local]?.authentication == .unavailable { return "Ollama is not running or has no installed local models." }
         return "opencode · sandboxed on this Mac. Web search is off."
     }
-    var currentContextFraction: Double? {
-        guard let sessionID = settings[settingsKey]?.id, state?.entries.last?.sessionID == sessionID else { return nil }
-        return ChatSettings.contextFraction(state?.usage)
+    var currentContextUsage: AgentUsage? {
+        guard let sessionID = settings[settingsKey]?.id else { return nil }
+        return state?.contextUsage(sessionID: sessionID)
     }
     var models: [AgentModel] { catalogs[choice] ?? [] }
     var selectedModel: AgentModel? { models.first { $0.id == model } }

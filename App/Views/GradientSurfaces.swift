@@ -58,6 +58,13 @@ struct ColorRamp {
     private static let lowUsage = Self(0x31BD9B, 0x36AE70, 0xA3D763)
     private static let elevatedUsage = Self(0xF6C75E, 0xF89B44, 0xD57B46)
 
+    static func context(_ fraction: Double) -> Self {
+        if fraction < 0.72 {
+            return idle.mixed(with: working, by: min(1, max(0, (fraction - 0.35) / 0.37)))
+        }
+        return working.mixed(with: attention, by: min(1, (fraction - 0.72) / 0.28))
+    }
+
     static func usage(_ fraction: Double) -> Self {
         if fraction < 0.65 {
             let t = min(1, max(0, (fraction - 0.18) / 0.47))

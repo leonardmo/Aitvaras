@@ -1,0 +1,14 @@
+{
+  "steps": [
+    { "action": "press", "identifier": "bubble.left.and.text.bubble.right", "delay": 1 },
+    { "action": "type", "text": "Measure the context window" },
+    { "action": "press", "identifier": "chat.composer.send" },
+    { "action": "waitFor", "identifier": "chat.stop", "absent": true, "delay": 1 },
+    { "action": "waitFor", "anyOf": ["chat.gauge.context", "chat.gauge.context.compact"] },
+    { "action": "waitFor", "text": "tokens used" },
+    { "action": "screenshot", "name": "context-meter" },
+    { "action": "dumpTree", "name": "context-meter-tree" },
+    { "action": "press", "identifier": "chat.usage.details" },
+    { "action": "waitFor", "identifier": "chat.usage.popover" }
+  ]
+}
