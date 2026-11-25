@@ -1301,6 +1301,15 @@ the owner's review; M6.1–M6.2 compatibility does not complete the cleanup gate
 On the host, `make ui` runs `scripts/run-self-drive.sh`. Screenshots land in
 `.build-e2e/self-drive/<scenario>`.
 
+The `provider-settings` scenario starts with an empty profile and adds two
+Claude accounts through Settings. Pass empty model overrides to keep the
+driver from configuring CLI accounts before the first step.
+
+```sh
+AITVARAS_SELF_DRIVE_CODEX_MODEL= AITVARAS_SELF_DRIVE_CLAUDE_MODEL= \
+  scripts/run-self-drive.sh provider-settings 120
+```
+
 The `composer-caret` scenario uses an offline Codex fixture. It replaces selected
 text while a reply streams, then types at the same caret after the queued turn
 finishes. It also checks that dismissing file suggestions preserves the caret.

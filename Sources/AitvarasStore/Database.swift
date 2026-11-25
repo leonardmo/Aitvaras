@@ -1389,6 +1389,51 @@ public final class AitvarasDatabase: Sendable {
                 t.column("payload", .blob).notNull()
             }
         }
+        m.registerMigration("v55-configured-providers") { db in
+            try db.execute(sql: """
+                ALTER TABLE agentProviderProfile RENAME TO agentProviderProfile_legacy;
+                CREATE TABLE agentProviderProfile (
+                    id TEXT PRIMARY KEY NOT NULL, name TEXT NOT NULL,
+                    kind TEXT NOT NULL CHECK(kind IN ('claude', 'codex', 'local')),
+                    badge TEXT NOT NULL, colour TEXT NOT NULL, defaultModel TEXT NOT NULL,
+                    defaultEffort TEXT NOT NULL, configDirectory TEXT, sortOrder INTEGER NOT NULL,
+                    createdAt DATETIME NOT NULL, isDeleted BOOLEAN NOT NULL DEFAULT 0
+                );
+                INSERT INTO agentProviderProfile SELECT * FROM agentProviderProfile_legacy;
+                DROP TABLE agentProviderProfile_legacy;
+                """)
+            func usedDefault(_ provider: AgentProvider) throws -> Bool {
+                try Bool.fetchOne(db, sql: """
+                    SELECT EXISTS(
+                        SELECT 1 FROM agentChatSession WHERE provider = :provider AND providerProfile = 'default'
+                        UNION ALL SELECT 1 FROM kv AS selection WHERE selection.value = :provider AND (
+                            (selection.key = 'agent.lastProvider' AND NOT EXISTS (
+                                SELECT 1 FROM kv WHERE key = 'agent.lastProfile' AND value LIKE :customChoice
+                            )) OR (selection.key LIKE 'agent.provider.%' AND NOT EXISTS (
+                                SELECT 1 FROM kv WHERE key = :profileKey || substr(selection.key, length('agent.provider.') + 1)
+                                    AND value NOT IN ('default', '')
+                            ))
+                        )
+                    )
+                    """, arguments: ["provider": provider.rawValue, "customChoice": provider.rawValue + ":%",
+                                     "profileKey": "agent." + provider.rawValue + "Profile."]) == true
+            }
+            if var claude = try AgentProviderProfile.fetchOne(db, key: AgentProviderProfile.defaultClaudeID),
+               claude.name == "Claude", claude.badge == "C", claude.colour == "orange",
+               claude.defaultModel == "opus", claude.defaultEffort == "medium", try !usedDefault(.claude) {
+                claude.isDeleted = true
+                try claude.update(db)
+            }
+            var order = (try Int.fetchOne(db, sql: "SELECT MAX(sortOrder) FROM agentProviderProfile") ?? -1) + 1
+            for (provider, name, badge, colour) in [(AgentProvider.codex, "Codex", "C", "blue"),
+                                                   (.local, "Local", "L", "green")] {
+                if try usedDefault(provider) {
+                    try AgentProviderProfile(id: AgentProviderProfile.defaultID(for: provider), name: name,
+                        kind: provider, badge: badge, colour: colour, sortOrder: order).insert(db)
+                    order += 1
+                }
+            }
+        }
         return m
     }
 

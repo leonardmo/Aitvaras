@@ -49,6 +49,7 @@ import AitvarasStore
 
     @Test func checkboxDisarmsThenRearmsTheSameIntentAndFiresOnlyOnce() async throws {
         let stores = try inMemoryStores(), clock = AutoContinueTimerClock(), backend = AutoContinueBackend()
+        try configureAutoContinueProvider(stores)
         let reset = clock.now.addingTimeInterval(3600)
         let intent = try autoContinueIntent(stores, reset: reset)
         let storage = AgentAutoContinueStore(db: stores.db)
@@ -87,6 +88,7 @@ import AitvarasStore
     }
     @Test func optOutDuringRegistrationSurvivesAndManualContinueStillWorks() async throws {
         let stores = try inMemoryStores(), clock = AutoContinueTimerClock(), backend = AutoContinueBackend()
+        try configureAutoContinueProvider(stores)
         let (chat, _) = try agentStoreChat(stores, provider: .codex)
         let storage = AgentAutoContinueStore(db: stores.db)
         let manager = try AgentSessionManager(persistence: stores, backend: { _ in backend }, audit: { _ = try stores.record($0) },

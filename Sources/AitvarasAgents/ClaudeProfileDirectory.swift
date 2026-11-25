@@ -8,12 +8,42 @@ public enum ClaudeProfileDirectory {
     public static let sharedNames = ["CLAUDE.md", "settings.json", "skills", "plugins"]
 
     public static func create(stateDirectory: URL, defaultDirectory: URL, id: UUID) throws -> URL {
+        let location = try createHome(stateDirectory: stateDirectory, provider: "claude", id: id)
+        defer { close(location.descriptor) }
+        let destination = location.descriptor
+        let source: Int32
+        do { source = try openDirectory(defaultDirectory) }
+        catch {
+            // A missing default CLI home is normal before the first login.
+            if errno == ENOENT { return location.url }
+            throw error
+        }
+        defer { close(source) }
+        for entry in sharedNames {
+            var info = stat()
+            if fstatat(source, entry, &info, AT_SYMLINK_NOFOLLOW) != 0 {
+                if errno == ENOENT { continue }; throw Failure.unsafeDirectory
+            }
+            // The target may itself be a user-managed symlink. We only create
+            // a link to its name; never resolve, open or copy its contents.
+            guard symlinkat(defaultDirectory.appendingPathComponent(entry).path, destination, entry) == 0 else { throw Failure.creationFailed }
+        }
+        return location.url
+    }
+
+    public static func createCodexHome(stateDirectory: URL, id: UUID) throws -> URL {
+        let directory = try createHome(stateDirectory: stateDirectory, provider: "codex", id: id)
+        close(directory.descriptor)
+        return directory.url
+    }
+
+    private static func createHome(stateDirectory: URL, provider: String, id: UUID) throws -> (url: URL, descriptor: Int32) {
         let state = try openDirectory(stateDirectory)
         defer { close(state) }
         var directory = dup(state)
         guard directory >= 0 else { throw Failure.creationFailed }
         defer { close(directory) }
-        for name in ["Providers", "claude"] {
+        for name in ["Providers", provider] {
             if mkdirat(directory, name, 0o700) != 0 && errno != EEXIST { throw Failure.creationFailed }
             let next = openat(directory, name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
             guard next >= 0 else { throw Failure.unsafeDirectory }
@@ -28,25 +58,8 @@ public enum ClaudeProfileDirectory {
         guard mkdirat(directory, name, 0o700) == 0 else { throw Failure.creationFailed }
         let destination = openat(directory, name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
         guard destination >= 0 else { throw Failure.unsafeDirectory }
-        defer { close(destination) }
-        let source: Int32
-        do { source = try openDirectory(defaultDirectory) }
-        catch {
-            // A missing default CLI home is normal before the first login.
-            if errno == ENOENT { return stateDirectory.appendingPathComponent("Providers/claude/" + name) }
-            throw error
-        }
-        defer { close(source) }
-        for entry in sharedNames {
-            var info = stat()
-            if fstatat(source, entry, &info, AT_SYMLINK_NOFOLLOW) != 0 {
-                if errno == ENOENT { continue }; throw Failure.unsafeDirectory
-            }
-            // The target may itself be a user-managed symlink. We only create
-            // a link to its name; never resolve, open or copy its contents.
-            guard symlinkat(defaultDirectory.appendingPathComponent(entry).path, destination, entry) == 0 else { throw Failure.creationFailed }
-        }
-        return stateDirectory.appendingPathComponent("Providers/claude/" + name)
+        return (stateDirectory.appendingPathComponent("Providers").appendingPathComponent(provider)
+            .appendingPathComponent(name), destination)
     }
 
     private static func openDirectory(_ url: URL) throws -> Int32 {

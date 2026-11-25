@@ -52,7 +52,6 @@ struct ComposerUsageLimits: View {
                 }
                 .compositingGroup()
                 .clipShape(Capsule(style: .circular))
-                .background(.regularMaterial, in: Capsule(style: .circular))
                 .overlay {
                     if contrast == .increased { Capsule(style: .circular).strokeBorder(.primary, lineWidth: 1) }
                 }
@@ -74,22 +73,21 @@ struct ComposerUsageLimits: View {
 
     private func usageFill(_ limit: ProviderUsageLimit) -> AnyShapeStyle {
         guard let used = limit.used else { return AnyShapeStyle(Color.primary.opacity(0.10)) }
-        let base = ColorRamp.usage(used)
-        let ramp = limit.id == "week" ? base.mixed(with: .idle, by: 0.22) : base
+        let ramp = ColorRamp.usage(used)
         if usesSolidColors { return AnyShapeStyle(ramp.color(at: 0.5)) }
-        return AnyShapeStyle(ramp.wash(opacity: 0.92, from: .leading, to: .trailing))
+        return AnyShapeStyle(ramp.wash(from: .leading, to: .trailing))
     }
 
     private func indicator(_ limit: ProviderUsageLimit, width: CGFloat, showsChevron: Bool) -> some View {
-        let ink = limit.used == nil ? self.ink : Color(white: 0.07)
+        let ink = limit.used == nil ? self.ink : Color(white: 0.03)
         return HStack(spacing: 3) {
-            Text(limit.shortTitle).foregroundStyle(ink.opacity(0.8))
-            Text(limit.percent.map { "\($0)%" } ?? "—").fontWeight(.semibold).monospacedDigit().foregroundStyle(ink)
+            Text(limit.shortTitle).fontWeight(.medium).foregroundStyle(ink)
+            Text(limit.percent.map { "\($0)%" } ?? "—").fontWeight(.bold).monospacedDigit().foregroundStyle(ink)
                 .lineLimit(1).fixedSize()
             if showsChevron {
                 Image(systemName: "chevron.down")
                     .font(.system(size: 7, weight: .semibold))
-                    .foregroundStyle(ink.opacity(0.7))
+                    .foregroundStyle(ink)
                     .padding(.leading, 2)
             }
         }
@@ -109,7 +107,7 @@ struct ComposerUsageLimits: View {
                 if chat?.provider == .claude {
                     Text("Usage appears when Claude reports it during a turn.")
                         .font(.caption).foregroundStyle(.secondary)
-                } else if chat?.refreshingCodexUsage == true {
+                } else if let chat, chat.refreshingCodexUsage(for: chat.choice) {
                     ProgressView("Checking usage…").controlSize(.small)
                 } else {
                     Text("Usage is currently unavailable.")
@@ -179,7 +177,7 @@ struct ProviderUsageSettings: View {
                 if limits.isEmpty {
                     if selection.wrappedValue.provider == .claude {
                         Text("Usage appears when Claude reports it during a turn.").foregroundStyle(.secondary)
-                    } else if chat.refreshingCodexUsage {
+                    } else if chat.refreshingCodexUsage(for: selection.wrappedValue) {
                         ProgressView("Checking usage…").controlSize(.small)
                     } else {
                         Text("Usage and reset times are unavailable for this account.").foregroundStyle(.secondary)
@@ -194,7 +192,8 @@ struct ProviderUsageSettings: View {
                     .id(selection.wrappedValue)
             }
             .task(id: selection.wrappedValue) {
-                if selection.wrappedValue.provider == .codex { await chat.refreshCodexUsage(interactive: true) }
+                let choice = selection.wrappedValue
+                if choice.provider == .codex { await chat.refreshCodexUsage(for: choice, interactive: true) }
             }
             .onChange(of: SettingsNavigation.shared.highlight) { _, highlight in
                 if highlight?.settingID == Self.settingID { selectedChoice = nil }
@@ -231,7 +230,7 @@ private struct ProviderResetControls: View {
     }
 
     @ViewBuilder private var codexControls: some View {
-        if let balance = chat.codexResetBalance {
+        if let balance = chat.codexResetBalance(for: choice) {
             Text(balance.availableCount == 1 ? "1 banked reset available" : "\(balance.availableCount) banked resets available")
                 .font(.caption).foregroundStyle(.secondary)
                 .accessibilityIdentifier("usage.manualResets.balance")
@@ -245,10 +244,10 @@ private struct ProviderResetControls: View {
                             .accessibilityIdentifier("usage.manualResets.cancel")
                         Button("Use reset") {
                             pendingCredit = nil
-                            Task { await chat.redeemCodexReset(credit) }
+                            Task { await chat.redeemCodexReset(credit, for: choice) }
                         }
                         .buttonStyle(.borderedProminent)
-                        .disabled(chat.refreshingCodexUsage || chat.redeemingCodexReset)
+                        .disabled(chat.refreshingCodexUsage(for: choice) || chat.redeemingCodexReset(for: choice))
                         .accessibilityIdentifier("usage.manualResets.confirm")
                     }
                 }
@@ -263,14 +262,14 @@ private struct ProviderResetControls: View {
                 }
                 if balance.availableCount > balance.credits.count { openCodexUsage }
             }
-        } else if chat.refreshingCodexUsage {
+        } else if chat.refreshingCodexUsage(for: choice) {
             ProgressView("Checking banked resets…").controlSize(.small)
         } else {
             openCodexUsage
         }
-        if chat.redeemingCodexReset {
+        if chat.redeemingCodexReset(for: choice) {
             ProgressView("Applying reset…").controlSize(.small)
-        } else if let message = chat.codexResetMessage {
+        } else if let message = chat.codexResetMessage(for: choice) {
             Text(message).font(.caption).foregroundStyle(.secondary)
                 .accessibilityIdentifier("usage.manualResets.result")
         }
@@ -284,7 +283,7 @@ private struct ProviderResetControls: View {
                     Spacer(minLength: 0)
                     Button("Review") { pendingCredit = credit }
                         .buttonStyle(.bordered)
-                        .disabled(chat.refreshingCodexUsage || chat.redeemingCodexReset)
+                        .disabled(chat.refreshingCodexUsage(for: choice) || chat.redeemingCodexReset(for: choice))
                         .accessibilityLabel("Review \(credit.title)")
                         .accessibilityIdentifier("usage.manualResets.review.\(index)")
                 }

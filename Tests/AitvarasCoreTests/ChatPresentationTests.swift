@@ -65,6 +65,25 @@ import AitvarasAgents
         #expect(!((try reopened.chatHasUnseenCompletion(chatID))))
     }
 
+    @Test func manualUnreadOnlyClearsOnAnExplicitOpen() throws {
+        let stores = try inMemoryStores()
+        let (chat, session) = try agentStoreChat(stores)
+        try stores.markChatUnread(chat.id)
+        try stores.markChatSeen(chat.id, clearingManualUnread: false)
+        #expect(try Stores(db: stores.db).chatHasUnseenCompletion(chat.id))
+        try stores.markChatSeen(chat.id)
+        #expect(try !stores.chatHasUnseenCompletion(chat.id))
+
+        let next = AgentJournalTurn(input: .init(text: "Example"), chatID: chat.id, sessionID: session.id)
+        try stores.prepareAgentTurn(next)
+        try stores.markChatUnread(chat.id)
+        try stores.finishAgentTurn(id: next.id, state: .completed)
+        try stores.markChatSeen(chat.id, clearingManualUnread: false)
+        #expect(try stores.chatHasUnseenCompletion(chat.id))
+        try stores.markChatSeen(chat.id)
+        #expect(try !stores.chatHasUnseenCompletion(chat.id))
+    }
+
     @Test func fiveRecentPlusRunningWaitingAndSelectionRegardlessOfAge() {
         let project = UUID()
         var chats = (0..<10).map { index in

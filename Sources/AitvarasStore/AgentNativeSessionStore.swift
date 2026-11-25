@@ -18,10 +18,10 @@ public struct AgentNativeSessionStore: Sendable {
                 guard identity.provider != .local, !identity.nativeID.isEmpty, !identity.profile.isEmpty,
                       !identity.host.isEmpty, summary.directory.isFileURL, summary.directory.path.hasPrefix("/"),
                       !summary.directory.path.contains("\0") else { throw AgentStoreError.invalidValue }
-                let providerProfile = identity.provider == .claude ? identity.profile : "default"
-                if identity.provider == .claude, providerProfile != "default" {
-                    guard let id = UUID(uuidString: providerProfile),
-                          try AgentProviderProfile.fetchOne(db, key: id) != nil else { throw AgentStoreError.invalidValue }
+                let providerProfile = identity.profile
+                if providerProfile != "default" {
+                    let choice = AgentProviderChoice(provider: identity.provider, profile: providerProfile)
+                    guard try Stores.providerProfile(choice, in: db) != nil else { throw AgentStoreError.invalidValue }
                 }
                 let cwd = Self.path(summary.directory.path)
                 if let previous = seen[identity] {
@@ -85,10 +85,8 @@ public struct AgentNativeSessionStore: Sendable {
                 // New native chats open on their provider. Existing worktree
                 // chats retain the user's selection and other local metadata.
                 if owned.isEmpty {
-                    if identity.provider == .claude {
-                        try db.execute(sql: "INSERT INTO kv(key, value) VALUES (?, ?)",
-                            arguments: ["agent.claudeProfile.\(chat.id.uuidString)", providerProfile])
-                    }
+                    try db.execute(sql: "INSERT INTO kv(key, value) VALUES (?, ?)",
+                        arguments: [Stores.providerProfileKey(identity.provider, chatID: chat.id), providerProfile])
                     try db.execute(sql: "INSERT INTO kv(key, value) VALUES (?, ?)",
                         arguments: ["agent.provider.\(chat.id.uuidString)", identity.provider.rawValue])
                 }

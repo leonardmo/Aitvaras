@@ -548,6 +548,7 @@ while True:
         }
         try writeStatus(email: "person@example.invalid", orgID: "example-org")
         let stores = try inMemoryStores()
+        try configureAutoContinueProvider(stores, provider: .claude)
         let (chat, _) = try agentStoreChat(stores, provider: .claude, cwd: fixture.directory.path)
         let persistence = AgentAutoContinueStore(db: stores.db)
         let backend = ClaudeBackend(executable: fixture.executable, environment: fixture.environment,

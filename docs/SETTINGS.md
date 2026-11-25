@@ -29,6 +29,8 @@ Under **Companion → Appearance**, turn on **Always animate in Aitvaras** to pl
 
 `SettingsRegistry` is the source of truth for setting IDs, value types, safety classes and homes. Use the list endpoint below to get the current registry. Collections represent variable-length lists, such as provider profiles, project folders and accounts. Their home opens the corresponding editor.
 
+Use **Settings → Providers → Add Provider** to configure Claude, Codex, or Local. Claude and Codex support multiple named accounts with separate CLI homes and model defaults. Choose the existing CLI account when you want to share its native sign-in and history. Local is a single provider with a choice of locally available models. Existing chat sessions keep their original account and model. Removing a provider hides it from the chooser and keeps its files and chat history.
+
 ## Agent guide
 
 Use these tools when the person asks for help with Aitvaras itself. Tool schemas are available to the model. In local chat and voice, the names use `settings.read`, `settings.propose`, `settings.open` and `settings.connections_propose`. Gateway clients see the same definitions as `settings_read`, `settings_propose`, `settings_open` and `settings_connections_propose` (your client can add a gateway namespace).

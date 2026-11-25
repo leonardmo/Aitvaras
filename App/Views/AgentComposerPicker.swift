@@ -11,12 +11,18 @@ struct AgentComposerPicker: View {
     private var choiceTitle: String { chat.title(chat.choice) }
     private var effortAvailable: Bool { chat.provider != .local && !(chat.selectedModel?.efforts.isEmpty ?? true) }
     private var summary: String {
-        ([choiceTitle, chat.modelTitle] + (effortAvailable ? [chat.effort.isEmpty ? "Default effort" : chat.effort.capitalized] : []))
+        guard chat.hasConfiguredProvider else {
+            return chat.allChoices.isEmpty ? "Add Provider" : "Choose provider"
+        }
+        return ([choiceTitle, chat.modelTitle] + (effortAvailable ? [chat.effort.isEmpty ? "Default effort" : chat.effort.capitalized] : []))
             .joined(separator: " · ")
     }
 
     var body: some View {
-        Button { isPresented.toggle() } label: {
+        Button {
+            if chat.allChoices.isEmpty { SettingsNavigation.open(.page(.providers)) }
+            else { isPresented.toggle() }
+        } label: {
             ComposerControlLabel(title: summary, icon: "cpu", iconOnly: iconOnly, maximumTitleWidth: 220)
         }
         .buttonStyle(.plain)
@@ -176,7 +182,6 @@ struct ComposerControlLabel: View {
         .padding(.horizontal, iconOnly ? 5 : 8)
         .frame(minHeight: 26)
         .background(ink.opacity(0.05), in: Capsule())
-        .background(.regularMaterial, in: Capsule())
         .contentShape(.rect)
     }
 }

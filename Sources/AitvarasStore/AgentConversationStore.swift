@@ -19,7 +19,7 @@ extension Stores: AgentConversationPersistence {
         var selected = try String.fetchOne(db, sql: "SELECT value FROM kv WHERE key = ?",
             arguments: ["agent.claudeProfile.\(chatID.uuidString)"]) ?? "default"
         if selected != "default" {
-            if let id = UUID(uuidString: selected), let profile = try AgentProviderProfile.fetchOne(db, key: id), !profile.isDeleted {} else { selected = "default" }
+            if let id = UUID(uuidString: selected), let profile = try AgentProviderProfile.fetchOne(db, key: id), profile.kind == .claude, !profile.isDeleted {} else { selected = "default" }
         }
         let sessions = AgentChatSession.filter(Column("chatID") == chatID).filter(Column("provider") == AgentProvider.claude.rawValue)
         let session: AgentChatSession?

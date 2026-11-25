@@ -55,8 +55,8 @@ struct ColorRamp {
     static let recording = Self(0xF062A6, 0xE42E77, 0xF46A50)
     static let news = Self(0x368DDE, 0x6557EF, 0xBA6EDB)
 
-    private static let lowUsage = Self(0x31BD9B, 0x36AE70, 0xA3D763)
-    private static let elevatedUsage = Self(0xF6C75E, 0xF89B44, 0xD57B46)
+    private static let lowUsage = Self(0x24C991, 0x22BE65, 0x97DC48)
+    private static let elevatedUsage = Self(0xFFD14E, 0xFFA53C, 0xF38742)
 
     static func context(_ fraction: Double) -> Self {
         if fraction < 0.72 {

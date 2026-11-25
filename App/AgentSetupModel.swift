@@ -10,8 +10,19 @@ final class AgentSetupModel {
     let coordinator: AgentSetupCoordinator
     let projectID: UUID?
     let directory: URL?
-    let claudeProfile: String
-    var provider: AgentProvider = .claude
+    let accountChoices: [AgentProviderChoice]
+    private var selectedAccounts: [AgentProvider: AgentProviderChoice]
+    var provider: AgentProvider {
+        didSet { if provider != oldValue { state = nil } }
+    }
+    var account: AgentProviderChoice {
+        get { selectedAccounts[provider] ?? .init(provider: provider) }
+        set {
+            guard newValue != account, accountChoices.contains(newValue), newValue.provider == provider else { return }
+            selectedAccounts[provider] = newValue
+            state = nil
+        }
+    }
     private(set) var state: AgentSetupState?
     private(set) var busy = false
     private(set) var signingIn = false
@@ -21,25 +32,30 @@ final class AgentSetupModel {
     private var loadToken = UUID()
     var didChange: (() -> Void)?
 
-    init(coordinator: AgentSetupCoordinator, projectID: UUID?, directory: URL?, claudeProfile: String = "default") {
-        self.claudeProfile = claudeProfile
+    init(coordinator: AgentSetupCoordinator, projectID: UUID?, directory: URL?, claudeProfile: String = "default",
+         accountChoices: [AgentProviderChoice]? = nil, preferred: [AgentProviderChoice] = []) {
+        let choices = accountChoices ?? [.init(provider: .claude, profile: claudeProfile), .init(provider: .codex), .init(provider: .local)]
+        self.accountChoices = choices
+        self.selectedAccounts = Dictionary((preferred.filter { choices.contains($0) } + choices)
+            .map { ($0.provider, $0) }, uniquingKeysWith: { first, _ in first })
+        self.provider = preferred.first { choices.contains($0) }?.provider ?? choices.first?.provider ?? .local
         self.coordinator = coordinator; self.projectID = projectID; self.directory = directory
     }
     func load() async {
-        let current = UUID(), selected = provider
+        let current = UUID(), selected = account
         loadToken = current
-        if state?.provider != selected { state = nil }
+        if state?.provider != selected.provider { state = nil }
         do {
-            let value = try await coordinator.state(projectID: projectID, directory: directory, provider: selected, profile: claudeProfile)
+            let value = try await coordinator.state(projectID: projectID, directory: directory, provider: selected.provider, profile: selected.profile)
             try Task.checkCancellation()
-            guard loadToken == current, provider == selected else { return }
+            guard loadToken == current, account == selected else { return }
             state = value
         } catch { if loadToken == current, !Task.isCancelled { message = "Agent setup could not be loaded." } }
     }
     func checkNow() {
-        guard let projectID else { return }
+        guard let projectID, accountChoices.contains(account) else { return }
         perform {
-            self.state = try await self.coordinator.refresh(projectID: projectID, directory: self.directory, provider: self.provider, profile: self.claudeProfile)
+            self.state = try await self.coordinator.refresh(projectID: projectID, directory: self.directory, provider: self.provider, profile: self.account.profile)
         }
     }
     func edit(_ edit: AgentSetupEdit) {
@@ -49,7 +65,7 @@ final class AgentSetupModel {
             self.didChange?()
             await self.load()
             if self.provider != .local {
-                do { self.state = try await self.coordinator.refresh(projectID: projectID, directory: self.directory, provider: self.provider, profile: self.claudeProfile) }
+                do { self.state = try await self.coordinator.refresh(projectID: projectID, directory: self.directory, provider: self.provider, profile: self.account.profile) }
                 catch { if !Task.isCancelled { self.message = "Settings saved. Provider status could not be checked." } }
             }
         }
@@ -74,7 +90,7 @@ final class AgentSetupModel {
         signingIn = true
         perform {
             self.state = try await self.coordinator.signIn(projectID: projectID, directory: self.directory,
-                provider: self.provider, profile: self.claudeProfile, rowID: row.id, onBrowserURL: Self.openBrowserURL)
+                provider: self.provider, profile: self.account.profile, rowID: row.id, onBrowserURL: Self.openBrowserURL)
             self.didChange?()
         }
     }
@@ -82,7 +98,7 @@ final class AgentSetupModel {
         guard provider == .claude, let projectID else { return }
         perform {
             try await self.coordinator.manageClaudeAccountConnector(projectID: projectID, directory: self.directory,
-                profile: self.claudeProfile, rowID: row.id, onBrowserURL: Self.openBrowserURL)
+                profile: self.account.profile, rowID: row.id, onBrowserURL: Self.openBrowserURL)
         }
     }
     private nonisolated static func openBrowserURL(_ url: URL) async {

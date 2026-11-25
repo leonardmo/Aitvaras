@@ -9,6 +9,7 @@ import AitvarasAgents
     private let now = Date(timeIntervalSince1970: 2_000_000_000)
 
     private func intent(_ stores: Stores, chatID: UUID? = nil) throws -> AgentAutoContinue {
+        try configureAutoContinueProvider(stores)
         var session: AgentChatSession
         if let chatID { session = try #require(try stores.agentSession(chatID: chatID, provider: .codex)) }
         else { session = try agentStoreChat(stores, provider: .codex).1 }
@@ -134,7 +135,7 @@ import AitvarasAgents
         let other = try intent(stores, chatID: candidate.chatID)
         #expect(throws: (any Error).self) { try store.schedule(other) }
         #expect(try store.pending() == [first])
-        #expect(try stores.recentActivity().count == 1)
+        #expect(try stores.recentActivity().filter { $0.connectorID == "agent.autoContinue" }.count == 1)
         try store.finish(id: first.id, state: .cancelled, now: now)
         #expect(try store.schedule(candidate).state == .cancelled)
         #expect(try store.schedule(other).failedInputID == other.failedInputID)
@@ -249,7 +250,7 @@ import AitvarasAgents
         #expect(try store.inputRevision(chatID: saved.chatID) == 0)
         #expect(throws: (any Error).self) { try store.claim(id: saved.id, version: saved.version, inputID: UUID(), now: now.addingTimeInterval(300)) }
         #expect(try store.continuation(id: saved.id) == saved)
-        #expect(try stores.recentActivity().count == 1)
+        #expect(try stores.recentActivity().filter { $0.connectorID == "agent.autoContinue" }.count == 1)
     }
 
     @Test func resetObservationsAreScopedMonotonicAndDurable() throws {

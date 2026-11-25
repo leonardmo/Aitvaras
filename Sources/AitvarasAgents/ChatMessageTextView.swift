@@ -372,10 +372,20 @@ import UniformTypeIdentifiers
             let destination = url.isFileURL ? url.path : url.absoluteString
             if toolTip != destination { toolTip = destination }
             NSCursor.pointingHand.set()
+        } else if let figure = figure(at: event) {
+            if toolTip != figure.caption { toolTip = figure.caption }
+            NSCursor.pointingHand.set()
         } else {
-            let caption = figure(at: event)?.caption
-            if toolTip != caption { toolTip = caption }
+            if toolTip != nil { toolTip = nil }
             super.mouseMoved(with: event)
+        }
+    }
+
+    public override func mouseDown(with event: NSEvent) {
+        if event.clickCount == 1, !event.modifierFlags.contains(.control), let figure = figure(at: event) {
+            showFigure(figure, at: convert(event.locationInWindow, from: nil))
+        } else {
+            super.mouseDown(with: event)
         }
     }
 
@@ -418,7 +428,13 @@ import UniformTypeIdentifiers
     }
 
     @objc private func viewFigure(_ sender: NSMenuItem) {
-        guard let figure = sender.representedObject as? ChatFigureCell, let image = figure.image else { return }
+        guard let figure = sender.representedObject as? ChatFigureCell else { return }
+        showFigure(figure, at: convert(window?.mouseLocationOutsideOfEventStream ?? .zero, from: nil))
+    }
+
+    private func showFigure(_ figure: ChatFigureCell, at position: NSPoint) {
+        guard let image = figure.image else { return }
+        figurePreview?.close()
         let preview = NSPopover()
         let view = NSImageView(image: image)
         view.imageScaling = .scaleProportionallyUpOrDown
@@ -430,7 +446,6 @@ import UniformTypeIdentifiers
         preview.contentViewController = controller
         preview.behavior = .transient
         figurePreview = preview
-        let position = convert(window?.mouseLocationOutsideOfEventStream ?? .zero, from: nil)
         preview.show(relativeTo: NSRect(origin: position, size: .zero), of: self, preferredEdge: .maxY)
     }
 

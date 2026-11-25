@@ -28,7 +28,6 @@ struct ComposerContextMeter: View {
                         .opacity(fraction == nil ? 0.72 : 1))
                     .frame(width: 44, height: 26)
                     .background { ComposerMeterTrack(fraction: fraction, ramp: ramp, behindText: true) }
-                    .background(.regularMaterial, in: Capsule())
             }
         }
         .buttonStyle(.plain)

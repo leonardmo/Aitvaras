@@ -35,7 +35,7 @@ public struct AgentChatStore: Sendable {
     }
 
     public func saveSession(_ value: AgentChatSession) throws {
-        guard (value.provider == .claude || value.providerProfile == "default"),
+        guard (value.provider != .local || value.providerProfile == "default"),
               value.providerProfile == "default" || UUID(uuidString: value.providerProfile) != nil,
               value.providerProfile == "default" || value.sessionID == nil || value.sessionID?.profile == value.providerProfile,
               value.cwd.hasPrefix("/"), !value.cwd.contains("\0"), !value.model.isEmpty,
@@ -55,8 +55,9 @@ public struct AgentChatStore: Sendable {
         try db.queue.write { dbc in
             guard try WorkspaceChat.fetchOne(dbc, key: value.chatID) != nil else { throw AgentStoreError.missingChat }
             if value.providerProfile != "default" {
-                guard let id = UUID(uuidString: value.providerProfile),
-                      try AgentProviderProfile.fetchOne(dbc, key: id) != nil else { throw AgentStoreError.invalidValue }
+                guard try Stores.providerProfile(value.choice, includeDeleted: true, in: dbc) != nil else {
+                    throw AgentStoreError.invalidValue
+                }
             }
             if let old = try AgentChatSession.fetchOne(dbc, key: value.id) {
                 guard old.chatID == value.chatID, old.provider == value.provider, old.providerProfile == value.providerProfile else { throw AgentStoreError.identityConflict }
@@ -166,7 +167,7 @@ extension Stores: AgentSessionPersistence {
     public func archiveAgentChat(chatID: UUID, archived: Bool) throws { try setWorkspaceChatArchived(id: chatID, archived: archived) }
     public func agentSession(chatID: UUID, provider: AgentProvider) throws -> AgentChatSession? {
         try AgentChatStore(db: db).session(chatID: chatID, provider: provider,
-            profile: provider == .claude ? selectedClaudeProfile(chatID: chatID) : "default")
+            profile: selectedProviderProfile(chatID: chatID, provider: provider))
     }
     public func saveAgentSession(_ session: AgentChatSession) throws { try AgentChatStore(db: db).saveSession(session) }
     /// Reorder the live projection after Claude coalesces queued inputs. IDs

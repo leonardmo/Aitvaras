@@ -530,21 +530,19 @@ read receipt identifies the last completed turn seen; opening a chat clears its 
 and completion while visible is acknowledged immediately. The main Chat icon has
 an accent badge whenever any chat needs the person.
 
-New chats use the last profile chosen or sent with (one implicit choice for
-Codex and Local). The composer shows up to three recent profile/provider
-segments, with order frozen until another chat opens, plus one flat More menu
-listing every choice grouped by provider and its sign-in state. Control-Command
-1–9 select menu entries in that order; Edit profiles opens AI providers. Claude
-profiles can be added, edited, reordered and deleted there, with separate login
-status and observed usage. New profiles default to Opus (newest), Medium effort.
-Deleting an additional profile retains chats, native history and CLI credentials;
-its chats fall back to default Claude on their next send. Switching Claude
-profiles is the same acknowledged catch-up as switching providers (D30/D31).
-A fresh app profile starts on
-Local, except when no local model is available and an installed, signed-in provider
-exists. Signed-out providers remain selectable; the composer immediately shows
-the single inline sign-in action and disables Send while the selected profile is
-known to be signed out. Sign-in failures discovered during Send retain safe retry.
+Fresh profiles have an empty provider list. Settings → Providers adds named
+Claude and Codex accounts, or one Local entry for available on-device models.
+Each cloud account gets its own CLI home by default, and one entry per CLI can
+reuse that CLI's existing login and history. Account defaults, usage and sign-in
+are scoped to the selected entry. Upgrades retain configured Claude accounts and
+activate default entries for providers with saved selections or sessions.
+Removing an entry preserves its chat history and CLI files. A chat using that
+entry needs an explicit provider choice to send again.
+
+New chats use the last configured profile chosen or sent with. The composer
+offers the configured accounts and links to the Providers page when none are
+available. A signed-out account remains selectable and offers inline sign-in.
+Sign-in failures discovered during Send retain safe retry.
 Setup includes a visible “AI providers” card
 (`settings.providers`) opening `AgentProviderSettingsView`. Section 4 of the unified
 chat plan still governs gauges, icons, flat menus and the absence of start buttons

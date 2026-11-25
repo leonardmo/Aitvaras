@@ -176,11 +176,13 @@ extension AppModel {
     func openUnassignedConversation(_ id: UUID) {
         guard allowWorkspaceSelection(), let stores else { return }
         do {
-            guard try stores.workspaceChat(forConversationID: id) == nil else {
+            guard let conversation = try stores.conversation(id: id),
+                  try stores.workspaceChat(forConversationID: id) == nil else {
                 throw WorkspaceSelectionError.unavailable
             }
             showingEarlierChat = true
             try loadWorkspaceConversation(id, projectID: nil, chatID: nil)
+            if conversation.title != "Voice" { chatModel?.markChatOpened(id) }
             workspaceMessage = nil
             refreshWorkspaces()
         } catch { reportWorkspaceFailure("Saved conversation could not be opened", error) }

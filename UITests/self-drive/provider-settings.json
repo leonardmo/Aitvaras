@@ -1,0 +1,19 @@
+{
+  "steps": [
+    {"action": "press", "identifier": "gearshape"},
+    {"action": "press", "identifier": "settings.providers", "delay": 0.3},
+    {"action": "waitFor", "identifier": "chat.settings.addProvider"},
+    {"action": "waitFor", "text": "Claude", "within": "settings.providers.page", "absent": true},
+    {"action": "waitFor", "text": "Codex", "within": "settings.providers.page", "absent": true},
+    {"action": "waitFor", "text": "Local", "within": "settings.providers.page", "absent": true},
+    {"action": "press", "identifier": "chat.settings.addProvider"},
+    {"action": "waitFor", "identifier": "chat.settings.providerName"},
+    {"action": "press", "identifier": "chat.settings.confirmAddProvider"},
+    {"action": "waitFor", "text": "Claude", "within": "settings.providers.page"},
+    {"action": "press", "identifier": "chat.settings.addProvider"},
+    {"action": "waitFor", "identifier": "chat.settings.providerName"},
+    {"action": "press", "identifier": "chat.settings.confirmAddProvider"},
+    {"action": "waitFor", "text": "Claude 2", "within": "settings.providers.page"},
+    {"action": "waitFor", "text": "Claude", "within": "settings.providers.page"}
+  ]
+}

@@ -12,14 +12,17 @@ struct AgentSetupSection: View {
     var body: some View {
         Group {
             if let setup {
-                AgentSetupContent(setup: setup, showsServerDefinitions: showsServerDefinitions, serversOnly: serversOnly)
+                AgentSetupContent(setup: setup, accountTitle: { model.chatModel?.title($0) ?? $0.provider.rawValue.capitalized }, showsServerDefinitions: showsServerDefinitions, serversOnly: serversOnly)
             }
             else { ProgressView().controlSize(.small).accessibilityLabel("Loading agent setup") }
         }
-        .task(id: "\(projectID?.uuidString ?? "global").\(directory?.path ?? "").\(model.agentSetupCoordinator != nil).\(model.chatModel?.claudeProfile ?? "default")") {
+        .task(id: "\(projectID?.uuidString ?? "global").\(directory?.path ?? "").\(model.agentSetupCoordinator != nil).\(model.chatModel?.choice.id ?? "").\(model.chatModel?.allChoices.map(\.id).joined(separator: ",") ?? "")") {
             setup?.cancel()
             guard let coordinator = model.agentSetupCoordinator else { return }
-            let value = AgentSetupModel(coordinator: coordinator, projectID: projectID, directory: directory, claudeProfile: model.chatModel?.claudeProfile ?? "default")
+            let chat = model.chatModel
+            let preferred = chat.map { [$0.choice, $0.effectiveChoice(.claude), $0.effectiveChoice(.codex)] } ?? []
+            let value = AgentSetupModel(coordinator: coordinator, projectID: projectID, directory: directory,
+                accountChoices: chat?.allChoices ?? [], preferred: preferred)
             value.didChange = { [weak model] in model?.chatModel?.invalidateCommandCatalog() }
             setup = value
             await value.load()
@@ -31,6 +34,7 @@ struct AgentSetupSection: View {
 
 private struct AgentSetupContent: View {
     @Bindable var setup: AgentSetupModel
+    let accountTitle: (AgentProviderChoice) -> String
     let showsServerDefinitions: Bool
     let serversOnly: Bool
     @State private var removingServer: AgentSetupServerRow?
@@ -38,13 +42,20 @@ private struct AgentSetupContent: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            if setup.projectID != nil {
+            if setup.projectID != nil, !setup.accountChoices.isEmpty {
+                let providers = [AgentProvider.claude, .codex, .local].filter { kind in
+                    setup.accountChoices.contains { $0.provider == kind }
+                }
                 Picker("Provider", selection: $setup.provider) {
-                    Text("Claude").tag(AgentProvider.claude)
-                    Text("Codex").tag(AgentProvider.codex)
-                    Text("Local").tag(AgentProvider.local)
+                    ForEach(providers, id: \.self) { Text($0.rawValue.capitalized).tag($0) }
                 }.pickerStyle(.segmented).disabled(setup.busy)
                     .accessibilityIdentifier("agent.setup.provider")
+                let accounts = setup.accountChoices.filter { $0.provider == setup.provider }
+                if accounts.count > 1 {
+                    Picker("Account", selection: $setup.account) {
+                        ForEach(accounts) { Text(accountTitle($0)).tag($0) }
+                    }.disabled(setup.busy)
+                }
             }
             HStack {
                 Text(showsServerDefinitions ? "Provider-managed servers" : "Provider state").font(.headline)
@@ -52,7 +63,7 @@ private struct AgentSetupContent: View {
                 if setup.busy { ProgressView().controlSize(.small) }
                 if setup.projectID != nil {
                     Button("Check now", systemImage: "arrow.clockwise") { setup.checkNow() }
-                        .disabled(setup.busy).accessibilityIdentifier("agent.setup.check")
+                        .disabled(setup.busy || setup.accountChoices.isEmpty).accessibilityIdentifier("agent.setup.check")
                 }
             }
             if showsServerDefinitions {
@@ -76,7 +87,7 @@ private struct AgentSetupContent: View {
             }
         }
         .accessibilityIdentifier("agent.setup")
-        .task(id: setup.provider) { await setup.load() }
+        .task(id: setup.account) { await setup.load() }
         .confirmationDialog("Remove MCP server?",
                             isPresented: Binding(get: { removingServer != nil }, set: { if !$0 { removingServer = nil } }),
                             presenting: removingServer) { row in

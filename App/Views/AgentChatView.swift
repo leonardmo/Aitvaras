@@ -100,7 +100,7 @@ struct AgentChatView: View {
         }
         .onChange(of: scenePhase) { _, phase in
             if phase == .active {
-                chat.markChatOpened(chatID)
+                chat.markChatOpened(chatID, clearingManualUnread: false)
                 Task { await chat.refreshNativePreview() }
             }
         }
@@ -284,15 +284,17 @@ struct AgentChatView: View {
             .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { composerHeight = $0 }
         }
         .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { transcriptHeight = $0 }
-        .task(id: chatID) { await chat.refreshStatus() }
-        .task(id: chat.choice) {
-            if chat.provider == .codex { await chat.refreshCodexUsage() }
+        .task(id: "\(chatID).\(chat.choice.id)") {
+            let account = chat.choice
+            await chat.refreshStatus(selectedOnly: true)
+            if account.provider == .codex { await chat.refreshCodexUsage(for: account) }
         }
-        .task(id: scenePhase == .active && chat.provider == .codex) {
-            guard scenePhase == .active, chat.provider == .codex else { return }
+        .task(id: scenePhase == .active && chat.provider == .codex ? chat.choice : nil) {
+            let runningChoice = chat.choice
+            guard scenePhase == .active, runningChoice.provider == .codex else { return }
             while !Task.isCancelled {
-                await chat.refreshCodexUsage()
                 do { try await Task.sleep(for: ChatModel.usageRefreshInterval) } catch { return }
+                await chat.refreshCodexUsage(for: runningChoice)
             }
         }
         .task(id: "\(chatID).\(chat.choice.id).\(chat.signingIn == nil)") { await chat.loadModels() }
@@ -528,108 +530,172 @@ struct ChatGauge: View {
 struct AgentProviderSettingsView: View {
     @Bindable var chat: ChatModel
     @AppStorage(ChatPresentation.preferenceKey, store: AitvarasPreferences.current) private var formattingGuidance = true
-    @State private var addingProfile = false
+    @State private var addingProvider = false
     @State private var editingProfile: AgentProviderProfile?
-    @State private var newProfileName = ""
+    @State private var removingProfile: AgentProviderProfile?
+
     var body: some View {
         Form {
             if let error = chat.profileError { Text(error).foregroundStyle(.orange) }
+            Section {
+                ForEach(chat.providerProfiles) { profile in providerRow(profile) }
+                Button("Add Provider…", systemImage: "plus") { addingProvider = true }
+                    .accessibilityIdentifier("chat.settings.addProvider")
+            }
             Section("Chat replies") {
                 Toggle("Suggest concise formatting and visuals to models", isOn: $formattingGuidance)
             }
-            Section("Claude profiles") {
-                ForEach(chat.claudeProfiles) { profile in
-                    HStack(spacing: 10) {
-                        Text(profile.badge).font(.caption.bold()).frame(width: 28, height: 28)
-                            .background(profileColour(profile).opacity(0.2), in: RoundedRectangle(cornerRadius: 6))
-                        VStack(alignment: .leading) {
-                            Text(profile.name)
-                            Text(chat.statusLabel(profile.choice)).font(.caption).foregroundStyle(.secondary)
-                        }
-                        Spacer()
-                        if let value = chat.profileLimits[profile.choice]?.compactMap(\.utilization).filter(\.isFinite).max() {
-                            ChatGauge(value: value, title: "Usage", identifier: "chat.settings.gauge.\(profile.choice.id)")
-                        }
-                        if chat.signingInChoice == profile.choice {
-                            ProgressView().controlSize(.small)
-                            Button("Cancel") { chat.cancelSignIn() }
-                        } else if chat.profileStatuses[profile.choice]?.authentication == .signedOut {
-                            Button("Sign in") { chat.signIn(profile.choice) }.disabled(chat.signingIn != nil)
-                        }
-                        Menu {
-                            Button("Edit…") { editingProfile = profile }
-                            Button("Move up") { chat.moveClaudeProfile(profile, by: -1) }
-                                .disabled(chat.claudeProfiles.first?.id == profile.id)
-                            Button("Move down") { chat.moveClaudeProfile(profile, by: 1) }
-                                .disabled(chat.claudeProfiles.last?.id == profile.id)
-                            if profile.id != AgentProviderProfile.defaultClaudeID {
-                                Button("Delete profile", role: .destructive) { chat.deleteClaudeProfile(profile) }
-                                    .disabled(chat.isBusy || chat.signingIn != nil)
-                            }
-                        } label: { Image(systemName: "ellipsis") }.menuIndicator(.hidden)
-                    }.accessibilityElement(children: .contain)
-                        .accessibilityIdentifier("chat.settings.\(profile.choice.id)")
-                }
-                Button("Add Claude profile…", systemImage: "plus") { newProfileName = ""; addingProfile = true }
-                Text("Profiles share local skills, plugins and settings. User MCP servers stay separate; use Aitvaras global MCP servers to share them.")
-                    .font(.caption).foregroundStyle(.secondary)
-                Text("Deleting a profile keeps chats and CLI data. Its chats use default Claude on their next send.")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
-            ForEach([AgentProvider.codex, .local], id: \.self) { provider in
-                HStack(spacing: 12) {
-                    Image(systemName: statusIcon(provider)).foregroundStyle(statusColor(provider))
-                        .accessibilityLabel(statusLabel(provider))
-                        .accessibilityIdentifier("chat.settings.status.\(provider.rawValue)")
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(provider.rawValue.capitalized)
-                        if provider == .local { Text(chat.localProviderDetail).font(.caption).foregroundStyle(.secondary) }
-                    }
-                    Spacer()
-                    if let value = chat.providerLimits[provider]?.compactMap(\.utilization).filter(\.isFinite).max() {
-                        ChatGauge(value: value, title: "Usage", identifier: "chat.settings.gauge.\(provider.rawValue)")
-                    }
-                    if chat.signingIn == provider {
-                        ProgressView().controlSize(.small)
-                        Button("Cancel") { chat.cancelSignIn() }
-                    } else if provider != .local, chat.statuses[provider]?.authentication == .signedOut {
-                        Button("Sign in") { chat.signIn(provider) }
-                            .disabled(chat.signingIn != nil)
-                            .accessibilityIdentifier("chat.signin")
-                    }
-                }
-                .accessibilityElement(children: .contain)
-                .accessibilityIdentifier("chat.settings.\(provider.rawValue)")
-            }
         }
-        .formStyle(.grouped).task { await chat.refreshStatus() }
-        .alert("Add Claude profile", isPresented: $addingProfile) {
-            TextField("Name", text: $newProfileName)
-            Button("Add") { chat.addClaudeProfile(name: newProfileName) }
-                .disabled(newProfileName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-            Button("Cancel", role: .cancel) {}
-        } message: { Text("Sign in with the CLI after adding the profile. New profiles use Opus (newest) and Medium effort.") }
+        .formStyle(.grouped)
+        .task { await chat.refreshStatus() }
+        .sheet(isPresented: $addingProvider) { AddProviderSheet(chat: chat) }
         .sheet(item: $editingProfile) { profile in
-            ClaudeProfileEditor(profile: profile) { chat.updateClaudeProfile($0) }
+            ProviderProfileEditor(chat: chat, profile: profile)
+        }
+        .alert("Remove provider?", isPresented: Binding(get: { removingProfile != nil }, set: { if !$0 { removingProfile = nil } }),
+               presenting: removingProfile) { profile in
+            Button("Remove", role: .destructive) { chat.removeProvider(profile); removingProfile = nil }
+                .disabled(!chat.canRemoveProvider)
+            Button("Cancel", role: .cancel) { removingProfile = nil }
+        } message: { profile in
+            Text("This removes \(profile.name) from the provider picker. Its chats and CLI files stay saved.")
         }
     }
-    private func profileColour(_ profile: AgentProviderProfile) -> Color {
-        switch profile.colour { case "blue": .blue; case "green": .green; case "purple": .purple; case "red": .red; default: .orange }
+
+    private func providerRow(_ profile: AgentProviderProfile) -> some View {
+        let choice = profile.choice
+        return HStack(spacing: 10) {
+            Image(systemName: profile.kind.configurationIcon)
+                .foregroundStyle(profile.kind == .claude ? Color.orange : profile.kind == .codex ? Color.blue : Color.green)
+                .frame(width: 28, height: 28)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(profile.name)
+                Text("\(profile.kind.configurationTitle) · \(chat.statusLabel(choice))")
+                    .font(.caption).foregroundStyle(.secondary)
+                if profile.kind == .local {
+                    Text(chat.localProviderDetail).font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            Spacer()
+            if let value = chat.profileLimits[choice]?.compactMap(\.utilization).filter(\.isFinite).max() {
+                ChatGauge(value: value, title: "Usage", identifier: "chat.settings.gauge.\(choice.id)")
+            }
+            if chat.signingInChoice == choice {
+                ProgressView().controlSize(.small)
+                Button("Cancel") { chat.cancelSignIn() }
+            } else if profile.kind != .local, chat.profileStatuses[choice]?.authentication != .subscription,
+                      chat.profileStatuses[choice]?.installed == true {
+                Button("Sign in") { chat.signIn(choice) }
+                    .disabled(chat.signingIn != nil)
+                    .accessibilityIdentifier("chat.settings.signIn.\(choice.id)")
+            }
+            Menu {
+                Button("Edit…") { editingProfile = profile }
+                if profile.kind != .local, chat.profileStatuses[choice]?.authentication == .subscription {
+                    Button("Sign in again…") { chat.signIn(choice) }.disabled(chat.signingIn != nil)
+                }
+                Button("Move up") { chat.moveProviderProfile(profile, by: -1) }
+                    .disabled(chat.providerProfiles.first?.id == profile.id)
+                Button("Move down") { chat.moveProviderProfile(profile, by: 1) }
+                    .disabled(chat.providerProfiles.last?.id == profile.id)
+                Button("Remove…", role: .destructive) { removingProfile = profile }
+                    .disabled(!chat.canRemoveProvider)
+            } label: { Image(systemName: "ellipsis").accessibilityLabel("Provider options") }
+            .menuIndicator(.hidden)
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("chat.settings.\(choice.id)")
     }
-    private func statusIcon(_ provider: AgentProvider) -> String {
-        guard let status = chat.statuses[provider] else { return "circle.dotted" }
-        return status.installed && (status.authentication == .subscription || status.authentication == .local)
-            ? "checkmark.circle.fill" : "exclamationmark.circle"
+}
+
+private extension AgentProvider {
+    var configurationTitle: String {
+        switch self { case .claude: "Claude"; case .codex: "Codex"; case .local: "Local" }
     }
-    private func statusColor(_ provider: AgentProvider) -> Color {
-        guard let status = chat.statuses[provider] else { return .secondary }
-        return status.installed && (status.authentication == .subscription || status.authentication == .local) ? .green : .orange
+    var configurationIcon: String {
+        switch self {
+        case .claude: "sparkle"
+        case .codex: "chevron.left.forwardslash.chevron.right"
+        case .local: "desktopcomputer"
+        }
     }
-    private func statusLabel(_ provider: AgentProvider) -> String {
-        guard let status = chat.statuses[provider] else { return "Unknown" }
-        if !status.installed { return "Not installed" }
-        if status.authentication == .unavailable { return "Unavailable" }
-        return status.authentication == .subscription || status.authentication == .local ? "Ready" : "Signed out"
+    var configurationEfforts: [String] {
+        self == .codex ? ["minimal", "low", "medium", "high", "xhigh"] : ["low", "medium", "high", "max"]
+    }
+}
+
+private struct AddProviderSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    let chat: ChatModel
+    @State private var kind: AgentProvider = .claude
+    @State private var name = ""
+    @State private var model = ""
+    @State private var effort = "medium"
+    @State private var usesCLIHome = false
+
+    private var canUseCLIHome: Bool {
+        kind != .local && !chat.allChoices.contains(.init(provider: kind))
+    }
+    private var suggestedName: String {
+        let used = Set(chat.providerProfiles.filter { $0.kind == kind }.map(\.name))
+        let title = kind.configurationTitle
+        if !used.contains(title) { return title }
+        var number = 2
+        while used.contains("\(title) \(number)") { number += 1 }
+        return "\(title) \(number)"
+    }
+    private var chosenName: String {
+        let value = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        return value.isEmpty ? suggestedName : value
+    }
+
+    var body: some View {
+        Form {
+            Picker("Provider", selection: $kind) {
+                ForEach([AgentProvider.claude, .codex, .local], id: \.self) { value in
+                    Label(value.configurationTitle, systemImage: value.configurationIcon).tag(value)
+                        .disabled(value == .local && chat.allChoices.contains(.init(provider: .local)))
+                }
+            }
+            .accessibilityIdentifier("chat.settings.providerKind")
+            TextField("Name", text: $name, prompt: Text(suggestedName))
+                .accessibilityIdentifier("chat.settings.providerName")
+            TextField("Default model", text: $model, prompt: Text("Provider default"))
+            if kind != .local {
+                Picker("Default effort", selection: $effort) {
+                    ForEach(kind.configurationEfforts, id: \.self) { Text($0.capitalized).tag($0) }
+                }
+                if canUseCLIHome {
+                    Toggle("Use the default CLI account", isOn: $usesCLIHome)
+                        .accessibilityIdentifier("chat.settings.useDefaultCLI")
+                        .help("Share the sign-in and history of the default CLI home. Leave this off for a separate account.")
+                }
+            } else {
+                Text("Uses the local models available on this Mac, including Ollama.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            if let error = chat.profileError { Text(error).foregroundStyle(.orange) }
+            HStack {
+                Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
+                Spacer()
+                Button("Add") {
+                    let modelID = model.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if chat.addProvider(kind, name: chosenName, useExistingCLI: canUseCLIHome && usesCLIHome,
+                                        defaultModel: modelID.isEmpty ? nil : modelID,
+                                        defaultEffort: kind == .local ? nil : effort) { dismiss() }
+                }
+                .keyboardShortcut(.defaultAction)
+                .accessibilityIdentifier("chat.settings.confirmAddProvider")
+                .disabled(chosenName.count > 80 || (kind == .local && chat.allChoices.contains(.init(provider: .local))))
+            }
+        }
+        .padding().frame(width: 420)
+        .onChange(of: kind) {
+            name = ""
+            model = ""
+            effort = "medium"
+            usesCLIHome = false
+        }
     }
 }
 
@@ -707,20 +773,22 @@ private struct AgentChatComposer: View {
                     }
                 }.scrollIndicators(.hidden).accessibilityIdentifier("chat.attachments")
             }
-            composerEditor
-                .frame(height: editorHeight)
-                .padding(.horizontal, 12)
-                .padding(.top, 10)
-                .padding(.bottom, 4)
-                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 18))
-                .overlay(alignment: .top) { resizeHandle }
-                .overlay {
-                    RoundedRectangle(cornerRadius: 18).strokeBorder(.primary.opacity(0.09))
-                        .allowsHitTesting(false).accessibilityHidden(true)
+            VStack(spacing: 5) {
+                composerEditor.frame(height: editorHeight)
+                ViewThatFits(in: .horizontal) {
+                    composerBar(iconOnly: false).frame(minWidth: 560)
+                    composerBar(iconOnly: true)
                 }
-            ViewThatFits(in: .horizontal) {
-                composerBar(iconOnly: false).frame(minWidth: 560)
-                composerBar(iconOnly: true)
+            }
+            .padding(.horizontal, 12)
+            .padding(.top, 10)
+            .padding(.bottom, 12)
+            .background(colorScheme == .dark ? Color(white: 0.14) : .white,
+                        in: RoundedRectangle(cornerRadius: 18))
+            .overlay(alignment: .top) { resizeHandle }
+            .overlay {
+                RoundedRectangle(cornerRadius: 18).strokeBorder(.primary.opacity(0.09))
+                    .allowsHitTesting(false).accessibilityHidden(true)
             }
         }
         .onDrop(of: [.fileURL, .image], isTargeted: nil, perform: receiveAttachments)
@@ -833,42 +901,55 @@ private struct AgentChatComposer: View {
         .controlSize(.small)
     }
 
+    private let actionDiameter: CGFloat = 38
+
     private func composerActions(narrow: Bool) -> some View {
-        HStack(spacing: 8) {
+        let running = chat.state?.isRunning == true
+        return HStack(spacing: 8) {
             composerMeters(narrow: narrow)
                 .padding(.trailing, 4)
                 .offset(y: 4)
-            if chat.state?.isRunning == true {
+            if running {
+                if chat.hasInput && sendEnabled { submitButton(diameter: 26) }
                 Button { Task { await chat.stop() } } label: {
-                    Image(systemName: "stop.fill").font(.system(size: 13, weight: .semibold))
+                    Image(systemName: "stop.fill")
+                        .font(.system(size: 14, weight: .semibold))
                         .foregroundStyle(colorScheme == .dark ? Color.black : Color.white)
-                        .frame(width: narrow ? 24 : 30, height: narrow ? 24 : 30)
+                        .frame(width: actionDiameter, height: actionDiameter, alignment: .center)
                         .background(colorScheme == .dark ? Color.white : Color.black, in: Circle())
                 }
                 .buttonStyle(.plain)
-                .offset(y: chat.hasInput ? 4 : 0)
-                .accessibilityLabel("Stop").accessibilityIdentifier("chat.stop")
+                .help("Stop")
+                .accessibilityLabel("Stop")
+                .accessibilityIdentifier("chat.stop")
+            } else {
+                submitButton(diameter: actionDiameter)
             }
-            if chat.state?.isRunning != true || chat.hasInput {
-                Button { submit() } label: {
-                    Image(systemName: chat.editingQueuedMessage ? "checkmark" : chat.willQueueMessage ? "tray.and.arrow.down" : "arrow.up")
-                        .font(.system(size: 20, weight: .semibold))
-                        .foregroundStyle(sendEnabled ? Color.white : Color.secondary)
-                        .frame(width: 42, height: 42)
-                        .background(sendEnabled ? Color.accentColor : Color.secondary.opacity(0.16), in: Circle())
-                }
-                .buttonStyle(.plain)
-                .disabled(!sendEnabled)
-                .help(chat.editingQueuedMessage ? "Save queued edit" : chat.willQueueMessage ? "Queue message (Command–Return to send now)" : "Send")
-                .accessibilityLabel(chat.editingQueuedMessage ? "Save queued edit" : chat.willQueueMessage ? "Queue message" : "Send")
-                .accessibilityIdentifier("chat.composer.send")
-            }
-        }.fixedSize()
+        }
+        .fixedSize()
+    }
+
+    private func submitButton(diameter: CGFloat) -> some View {
+        let editing = chat.editingQueuedMessage
+        let queueing = chat.hasInput && sendEnabled && chat.willQueueMessage
+        let label = editing ? "Save queued edit" : queueing ? "Queue message" : "Send"
+        return Button { submit() } label: {
+            Image(systemName: editing ? "checkmark" : queueing ? "tray.and.arrow.down" : "arrow.up")
+                .font(.system(size: diameter == actionDiameter ? 18 : 13, weight: .semibold))
+                .foregroundStyle(sendEnabled ? Color.white : Color.secondary)
+                .frame(width: diameter, height: diameter, alignment: .center)
+                .background(sendEnabled ? Color.accentColor : Color.secondary.opacity(0.16), in: Circle())
+        }
+        .buttonStyle(.plain)
+        .disabled(!sendEnabled)
+        .help(queueing ? "Queue message (Command–Return to send now)" : label)
+        .accessibilityLabel(label)
+        .accessibilityIdentifier("chat.composer.send")
     }
 
     @ViewBuilder private func composerMeters(narrow: Bool) -> some View {
         let windows = chat.composerUsageWindows
-        let showsUsage = !windows.isEmpty || chat.provider != .local
+        let showsUsage = chat.hasConfiguredProvider && (!windows.isEmpty || chat.provider != .local)
         let context = ComposerContextMeter(usage: chat.currentContextUsage, compact: narrow)
         if narrow {
             VStack(spacing: 0) {
@@ -882,7 +963,6 @@ private struct AgentChatComposer: View {
             .frame(width: 72)
             .compositingGroup()
             .clipShape(Capsule(style: .circular))
-            .background(.regularMaterial, in: Capsule(style: .circular))
         } else {
             HStack(spacing: 8) {
                 context
@@ -961,11 +1041,10 @@ private struct AgentChatComposer: View {
             attachmentTarget = (chat.composerOwnerID, chat.provider)
             showingCompletion = false; choosingAttachments = true
         } label: {
-            Image(systemName: "paperclip").font(.system(size: 15, weight: .medium))
+            Image(systemName: "paperclip").font(.system(size: 13, weight: .medium))
                 .foregroundStyle(composerMessageColor)
                 .frame(width: 26, height: 26)
                 .background(composerMessageColor.opacity(0.08), in: Circle())
-                .background(.regularMaterial, in: Circle())
         }
         .buttonStyle(.plain)
         .disabled(!canSend || chat.provider == .local)
@@ -1058,7 +1137,6 @@ private struct AgentComposerPermissionsControl: View {
             .padding(.horizontal, iconOnly && !chat.permissionsApplyNextTurn ? 5 : 8)
             .frame(minHeight: 26)
             .background(isFullAccessVisible ? Color.orange.opacity(0.22) : ink.opacity(0.05), in: Capsule())
-            .background(.regularMaterial, in: Capsule())
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -1254,31 +1332,46 @@ private struct AgentComposerPermissionsControl: View {
     }
 }
 
-private struct ClaudeProfileEditor: View {
+private struct ProviderProfileEditor: View {
     @Environment(\.dismiss) private var dismiss
+    let chat: ChatModel
     @State var profile: AgentProviderProfile
-    let save: (AgentProviderProfile) -> Void
+    @State private var models: [AgentModel] = []
+
     var body: some View {
         Form {
             TextField("Name", text: $profile.name)
-            TextField("Badge", text: $profile.badge)
-            Picker("Colour", selection: $profile.colour) {
-                ForEach(["orange", "blue", "green", "purple", "red"], id: \.self) { Text($0.capitalized).tag($0) }
+            if models.isEmpty {
+                TextField("Default model", text: $profile.defaultModel)
+            } else {
+                Picker("Default model", selection: $profile.defaultModel) {
+                    let automatic = profile.kind == .local ? "local" : "default"
+                    if !models.contains(where: { $0.id == automatic }) { Text("Provider default").tag(automatic) }
+                    if profile.defaultModel != automatic, !models.contains(where: { $0.id == profile.defaultModel }) {
+                        Text(profile.defaultModel).tag(profile.defaultModel)
+                    }
+                    ForEach(models, id: \.id) { Text($0.name).tag($0.id) }
+                }
             }
-            TextField("Default model", text: $profile.defaultModel)
-            Picker("Default effort", selection: $profile.defaultEffort) {
-                ForEach(["low", "medium", "high", "max"], id: \.self) { Text($0.capitalized).tag($0) }
+            if profile.kind != .local {
+                Picker("Default effort", selection: $profile.defaultEffort) {
+                    ForEach(profile.kind.configurationEfforts, id: \.self) { Text($0.capitalized).tag($0) }
+                }
             }
+            if let error = chat.profileError { Text(error).foregroundStyle(.orange) }
             HStack {
-                Button("Cancel") { dismiss() }
+                Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
                 Spacer()
-                Button("Save") { save(profile); dismiss() }
-                    .disabled(profile.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || profile.name.count > 80 || profile.badge.isEmpty || profile.badge.count > 4 || profile.defaultModel.isEmpty)
+                Button("Save") { if chat.updateProviderProfile(profile) { dismiss() } }
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(profile.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                              || profile.name.count > 80 || profile.defaultModel.isEmpty)
             }
-        }.padding().frame(width: 400)
+        }
+        .padding().frame(width: 420)
+        .task(id: profile.choice) { models = await chat.availableModels(for: profile.choice) }
     }
 }
-
 
 private struct AgentWakeBadge: View {
     let manager: AgentSessionManager?

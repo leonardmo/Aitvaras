@@ -205,6 +205,7 @@ done()
         let stopped = try seedStopped(stores, session: session, input: input, delivery: delivery,
             reason: .failure(.offline), wire: wire, context: context)
         // A provider switch must not redirect this recovery into another session.
+        try stores.saveProviderProfile(.init(id: AgentProviderProfile.defaultCodexID, name: "Codex", kind: .codex))
         try stores.selectAgentChoice(.init(provider: .codex), chatID: chat.id)
         let backend = ClaudeBackend(executable: fixture.executable, environment: fixture.environment)
         let manager = try AgentSessionManager(persistence: stores, backend: { provider in

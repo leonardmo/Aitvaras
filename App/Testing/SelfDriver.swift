@@ -96,6 +96,22 @@ import AitvarasStore
             // Only this driver's window gets the explicit test override.
             if let appearance { window.appearance = appearance }
             window.setContentSize(size)
+            if let chat = AppModel.shared.chatModel, let stores = AppModel.shared.stores {
+                let modelKeys: [(AgentProvider, String)] = [
+                    (.codex, "AITVARAS_SELF_DRIVE_CODEX_MODEL"), (.claude, "AITVARAS_SELF_DRIVE_CLAUDE_MODEL"),
+                    (.local, "AITVARAS_SELF_DRIVE_LOCAL_MODEL")
+                ]
+                for (provider, key) in modelKeys where env[key]?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+                    || env["AITVARAS_SELF_DRIVE_PROVIDER"] == provider.rawValue {
+                    let choice = AgentProviderChoice(provider: provider)
+                    if try stores.providerProfile(choice) == nil {
+                        let root = AitvarasPaths.stateDirectory
+                        try stores.createProviderProfile(kind: provider, name: provider.rawValue.capitalized,
+                            stateDirectory: root, claudeDefaultDirectory: root, useExistingCLI: true)
+                    }
+                }
+                chat.reloadProfiles()
+            }
             if let model = env["AITVARAS_SELF_DRIVE_CODEX_MODEL"]?.trimmingCharacters(in: .whitespacesAndNewlines), !model.isEmpty {
                 AppModel.shared.chatModel?.selfDriveCodexModel = model
             }

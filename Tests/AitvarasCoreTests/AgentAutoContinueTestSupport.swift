@@ -6,8 +6,16 @@ import AitvarasStore
 
 let autoContinueTestDate = Date(timeIntervalSince1970: 2_000_000_000)
 
+func configureAutoContinueProvider(_ stores: Stores, provider: AgentProvider = .codex) throws {
+    guard try stores.providerProfile(.init(provider: provider)) == nil else { return }
+    let root = FileManager.default.temporaryDirectory
+    try stores.createProviderProfile(kind: provider, name: provider.rawValue.capitalized,
+        stateDirectory: root, claudeDefaultDirectory: root, useExistingCLI: true)
+}
+
 func autoContinueIntent(_ stores: Stores, provider: AgentProvider = .codex, reset: Date? = autoContinueTestDate,
                         profile: String = "default") throws -> AgentAutoContinue {
+    if profile == "default" { try configureAutoContinueProvider(stores, provider: provider) }
     var session = try agentStoreChat(stores, provider: provider).1
     if profile != "default" {
         session = AgentChatSession(chatID: session.chatID, provider: provider, cwd: session.cwd, model: session.model, providerProfile: profile)
