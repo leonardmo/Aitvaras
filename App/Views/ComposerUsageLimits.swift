@@ -37,8 +37,10 @@ struct ComposerUsageLimits: View {
                     if limits.isEmpty {
                         Label("Usage", systemImage: "chevron.down").labelStyle(.titleAndIcon)
                             .font(.system(size: 10, weight: .medium))
+                            .foregroundStyle(ink.opacity(0.78))
                             .padding(.horizontal, 9)
                             .frame(height: 26)
+                            .background(Color.secondary.opacity(0.10))
                     }
                     ForEach(limits) { limit in
                         if limit.id != limits.first?.id {
@@ -98,6 +100,17 @@ struct ComposerUsageLimits: View {
         VStack(alignment: .leading, spacing: 12) {
             Text(chat.map { "\($0.title($0.choice)) usage" } ?? "Usage limits")
                 .font(.headline).accessibilityAddTraits(.isHeader)
+            if limits.isEmpty {
+                if chat?.provider == .claude {
+                    Text("Usage appears when Claude reports it during a turn.")
+                        .font(.caption).foregroundStyle(.secondary)
+                } else if chat?.refreshingCodexUsage == true {
+                    ProgressView("Checking usage…").controlSize(.small)
+                } else {
+                    Text("Usage is currently unavailable.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
             ForEach(limits) { limit in
                 if limit.id != limits.first?.id { Divider() }
                 ProviderUsageLimitRow(limit: limit)
@@ -107,7 +120,9 @@ struct ComposerUsageLimits: View {
                 Divider()
                 ProviderResetControls(chat: chat, choice: chat.choice)
                     .id(chat.choice)
-                    .task(id: chat.choice) { if chat.choice.provider == .codex { await chat.refreshCodexUsage() } }
+                    .task(id: chat.choice) {
+                        if chat.choice.provider == .codex { await chat.refreshCodexUsage(interactive: true) }
+                    }
             }
             if let chat, let entry = chat.currentQuotaStop, let continuation = chat.autoContinueRow(entry) {
                 Divider()
@@ -157,7 +172,13 @@ struct ProviderUsageSettings: View {
                 }
                 .settingsAnchor(Self.settingID)
                 if limits.isEmpty {
-                    Text("Usage and reset times are unavailable for this account.").foregroundStyle(.secondary)
+                    if selection.wrappedValue.provider == .claude {
+                        Text("Usage appears when Claude reports it during a turn.").foregroundStyle(.secondary)
+                    } else if chat.refreshingCodexUsage {
+                        ProgressView("Checking usage…").controlSize(.small)
+                    } else {
+                        Text("Usage and reset times are unavailable for this account.").foregroundStyle(.secondary)
+                    }
                 }
                 ForEach(limits) { limit in
                     ProviderUsageLimitRow(limit: limit)
@@ -166,6 +187,9 @@ struct ProviderUsageSettings: View {
                 }
                 ProviderResetControls(chat: chat, choice: selection.wrappedValue)
                     .id(selection.wrappedValue)
+            }
+            .task(id: selection.wrappedValue) {
+                if selection.wrappedValue.provider == .codex { await chat.refreshCodexUsage(interactive: true) }
             }
             .onChange(of: SettingsNavigation.shared.highlight) { _, highlight in
                 if highlight?.settingID == Self.settingID { selectedChoice = nil }

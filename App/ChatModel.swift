@@ -44,6 +44,10 @@ final class ChatModel {
     private(set) var codexResetMessage: String?
     private(set) var redeemingCodexReset = false
     private(set) var refreshingCodexUsage = false
+    @ObservationIgnored private var observedUsage: [UUID: [AgentRateLimitWindow]] = [:]
+    @ObservationIgnored private var codexUsageAttempt: ContinuousClock.Instant?
+    @ObservationIgnored private var codexUsageRetryAfter: Duration = .seconds(600)
+    static let usageRefreshInterval: Duration = .seconds(600)
     private(set) var profileError: String?
     private(set) var signingInChoice: AgentProviderChoice?
     var choice: AgentProviderChoice { .init(provider: provider, profile: claudeProfile) }
@@ -963,9 +967,12 @@ final class ChatModel {
         reloadProfiles()
         for entry in allChoices {
             let backend = backend(for: entry)
-            profileStatuses[entry] = try? await backend?.status()
-            if entry == choice || entry.provider != .claude { statuses[entry.provider] = profileStatuses[entry] }
-            if entry.provider == .codex { await refreshCodexUsage() }
+            if let status = try? await backend?.status() {
+                applyProfileStatus(status, for: entry)
+            } else {
+                profileStatuses[entry] = nil
+                if entry == choice || entry.provider != .claude { statuses[entry.provider] = nil }
+            }
         }
         if backends[.local] is LocalBackend {
             let assigned = MLXEngine.assignedModel(for: .chat)
@@ -984,24 +991,42 @@ final class ChatModel {
             selectComposer(nil, provider: value); try? loadSettings()
         }
     }
-    func refreshCodexUsage() async {
-        let choice = AgentProviderChoice(provider: .codex)
-        guard !refreshingCodexUsage, !redeemingCodexReset, let codex = backend(for: choice) as? CodexBackend else { return }
-        refreshingCodexUsage = true
-        defer { refreshingCodexUsage = false }
-        await loadCodexUsage(codex, choice: choice)
+    private func applyProfileStatus(_ status: AgentStatus, for choice: AgentProviderChoice) {
+        let previous = profileStatuses[choice]
+        if status.authentication != .subscription || (previous != nil && previous?.accountID != status.accountID) {
+            profileLimits[choice] = nil
+            if choice == self.choice || choice.provider == .codex { providerLimits[choice.provider] = nil }
+            if choice.provider == .codex {
+                codexResetBalance = nil
+                codexUsageAttempt = nil
+            }
+        }
+        profileStatuses[choice] = status
+        if choice == self.choice || choice.provider != .claude { statuses[choice.provider] = status }
     }
 
-    private func loadCodexUsage(_ codex: CodexBackend, choice: AgentProviderChoice) async {
-        let usage = try? await codex.usageSnapshot()
-        codexResetBalance = usage?.resets
-        if let usage {
-            profileLimits[choice] = usage.windows
-            providerLimits[.codex] = usage.windows
-        } else if profileStatuses[choice]?.authentication != .subscription {
-            profileLimits[choice] = nil
-            providerLimits[.codex] = nil
-        }
+    func refreshCodexUsage(interactive: Bool = false) async {
+        let choice = AgentProviderChoice(provider: .codex)
+        guard !refreshingCodexUsage, !redeemingCodexReset, let codex = backend(for: choice) as? CodexBackend else { return }
+        let now = ContinuousClock.now
+        let interval = interactive ? Duration.seconds(30) : codexUsageRetryAfter
+        if let previous = codexUsageAttempt, previous.duration(to: now) < interval { return }
+        codexUsageAttempt = now
+        refreshingCodexUsage = true
+        defer { refreshingCodexUsage = false }
+        if Task.isCancelled { codexUsageAttempt = nil; return }
+        let loaded = await loadCodexUsage(codex, choice: choice)
+        if Task.isCancelled && !loaded { codexUsageAttempt = nil }
+        else { codexUsageRetryAfter = loaded ? Self.usageRefreshInterval : .seconds(1800) }
+    }
+
+    @discardableResult
+    private func loadCodexUsage(_ codex: CodexBackend, choice: AgentProviderChoice) async -> Bool {
+        guard let usage = try? await codex.usageSnapshot() else { return false }
+        codexResetBalance = usage.resets
+        profileLimits[choice] = usage.windows
+        providerLimits[.codex] = usage.windows
+        return true
     }
 
     func redeemCodexReset(_ credit: CodexUsageResetCredit) async {
@@ -1376,10 +1401,15 @@ final class ChatModel {
         }
     }
     private func recordProfileUsage(_ state: ChatState) {
-        if !state.rateLimits.isEmpty, let sessionID = state.entries.last?.sessionID,
+        if !state.rateLimits.isEmpty, observedUsage[state.chatID] != state.rateLimits,
+           let sessionID = state.entries.last?.sessionID,
            let session = try? stores.agentSessions(chatID: state.chatID).first(where: { $0.id == sessionID }) {
-            profileLimits[session.choice] = state.rateLimits
-            if choice == session.choice { providerLimits[session.provider] = state.rateLimits }
+            observedUsage[state.chatID] = state.rateLimits
+            let windows = session.provider == .claude
+                ? AgentRateLimitWindow.merging(state.rateLimits, into: profileLimits[session.choice] ?? [])
+                : state.rateLimits
+            profileLimits[session.choice] = windows
+            if choice == session.choice { providerLimits[session.provider] = windows }
         }
     }
     private func failed(inputID: UUID, failure: AgentFailure) {
@@ -1538,9 +1568,9 @@ final class ChatModel {
                 let status = try await backend.status()
                 try Task.checkCancellation()
                 guard self.loginToken == token else { return }
-                self.profileStatuses[selected] = status
-                if self.choice == selected || provider != .claude { self.statuses[provider] = status }
+                self.applyProfileStatus(status, for: selected)
                 guard status.authentication == .subscription else { throw AgentFailure.authRequired }
+                if provider == .codex { Task { await self.refreshCodexUsage(interactive: true) } }
                 self.catalogs[selected] = nil
                 self.modelLoads.removeValue(forKey: selected)?.task.cancel()
                 if let pending = try self.stores.pendingSend(), pending.session.choice == selected, self.choice == selected,

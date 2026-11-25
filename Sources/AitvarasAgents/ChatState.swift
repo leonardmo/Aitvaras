@@ -156,7 +156,10 @@ public struct ChatState: Sendable, Equatable {
         case .modeChanged(let mode):
             guard event.scope.inputID == nil || event.scope.inputID == inputID else { return }
             acknowledgedMode = mode
-        case .rateLimits(let windows): rateLimits = windows
+        case .rateLimits(let windows):
+            if (event.scope.session?.provider ?? provider) == .claude {
+                rateLimits = AgentRateLimitWindow.merging(windows, into: rateLimits)
+            } else { rateLimits = windows }
         case .usage(let value):
             usage = value
             if ChatSettings.contextFraction(value) != nil { lastContextUsage = value }

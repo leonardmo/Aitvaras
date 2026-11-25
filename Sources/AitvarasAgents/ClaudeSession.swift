@@ -651,9 +651,22 @@ enum ClaudeRunPermissions {
 }
 
 func claudeRateLimits(_ value: JSONValue) -> [AgentRateLimitWindow] {
-    (value["unifiedWindows"]?.objectValue ?? [:]).sorted { $0.key < $1.key }.map { key, window in
-        AgentRateLimitWindow(id: key, utilization: window["utilization"]?.doubleValue.map { min(1, max(0, $0)) },
+    let unified = value["unifiedWindows"]?.objectValue ?? [:]
+    var reported = unified
+    if let id = value["rateLimitType"]?.stringValue, ["five_hour", "seven_day"].contains(id) {
+        // Older or partial events report just one window at the top level.
+        var fields = unified[id]?.objectValue ?? [:]
+        for key in ["utilization", "resetsAt"] where fields[key] == nil || fields[key] == .null {
+            fields[key] = value[key]
+        }
+        reported[id] = .object(fields)
+    }
+    return reported.sorted { $0.key < $1.key }.compactMap { key, window in
+        let utilization = window["utilization"]?.doubleValue.flatMap { $0.isFinite ? min(1, max(0, $0)) : nil }
+        let reset = window["resetsAt"]?.usageResetDate
+        guard utilization != nil || reset != nil else { return nil }
+        return AgentRateLimitWindow(id: key, utilization: utilization,
             duration: key == "five_hour" ? 5 * 3600 : key == "seven_day" ? 7 * 86400 : nil,
-            resetsAt: window["resetsAt"]?.usageResetDate)
+            resetsAt: reset)
     }
 }

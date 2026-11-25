@@ -214,6 +214,13 @@ struct AgentChatView: View {
                 .padding(.horizontal, 16).padding(.vertical, 20).frame(maxWidth: .infinity)
             }
             .id(chatID)
+            .mask {
+                VStack(spacing: 0) {
+                    Rectangle()
+                    LinearGradient(colors: [.black, .clear], startPoint: .top, endPoint: .bottom)
+                        .frame(height: 14)
+                }
+            }
             VStack(spacing: 6) {
                 if chat.chatID == nil, model.workspaceProjects.allSatisfy({ !$0.isVisible }) {
                     Text("Choose a project to send a message.").font(.caption).foregroundStyle(composerMessageColor)
@@ -275,16 +282,29 @@ struct AgentChatView: View {
                     .accessibilityIdentifier("chat.error")
                 }
             }
-            .padding(12)
-            .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 18))
+            .padding(.horizontal, 12)
+            .padding(.bottom, 12)
             .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 18))
-            .overlay { RoundedRectangle(cornerRadius: 18).strokeBorder(.primary.opacity(0.12)).allowsHitTesting(false) }
+            .overlay {
+                RoundedRectangle(cornerRadius: 18).strokeBorder(.primary.opacity(0.09))
+                    .allowsHitTesting(false).accessibilityHidden(true)
+            }
             .frame(maxWidth: 760)
             .padding(.horizontal, 16).padding(.top, 8).padding(.bottom, 16)
             .frame(maxWidth: .infinity)
         }
         .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { transcriptHeight = $0 }
         .task(id: chatID) { await chat.refreshStatus() }
+        .task(id: chat.choice) {
+            if chat.provider == .codex { await chat.refreshCodexUsage() }
+        }
+        .task(id: scenePhase == .active && chat.provider == .codex) {
+            guard scenePhase == .active, chat.provider == .codex else { return }
+            while !Task.isCancelled {
+                await chat.refreshCodexUsage()
+                do { try await Task.sleep(for: ChatModel.usageRefreshInterval) } catch { return }
+            }
+        }
         .task(id: "\(chatID).\(chat.choice.id).\(chat.signingIn == nil)") { await chat.loadModels() }
     }
     private func transcriptRow(_ entry: AgentTranscriptEntry, streaming: Bool,
@@ -653,8 +673,7 @@ private struct AgentChatComposer: View {
     }
 
     var body: some View {
-        VStack(spacing: 8) {
-            resizeHandle
+        VStack(spacing: 5) {
             AgentMessageQueueView(chat: chat)
             if chat.editingQueuedMessage {
                 HStack {
@@ -703,6 +722,8 @@ private struct AgentChatComposer: View {
                 composerBar(iconOnly: true)
             }
         }
+        .padding(.top, 10)
+        .overlay(alignment: .top) { resizeHandle }
         .onDrop(of: [.fileURL, .image], isTargeted: nil, perform: receiveAttachments)
         .fileImporter(isPresented: $choosingAttachments, allowedContentTypes: [.item], allowsMultipleSelection: true) { result in
             defer { attachmentTarget = nil }
@@ -715,9 +736,9 @@ private struct AgentChatComposer: View {
     }
 
     private var resizeHandle: some View {
-        Capsule().fill(.secondary.opacity(0.45))
+        Capsule().fill(Color(nsColor: .labelColor).opacity(0.24))
             .frame(width: 30, height: 3)
-            .frame(maxWidth: .infinity).frame(height: 13)
+            .frame(width: 68, height: 12)
             .contentShape(Rectangle())
             .gesture(DragGesture(minimumDistance: 2, coordinateSpace: .global)
                 .onChanged { value in
@@ -725,17 +746,22 @@ private struct AgentChatComposer: View {
                     dragStartHeight = start
                     manualHeight = min(editorHeightLimit, max(minimumHeight, start - value.translation.height))
                 }
-                .onEnded { _ in dragStartHeight = nil })
+                .onEnded { _ in
+                    if manualHeight == minimumHeight { manualHeight = nil }
+                    dragStartHeight = nil
+                })
             .onTapGesture(count: 2) { manualHeight = nil }
-            .help("Drag to resize. Double-click to reset to automatic height.")
+            .help("Drag to resize. Drag down to the minimum or double-click to restore automatic height.")
             .accessibilityElement()
             .accessibilityIdentifier("chat.composer.resize")
             .accessibilityLabel("Composer height")
-            .accessibilityValue("\(Int(editorHeight)) points")
+            .accessibilityValue(manualHeight == nil ? "Automatic, \(Int(editorHeight)) points" : "\(Int(editorHeight)) points")
             .accessibilityAdjustableAction { direction in
                 switch direction {
                 case .increment: manualHeight = min(editorHeightLimit, editorHeight + 24)
-                case .decrement: manualHeight = max(minimumHeight, editorHeight - 24)
+                case .decrement:
+                    let height = editorHeight - 24
+                    manualHeight = height > minimumHeight ? height : nil
                 @unknown default: break
                 }
             }
@@ -790,10 +816,13 @@ private struct AgentChatComposer: View {
 
     private func composerBar(iconOnly: Bool) -> some View {
         HStack(spacing: iconOnly ? 4 : 8) {
-            attachButton(narrow: iconOnly)
-            if chat.chatID == nil { projectControl(iconOnly: iconOnly) }
-            AgentComposerPicker(chat: chat, iconOnly: iconOnly).disabled(chat.editingQueuedMessage)
-            AgentComposerPermissionsControl(chat: chat, iconOnly: iconOnly)
+            HStack(spacing: iconOnly ? 4 : 8) {
+                attachButton(narrow: iconOnly)
+                if chat.chatID == nil { projectControl(iconOnly: iconOnly) }
+                AgentComposerPicker(chat: chat, iconOnly: iconOnly).disabled(chat.editingQueuedMessage)
+                AgentComposerPermissionsControl(chat: chat, iconOnly: iconOnly)
+            }
+            .offset(y: 4)
             Spacer(minLength: 4)
             composerActions(narrow: iconOnly)
         }
@@ -804,6 +833,7 @@ private struct AgentChatComposer: View {
         HStack(spacing: 8) {
             composerMeters(narrow: narrow)
                 .padding(.trailing, 4)
+                .offset(y: 4)
             if chat.state?.isRunning == true {
                 Button { Task { await chat.stop() } } label: {
                     Image(systemName: "stop.fill").font(.system(size: 13, weight: .semibold))
@@ -812,6 +842,7 @@ private struct AgentChatComposer: View {
                         .background(colorScheme == .dark ? Color.white : Color.black, in: Circle())
                 }
                 .buttonStyle(.plain)
+                .offset(y: chat.hasInput ? 4 : 0)
                 .accessibilityLabel("Stop").accessibilityIdentifier("chat.stop")
             }
             if chat.state?.isRunning != true || chat.hasInput {

@@ -143,6 +143,30 @@ done()
         try await run.shutdown()
     }
 
+    @Test func partialRateLimitEventPublishesTheReportedWindow() async throws {
+        let fixture = try BackendExecutableFixture(script: """
+claude_init()
+read()
+emit({'type':'rate_limit_event','rate_limit_info':{
+    'status':'allowed','rateLimitType':'five_hour','utilization':0.42,'resetsAt':2000000000}})
+emit({'type':'rate_limit_event','rate_limit_info':{'status':'allowed'}})
+emit({'type':'result','is_error':False})
+done()
+""")
+        defer { fixture.remove() }
+        let backend = ClaudeBackend(executable: fixture.executable, environment: fixture.environment)
+        let run = try await backend.start(.init(directory: fixture.directory, model: "test"))
+        try await run.send(.init(text: "test"), willDeliver: {})
+        let events = try await collectTurn(run)
+        let reported = events.compactMap { event -> [AgentRateLimitWindow]? in
+            guard case .rateLimits(let windows) = event.kind else { return nil }
+            return windows
+        }
+        #expect(reported == [[.init(id: "five_hour", utilization: 0.42, duration: 5 * 3600,
+            resetsAt: Date(timeIntervalSince1970: 2_000_000_000))], []])
+        try await run.shutdown()
+    }
+
     @Test(arguments: ["allowed", "warning", "future"])
     func nonRejectionDoesNotFailTurn(status: String) async throws {
         let fixture = try BackendExecutableFixture(script: """

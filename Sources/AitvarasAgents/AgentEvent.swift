@@ -132,6 +132,19 @@ public struct AgentRateLimitWindow: Sendable, Equatable {
     public init(id: String, utilization: Double?, duration: TimeInterval? = nil, resetsAt: Date? = nil) {
         self.id = id; self.utilization = utilization; self.duration = duration; self.resetsAt = resetsAt
     }
+
+    /// A partial report can update one window without clearing the others.
+    public static func merging(_ observations: [Self], into previous: [Self]) -> [Self] {
+        var byID = Dictionary(previous.map { ($0.id, $0) }, uniquingKeysWith: { _, latest in latest })
+        for window in observations {
+            let old = byID[window.id]
+            let sameWindow = old?.resetsAt == window.resetsAt
+            byID[window.id] = Self(id: window.id,
+                utilization: window.utilization ?? (sameWindow ? old?.utilization : nil),
+                duration: window.duration, resetsAt: window.resetsAt)
+        }
+        return byID.values.sorted { $0.id < $1.id }
+    }
 }
 
 public struct AgentEvent: Sendable, Equatable {

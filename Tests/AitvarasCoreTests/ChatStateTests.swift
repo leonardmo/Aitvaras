@@ -80,6 +80,26 @@ import AitvarasAgents
         #expect(state.contextUsage(sessionID: codex.id) == nil)
     }
 
+    @Test func claudeKeepsBothWindowsWhenReportsArriveSeparately() {
+        let session = AgentChatSession(chatID: UUID(), provider: .claude, cwd: "/tmp", model: "fixture")
+        var state = ChatState(chatID: session.chatID)
+        let input = AgentInput(text: "Example")
+        state.begin(input, session: session, outputID: UUID())
+        let scope = AgentEventScope(runID: UUID(), inputID: input.id)
+        let reset = Date(timeIntervalSince1970: 2_000_000_000)
+        let fiveHour = AgentRateLimitWindow(id: "five_hour", utilization: 0.42, duration: 18_000, resetsAt: reset)
+        let weekly = AgentRateLimitWindow(id: "seven_day", utilization: 0.61, duration: 604_800, resetsAt: reset)
+        let sameReset = AgentRateLimitWindow(id: fiveHour.id, utilization: nil, duration: fiveHour.duration, resetsAt: reset)
+        for window in [fiveHour, weekly, sameReset] {
+            state.reduce(.init(scope: scope, kind: .rateLimits([window])), newEntryID: UUID())
+        }
+        #expect(state.rateLimits == [fiveHour, weekly])
+        let nextReset = AgentRateLimitWindow(id: fiveHour.id, utilization: nil,
+            duration: fiveHour.duration, resetsAt: reset.addingTimeInterval(18_000))
+        state.reduce(.init(scope: scope, kind: .rateLimits([nextReset])), newEntryID: UUID())
+        #expect(state.rateLimits == [nextReset, weekly])
+    }
+
     @Test func originalMessageIdentitySurvivesWireEchoAndHandoverIsSeparate() throws {
         let chat = UUID(), output = UUID()
         let input = AgentInput(text: "original")
