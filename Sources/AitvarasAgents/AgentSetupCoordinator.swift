@@ -153,7 +153,7 @@ public actor AgentSetupCoordinator {
         return .init(directory: directory ?? project.directory, context: project.context)
     }
     private func key(projectID: UUID, directory: URL, provider: AgentProvider, profile: String = "default") -> String {
-        projectID.uuidString + "." + directory.standardizedFileURL.path + "." + provider.rawValue + "." + (provider == .claude ? profile : "default")
+        projectID.uuidString + "." + directory.standardizedFileURL.path + "." + provider.rawValue + "." + AgentProviderChoice(provider: provider, profile: profile).profile
     }
     private func revision(_ project: AgentSetupProject) throws -> String {
         try AgentMCPLaunchPolicy(load: { _, _ in project.context }, audit: { _ in throw AgentMCPError.auditFailed })

@@ -14,8 +14,12 @@ public struct AgentTurnStore: Sendable {
         try db.queue.read { try AgentJournalTurn.fetchOne($0, key: id) }
     }
     public func latest(chatID: UUID) throws -> AgentJournalTurn? {
-        try db.queue.read { try AgentJournalTurn.filter(Column("chatID") == chatID)
-            .order(Column("startedAt").desc, Column("id")).fetchOne($0) }
+        try db.queue.read { try Self.latest(chatID: chatID, in: $0) }
+    }
+
+    static func latest(chatID: UUID, in db: Database) throws -> AgentJournalTurn? {
+        try AgentJournalTurn.filter(Column("chatID") == chatID)
+            .order(Column("startedAt").desc, Column("id")).fetchOne(db)
     }
     public func prepare(_ turn: AgentJournalTurn, context: ChatContextProjection? = nil, automatic: AgentAutoContinue? = nil) throws {
         guard turn.delivery == .prepared, turn.state == .running, turn.resendCount == 0,
@@ -56,8 +60,7 @@ public struct AgentTurnStore: Sendable {
                   entry.id == turn.id, entry.sessionID == session.id, entry.chatID == turn.chatID,
                   entry.provider == session.provider, entry.nativeMessageID == nil else { throw AgentFailure.invalidTransition }
             if session.providerProfile != "default" {
-                guard let id = UUID(uuidString: session.providerProfile),
-                      try AgentProviderProfile.fetchOne(dbc, key: id)?.isDeleted == false else { throw AgentFailure.invalidTransition }
+                guard try Stores.providerProfile(session.choice, in: dbc) != nil else { throw AgentFailure.invalidTransition }
             }
             if action == .continueTurn {
                 guard session.usesThreadContext, stop.canContinue, let native = stop.nativeSession, session.sessionID == native,

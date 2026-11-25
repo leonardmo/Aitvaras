@@ -1,4 +1,3 @@
-import AppKit
 import SwiftUI
 import AitvarasAgents
 
@@ -6,6 +5,7 @@ struct ComposerUsageLimits: View {
     @AppReduceMotion private var reduceMotion
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.colorSchemeContrast) private var contrast
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @State private var showsDetails = false
     let windows: [AgentRateLimitWindow]
     let narrow: Bool
@@ -17,17 +17,16 @@ struct ComposerUsageLimits: View {
             if narrow {
                 HStack(spacing: 0) {
                     if limits.isEmpty {
-                        ComposerMeterTrack(fraction: nil, ramp: .idle, rounded: false)
+                        Rectangle().fill(.primary.opacity(0.12))
                     }
                     ForEach(limits) { limit in
                         if limit.id != limits.first?.id {
                             Rectangle().fill(.primary.opacity(0.18))
                                 .frame(width: 1).accessibilityHidden(true)
                         }
-                        let ramp = ColorRamp.usage(limit.used ?? 0)
-                        ComposerMeterTrack(fraction: limit.used,
-                            ramp: limit.id == "week" ? ramp.mixed(with: .idle, by: 0.36) : ramp,
-                            rounded: false)
+                        Rectangle().fill(usageFill(limit))
+                            .frame(maxWidth: .infinity)
+                            .accessibilityHidden(true)
                     }
                 }
                 .frame(height: ComposerMeterTrack.compactRowHeight)
@@ -37,8 +36,10 @@ struct ComposerUsageLimits: View {
                     if limits.isEmpty {
                         Label("Usage", systemImage: "chevron.down").labelStyle(.titleAndIcon)
                             .font(.system(size: 10, weight: .medium))
+                            .foregroundStyle(ink.opacity(0.78))
                             .padding(.horizontal, 9)
                             .frame(height: 26)
+                            .background(Color.secondary.opacity(0.10))
                     }
                     ForEach(limits) { limit in
                         if limit.id != limits.first?.id {
@@ -68,15 +69,25 @@ struct ComposerUsageLimits: View {
 
     private var ink: Color { colorScheme == .dark ? Color(white: 0.94) : Color(white: 0.13) }
 
+    private var usesSolidColors: Bool { contrast == .increased || reduceTransparency }
+
+    private func usageFill(_ limit: ProviderUsageLimit) -> AnyShapeStyle {
+        guard let used = limit.used else { return AnyShapeStyle(Color.primary.opacity(0.10)) }
+        let ramp = ColorRamp.usage(used)
+        if usesSolidColors { return AnyShapeStyle(ramp.color(at: 0.5)) }
+        return AnyShapeStyle(ramp.wash(from: .leading, to: .trailing))
+    }
+
     private func indicator(_ limit: ProviderUsageLimit, width: CGFloat, showsChevron: Bool) -> some View {
-        HStack(spacing: 3) {
-            Text(limit.shortTitle).foregroundStyle(ink.opacity(0.8))
-            Text(limit.percent.map { "\($0)%" } ?? "—").fontWeight(.semibold).monospacedDigit().foregroundStyle(ink)
+        let ink = limit.used == nil ? self.ink : Color(white: 0.03)
+        return HStack(spacing: 3) {
+            Text(limit.shortTitle).fontWeight(.medium).foregroundStyle(ink)
+            Text(limit.percent.map { "\($0)%" } ?? "—").fontWeight(.bold).monospacedDigit().foregroundStyle(ink)
                 .lineLimit(1).fixedSize()
             if showsChevron {
                 Image(systemName: "chevron.down")
                     .font(.system(size: 7, weight: .semibold))
-                    .foregroundStyle(ink.opacity(0.7))
+                    .foregroundStyle(ink)
                     .padding(.leading, 2)
             }
         }
@@ -84,13 +95,7 @@ struct ComposerUsageLimits: View {
         .lineLimit(1)
         .fixedSize()
         .frame(width: width, height: 26)
-        .background {
-            if let used = limit.used {
-                GradientTileSurface(ramp: .usage(used), cornerRadius: 0, prominent: true, outlined: false)
-            } else {
-                Rectangle().fill(Color.secondary.opacity(0.10))
-            }
-        }
+        .background { Rectangle().fill(usageFill(limit)) }
         .animation(reduceMotion ? nil : .easeInOut(duration: 0.24), value: limit.used)
     }
 
@@ -98,6 +103,17 @@ struct ComposerUsageLimits: View {
         VStack(alignment: .leading, spacing: 12) {
             Text(chat.map { "\($0.title($0.choice)) usage" } ?? "Usage limits")
                 .font(.headline).accessibilityAddTraits(.isHeader)
+            if limits.isEmpty {
+                if chat?.provider == .claude {
+                    Text("Usage appears when Claude reports it during a turn.")
+                        .font(.caption).foregroundStyle(.secondary)
+                } else if let chat, chat.refreshingCodexUsage(for: chat.choice) {
+                    ProgressView("Checking usage…").controlSize(.small)
+                } else {
+                    Text("Usage is currently unavailable.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
             ForEach(limits) { limit in
                 if limit.id != limits.first?.id { Divider() }
                 ProviderUsageLimitRow(limit: limit)
@@ -107,7 +123,9 @@ struct ComposerUsageLimits: View {
                 Divider()
                 ProviderResetControls(chat: chat, choice: chat.choice)
                     .id(chat.choice)
-                    .task(id: chat.choice) { if chat.choice.provider == .codex { await chat.refreshCodexUsage() } }
+                    .task(id: chat.choice) {
+                        if chat.choice.provider == .codex { await chat.refreshCodexUsage(interactive: true) }
+                    }
             }
             if let chat, let entry = chat.currentQuotaStop, let continuation = chat.autoContinueRow(entry) {
                 Divider()
@@ -157,7 +175,13 @@ struct ProviderUsageSettings: View {
                 }
                 .settingsAnchor(Self.settingID)
                 if limits.isEmpty {
-                    Text("Usage and reset times are unavailable for this account.").foregroundStyle(.secondary)
+                    if selection.wrappedValue.provider == .claude {
+                        Text("Usage appears when Claude reports it during a turn.").foregroundStyle(.secondary)
+                    } else if chat.refreshingCodexUsage(for: selection.wrappedValue) {
+                        ProgressView("Checking usage…").controlSize(.small)
+                    } else {
+                        Text("Usage and reset times are unavailable for this account.").foregroundStyle(.secondary)
+                    }
                 }
                 ForEach(limits) { limit in
                     ProviderUsageLimitRow(limit: limit)
@@ -166,6 +190,10 @@ struct ProviderUsageSettings: View {
                 }
                 ProviderResetControls(chat: chat, choice: selection.wrappedValue)
                     .id(selection.wrappedValue)
+            }
+            .task(id: selection.wrappedValue) {
+                let choice = selection.wrappedValue
+                if choice.provider == .codex { await chat.refreshCodexUsage(for: choice, interactive: true) }
             }
             .onChange(of: SettingsNavigation.shared.highlight) { _, highlight in
                 if highlight?.settingID == Self.settingID { selectedChoice = nil }
@@ -202,7 +230,7 @@ private struct ProviderResetControls: View {
     }
 
     @ViewBuilder private var codexControls: some View {
-        if let balance = chat.codexResetBalance {
+        if let balance = chat.codexResetBalance(for: choice) {
             Text(balance.availableCount == 1 ? "1 banked reset available" : "\(balance.availableCount) banked resets available")
                 .font(.caption).foregroundStyle(.secondary)
                 .accessibilityIdentifier("usage.manualResets.balance")
@@ -216,10 +244,10 @@ private struct ProviderResetControls: View {
                             .accessibilityIdentifier("usage.manualResets.cancel")
                         Button("Use reset") {
                             pendingCredit = nil
-                            Task { await chat.redeemCodexReset(credit) }
+                            Task { await chat.redeemCodexReset(credit, for: choice) }
                         }
                         .buttonStyle(.borderedProminent)
-                        .disabled(chat.refreshingCodexUsage || chat.redeemingCodexReset)
+                        .disabled(chat.refreshingCodexUsage(for: choice) || chat.redeemingCodexReset(for: choice))
                         .accessibilityIdentifier("usage.manualResets.confirm")
                     }
                 }
@@ -234,14 +262,14 @@ private struct ProviderResetControls: View {
                 }
                 if balance.availableCount > balance.credits.count { openCodexUsage }
             }
-        } else if chat.refreshingCodexUsage {
+        } else if chat.refreshingCodexUsage(for: choice) {
             ProgressView("Checking banked resets…").controlSize(.small)
         } else {
             openCodexUsage
         }
-        if chat.redeemingCodexReset {
+        if chat.redeemingCodexReset(for: choice) {
             ProgressView("Applying reset…").controlSize(.small)
-        } else if let message = chat.codexResetMessage {
+        } else if let message = chat.codexResetMessage(for: choice) {
             Text(message).font(.caption).foregroundStyle(.secondary)
                 .accessibilityIdentifier("usage.manualResets.result")
         }
@@ -255,7 +283,7 @@ private struct ProviderResetControls: View {
                     Spacer(minLength: 0)
                     Button("Review") { pendingCredit = credit }
                         .buttonStyle(.bordered)
-                        .disabled(chat.refreshingCodexUsage || chat.redeemingCodexReset)
+                        .disabled(chat.refreshingCodexUsage(for: choice) || chat.redeemingCodexReset(for: choice))
                         .accessibilityLabel("Review \(credit.title)")
                         .accessibilityIdentifier("usage.manualResets.review.\(index)")
                 }
@@ -340,7 +368,6 @@ private struct ProviderUsageLimit: Identifiable {
 
 private struct ProviderUsageLimitRow: View {
     let limit: ProviderUsageLimit
-    @State private var copiedDate: Date?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 7) {
@@ -371,17 +398,6 @@ private struct ProviderUsageLimitRow: View {
                         Image(systemName: "clock").foregroundStyle(.secondary)
                     }
                     .accessibilityIdentifier("usage.reset.\(limit.id)")
-                    Spacer(minLength: 0)
-                    Button {
-                        NSPasteboard.general.clearContents()
-                        if NSPasteboard.general.setString(formatted, forType: .string) { copiedDate = date }
-                    } label: {
-                        Image(systemName: copiedDate == date ? "checkmark" : "document.on.document")
-                    }
-                    .buttonStyle(.borderless)
-                    .help(copiedDate == date ? "Reset time copied" : "Copy reset time")
-                    .accessibilityLabel(copiedDate == date ? "Reset time copied for \(limit.title)" : "Copy reset time for \(limit.title)")
-                    .accessibilityIdentifier("usage.copyReset.\(limit.id)")
                 } else {
                     Label("Reset time unavailable", systemImage: "clock").foregroundStyle(.secondary)
                         .accessibilityIdentifier("usage.reset.\(limit.id)")

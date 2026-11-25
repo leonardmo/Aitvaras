@@ -1,9 +1,18 @@
 import Foundation
 
-/// Explicit accounts are implemented for Claude only. Other providers retain
-/// one implicit choice; the identity leaves room for additional kinds later.
+/// A configured CLI account or a local model provider.
 public struct AgentProviderProfile: Codable, Sendable, Equatable, Identifiable {
     public static let defaultClaudeID = UUID(uuidString: "00000000-0000-0000-0000-000000000001")!
+    public static let defaultCodexID = UUID(uuidString: "00000000-0000-0000-0000-000000000002")!
+    public static let localID = UUID(uuidString: "00000000-0000-0000-0000-000000000003")!
+
+    public static func defaultID(for provider: AgentProvider) -> UUID {
+        switch provider {
+        case .claude: defaultClaudeID
+        case .codex: defaultCodexID
+        case .local: localID
+        }
+    }
     public var id: UUID
     public var name: String
     public var kind: AgentProvider
@@ -15,12 +24,14 @@ public struct AgentProviderProfile: Codable, Sendable, Equatable, Identifiable {
     public var sortOrder: Int
     public var createdAt: Date
     public var isDeleted: Bool
-    public var nativeProfile: String { id == Self.defaultClaudeID ? "default" : id.uuidString }
+    public var nativeProfile: String { id == Self.defaultID(for: kind) ? "default" : id.uuidString }
     public var choice: AgentProviderChoice { .init(provider: kind, profile: nativeProfile) }
-    public init(id: UUID = UUID(), name: String, badge: String = "C", colour: String = "orange",
+    public init(id: UUID = UUID(), name: String, kind: AgentProvider = .claude,
+                badge: String = "C", colour: String = "orange",
                 configDirectory: String? = nil, sortOrder: Int = 0, createdAt: Date = .now) {
-        self.id = id; self.name = name; kind = .claude; self.badge = badge; self.colour = colour
-        defaultModel = "opus"; defaultEffort = "medium"; self.configDirectory = configDirectory
+        self.id = id; self.name = name; self.kind = kind; self.badge = badge; self.colour = colour
+        defaultModel = switch kind { case .claude: "opus"; case .codex: "default"; case .local: "local" }
+        defaultEffort = "medium"; self.configDirectory = configDirectory
         self.sortOrder = sortOrder; self.createdAt = createdAt; isDeleted = false
     }
 }
@@ -30,12 +41,12 @@ public struct AgentProviderChoice: Hashable, Sendable, Identifiable {
     public let profile: String
     public var id: String { profile == "default" ? provider.rawValue : provider.rawValue + ":" + profile }
     public init(provider: AgentProvider, profile: String = "default") {
-        self.provider = provider; self.profile = provider == .claude ? profile : "default"
+        self.provider = provider; self.profile = provider == .local ? "default" : profile
     }
     public init?(id: String) {
         let parts = id.split(separator: ":", maxSplits: 1).map(String.init)
         guard let first = parts.first, let provider = AgentProvider(rawValue: first),
-              parts.count == 1 || provider == .claude && UUID(uuidString: parts[1]) != nil else { return nil }
+              parts.count == 1 || provider != .local && UUID(uuidString: parts[1]) != nil else { return nil }
         self.init(provider: provider, profile: parts.count == 2 ? parts[1] : "default")
     }
     public static func inlineChoices(all: [Self], recent: [Self], selected: Self) -> [Self] {
@@ -51,6 +62,16 @@ public final class AgentProfileBackends: @unchecked Sendable {
     private var values: [AgentProviderChoice: any AgentBackend] = [:]
     private let factory: @Sendable (AgentProviderChoice) throws -> any AgentBackend
     public init(factory: @escaping @Sendable (AgentProviderChoice) throws -> any AgentBackend) { self.factory = factory }
+    public func discard(_ choice: AgentProviderChoice) -> (any AgentBackend)? {
+        lock.lock(); defer { lock.unlock() }
+        return values.removeValue(forKey: choice)
+    }
+
+    public func snapshot() -> [any AgentBackend] {
+        lock.lock(); defer { lock.unlock() }
+        return Array(values.values)
+    }
+
     public func backend(_ choice: AgentProviderChoice) throws -> any AgentBackend {
         lock.lock(); defer { lock.unlock() }
         if let value = values[choice] { return value }

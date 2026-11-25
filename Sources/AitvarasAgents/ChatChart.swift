@@ -74,6 +74,11 @@ final class ChatFigureCell: NSTextAttachmentCell {
 
     required init(coder: NSCoder) { fatalError("Use init(image:sourceText:caption:)") }
 
+    override func draw(withFrame cellFrame: NSRect, in controlView: NSView?) {
+        image?.draw(in: cellFrame, from: .zero, operation: .sourceOver, fraction: 1,
+                    respectFlipped: true, hints: nil)
+    }
+
     override func cellFrame(for textContainer: NSTextContainer, proposedLineFragment lineFrag: NSRect,
                             glyphPosition position: NSPoint, characterIndex charIndex: Int) -> NSRect {
         guard imageSize.width > 0, imageSize.height > 0 else { return .zero }

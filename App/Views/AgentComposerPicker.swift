@@ -11,12 +11,18 @@ struct AgentComposerPicker: View {
     private var choiceTitle: String { chat.title(chat.choice) }
     private var effortAvailable: Bool { chat.provider != .local && !(chat.selectedModel?.efforts.isEmpty ?? true) }
     private var summary: String {
-        ([choiceTitle, chat.modelTitle] + (effortAvailable ? [chat.effort.isEmpty ? "Default effort" : chat.effort.capitalized] : []))
+        guard chat.hasConfiguredProvider else {
+            return chat.allChoices.isEmpty ? "Add Provider" : "Choose provider"
+        }
+        return ([choiceTitle, chat.modelTitle] + (effortAvailable ? [chat.effort.isEmpty ? "Default effort" : chat.effort.capitalized] : []))
             .joined(separator: " · ")
     }
 
     var body: some View {
-        Button { isPresented.toggle() } label: {
+        Button {
+            if chat.allChoices.isEmpty { SettingsNavigation.open(.page(.providers)) }
+            else { isPresented.toggle() }
+        } label: {
             ComposerControlLabel(title: summary, icon: "cpu", iconOnly: iconOnly, maximumTitleWidth: 220)
         }
         .buttonStyle(.plain)
@@ -160,6 +166,7 @@ struct ComposerControlLabel: View {
         let ink = colorScheme == .dark ? Color(white: 0.92) : Color(white: 0.15)
         HStack(spacing: 5) {
             Image(systemName: icon).foregroundStyle(ink.opacity(0.72))
+                .frame(width: 16, height: 16)
             if !iconOnly {
                 ViewThatFits(in: .horizontal) {
                     Text(title).lineLimit(1).fixedSize(horizontal: true, vertical: false)
@@ -172,7 +179,7 @@ struct ComposerControlLabel: View {
             }
         }
         .font(.caption)
-        .padding(.horizontal, 8)
+        .padding(.horizontal, iconOnly ? 5 : 8)
         .frame(minHeight: 26)
         .background(ink.opacity(0.05), in: Capsule())
         .contentShape(.rect)

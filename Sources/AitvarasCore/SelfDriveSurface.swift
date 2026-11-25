@@ -175,7 +175,8 @@ import AppKit
             for child in view.subviews {
                 if let found = editable(in: child) { return found }
             }
-            guard view is NSTextView || (view as? NSTextField)?.isEditable == true else { return nil }
+            guard (view as? NSTextView)?.isEditable == true
+                || (view as? NSTextField)?.isEditable == true else { return nil }
             let onScreen = window.convertToScreen(view.convert(view.bounds, to: nil))
             return onScreen.intersects(frame) ? view : nil
         }
@@ -218,6 +219,12 @@ import AppKit
         switch step.action {
         case .scroll:
             return try await scroll(step.identifier!, verticalBy: step.verticalBy!)
+        case .checkScrollBottom:
+            let scroll = try scrollView(for: step.identifier!)
+            guard let document = scroll.documentView else { throw SelfDriveFailure("Missing transcript document view") }
+            let remaining = document.bounds.maxY - scroll.documentVisibleRect.maxY
+            guard remaining <= 1 else { throw SelfDriveFailure("Viewport is \(remaining) points from the bottom") }
+            return "Viewport is at the bottom"
         case .checkScroll:
             return try checkScroll(step.identifier!)
         case .drag:

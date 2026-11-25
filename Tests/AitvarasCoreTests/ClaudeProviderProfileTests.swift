@@ -44,7 +44,7 @@ import AitvarasAgents
                     WHEN NOT EXISTS (SELECT 1 FROM agentChatSession WHERE id = NEW.sessionID AND chatID = NEW.chatID)
                     BEGIN SELECT RAISE(ABORT, 'Turn must belong to its chat session'); END;
                     DROP TABLE agentProviderProfile;
-                    DELETE FROM grdb_migrations WHERE identifier = 'v35-claude-provider-profiles';
+                    DELETE FROM grdb_migrations WHERE identifier IN ('v35-claude-provider-profiles', 'v55-configured-providers');
                     """)
             }
         }
@@ -61,6 +61,32 @@ import AitvarasAgents
             #expect(try stores.agentTurn(id: turn.id) == turn)
             #expect(try stores.db.queue.read { try Row.fetchAll($0, sql: "PRAGMA foreign_key_check").isEmpty })
         }
+    }
+
+    @Test func configuredProvidersMigrationKeepsUsedDefaultsAndHidesUnusedSeed() throws {
+        let root = try profileTestDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let url = root.appendingPathComponent("store.sqlite")
+        let codexSession: AgentChatSession
+        do {
+            let stores = Stores(db: try AitvarasDatabase(url: url))
+            codexSession = try agentStoreChat(stores, provider: .codex).1
+            let account = AgentProviderProfile(name: "Existing Claude", configDirectory: root.appendingPathComponent("claude").path)
+            try stores.saveProviderProfile(account)
+            try stores.selectAgentChoice(account.choice, chatID: codexSession.chatID)
+            try stores.setValue("local", forKey: "agent.lastProvider")
+            try stores.db.queue.write { db in
+                try db.execute(sql: "UPDATE agentProviderProfile SET isDeleted = 0")
+                try db.execute(sql: "DELETE FROM grdb_migrations WHERE identifier = 'v55-configured-providers'")
+            }
+        }
+        let upgraded = Stores(db: try AitvarasDatabase(url: url))
+        let choices = try upgraded.providerProfiles().map(\.choice)
+        #expect(choices.count == 3)
+        #expect(choices.suffix(2) == [.init(provider: .codex), .init(provider: .local)])
+        #expect(choices.first?.provider == .claude && choices.first?.profile != "default")
+        #expect(try upgraded.agentSession(chatID: codexSession.chatID, choice: codexSession.choice) == codexSession)
+        #expect(try upgraded.providerProfile(.init(provider: .claude), includeDeleted: true)?.isDeleted == true)
     }
 
     @Test func createsPrivateLinksOnlyAndLeavesDefaultHomeUntouched() throws {
@@ -111,8 +137,8 @@ import AitvarasAgents
         let second = try stores.createClaudeProfile(name: "Other", stateDirectory: root, defaultDirectory: root.appendingPathComponent("missing"))
         #expect(first.defaultModel == "opus" && first.defaultEffort == "medium")
         try stores.authorizeClaudeProfileSignIn(profile: first.nativeProfile)
-        #expect(try stores.activity(since: .distantPast).contains { $0.summary == "Sign in to Claude profile" && $0.sourceID == "providerProfile:" + first.id.uuidString })
-        let ids = [second.id, AgentProviderProfile.defaultClaudeID, first.id]
+        #expect(try stores.activity(since: .distantPast).contains { $0.summary == "Sign in to provider profile" && $0.sourceID == "providerProfile:" + first.id.uuidString })
+        let ids = [second.id, first.id]
         try stores.reorderClaudeProfiles(ids: ids)
         #expect(try stores.claudeProfiles().map(\.id) == ids)
         #expect(throws: AgentStoreError.invalidValue) { try stores.reorderClaudeProfiles(ids: [first.id, first.id]) }
@@ -124,7 +150,7 @@ import AitvarasAgents
         try stores.setValues(["agent.claudeProfile.\(chat.id.uuidString)": first.nativeProfile])
         #expect(try stores.agentSession(chatID: chat.id, provider: .claude)?.id == session.id)
         try stores.deleteClaudeProfile(id: first.id)
-        #expect(try stores.selectedClaudeProfile(chatID: chat.id) == "default")
+        #expect(try stores.selectedClaudeProfile(chatID: chat.id) == first.nativeProfile)
         #expect(try stores.agentSession(chatID: chat.id, choice: first.choice) == session)
         #expect(try stores.claudeProfile(nativeProfile: first.nativeProfile) == nil)
         #expect(throws: AgentStoreError.invalidValue) { try stores.authorizeClaudeProfileSignIn(profile: first.nativeProfile) }
@@ -136,7 +162,11 @@ import AitvarasAgents
     }
 
     @Test func switchingInExistingAndNewChatsPersistsTheExactChoice() throws {
-        let stores = try inMemoryStores()
+        let stores = try inMemoryStores(), root = try profileTestDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        try stores.createProviderProfile(kind: .claude, name: "Claude", stateDirectory: root,
+            claudeDefaultDirectory: root, useExistingCLI: true)
+        try stores.saveProviderProfile(.init(id: AgentProviderProfile.defaultCodexID, name: "Codex", kind: .codex))
         let (existing, original) = try agentStoreChat(stores)
         let profile = AgentProviderProfile(name: "Other account", configDirectory: "/tmp/example-account")
         try stores.saveClaudeProfile(profile)
@@ -158,7 +188,53 @@ import AitvarasAgents
         #expect(try stores.agentSession(chatID: existing.id, provider: .claude)?.id == original.id)
         try stores.deleteClaudeProfile(id: profile.id)
         #expect(throws: AgentStoreError.invalidValue) { try stores.selectAgentChoice(profile.choice, chatID: nil) }
-        #expect(try stores.selectedClaudeProfile(chatID: newChat.id) == "default")
+        #expect(try stores.selectedClaudeProfile(chatID: newChat.id) == profile.nativeProfile)
+    }
+
+    @Test func mixedAccountsStartEmptyAndKeepIndependentSessionsAndHomes() throws {
+        let stores = try inMemoryStores(), root = try profileTestDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        #expect(try stores.providerProfiles().isEmpty)
+        #expect(throws: AgentStoreError.invalidValue) {
+            try stores.selectAgentChoice(.init(provider: .claude), chatID: nil)
+        }
+        func add(_ kind: AgentProvider, _ name: String, useExisting: Bool = false) throws -> AgentProviderProfile {
+            try stores.createProviderProfile(kind: kind, name: name, stateDirectory: root,
+                claudeDefaultDirectory: root.appendingPathComponent("missing"), useExistingCLI: useExisting)
+        }
+        let cloud = try [add(.claude, "Claude one"), add(.claude, "Claude two"),
+                         add(.codex, "Codex one"), add(.codex, "Codex two")]
+        let local = try add(.local, "Ollama")
+        let existing = try add(.codex, "Existing CLI", useExisting: true)
+        #expect(try stores.providerProfiles().map(\.id) == (cloud + [local, existing]).map(\.id))
+        #expect(local.configDirectory == nil && existing.configDirectory == nil)
+        #expect(throws: AgentStoreError.identityConflict) { try add(.local, "Duplicate") }
+        #expect(throws: AgentStoreError.identityConflict) { try add(.codex, "Same CLI", useExisting: true) }
+
+        let project = try stores.createWorkspaceProject(title: "Example")
+        let chat = try stores.createWorkspaceChat(projectID: project.id, title: "Multiple accounts")
+        let paths = cloud.compactMap(\.configDirectory)
+        #expect(Set(paths).count == cloud.count)
+        for (index, account) in cloud.enumerated() {
+            let path = try #require(account.configDirectory)
+            #expect(try FileManager.default.contentsOfDirectory(atPath: path).isEmpty)
+            let permissions = try FileManager.default.attributesOfItem(atPath: path)[.posixPermissions] as? NSNumber
+            #expect(permissions?.intValue == 0o700)
+            try stores.selectAgentChoice(account.choice, chatID: chat.id)
+            try stores.saveAgentSession(.init(chatID: chat.id, provider: account.kind, cwd: "/tmp",
+                model: "example-\(index)", providerProfile: account.nativeProfile))
+            #expect(try stores.agentSession(chatID: chat.id, provider: account.kind)?.model == "example-\(index)")
+        }
+        for (index, account) in cloud.enumerated() {
+            #expect(try stores.agentSession(chatID: chat.id, choice: account.choice)?.model == "example-\(index)")
+        }
+        let removed = cloud[3]
+        try stores.deleteProviderProfile(id: removed.id)
+        #expect(try stores.agentSession(chatID: chat.id, provider: .codex)?.providerProfile == removed.nativeProfile)
+        #expect(throws: AgentStoreError.invalidValue) { try stores.selectAgentChoice(removed.choice, chatID: chat.id) }
+        #expect(try stores.providerProfiles(provider: .codex).map(\.id) == [cloud[2].id, existing.id])
+        try stores.deleteProviderProfile(id: local.id)
+        #expect(try add(.local, "Ollama again").id == local.id)
     }
 
     @Test func aNewAccountNeverInheritsThePreviousAccountsUsageWindow() {
@@ -184,7 +260,9 @@ import AitvarasAgents
         #expect(inline == [selected, all[5], all[1]])
         #expect(all.count == 8 && Set(all.map(\.id)).count == 8)
         #expect(all.allSatisfy { AgentProviderChoice(id: $0.id) == $0 })
-        #expect(AgentProviderChoice(provider: .codex, profile: "ignored").profile == "default")
+        let codexChoice = AgentProviderChoice(provider: .codex, profile: UUID().uuidString)
+        #expect(codexChoice.id.hasPrefix("codex:"))
+        #expect(AgentProviderChoice(id: codexChoice.id) == codexChoice)
         #expect(AgentProviderChoice(provider: .local, profile: "ignored").profile == "default")
         #expect(AgentProviderChoice(id: "codex:invalid") == nil)
     }

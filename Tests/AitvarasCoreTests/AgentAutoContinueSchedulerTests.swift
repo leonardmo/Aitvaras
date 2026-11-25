@@ -312,6 +312,7 @@ final class AutoContinueTimerClock: Sendable {
 
     @Test func verifiedQuotaArmsOnlyAfterActualProviderFailureAndDefaultsReset() async throws {
         let stores = try inMemoryStores(), session = try agentStoreChat(stores, provider: .codex).1
+        try configureAutoContinueProvider(stores)
         let clock = AutoContinueTimerClock(), backend = AutoContinueBackend()
         let manager = try manager(stores, backend, clock), scheduler = scheduler(manager, stores, backend, clock)
         try await scheduler.start()

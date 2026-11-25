@@ -74,7 +74,7 @@ struct SettingsSearchResult: Identifiable {
 
     private static let pageKeywords: [SettingsPage: String] = [
         .avatar: "appearance theme floating overlay accessibility",
-        .providers: "Claude Codex accounts login sign in",
+        .providers: "Add provider Claude Codex Local Ollama accounts login sign in",
         .access: "privacy macOS system permissions"
     ]
 

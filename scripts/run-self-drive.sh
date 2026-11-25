@@ -31,8 +31,8 @@ fi
 git -C "$project" add -A
 git -C "$project" -c user.name=test -c user.email=test@example.invalid commit -q -m init
 env AITVARAS_SELF_DRIVE="$PWD/UITests/self-drive/$scenario.json" AITVARAS_SELF_DRIVE_OUTPUT="$out" \
-    AITVARAS_SELF_DRIVE_PROJECT="$project" AITVARAS_SELF_DRIVE_CODEX_MODEL="${AITVARAS_SELF_DRIVE_CODEX_MODEL:-gpt-6-luna}" \
-    AITVARAS_SELF_DRIVE_CLAUDE_MODEL="${AITVARAS_SELF_DRIVE_CLAUDE_MODEL:-haiku}" \
+    AITVARAS_SELF_DRIVE_PROJECT="$project" AITVARAS_SELF_DRIVE_CODEX_MODEL="${AITVARAS_SELF_DRIVE_CODEX_MODEL-gpt-6-luna}" \
+    AITVARAS_SELF_DRIVE_CLAUDE_MODEL="${AITVARAS_SELF_DRIVE_CLAUDE_MODEL-haiku}" \
     AITVARAS_STATE_DIR="$state" AITVARAS_DISABLE_EXTERNAL_INTEGRATIONS=1 \
     AITVARAS_AGENT_TEST_PROVIDERS=real "$app" > "$out/app.log" 2>&1 &
 pid=$!

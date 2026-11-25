@@ -1,4 +1,5 @@
 import Foundation
+import GRDB
 import AitvarasAgents
 
 /// Profile-local choices and read receipts use the existing key/value store.
@@ -39,18 +40,45 @@ extension Stores {
     }
 
     public func chatHasUnseenCompletion(_ id: UUID) throws -> Bool {
-        guard let turn = try latestAgentTurn(chatID: id) else { return false }
-        guard turn.state == .completed || turn.origin != .user else { return false }
-        return try value(forKey: "chat.lastSeen.\(id.uuidString)") != Self.chatReadReceipt(turn)
+        try db.queue.read { dbc in
+            let previous = try Self.savedChatReceipt(id, in: dbc)
+            if previous == Self.manualUnreadReceipt { return true }
+            guard let turn = try AgentTurnStore.latest(chatID: id, in: dbc),
+                  turn.state == .completed || turn.origin != .user else { return false }
+            return previous != Self.chatReadReceipt(turn)
+        }
     }
 
-    public func markChatSeen(_ id: UUID) throws {
-        guard let turn = try latestAgentTurn(chatID: id) else { return }
-        guard turn.state == .completed || turn.origin != .user else { return }
-        let key = "chat.lastSeen.\(id.uuidString)"
-        let receipt = Self.chatReadReceipt(turn)
-        if try value(forKey: key) != receipt { try setValues([key: receipt]) }
+    public func markChatUnread(_ id: UUID) throws {
+        try setValue(Self.manualUnreadReceipt, forKey: Self.chatReceiptKey(id))
     }
+
+    public func markChatSeen(_ id: UUID, clearingManualUnread: Bool = true) throws {
+        try db.queue.write { dbc in
+            let previous = try Self.savedChatReceipt(id, in: dbc)
+            if previous == Self.manualUnreadReceipt && !clearingManualUnread { return }
+            let key = Self.chatReceiptKey(id)
+            if let turn = try AgentTurnStore.latest(chatID: id, in: dbc),
+               turn.state == .completed || turn.origin != .user {
+                let receipt = Self.chatReadReceipt(turn)
+                if previous != receipt {
+                    try dbc.execute(sql: "INSERT INTO kv(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                                    arguments: [key, receipt])
+                }
+            } else if previous == Self.manualUnreadReceipt {
+                try dbc.execute(sql: "DELETE FROM kv WHERE key = ?", arguments: [key])
+            }
+        }
+    }
+
+    private static let manualUnreadReceipt = "unread"
+
+    private static func chatReceiptKey(_ id: UUID) -> String { "chat.lastSeen.\(id.uuidString)" }
+
+    private static func savedChatReceipt(_ id: UUID, in db: Database) throws -> String? {
+        try String.fetchOne(db, sql: "SELECT value FROM kv WHERE key = ?", arguments: [chatReceiptKey(id)])
+    }
+
     private static func chatReadReceipt(_ turn: AgentJournalTurn) -> String {
         turn.origin == .user ? turn.id.uuidString : "\(turn.id.uuidString):\(turn.state.rawValue)"
     }

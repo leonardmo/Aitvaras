@@ -180,7 +180,8 @@ public actor CodexBackend: AgentBackend {
         defer { mcpLoginInProgress = false }
         // A dedicated login connection can be closed on cancellation without
         // interrupting the backend's existing chat threads.
-        let login = CodexBackend(executable: executable, environment: environment, profile: profile)
+        let login = CodexBackend(executable: executable, environment: environment, profile: profile,
+            overrides: environment.filter { $0.key == "CODEX_HOME" })
         let deadline = ContinuousClock.now.advanced(by: min(timeout, .seconds(300)))
         do {
             try await withThrowingTaskGroup(of: Void.self) { group in

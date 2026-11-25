@@ -35,28 +35,54 @@ final class ChatModel {
     private(set) var canDiscardChanges = false
     private let claudeDefaultDirectory: URL
     private let profileBackends: AgentProfileBackends?
-    private(set) var claudeProfiles: [AgentProviderProfile] = []
+    private(set) var providerProfiles: [AgentProviderProfile] = []
     private(set) var claudeProfile = "default"
+    private(set) var codexProfile = "default"
     private(set) var inlineChoices: [AgentProviderChoice] = []
     private(set) var profileStatuses: [AgentProviderChoice: AgentStatus] = [:]
     private(set) var profileLimits: [AgentProviderChoice: [AgentRateLimitWindow]] = [:]
-    private(set) var codexResetBalance: CodexUsageResetBalance?
-    private(set) var codexResetMessage: String?
-    private(set) var redeemingCodexReset = false
-    private(set) var refreshingCodexUsage = false
+    private struct CodexUsageState {
+        var balance: CodexUsageResetBalance?
+        var message: String?
+        var redeeming = false
+        var refreshing = false
+        var lastAttempt: ContinuousClock.Instant?
+        var retryInterval: Duration = .seconds(600)
+    }
+    private var codexUsage: [AgentProviderChoice: CodexUsageState] = [:]
+    @ObservationIgnored private var observedUsage: [UUID: [AgentRateLimitWindow]] = [:]
+    static let usageRefreshInterval: Duration = .seconds(600)
     private(set) var profileError: String?
     private(set) var signingInChoice: AgentProviderChoice?
-    var choice: AgentProviderChoice { .init(provider: provider, profile: claudeProfile) }
-    var allChoices: [AgentProviderChoice] { claudeProfiles.map(\.choice) + [.init(provider: .codex), .init(provider: .local)] }
+    var choice: AgentProviderChoice { effectiveChoice(provider) }
+    var allChoices: [AgentProviderChoice] { providerProfiles.map(\.choice) }
+    var hasConfiguredProvider: Bool { allChoices.contains(choice) }
+
+    func effectiveChoice(_ provider: AgentProvider) -> AgentProviderChoice {
+        let profile = switch provider { case .claude: claudeProfile; case .codex: codexProfile; case .local: "default" }
+        return .init(provider: provider, profile: profile)
+    }
+
+    private func applyChoice(_ value: AgentProviderChoice, chatID: UUID?) {
+        switch value.provider {
+        case .claude: claudeProfile = value.profile
+        case .codex: codexProfile = value.profile
+        case .local: break
+        }
+        selectComposer(chatID, provider: value.provider)
+        snapshotInlineChoices()
+        syncSelectedStatus()
+    }
+
     func title(_ choice: AgentProviderChoice) -> String {
-        if choice.provider == .claude { return claudeProfiles.first { $0.nativeProfile == choice.profile }?.name ?? "Claude" }
-        return choice.provider.rawValue.capitalized
+        providerProfiles.first { $0.choice == choice }?.name ?? choice.provider.rawValue.capitalized
     }
     func statusLabel(_ choice: AgentProviderChoice) -> String {
         guard let status = profileStatuses[choice] else { return "Unknown" }
         if !status.installed { return "Not installed" }
         switch status.authentication {
-        case .subscription, .local: return "Signed in"
+        case .subscription: return "Signed in"
+        case .local: return "Ready"
         case .signedOut: return "Signed out"
         case .unsupported: return "Unsupported login"
         case .unavailable: return "Unavailable"
@@ -69,53 +95,97 @@ final class ChatModel {
     }
     func reloadProfiles() {
         do {
-            let profiles = try stores.claudeProfiles()
-            guard claudeProfiles != profiles else { return }
-            claudeProfiles = profiles
+            let profiles = try stores.providerProfiles()
+            guard providerProfiles != profiles else { return }
+            providerProfiles = profiles
+            snapshotInlineChoices()
             if let autoContinue { Task { try? await autoContinue.profilesChanged() } }
-        } catch { self.error = "Claude profiles could not be loaded." }
+        } catch { profileError = "Provider profiles could not be loaded." }
     }
     private func syncSelectedStatus() {
-        statuses[.claude] = profileStatuses[.init(provider: .claude, profile: claudeProfile)]
-        providerLimits[.claude] = profileLimits[.init(provider: .claude, profile: claudeProfile)]
+        for provider in [AgentProvider.claude, .codex, .local] {
+            let selected = effectiveChoice(provider)
+            statuses[provider] = profileStatuses[selected]
+            providerLimits[provider] = profileLimits[selected]
+        }
     }
     private func snapshotInlineChoices() {
         let recent = (try? stores.value(forKey: "agent.recentProfiles"))
             .flatMap { try? JSONDecoder().decode([String].self, from: Data($0.utf8)) } ?? []
         inlineChoices = AgentProviderChoice.inlineChoices(all: allChoices, recent: recent.compactMap(AgentProviderChoice.init(id:)), selected: choice)
     }
-    func addClaudeProfile(name: String) {
+
+    func addProvider(_ kind: AgentProvider, name: String, useExistingCLI: Bool, defaultModel: String?, defaultEffort: String?) -> Bool {
         profileError = nil
         do {
-            _ = try stores.createClaudeProfile(name: name, stateDirectory: AitvarasPaths.stateDirectory, defaultDirectory: claudeDefaultDirectory)
+            let profile = try stores.createProviderProfile(kind: kind, name: name,
+                stateDirectory: AitvarasPaths.stateDirectory, claudeDefaultDirectory: claudeDefaultDirectory,
+                useExistingCLI: useExistingCLI, defaultModel: defaultModel, defaultEffort: defaultEffort)
             reloadProfiles()
+            if chatID == nil && (!hasConfiguredProvider || providerProfiles.count == 1) {
+                applyChoice(profile.choice, chatID: nil)
+                try? loadSettings()
+            }
             Task { await refreshStatus() }
-        } catch { profileError = "Claude profile could not be created." }
+            return true
+        } catch {
+            profileError = "Provider could not be added."
+            return false
+        }
     }
-    func updateClaudeProfile(_ profile: AgentProviderProfile) {
-        profileError = nil
-        do { try stores.saveClaudeProfile(profile); reloadProfiles() }
-        catch { profileError = "Claude profile could not be saved." }
-    }
-    func deleteClaudeProfile(_ profile: AgentProviderProfile) {
-        guard !isBusy, signingIn == nil else { return }
+
+    func updateProviderProfile(_ profile: AgentProviderProfile) -> Bool {
         profileError = nil
         do {
-            try stores.deleteClaudeProfile(id: profile.id); reloadProfiles()
-            inlineChoices.removeAll { $0 == profile.choice }
-            if claudeProfile == profile.nativeProfile {
-                claudeProfile = "default"; invalidateCommandCatalog(); invalidatePending(); try loadSettings()
-                statuses[.claude] = profileStatuses[.init(provider: .claude)]
-                providerLimits[.claude] = profileLimits[.init(provider: .claude)]
+            try stores.saveProviderProfile(profile)
+            reloadProfiles()
+            if chatID == nil && choice == profile.choice {
+                settings[settingsKey] = nil
+                try? loadSettings()
             }
-        } catch { profileError = "Claude profile could not be deleted." }
+            return true
+        } catch {
+            profileError = "Provider settings could not be saved."
+            return false
+        }
     }
-    func moveClaudeProfile(_ profile: AgentProviderProfile, by offset: Int) {
-        guard let index = claudeProfiles.firstIndex(where: { $0.id == profile.id }), claudeProfiles.indices.contains(index + offset) else { return }
+
+    var canRemoveProvider: Bool { !isBusy && signingIn == nil && !sidebarStates.values.contains(where: \.isRunning)
+        && !codexUsage.values.contains(where: \.redeeming) }
+
+    func removeProvider(_ profile: AgentProviderProfile) {
+        guard canRemoveProvider else { return }
         profileError = nil
-        var ids = claudeProfiles.map(\.id); ids.swapAt(index, index + offset)
-        do { try stores.reorderClaudeProfiles(ids: ids); reloadProfiles() }
-        catch { profileError = "Claude profiles could not be reordered." }
+        do {
+            try stores.deleteProviderProfile(id: profile.id)
+            if let codex = profileBackends?.discard(profile.choice) as? CodexBackend {
+                Task { try? await codex.shutdown() }
+            }
+            profileStatuses[profile.choice] = nil
+            profileLimits[profile.choice] = nil
+            catalogs[profile.choice] = nil
+            modelLoads.removeValue(forKey: profile.choice)?.task.cancel()
+            codexUsage[profile.choice] = nil
+            reloadProfiles()
+            if choice == profile.choice {
+                invalidateCommandCatalog()
+                invalidatePending()
+                dismissSideQuestion()
+                if chatID == nil, let remaining = allChoices.first {
+                    applyChoice(remaining, chatID: nil)
+                    try? loadSettings()
+                } else { syncSelectedStatus() }
+            }
+        } catch { profileError = "Provider could not be removed." }
+    }
+    func moveProviderProfile(_ profile: AgentProviderProfile, by offset: Int) {
+        guard let index = providerProfiles.firstIndex(where: { $0.id == profile.id }),
+              providerProfiles.indices.contains(index + offset) else { return }
+        profileError = nil
+        var ids = providerProfiles.map(\.id)
+        ids.swapAt(index, index + offset)
+        do { try stores.reorderProviderProfiles(ids: ids); reloadProfiles() }
+        catch { profileError = "Providers could not be reordered." }
     }
     private let backends: [AgentProvider: any AgentBackend]
     private let agentSetup: AgentSetupCoordinator?
@@ -163,10 +233,30 @@ final class ChatModel {
     private var localAvailable = true
     private var localModelTitle = "Checking model…"
 
-    func markChatOpened(_ id: UUID) {
+    func markChatOpened(_ id: UUID, clearingManualUnread: Bool = true) {
         guard NSApplication.shared.isActive else { return }
-        try? stores.markChatSeen(id)
-        unseenChats.remove(id)
+        do {
+            try stores.markChatSeen(id, clearingManualUnread: clearingManualUnread)
+            if try stores.chatHasUnseenCompletion(id) { unseenChats.insert(id) }
+            else { unseenChats.remove(id) }
+        } catch { /* Keep the existing indicator when a receipt cannot be saved. */ }
+    }
+
+    func loadUnreadStatus(_ ids: [UUID]) {
+        for id in ids {
+            guard let unread = try? stores.chatHasUnseenCompletion(id) else { continue }
+            if unread { unseenChats.insert(id) }
+            else { unseenChats.remove(id) }
+        }
+    }
+
+    func markChatUnread(_ id: UUID) {
+        do {
+            try stores.markChatUnread(id)
+            unseenChats.insert(id)
+        } catch {
+            self.error = "Chat could not be marked unread."
+        }
     }
     func showChat(_ id: UUID?, surface: UUID) {
         visibleChats[surface] = id
@@ -194,9 +284,14 @@ final class ChatModel {
                             self.agentSetupRevision = UUID()
                         }
                         let visible = self.visibleChats.values.contains(id) && NSApplication.shared.isActive
-                        if visible { try? self.stores.markChatSeen(id) }
-                        if (try? self.stores.chatHasUnseenCompletion(id)) == true { self.unseenChats.insert(id) }
-                        else if visible { self.unseenChats.remove(id) }
+                        if previous == nil || previous?.inputID != value.inputID
+                            || previous?.isRunning != value.isRunning || previous?.outcome != value.outcome {
+                            if visible { try? self.stores.markChatSeen(id, clearingManualUnread: false) }
+                            if let unread = try? self.stores.chatHasUnseenCompletion(id) {
+                                if unread { self.unseenChats.insert(id) }
+                                else if visible { self.unseenChats.remove(id) }
+                            }
+                        }
                         if !visible, case .autonomous = value.turnOrigin,
                            previous?.inputID != value.inputID || value.pendingCards.contains(where: { card in
                                previous?.pendingCards.contains(where: { $0.id == card.id }) != true
@@ -227,11 +322,13 @@ final class ChatModel {
         setVisibleDraft("")
         reloadProfiles()
         let savedChoice = (try? stores.value(forKey: "agent.lastProfile")).flatMap(AgentProviderChoice.init(id:))
-        let saved = savedChoice?.provider ?? (try? stores.value(forKey: "agent.lastProvider")).flatMap(AgentProvider.init(rawValue:))
-        if let savedChoice, savedChoice.provider == .claude, allChoices.contains(savedChoice) { claudeProfile = savedChoice.profile }
-        else { claudeProfile = "default" }
-        selectComposer(nil, provider: ChatSettings.newProvider(lastUsed: saved, localAvailable: localAvailable, statuses: statuses))
-        snapshotInlineChoices(); syncSelectedStatus()
+        let savedProvider = (try? stores.value(forKey: "agent.lastProvider")).flatMap(AgentProvider.init(rawValue:))
+        let restored = savedChoice.flatMap { allChoices.contains($0) ? $0 : nil }
+            ?? allChoices.first { $0.provider == savedProvider }
+            ?? allChoices.first
+        claudeProfile = "default"
+        codexProfile = "default"
+        applyChoice(restored ?? .init(provider: .local), chatID: nil)
         authProvider = nil
         try? loadSettings()
     }
@@ -253,8 +350,11 @@ final class ChatModel {
         if provider == .local, let selfDriveLocalModel { return selfDriveLocalModel }
         if provider == .claude, let selfDriveClaudeModel { return selfDriveClaudeModel }
         #endif
-        return provider == .local ? "local" : provider == .claude ? (claudeProfiles.first { $0.nativeProfile == claudeProfile }?.defaultModel ?? "opus") : "default"
+        return selectedProviderProfile?.defaultModel ?? (provider == .local ? "local" : "default")
     }
+    private var selectedProviderProfile: AgentProviderProfile? { providerProfiles.first { $0.choice == choice } }
+    private var newSessionEffort: String? { provider == .local ? nil : selectedProviderProfile?.defaultEffort }
+
     private var settings: [String: AgentChatSession] = [:]
     private let autoContinue: AgentAutoContinueLifecycle?
     private var autoContinueSubscription: Task<Void, Never>?
@@ -559,7 +659,7 @@ final class ChatModel {
     }
     var isBusy: Bool { state?.isRunning == true || chatID.map { sending[$0] != nil } == true }
     var canSubmit: Bool {
-        guard selectedSignInProvider == nil else { return false }
+        guard hasConfiguredProvider, selectedSignInProvider == nil else { return false }
         guard let id = chatID else { return !terminating && !creatingChat && newProjectID != nil && signingIn == nil }
         return !terminating && !gitBusy && !stopping.contains(id) && sending[id] == nil && !submittedText.contains(id) && signingIn == nil
             && !queueChanges.contains(id)
@@ -669,9 +769,17 @@ final class ChatModel {
         pullRequestCheckedAt = nil; pullRequestSignedIn = false
         do {
             let saved = try stores.value(forKey: id.map { "agent.provider.\($0.uuidString)" } ?? "agent.lastProvider")
-            selectComposer(id, provider: saved.flatMap(AgentProvider.init(rawValue:)) ?? .local)
-            claudeProfile = try id.map { try stores.selectedClaudeProfile(chatID: $0) } ?? "default"
-            snapshotInlineChoices(); syncSelectedStatus()
+            let selectedProvider = saved.flatMap(AgentProvider.init(rawValue:))
+            if let id {
+                claudeProfile = try stores.selectedProviderProfile(chatID: id, provider: .claude)
+                codexProfile = try stores.selectedProviderProfile(chatID: id, provider: .codex)
+            }
+            let previousSession: AgentProviderChoice?
+            if selectedProvider == nil, let id, let turn = try stores.latestAgentTurn(chatID: id) {
+                previousSession = try stores.agentSessions(chatID: id).first { $0.id == turn.sessionID }?.choice
+            } else { previousSession = nil }
+            let restored = selectedProvider.map { effectiveChoice($0) } ?? previousSession ?? allChoices.first ?? .init(provider: .local)
+            applyChoice(restored, chatID: id)
             try loadSettings()
             if let id { selectedPermissions = try stores.agentChatPermissions(chatID: id) }
             else { loadProjectPermissions() }
@@ -696,18 +804,18 @@ final class ChatModel {
     }
 
     func setProvider(_ value: AgentProvider) {
-        setChoice(.init(provider: value, profile: value == .claude ? claudeProfile : "default"))
+        let effective = effectiveChoice(value)
+        if let selected = allChoices.contains(effective) ? effective : allChoices.first(where: { $0.provider == value }) {
+            setChoice(selected)
+        }
     }
     func setChoice(_ value: AgentProviderChoice) {
         guard !isBusy, !editingQueuedMessage, !creatingChat, signingIn == nil, value != choice, allChoices.contains(value) else { return }
         do {
             try stores.selectAgentChoice(value, chatID: chatID)
-            selectComposer(chatID, provider: value.provider)
-            if value.provider == .claude { claudeProfile = value.profile }
+            applyChoice(value, chatID: chatID)
             invalidatePending(); invalidateCommandCatalog(); dismissSideQuestion()
             try loadSettings(); error = nil; authProvider = nil
-            statuses[value.provider] = profileStatuses[value]
-            providerLimits[value.provider] = profileLimits[value]
         } catch { self.error = "Provider selection could not be saved." }
     }
 
@@ -728,7 +836,7 @@ final class ChatModel {
             resourceScope = ChatResourceScope()
             if settings[settingsKey] == nil {
                 settings[settingsKey] = AgentChatSession(chatID: newChatID, provider: provider, cwd: "/tmp",
-                                                       model: newSessionModel, effort: provider == .claude ? claudeProfiles.first { $0.nativeProfile == claudeProfile }?.defaultEffort ?? "medium" : nil, providerProfile: choice.profile)
+                                                       model: newSessionModel, effort: newSessionEffort, providerProfile: choice.profile)
             }
             restoreModelSelection()
             return
@@ -742,7 +850,7 @@ final class ChatModel {
         // Refresh identities while retaining unsent choices (which are saved immediately).
         settings[settingsKey] = try stores.agentSession(chatID: id, choice: choice)
             ?? AgentChatSession(chatID: id, provider: provider, cwd: cwd,
-                                model: newSessionModel, effort: provider == .claude ? claudeProfiles.first { $0.nativeProfile == claudeProfile }?.defaultEffort ?? "medium" : nil, providerProfile: choice.profile)
+                                model: newSessionModel, effort: newSessionEffort, providerProfile: choice.profile)
         if settings[settingsKey]?.sessionID == nil { settings[settingsKey]?.cwd = cwd }
         let primary = URL(fileURLWithPath: settings[settingsKey]?.cwd ?? cwd).resolvingSymlinksInPath().standardizedFileURL.path
         settings[settingsKey]?.additionalRootsJSON = try owned?.additionalRootsJSON
@@ -959,14 +1067,20 @@ final class ChatModel {
     }
 
     /// No browser or user message is initiated by opening Chat or Settings.
-    func refreshStatus() async {
+    func refreshStatus(selectedOnly: Bool = false) async {
         reloadProfiles()
-        for entry in allChoices {
+        let choices = selectedOnly ? allChoices.filter { $0 == choice } : allChoices
+        for entry in choices {
+            guard !Task.isCancelled else { return }
             let backend = backend(for: entry)
-            profileStatuses[entry] = try? await backend?.status()
-            if entry == choice || entry.provider != .claude { statuses[entry.provider] = profileStatuses[entry] }
-            if entry.provider == .codex { await refreshCodexUsage() }
+            if let status = try? await backend?.status() {
+                applyProfileStatus(status, for: entry)
+            } else {
+                profileStatuses[entry] = nil
+                if entry == effectiveChoice(entry.provider) { statuses[entry.provider] = nil }
+            }
         }
+        guard choices.contains(.init(provider: .local)) else { return }
         if backends[.local] is LocalBackend {
             let assigned = MLXEngine.assignedModel(for: .chat)
             localAvailable = MLXEngine.installedModels().contains(assigned)
@@ -979,75 +1093,117 @@ final class ChatModel {
         } else {
             localAvailable = (try? await backends[.local]?.models().isEmpty) == false
         }
-        if chatID == nil, (try? stores.value(forKey: "agent.lastProvider")) == nil {
-            let value = ChatSettings.newProvider(lastUsed: nil, localAvailable: localAvailable, statuses: statuses)
-            selectComposer(nil, provider: value); try? loadSettings()
-        }
-    }
-    func refreshCodexUsage() async {
-        let choice = AgentProviderChoice(provider: .codex)
-        guard !refreshingCodexUsage, !redeemingCodexReset, let codex = backend(for: choice) as? CodexBackend else { return }
-        refreshingCodexUsage = true
-        defer { refreshingCodexUsage = false }
-        await loadCodexUsage(codex, choice: choice)
     }
 
-    private func loadCodexUsage(_ codex: CodexBackend, choice: AgentProviderChoice) async {
-        let usage = try? await codex.usageSnapshot()
-        codexResetBalance = usage?.resets
-        if let usage {
-            profileLimits[choice] = usage.windows
-            providerLimits[.codex] = usage.windows
-        } else if profileStatuses[choice]?.authentication != .subscription {
+    private func applyProfileStatus(_ status: AgentStatus, for choice: AgentProviderChoice) {
+        guard allChoices.contains(choice) else { return }
+        let previous = profileStatuses[choice]
+        let changedAccount = previous != nil && previous?.accountID != status.accountID
+        if changedAccount {
+            catalogs[choice] = nil
+            modelLoads.removeValue(forKey: choice)?.task.cancel()
+        }
+        if status.authentication != .subscription || changedAccount {
             profileLimits[choice] = nil
-            providerLimits[.codex] = nil
+            if choice == effectiveChoice(choice.provider) { providerLimits[choice.provider] = nil }
+            if choice.provider == .codex {
+                codexUsage[choice]?.balance = nil
+                codexUsage[choice]?.lastAttempt = nil
+                codexUsage[choice]?.message = nil
+            }
         }
+        profileStatuses[choice] = status
+        if choice == effectiveChoice(choice.provider) { statuses[choice.provider] = status }
     }
 
-    func redeemCodexReset(_ credit: CodexUsageResetCredit) async {
-        let choice = AgentProviderChoice(provider: .codex)
-        guard !refreshingCodexUsage, !redeemingCodexReset, codexResetBalance?.credits.contains(credit) == true,
+    func codexResetBalance(for choice: AgentProviderChoice) -> CodexUsageResetBalance? { codexUsage[choice]?.balance }
+    func codexResetMessage(for choice: AgentProviderChoice) -> String? { codexUsage[choice]?.message }
+    func refreshingCodexUsage(for choice: AgentProviderChoice) -> Bool { codexUsage[choice]?.refreshing == true }
+    func redeemingCodexReset(for choice: AgentProviderChoice) -> Bool { codexUsage[choice]?.redeeming == true }
+
+    func refreshCodexUsage(for selected: AgentProviderChoice? = nil, interactive: Bool = false) async {
+        let choice = selected ?? self.choice
+        guard choice.provider == .codex, allChoices.contains(choice),
+              !refreshingCodexUsage(for: choice), !redeemingCodexReset(for: choice),
+              let codex = backend(for: choice) as? CodexBackend, !Task.isCancelled else { return }
+        let now = ContinuousClock.now
+        let interval = interactive ? Duration.seconds(30) : codexUsage[choice]?.retryInterval ?? Self.usageRefreshInterval
+        if let previous = codexUsage[choice]?.lastAttempt, previous.duration(to: now) < interval { return }
+        codexUsage[choice, default: .init()].lastAttempt = now
+        codexUsage[choice, default: .init()].refreshing = true
+        defer { codexUsage[choice]?.refreshing = false }
+        if profileStatuses[choice] == nil, let status = try? await codex.status() {
+            applyProfileStatus(status, for: choice)
+        }
+        let loaded = await loadCodexUsage(codex, choice: choice)
+        if Task.isCancelled && !loaded { codexUsage[choice]?.lastAttempt = nil }
+        else { codexUsage[choice]?.retryInterval = loaded ? Self.usageRefreshInterval : .seconds(1800) }
+    }
+
+    @discardableResult
+    private func loadCodexUsage(_ codex: CodexBackend, choice: AgentProviderChoice) async -> Bool {
+        guard let usage = try? await codex.usageSnapshot(), allChoices.contains(choice) else { return false }
+        codexUsage[choice, default: .init()].balance = usage.resets
+        profileLimits[choice] = usage.windows
+        if choice == effectiveChoice(.codex) { providerLimits[.codex] = usage.windows }
+        return true
+    }
+
+    func redeemCodexReset(_ credit: CodexUsageResetCredit, for choice: AgentProviderChoice) async {
+        guard choice.provider == .codex, allChoices.contains(choice),
+              !refreshingCodexUsage(for: choice), !redeemingCodexReset(for: choice),
+              codexResetBalance(for: choice)?.credits.contains(credit) == true,
               let codex = backend(for: choice) as? CodexBackend else { return }
-        redeemingCodexReset = true
-        defer { redeemingCodexReset = false }
-        codexResetMessage = nil
+        codexUsage[choice, default: .init()].redeeming = true
+        defer { codexUsage[choice]?.redeeming = false }
+        codexUsage[choice]?.message = nil
         do {
             let outcome = try await codex.redeemUsageReset(credit, confirmed: true, audit: { [stores] event in
                 _ = try stores.record(event)
             })
             switch outcome {
-            case .reset, .alreadyRedeemed: codexResetMessage = "Codex reset applied."
-            case .nothingToReset: codexResetMessage = "None of the covered limits needs a reset yet."
-            case .noCredit: codexResetMessage = "This reset is no longer available."
+            case .reset, .alreadyRedeemed: codexUsage[choice]?.message = "Codex reset applied."
+            case .nothingToReset: codexUsage[choice]?.message = "None of the covered limits needs a reset yet."
+            case .noCredit: codexUsage[choice]?.message = "This reset is no longer available."
             }
         } catch {
-            codexResetMessage = "Couldn’t verify the reset. Check Codex Usage before trying again."
+            codexUsage[choice]?.message = "Couldn’t verify the reset. Check Codex Usage before trying again."
         }
         await loadCodexUsage(codex, choice: choice)
     }
 
     func loadModels() async {
         let selected = choice
-        if catalogs[selected] != nil { restoreModelSelection(); return }
-        guard let backend = backend(for: selected) else { return }
+        guard hasConfiguredProvider else { return }
+        _ = await availableModels(for: selected)
+        guard !Task.isCancelled, choice == selected, !isBusy, signingIn == nil else { return }
+        restoreModelSelection()
+    }
+
+    func availableModels(for selected: AgentProviderChoice) async -> [AgentModel] {
+        guard allChoices.contains(selected) else { return [] }
+        if let cached = catalogs[selected] { return cached }
+        guard let backend = backend(for: selected) else { return [] }
         let load: (token: UUID, task: Task<[AgentModel], Error>)
         if let existing = modelLoads[selected] { load = existing }
         else {
             load = (UUID(), Task {
                 let status = try await backend.status()
                 guard status.authentication == .subscription || status.authentication == .local else { return [] }
-                return try await backend.models()
+                let models = try await backend.models()
+                return selected.provider == .claude ? ChatSettings.claudeModels(models) : models
             })
             modelLoads[selected] = load
         }
-        defer { if modelLoads[selected]?.token == load.token { modelLoads.removeValue(forKey: selected) } }
-        do {
-            let values = try await load.task.value
-            guard modelLoads[selected]?.token == load.token, !values.isEmpty else { return }
-            catalogs[selected] = selected.provider == .claude ? ChatSettings.claudeModels(values) : values
-            guard choice == selected, !isBusy, signingIn == nil else { return }
-            restoreModelSelection()
-        } catch { /* A real Send supplies the actionable failure. */ }
+        guard let models = try? await load.task.value else {
+            if modelLoads[selected]?.token == load.token { modelLoads.removeValue(forKey: selected) }
+            return []
+        }
+        if modelLoads[selected]?.token == load.token {
+            modelLoads.removeValue(forKey: selected)
+            if !models.isEmpty, allChoices.contains(selected) { catalogs[selected] = models }
+        }
+        return catalogs[selected] ?? []
     }
 
     /// Compatibility entry point for typed actions outside the main composer.
@@ -1376,10 +1532,16 @@ final class ChatModel {
         }
     }
     private func recordProfileUsage(_ state: ChatState) {
-        if !state.rateLimits.isEmpty, let sessionID = state.entries.last?.sessionID,
-           let session = try? stores.agentSessions(chatID: state.chatID).first(where: { $0.id == sessionID }) {
-            profileLimits[session.choice] = state.rateLimits
-            if choice == session.choice { providerLimits[session.provider] = state.rateLimits }
+        if !state.rateLimits.isEmpty, observedUsage[state.chatID] != state.rateLimits,
+           let sessionID = state.entries.last?.sessionID,
+           let session = try? stores.agentSessions(chatID: state.chatID).first(where: { $0.id == sessionID }),
+           allChoices.contains(session.choice) {
+            observedUsage[state.chatID] = state.rateLimits
+            let windows = session.provider == .claude
+                ? AgentRateLimitWindow.merging(state.rateLimits, into: profileLimits[session.choice] ?? [])
+                : state.rateLimits
+            profileLimits[session.choice] = windows
+            if choice == session.choice { providerLimits[session.provider] = windows }
         }
     }
     private func failed(inputID: UUID, failure: AgentFailure) {
@@ -1516,11 +1678,11 @@ final class ChatModel {
         catch { self.error = "The waiting message could not be cleared." }
     }
     func signIn(_ provider: AgentProvider) {
-        signIn(.init(provider: provider, profile: provider == .claude ? claudeProfile : "default"))
+        signIn(effectiveChoice(provider))
     }
     func signIn(_ selected: AgentProviderChoice) {
         let provider = selected.provider
-        guard provider != .local, signingIn == nil, let backend = backend(for: selected) else { return }
+        guard provider != .local, allChoices.contains(selected), signingIn == nil, let backend = backend(for: selected) else { return }
         signingInChoice = selected; profileError = nil
         let token = UUID(), selectedChat = chatID
         loginToken = token; signingIn = provider
@@ -1529,7 +1691,7 @@ final class ChatModel {
             defer { if self.loginToken == token { self.loginToken = nil; self.signingIn = nil; self.signingInChoice = nil } }
             var retriedInput: UUID?
             do {
-                if provider == .claude { try self.stores.authorizeClaudeProfileSignIn(profile: selected.profile) }
+                try self.stores.authorizeProviderSignIn(selected)
                 try await self.signInCoordinator.signIn(backend: backend) { [weak self] url in
                     await self?.openSignInURL(url, token: token)
                 }
@@ -1538,15 +1700,15 @@ final class ChatModel {
                 let status = try await backend.status()
                 try Task.checkCancellation()
                 guard self.loginToken == token else { return }
-                self.profileStatuses[selected] = status
-                if self.choice == selected || provider != .claude { self.statuses[provider] = status }
+                self.applyProfileStatus(status, for: selected)
                 guard status.authentication == .subscription else { throw AgentFailure.authRequired }
+                if provider == .codex { Task { await self.refreshCodexUsage(for: selected, interactive: true) } }
                 self.catalogs[selected] = nil
                 self.modelLoads.removeValue(forKey: selected)?.task.cancel()
                 if let pending = try self.stores.pendingSend(), pending.session.choice == selected, self.choice == selected,
                    self.chatID == selectedChat, self.chatID == pending.session.chatID, self.provider == provider,
                    let turn = try self.stores.agentTurn(id: pending.inputID),
-                   let session = try self.stores.agentSession(chatID: pending.session.chatID, provider: provider),
+                   let session = try self.stores.agentSession(chatID: pending.session.chatID, choice: selected),
                    let chat = try self.stores.workspaceChat(id: pending.session.chatID), chat.archivedAt == nil,
                    try self.stores.workspaceProject(id: chat.projectID)?.isVisible == true {
                     _ = try await self.signInCoordinator.consume(inputID: pending.inputID, turn: turn, session: session, accountID: self.statuses[provider]?.accountID)
@@ -1636,7 +1798,11 @@ final class ChatModel {
         }
         sidebarTasks.values.forEach { $0.cancel() }; sidebarTasks.removeAll()
         for case let opencode as OpencodeBackend in backends.values { await opencode.shutdown() }
-        for case let codex as CodexBackend in backends.values { try await codex.shutdown() }
+        let configuredBackends = profileBackends?.snapshot() ?? []
+        var seen = Set<ObjectIdentifier>()
+        for case let codex as CodexBackend in configuredBackends + Array(backends.values) {
+            if seen.insert(ObjectIdentifier(codex)).inserted { try await codex.shutdown() }
+        }
     }
     func resumeAfterCancelledTermination() { terminating = false }
     func approvalContext(_ suggestion: AgentApprovalSuggestion) -> String {

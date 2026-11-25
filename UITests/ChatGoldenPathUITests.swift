@@ -50,6 +50,25 @@ final class ChatGoldenPathUITests: XCTestCase {
         element("chat.agent.done").click()
     }
 
+    private func configureProviders() throws {
+        let settings = element("gearshape")
+        XCTAssertTrue(settings.waitForExistence(timeout: 15))
+        settings.click()
+        element("settings.providers").click()
+        for (title, id) in [("Claude", "claude"), ("Codex", "codex"), ("Local", "local")] {
+            element("chat.settings.addProvider").click()
+            let kind = element("chat.settings.providerKind")
+            XCTAssertTrue(kind.waitForExistence(timeout: 10))
+            if id != "claude" {
+                kind.click()
+                app.menuItems[title].firstMatch.click()
+            }
+            if id != "local" { element("chat.settings.useDefaultCLI").click() }
+            element("chat.settings.confirmAddProvider").click()
+            XCTAssertTrue(element("chat.settings.\(id)").waitForExistence(timeout: 10))
+        }
+    }
+
     func testGoldenPath() throws {
         continueAfterFailure = true
         app = E2EApp.launch(environment: ["AITVARAS_AGENT_TEST_PROVIDERS": "real"])
@@ -59,7 +78,8 @@ final class ChatGoldenPathUITests: XCTestCase {
         shot("01-launch")
         dump("01-launch-tree")
 
-        // No setup step should stand between launch and Chat.
+        try configureProviders()
+        // The configured CLI accounts are now available in Chat.
         let nav = app.buttons["bubble.left.and.text.bubble.right"].firstMatch
         if nav.waitForExistence(timeout: 10) { nav.click() }
         sleep(2)

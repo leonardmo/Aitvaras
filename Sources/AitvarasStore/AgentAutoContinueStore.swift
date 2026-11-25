@@ -62,11 +62,8 @@ public struct AgentAutoContinueStore: AgentAutoContinuePersistence {
               !value.native.host.isEmpty, value.native.profile == value.scope.providerProfile else {
             throw AgentStoreError.identityConflict
         }
-        if session.provider == .claude {
-            let profileID = session.providerProfile == "default" ? AgentProviderProfile.defaultClaudeID : UUID(uuidString: session.providerProfile)
-            guard let profileID, let profile = try AgentProviderProfile.fetchOne(dbc, key: profileID), !profile.isDeleted else {
-                throw AgentStoreError.identityConflict
-            }
+        guard try Stores.providerProfile(session.choice, in: dbc) != nil else {
+            throw AgentStoreError.identityConflict
         }
         guard let chat = try WorkspaceChat.fetchOne(dbc, key: value.chatID), chat.archivedAt == nil,
               let project = try WorkspaceProject.fetchOne(dbc, key: chat.projectID), project.isVisible else {

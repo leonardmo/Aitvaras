@@ -333,6 +333,10 @@ final class AppModel {
             // already has facts is never touched.
             if CommandLine.arguments.contains("--seed-demo-state"), AitvarasPaths.isIsolated {
                 _ = try? StateFixtures.seedDemoProfile(into: stores)
+                if try stores.providerProfile(.init(provider: .local)) == nil {
+                    let root = AitvarasPaths.stateDirectory
+                    try stores.createProviderProfile(kind: .local, name: "Local", stateDirectory: root, claudeDefaultDirectory: root)
+                }
             }
             // `--seed-home-attention` (D36, TESTING.md) adds fictional attention
             // items for Home/History checks. Only in an isolated profile.
@@ -503,12 +507,20 @@ final class AppModel {
         let gateway = gatewayChatLaunch
         let profileBackends = AgentProfileBackends { choice in
             guard let fallback = available[choice.provider] else { throw AgentFailure.offline }
-            guard choice.provider == .claude, choice.profile != "default" else { return fallback }
-            guard let profile = try stores.claudeProfile(nativeProfile: choice.profile, includeDeleted: true),
-                  let directory = profile.configDirectory else { throw AgentFailure.invalidRequest }
-            return ClaudeBackend(executable: AgentProviderLaunchPolicy.executable(.claude,
-                environment: inherited, isolated: isolated), environment: environment, profile: choice.profile,
-                overrides: ["CLAUDE_CONFIG_DIR": directory], mcpPolicy: mcpPolicy, gateway: gateway)
+            guard let profile = try stores.providerProfile(choice) else { throw AgentFailure.invalidRequest }
+            guard let directory = profile.configDirectory else { return fallback }
+            switch choice.provider {
+            case .claude:
+                return ClaudeBackend(executable: AgentProviderLaunchPolicy.executable(.claude,
+                    environment: inherited, isolated: isolated), environment: environment, profile: choice.profile,
+                    overrides: ["CLAUDE_CONFIG_DIR": directory], mcpPolicy: mcpPolicy, gateway: gateway)
+            case .codex:
+                return CodexBackend(executable: AgentProviderLaunchPolicy.executable(.codex,
+                    environment: inherited, isolated: isolated), environment: environment, profile: choice.profile,
+                    overrides: ["CODEX_HOME": directory], gateway: gateway)
+            case .local:
+                return fallback
+            }
         }
         let metadataUserDirectory = available[.claude] == nil ? nil
             : (claudeOverrides["CLAUDE_CONFIG_DIR"] ?? environment["CLAUDE_CONFIG_DIR"]).map { URL(fileURLWithPath: $0) }

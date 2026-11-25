@@ -31,21 +31,19 @@ struct WorkspaceRailView: View {
                             Text("Earlier chats").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
                             if earlierExpanded {
                                 ForEach(model.unassignedChatConversations) { conversation in
-                                    Button { model.openUnassignedConversation(conversation.id) } label: {
-                                        Label(conversation.title, systemImage: conversation.title == "Voice" ? "waveform" : "bubble.left")
-                                            .lineLimit(1).frame(maxWidth: .infinity, alignment: .leading)
-                                    }
-                                    .accessibilityIdentifier("chat.sidebar.\(conversation.id)")
-                                    .contextMenu {
-                                        if conversation.title != "Voice" {
-                                            Button("Move to project…") { assigningConversation = conversation }
-                                        }
-                                    }
+                                    earlierChatRow(conversation)
                                 }
                             }
                             Button(earlierExpanded ? "Show less" : "Show more") { earlierExpanded.toggle() }
                                 .accessibilityIdentifier("chat.earlier.more")
-                        }.font(.callout).buttonStyle(.plain)
+                        }
+                        .font(.callout).buttonStyle(.plain)
+                        .task(id: earlierExpanded && model.chatModel != nil
+                            ? model.unassignedChatConversations.map(\.id) : []) {
+                            guard earlierExpanded else { return }
+                            model.chatModel?.loadUnreadStatus(model.unassignedChatConversations
+                                .filter { $0.title != "Voice" }.map(\.id))
+                        }
                     }
                 }.padding(10)
             }
@@ -156,11 +154,48 @@ struct WorkspaceRailView: View {
         }
     }
 
+    private func earlierChatRow(_ conversation: Conversation) -> some View {
+        let isVoice = conversation.title == "Voice"
+        let unread = !isVoice && model.chatModel?.unseenChats.contains(conversation.id) == true
+        return Button { model.openUnassignedConversation(conversation.id) } label: {
+            HStack {
+                Label(conversation.title, systemImage: isVoice ? "waveform" : "bubble.left")
+                    .lineLimit(1)
+                Spacer(minLength: 0)
+                if unread {
+                    Image(systemName: "circle.fill").font(.system(size: 7))
+                        .foregroundStyle(Color.accentColor)
+                        .accessibilityLabel("Unread")
+                }
+            }
+        }
+        .accessibilityIdentifier("chat.sidebar.\(conversation.id)")
+        .contextMenu {
+            if !isVoice {
+                readStatusMenu(conversation.id)
+                Button("Move to project…") { assigningConversation = conversation }
+            }
+        }
+    }
+
+    @ViewBuilder private func readStatusMenu(_ id: UUID) -> some View {
+        if let chatModel = model.chatModel {
+            if chatModel.unseenChats.contains(id) {
+                Button("Mark as read") { chatModel.markChatOpened(id) }
+                    .accessibilityIdentifier("chat.markRead.\(id)")
+            } else {
+                Button("Mark as unread") { chatModel.markChatUnread(id) }
+                    .accessibilityIdentifier("chat.markUnread.\(id)")
+            }
+        }
+    }
+
     private func chatRow(_ chat: WorkspaceChat) -> some View {
         SidebarChatRow(chat: chat, selected: model.selectedWorkspaceChatID == chat.id,
                        status: model.chatModel?.sidebarStatus(chat.id) ?? .idle,
                        unseen: model.chatModel?.unseenChats.contains(chat.id) == true, open: { model.openWorkspaceChat(chat.id) })
         .contextMenu {
+            readStatusMenu(chat.id)
             Button("Rename") { newTitle = chat.title; renamingChat = chat }
                 .accessibilityIdentifier("chat.rename.\(chat.id)")
             Button(chat.kind == .primary ? "Unpin" : "Pin") {

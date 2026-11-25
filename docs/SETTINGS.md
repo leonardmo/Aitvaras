@@ -2,7 +2,7 @@
 
 Open Settings with Command–comma. The sidebar shows profile pages and projects. Project settings open here from the Chat header or project sidebar. The display, project and agent shortcuts link to their full settings destination when they touch persistent settings. Use Search settings or Command–F to find a setting, page, or project. Ask Aitvaras opens a chat draft about the current page or selected setting.
 
-The chat composer shows five-hour and weekly quota percentages in one pill when the selected account reports both windows. Click the usage pill for each available reset date and time. Markdown formats as you type. Return continues a list, Shift–Return adds a line, and Command–Return sends. Drag the handle at the top of the composer to set its height. Double-click it to return to automatic sizing. Paste an image into the message field to attach it in Claude or Codex chats.
+The chat composer shows five-hour and weekly quota percentages in one pill when the selected account reports both windows. Click the usage pill for each available reset date and time. A visible Codex chat refreshes usage through its native CLI about every ten minutes while the app is active, with a longer delay after failures. Claude usage updates when the CLI reports it during regular turns. The usage popover links to Claude’s Usage page for a current reading. Markdown formats as you type. Return continues a list, Shift–Return adds a line, and Command–Return sends. Drag the handle at the top of the composer to set its height. Drag it back to the minimum height or double-click it to return to automatic sizing. Paste an image into the message field to attach it in Claude or Codex chats.
 
 Under **Companion → Appearance**, turn on **Always animate in Aitvaras** to play app animations even when macOS Reduce Motion is enabled. The switch is off by default.
 
@@ -28,6 +28,8 @@ Under **Companion → Appearance**, turn on **Always animate in Aitvaras** to pl
 | Attachment, send, stop and gauges | Composer |
 
 `SettingsRegistry` is the source of truth for setting IDs, value types, safety classes and homes. Use the list endpoint below to get the current registry. Collections represent variable-length lists, such as provider profiles, project folders and accounts. Their home opens the corresponding editor.
+
+Use **Settings → Providers → Add Provider** to configure Claude, Codex, or Local. Claude and Codex support multiple named accounts with separate CLI homes and model defaults. Choose the existing CLI account when you want to share its native sign-in and history. Local is a single provider with a choice of locally available models. Existing chat sessions keep their original account and model. Removing a provider hides it from the chooser and keeps its files and chat history.
 
 ## Agent guide
 
