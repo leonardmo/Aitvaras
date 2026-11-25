@@ -1,4 +1,3 @@
-import AppKit
 import SwiftUI
 import AitvarasAgents
 
@@ -6,6 +5,7 @@ struct ComposerUsageLimits: View {
     @AppReduceMotion private var reduceMotion
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.colorSchemeContrast) private var contrast
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @State private var showsDetails = false
     let windows: [AgentRateLimitWindow]
     let narrow: Bool
@@ -17,17 +17,16 @@ struct ComposerUsageLimits: View {
             if narrow {
                 HStack(spacing: 0) {
                     if limits.isEmpty {
-                        ComposerMeterTrack(fraction: nil, ramp: .idle, rounded: false)
+                        Rectangle().fill(.primary.opacity(0.12))
                     }
                     ForEach(limits) { limit in
                         if limit.id != limits.first?.id {
                             Rectangle().fill(.primary.opacity(0.18))
                                 .frame(width: 1).accessibilityHidden(true)
                         }
-                        let ramp = ColorRamp.usage(limit.used ?? 0)
-                        ComposerMeterTrack(fraction: limit.used,
-                            ramp: limit.id == "week" ? ramp.mixed(with: .idle, by: 0.36) : ramp,
-                            rounded: false)
+                        Rectangle().fill(usageFill(limit))
+                            .frame(maxWidth: .infinity)
+                            .accessibilityHidden(true)
                     }
                 }
                 .frame(height: ComposerMeterTrack.compactRowHeight)
@@ -53,6 +52,7 @@ struct ComposerUsageLimits: View {
                 }
                 .compositingGroup()
                 .clipShape(Capsule(style: .circular))
+                .background(.regularMaterial, in: Capsule(style: .circular))
                 .overlay {
                     if contrast == .increased { Capsule(style: .circular).strokeBorder(.primary, lineWidth: 1) }
                 }
@@ -70,8 +70,19 @@ struct ComposerUsageLimits: View {
 
     private var ink: Color { colorScheme == .dark ? Color(white: 0.94) : Color(white: 0.13) }
 
+    private var usesSolidColors: Bool { contrast == .increased || reduceTransparency }
+
+    private func usageFill(_ limit: ProviderUsageLimit) -> AnyShapeStyle {
+        guard let used = limit.used else { return AnyShapeStyle(Color.primary.opacity(0.10)) }
+        let base = ColorRamp.usage(used)
+        let ramp = limit.id == "week" ? base.mixed(with: .idle, by: 0.22) : base
+        if usesSolidColors { return AnyShapeStyle(ramp.color(at: 0.5)) }
+        return AnyShapeStyle(ramp.wash(opacity: 0.92, from: .leading, to: .trailing))
+    }
+
     private func indicator(_ limit: ProviderUsageLimit, width: CGFloat, showsChevron: Bool) -> some View {
-        HStack(spacing: 3) {
+        let ink = limit.used == nil ? self.ink : Color(white: 0.07)
+        return HStack(spacing: 3) {
             Text(limit.shortTitle).foregroundStyle(ink.opacity(0.8))
             Text(limit.percent.map { "\($0)%" } ?? "—").fontWeight(.semibold).monospacedDigit().foregroundStyle(ink)
                 .lineLimit(1).fixedSize()
@@ -86,13 +97,7 @@ struct ComposerUsageLimits: View {
         .lineLimit(1)
         .fixedSize()
         .frame(width: width, height: 26)
-        .background {
-            if let used = limit.used {
-                GradientTileSurface(ramp: .usage(used), cornerRadius: 0, prominent: true, outlined: false)
-            } else {
-                Rectangle().fill(Color.secondary.opacity(0.10))
-            }
-        }
+        .background { Rectangle().fill(usageFill(limit)) }
         .animation(reduceMotion ? nil : .easeInOut(duration: 0.24), value: limit.used)
     }
 
@@ -364,7 +369,6 @@ private struct ProviderUsageLimit: Identifiable {
 
 private struct ProviderUsageLimitRow: View {
     let limit: ProviderUsageLimit
-    @State private var copiedDate: Date?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 7) {
@@ -395,17 +399,6 @@ private struct ProviderUsageLimitRow: View {
                         Image(systemName: "clock").foregroundStyle(.secondary)
                     }
                     .accessibilityIdentifier("usage.reset.\(limit.id)")
-                    Spacer(minLength: 0)
-                    Button {
-                        NSPasteboard.general.clearContents()
-                        if NSPasteboard.general.setString(formatted, forType: .string) { copiedDate = date }
-                    } label: {
-                        Image(systemName: copiedDate == date ? "checkmark" : "document.on.document")
-                    }
-                    .buttonStyle(.borderless)
-                    .help(copiedDate == date ? "Reset time copied" : "Copy reset time")
-                    .accessibilityLabel(copiedDate == date ? "Reset time copied for \(limit.title)" : "Copy reset time for \(limit.title)")
-                    .accessibilityIdentifier("usage.copyReset.\(limit.id)")
                 } else {
                     Label("Reset time unavailable", systemImage: "clock").foregroundStyle(.secondary)
                         .accessibilityIdentifier("usage.reset.\(limit.id)")

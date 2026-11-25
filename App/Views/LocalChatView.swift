@@ -10,6 +10,7 @@ struct LocalChatView: View {
     @State private var localModel = MLXEngine.assignedModel(for: .chat)
     @State private var installedModels: [String] = []
     @FocusState private var inputFocused: Bool
+    @State private var sendScrollRequest: UUID?
 
     private var readOnly: Bool {
         model.selectedChatConversationID == nil || model.selectedUnassignedVoiceHistory
@@ -26,7 +27,7 @@ struct LocalChatView: View {
                     }.padding(.horizontal, 16)
                 }
             }
-            ChatTranscriptScroll {
+            ChatTranscriptScroll(sendRequest: sendScrollRequest) {
                 LazyVStack(alignment: .leading, spacing: 14) {
                     if model.selectedWorkspaceProjectID != nil {
                         Text("Choose or create a chat in this project.").foregroundStyle(.secondary)
@@ -96,7 +97,10 @@ struct LocalChatView: View {
         .padding(16).disabled(readOnly)
     }
     private func send() {
-        if model.send(draft) { draft = "" }
+        if model.send(draft) {
+            sendScrollRequest = UUID()
+            draft = ""
+        }
         inputFocused = true
     }
 }

@@ -160,6 +160,7 @@ struct ComposerControlLabel: View {
         let ink = colorScheme == .dark ? Color(white: 0.92) : Color(white: 0.15)
         HStack(spacing: 5) {
             Image(systemName: icon).foregroundStyle(ink.opacity(0.72))
+                .frame(width: 16, height: 16)
             if !iconOnly {
                 ViewThatFits(in: .horizontal) {
                     Text(title).lineLimit(1).fixedSize(horizontal: true, vertical: false)
@@ -172,9 +173,10 @@ struct ComposerControlLabel: View {
             }
         }
         .font(.caption)
-        .padding(.horizontal, 8)
+        .padding(.horizontal, iconOnly ? 5 : 8)
         .frame(minHeight: 26)
         .background(ink.opacity(0.05), in: Capsule())
+        .background(.regularMaterial, in: Capsule())
         .contentShape(.rect)
     }
 }

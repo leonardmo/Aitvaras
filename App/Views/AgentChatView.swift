@@ -24,6 +24,8 @@ struct AgentChatView: View {
     @State private var gitProject = false
     @State private var composerFocusRequest: UUID?
     @State private var transcriptHeight: CGFloat = 0
+    @State private var sendScrollRequest: UUID?
+    @State private var composerHeight: CGFloat = 0
 
     private var gatewayApprovals: [GatewayApprovalRequest] {
         model.gatewayInlineApprovals.filter { $0.invocation.presentation == .inline(chatID: chatID) }
@@ -160,67 +162,60 @@ struct AgentChatView: View {
             return false
         }?.id
         let pendingItemIDs = Set((chat.state?.pendingCards ?? []).compactMap(\.scope.itemID))
-        return VStack(spacing: 0) {
-            ChatTranscriptScroll {
-                LazyVStack(alignment: .leading, spacing: 18) {
-                    ForEach(rows) { row in
-                        switch row {
-                        case .entry(let entry):
-                            transcriptRow(entry, streaming: chat.state?.isStreaming(entryID: entry.id) == true).id(entry.id)
-                        case .activity(_, let entries, let isLive):
-                            AgentActivityPanel(entries: entries, isLive: isLive, isLatest: row.id == latestActivityID) { entry, featured in
-                                transcriptRow(entry, streaming: chat.state?.isStreaming(entryID: entry.id) == true,
-                                              commandFeatured: featured,
-                                              commandAwaitingApproval: isLive && entry.toolItemID.map(pendingItemIDs.contains) == true)
-                            }
+        return ChatTranscriptScroll(sendRequest: sendScrollRequest, overlayBottom: composerHeight) {
+            LazyVStack(alignment: .leading, spacing: 18) {
+                ForEach(rows) { row in
+                    switch row {
+                    case .entry(let entry):
+                        transcriptRow(entry, streaming: chat.state?.isStreaming(entryID: entry.id) == true).id(entry.id)
+                    case .activity(_, let entries, let isLive):
+                        AgentActivityPanel(entries: entries, isLive: isLive, isLatest: row.id == latestActivityID) { entry, featured in
+                            transcriptRow(entry, streaming: chat.state?.isStreaming(entryID: entry.id) == true,
+                                          commandFeatured: featured,
+                                          commandAwaitingApproval: isLive && entry.toolItemID.map(pendingItemIDs.contains) == true)
                         }
                     }
-                    if isRunning, case .entry(let last)? = rows.last,
-                       ["user", "wakeup", "continued", "automaticContinuation"].contains(last.kind),
-                       (chat.state?.pendingCards ?? []).isEmpty, gatewayApprovals.isEmpty {
-                        AgentWorkingLabel()
-                    }
-                    ForEach(Array((chat.state?.pendingCards ?? []).enumerated()), id: \.element.identity) { index, request in
-                        requestCard(request, index: index)
-                    }
-                    ForEach(gatewayApprovals) { request in
-                        VStack(alignment: .leading, spacing: 8) {
-                            Text("Allow \(request.toolName)?").font(.headline)
-                            if let reason = request.reason {
-                                Text(reason).font(.caption).foregroundStyle(.secondary)
-                            }
-                            DisclosureGroup("Arguments") {
-                                Text(verbatim: request.arguments.jsonString)
-                                    .font(.caption.monospaced()).textSelection(.enabled)
-                            }
-                            HStack {
-                                Button("Deny") { Task { await model.decideGatewayApproval(request, allow: false) } }
-                                Button("Allow once") { Task { await model.decideGatewayApproval(request, allow: true) } }
-                            }
-                            if request.canAlwaysAllow {
-                                Button("Always allow in this project") {
-                                    Task { await model.decideGatewayApproval(request, allow: true, forProject: true) }
-                                }
-                                .accessibilityIdentifier("chat.gateway.approval.\(request.id).alwaysAllow")
-                            }
+                }
+                if isRunning, case .entry(let last)? = rows.last,
+                   ["user", "wakeup", "continued", "automaticContinuation"].contains(last.kind),
+                   (chat.state?.pendingCards ?? []).isEmpty, gatewayApprovals.isEmpty {
+                    AgentWorkingLabel()
+                }
+                ForEach(Array((chat.state?.pendingCards ?? []).enumerated()), id: \.element.identity) { index, request in
+                    requestCard(request, index: index)
+                }
+                ForEach(gatewayApprovals) { request in
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Allow \(request.toolName)?").font(.headline)
+                        if let reason = request.reason {
+                            Text(reason).font(.caption).foregroundStyle(.secondary)
                         }
-                        .padding(12)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 8))
+                        DisclosureGroup("Arguments") {
+                            Text(verbatim: request.arguments.jsonString)
+                                .font(.caption.monospaced()).textSelection(.enabled)
+                        }
+                        HStack {
+                            Button("Deny") { Task { await model.decideGatewayApproval(request, allow: false) } }
+                            Button("Allow once") { Task { await model.decideGatewayApproval(request, allow: true) } }
+                        }
+                        if request.canAlwaysAllow {
+                            Button("Always allow in this project") {
+                                Task { await model.decideGatewayApproval(request, allow: true, forProject: true) }
+                            }
+                            .accessibilityIdentifier("chat.gateway.approval.\(request.id).alwaysAllow")
+                        }
                     }
-                    SettingsProposalCards(chatID: chatID)
+                    .padding(12)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 8))
                 }
-                .frame(maxWidth: 760, alignment: .leading)
-                .padding(.horizontal, 16).padding(.vertical, 20).frame(maxWidth: .infinity)
+                SettingsProposalCards(chatID: chatID)
             }
-            .id(chatID)
-            .mask {
-                VStack(spacing: 0) {
-                    Rectangle()
-                    LinearGradient(colors: [.black, .clear], startPoint: .top, endPoint: .bottom)
-                        .frame(height: 14)
-                }
-            }
+            .frame(maxWidth: 760, alignment: .leading)
+            .padding(.horizontal, 16).padding(.vertical, 20).frame(maxWidth: .infinity)
+        }
+        .id(chatID)
+        .overlay(alignment: .bottom) {
             VStack(spacing: 6) {
                 if chat.chatID == nil, model.workspaceProjects.allSatisfy({ !$0.isVisible }) {
                     Text("Choose a project to send a message.").font(.caption).foregroundStyle(composerMessageColor)
@@ -245,7 +240,8 @@ struct AgentChatView: View {
                 }
                 AgentChatComposer(chat: chat, chatID: chatID, canSend: canSend, gitProject: gitProject,
                                   focusRequest: $composerFocusRequest,
-                                  heightLimit: max(38, transcriptHeight - (compact ? 100 : 168)), compact: compact)
+                                  heightLimit: max(38, transcriptHeight - (compact ? 100 : 168)), compact: compact,
+                                  willSend: { sendScrollRequest = UUID() })
                 if composerMessage != nil || !canSend {
                     HStack(spacing: 8) {
                         if let error = composerMessage {
@@ -282,16 +278,10 @@ struct AgentChatView: View {
                     .accessibilityIdentifier("chat.error")
                 }
             }
-            .padding(.horizontal, 12)
-            .padding(.bottom, 12)
-            .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 18))
-            .overlay {
-                RoundedRectangle(cornerRadius: 18).strokeBorder(.primary.opacity(0.09))
-                    .allowsHitTesting(false).accessibilityHidden(true)
-            }
             .frame(maxWidth: 760)
             .padding(.horizontal, 16).padding(.top, 8).padding(.bottom, 16)
             .frame(maxWidth: .infinity)
+            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { composerHeight = $0 }
         }
         .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { transcriptHeight = $0 }
         .task(id: chatID) { await chat.refreshStatus() }
@@ -653,6 +643,7 @@ private struct AgentChatComposer: View {
     @Binding var focusRequest: UUID?
     let heightLimit: CGFloat
     let compact: Bool
+    let willSend: () -> Void
     @State private var choosingProject = false
     @State private var choosingAttachments = false
     @State private var attachmentTarget: (chatID: UUID, provider: AgentProvider)?
@@ -716,14 +707,22 @@ private struct AgentChatComposer: View {
                     }
                 }.scrollIndicators(.hidden).accessibilityIdentifier("chat.attachments")
             }
-            composerEditor.frame(height: editorHeight)
+            composerEditor
+                .frame(height: editorHeight)
+                .padding(.horizontal, 12)
+                .padding(.top, 10)
+                .padding(.bottom, 4)
+                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 18))
+                .overlay(alignment: .top) { resizeHandle }
+                .overlay {
+                    RoundedRectangle(cornerRadius: 18).strokeBorder(.primary.opacity(0.09))
+                        .allowsHitTesting(false).accessibilityHidden(true)
+                }
             ViewThatFits(in: .horizontal) {
-                composerBar(iconOnly: false).frame(minWidth: 520)
+                composerBar(iconOnly: false).frame(minWidth: 560)
                 composerBar(iconOnly: true)
             }
         }
-        .padding(.top, 10)
-        .overlay(alignment: .top) { resizeHandle }
         .onDrop(of: [.fileURL, .image], isTargeted: nil, perform: receiveAttachments)
         .fileImporter(isPresented: $choosingAttachments, allowedContentTypes: [.item], allowsMultipleSelection: true) { result in
             defer { attachmentTarget = nil }
@@ -795,8 +794,13 @@ private struct AgentChatComposer: View {
             if showingCompletion { completionAcceptance += 1; return true }
             if hasMarkdownEdit { return false }
         }
-        if chat.canSubmit && canSend && chat.hasInput { Task { await chat.send(immediately: send) } }
+        if chat.canSubmit && canSend && chat.hasInput { submit(immediately: send) }
         return true
+    }
+
+    private func submit(immediately: Bool = false) {
+        if !chat.editingQueuedMessage { willSend() }
+        Task { await chat.send(immediately: immediately) }
     }
 
     private func pasteAttachments(_ pasteboard: NSPasteboard) -> Bool {
@@ -817,7 +821,7 @@ private struct AgentChatComposer: View {
     private func composerBar(iconOnly: Bool) -> some View {
         HStack(spacing: iconOnly ? 4 : 8) {
             HStack(spacing: iconOnly ? 4 : 8) {
-                attachButton(narrow: iconOnly)
+                attachButton
                 if chat.chatID == nil { projectControl(iconOnly: iconOnly) }
                 AgentComposerPicker(chat: chat, iconOnly: iconOnly).disabled(chat.editingQueuedMessage)
                 AgentComposerPermissionsControl(chat: chat, iconOnly: iconOnly)
@@ -846,7 +850,7 @@ private struct AgentChatComposer: View {
                 .accessibilityLabel("Stop").accessibilityIdentifier("chat.stop")
             }
             if chat.state?.isRunning != true || chat.hasInput {
-                Button { Task { await chat.send() } } label: {
+                Button { submit() } label: {
                     Image(systemName: chat.editingQueuedMessage ? "checkmark" : chat.willQueueMessage ? "tray.and.arrow.down" : "arrow.up")
                         .font(.system(size: 20, weight: .semibold))
                         .foregroundStyle(sendEnabled ? Color.white : Color.secondary)
@@ -878,6 +882,7 @@ private struct AgentChatComposer: View {
             .frame(width: 72)
             .compositingGroup()
             .clipShape(Capsule(style: .circular))
+            .background(.regularMaterial, in: Capsule(style: .circular))
         } else {
             HStack(spacing: 8) {
                 context
@@ -951,14 +956,16 @@ private struct AgentChatComposer: View {
     }
 
     private var sendEnabled: Bool { canSend && chat.canSubmit }
-    private func attachButton(narrow: Bool) -> some View {
+    private var attachButton: some View {
         Button {
             attachmentTarget = (chat.composerOwnerID, chat.provider)
             showingCompletion = false; choosingAttachments = true
         } label: {
             Image(systemName: "paperclip").font(.system(size: 15, weight: .medium))
                 .foregroundStyle(composerMessageColor)
-                .frame(width: narrow ? 18 : 28, height: 28)
+                .frame(width: 26, height: 26)
+                .background(composerMessageColor.opacity(0.08), in: Circle())
+                .background(.regularMaterial, in: Circle())
         }
         .buttonStyle(.plain)
         .disabled(!canSend || chat.provider == .local)
@@ -1033,8 +1040,11 @@ private struct AgentComposerPermissionsControl: View {
                     Image(systemName: "exclamationmark.triangle")
                         .symbolRenderingMode(.monochrome)
                         .foregroundStyle(Color.orange)
+                        .frame(width: 16, height: 16)
+                        .offset(y: -0.5)
                 } else {
                     Image(systemName: symbol).foregroundStyle(ink.opacity(0.72))
+                        .frame(width: 16, height: 16)
                 }
                 if !iconOnly { Text(title(selection)).lineLimit(1) }
                 if !iconOnly || chat.permissionsApplyNextTurn {
@@ -1045,9 +1055,10 @@ private struct AgentComposerPermissionsControl: View {
             }
             .font(.caption)
             .foregroundStyle(ink)
-            .padding(.horizontal, 8)
+            .padding(.horizontal, iconOnly && !chat.permissionsApplyNextTurn ? 5 : 8)
             .frame(minHeight: 26)
             .background(isFullAccessVisible ? Color.orange.opacity(0.22) : ink.opacity(0.05), in: Capsule())
+            .background(.regularMaterial, in: Capsule())
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)

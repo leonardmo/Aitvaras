@@ -5,18 +5,24 @@
     { "action": "press", "identifier": "chat.composer.send" },
     { "action": "waitFor", "identifier": "chat.stop", "timeout": 20 },
     { "action": "waitFor", "identifier": "chat.stop", "absent": true },
-    { "action": "press", "identifier": "chat.transcript.latest", "delay": 0.5, "optional": true },
+    { "action": "checkScrollBottom", "identifier": "chat.transcript", "delay": 0.5 },
     { "action": "type", "text": "Stream while I read the transcript" },
     { "action": "press", "identifier": "chat.composer.send" },
     { "action": "waitFor", "identifier": "chat.stop" },
+    { "action": "checkScrollBottom", "identifier": "chat.transcript", "delay": 0.8 },
     { "action": "scroll", "identifier": "chat.transcript", "verticalBy": 300 },
     { "action": "waitFor", "identifier": "chat.transcript.latest" },
     { "action": "checkScroll", "identifier": "chat.transcript", "delay": 1.5 },
     { "action": "waitFor", "identifier": "chat.stop" },
-    { "action": "scroll", "identifier": "chat.transcript", "verticalBy": -150 },
+    { "action": "scroll", "identifier": "chat.transcript", "verticalBy": -75 },
     { "action": "waitFor", "identifier": "chat.stop", "absent": true, "timeout": 20 },
     { "action": "checkScroll", "identifier": "chat.transcript" },
+    { "action": "type", "text": "Send while reading earlier messages" },
+    { "action": "press", "identifier": "chat.composer.send" },
+    { "action": "waitFor", "identifier": "chat.stop", "absent": true, "delay": 1 },
+    { "action": "checkScroll", "identifier": "chat.transcript" },
     { "action": "press", "identifier": "chat.transcript.latest" },
-    { "action": "waitFor", "identifier": "chat.transcript.latest", "absent": true }
+    { "action": "waitFor", "identifier": "chat.transcript.latest", "absent": true },
+    { "action": "checkScrollBottom", "identifier": "chat.transcript", "delay": 0.4 }
   ]
 }

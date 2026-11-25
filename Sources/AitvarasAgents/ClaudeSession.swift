@@ -24,6 +24,7 @@ actor ClaudeRun: AgentRun {
     private var localCommand: (id: UUID, nativeID: String, text: String, caveat: Bool, output: String?)?
     private var pendingCommandCaveat = false
     private var modelWorked = false
+    private var latestContext: (model: String, tokens: Int)?
     private var writing = false
     private var acknowledged = false
     private var interrupted = false
@@ -331,7 +332,14 @@ actor ClaudeRun: AgentRun {
             acknowledge()
             parseStream(value["event"] ?? .null)
         case "assistant", "user":
-            if type == "assistant" { modelWorked = true }
+            if type == "assistant" {
+                modelWorked = true
+                if value["parent_tool_use_id"] == nil || value["parent_tool_use_id"] == .null,
+                   value["error"] == nil || value["error"] == .null,
+                   let message = value["message"], let reading = Self.contextReading(message) {
+                    latestContext = reading
+                }
+            }
             acknowledge()
             if let error = value["error"]?.stringValue {
                 if error == "authentication_failed" { assistantFailure = .authRequired }
@@ -355,10 +363,17 @@ actor ClaudeRun: AgentRun {
             }
             if modelWorked || localCommand?.id != input || localCommand?.output == nil {
                 let usage = value["usage"] ?? .null
+                let contextLimit = latestContext.flatMap { reading in
+                    let models = value["modelUsage"]?.objectValue ?? [:]
+                    let model = models[reading.model] ?? models.values.first(where: { $0["canonicalModel"]?.stringValue == reading.model })
+                    return model?["contextWindow"]?.int.flatMap { $0 > 0 ? $0 : nil }
+                }
                 emit(.usage(AgentUsage(scope: .turn, inputTokens: usage["input_tokens"]?.int,
                     outputTokens: usage["output_tokens"]?.int, cachedInputTokens: usage["cache_read_input_tokens"]?.int,
                     cacheWriteInputTokens: usage["cache_creation_input_tokens"]?.int,
-                    thinkingTokens: usage["output_tokens_details"]?["thinking_tokens"]?.int, costUSD: value["total_cost_usd"]?.doubleValue)))
+                    thinkingTokens: usage["output_tokens_details"]?["thinking_tokens"]?.int,
+                    contextTokens: contextLimit == nil ? nil : latestContext?.tokens, contextLimit: contextLimit,
+                    costUSD: value["total_cost_usd"]?.doubleValue)))
             }
             // Interrupt results can also contain an assistant execution error.
             // That error must not turn a user Stop into an unknown failure.
@@ -369,6 +384,7 @@ actor ClaudeRun: AgentRun {
             let completed = [input!] + queue
             continuation.yield(.init(scope: .init(runID: id, session: session, inputID: input,
                 completedInputIDs: completed.count > 1 ? completed : []), kind: .turnEnded(outcome)))
+            latestContext = nil
             input = nil; autonomous = false; queue.removeAll(); requests.removeAll(); modeState.cancel()
         default: emit(.unknown(name: value["type"]?.stringValue ?? "unknown", payload: value))
         }
@@ -548,6 +564,21 @@ actor ClaudeRun: AgentRun {
         default: break
         }
     }
+    // Claude's turn totals aggregate requests. Use the latest main assistant
+    // message's input and cache tokens, matching Claude's status-line meter.
+    private static func contextReading(_ message: JSONValue) -> (model: String, tokens: Int)? {
+        guard let model = message["model"]?.stringValue, !model.isEmpty, model != "<synthetic>",
+              let usage = message["usage"], let input = usage["input_tokens"]?.int else { return nil }
+        var total = 0
+        for count in [input, usage["cache_creation_input_tokens"]?.int ?? 0,
+                      usage["cache_read_input_tokens"]?.int ?? 0] {
+            let (sum, overflow) = total.addingReportingOverflow(count)
+            guard count >= 0, !overflow else { return nil }
+            total = sum
+        }
+        return (model, total)
+    }
+
     private func parseMessage(_ value: JSONValue) async {
         let message = value["message"] ?? .null
         let messageID = message["id"]?.stringValue ?? value["uuid"]?.stringValue

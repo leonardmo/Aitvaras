@@ -1324,13 +1324,14 @@ Run `scripts/run-self-drive.sh manual-usage-reset-claude 120 --no-build` with
 even before Claude reports a usage window.
 
 Run `scripts/run-self-drive.sh transcript-scroll 120 --no-build` with the same
-Codex fixture to check transcript scrolling. It sends local wheel events
-during a streaming reply, checks the viewport offset through later updates
-and completion, and uses Jump to latest to reach the last message.
+Codex fixture to check transcript scrolling. It checks that sending from the
+bottom follows the transcript, local wheel events take control during streaming,
+and later updates and sends leave the reader's offset in place. Jump to latest
+returns to the bottom.
 
 Run `scripts/run-self-drive.sh context-meter 120 --no-build` with the same
 fixture at 1080×650 and 800×500. The scenario supplies a 42% context window
-reading, checks the token details in the accessibility tree, and opens usage
+reading, opens the context popover to verify token details, and opens usage
 details from both the full pill and the narrow bars.
 
 For a fast check without a local model, run `make ui UI_SCENARIO=cloud-switching`

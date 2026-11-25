@@ -143,6 +143,41 @@ done()
         try await run.shutdown()
     }
 
+    @Test func contextUsesTheLatestMainResponseAndItsReportedWindow() async throws {
+        let fixture = try BackendExecutableFixture(script: """
+claude_init()
+read()
+def answer(id, model, usage, parent=None):
+    emit({'type':'assistant','uuid':id,'parent_tool_use_id':parent,
+          'message':{'model':model,'usage':usage,'content':[{'type':'text','text':'Example reply'}]}})
+answer('first','main',{'input_tokens':100})
+answer('latest','main',{'input_tokens':1000,'cache_creation_input_tokens':3000,
+                       'cache_read_input_tokens':38000,'output_tokens':900})
+answer('subagent','other',{'input_tokens':90000},parent='tool')
+emit({'type':'result','is_error':False,'usage':{'input_tokens':150000},
+      'modelUsage':{'main':{'contextWindow':200000},'other':{'contextWindow':1000000}}})
+read()
+emit({'type':'result','is_error':False,'modelUsage':{'main':{'contextWindow':200000}}})
+done()
+""")
+        defer { fixture.remove() }
+        let backend = ClaudeBackend(executable: fixture.executable, environment: fixture.environment)
+        let run = try await backend.start(.init(directory: fixture.directory, model: "test"))
+        try await run.send(.init(text: "Example"), willDeliver: {})
+        let events = try await collectTurn(run)
+        #expect(events.contains { event in
+            guard case .usage(let usage) = event.kind else { return false }
+            return usage.contextTokens == 42_000 && usage.contextLimit == 200_000 && usage.inputTokens == 150_000
+        })
+        try await run.send(.init(text: "Another example"), willDeliver: {})
+        let secondTurn = try await collectTurn(run)
+        #expect(!secondTurn.contains { event in
+            guard case .usage(let usage) = event.kind else { return false }
+            return usage.contextTokens != nil || usage.contextLimit != nil
+        })
+        try await run.shutdown()
+    }
+
     @Test func partialRateLimitEventPublishesTheReportedWindow() async throws {
         let fixture = try BackendExecutableFixture(script: """
 claude_init()

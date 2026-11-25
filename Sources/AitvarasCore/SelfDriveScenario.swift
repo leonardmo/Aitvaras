@@ -16,7 +16,7 @@ public struct SelfDriveScenario: Decodable, Sendable {
 }
 
 public struct SelfDriveStep: Codable, Sendable {
-    public enum Action: String, Codable, Sendable { case press, type, selectText, waitFor, screenshot, dumpTree, drag, scroll, checkScroll }
+    public enum Action: String, Codable, Sendable { case press, type, selectText, waitFor, screenshot, dumpTree, drag, scroll, checkScroll, checkScrollBottom }
     public let action: Action
     public var identifier: String?
     /// A wait succeeds when any identifier is present; press uses the first
@@ -70,8 +70,8 @@ public struct SelfDriveStep: Codable, Sendable {
                   (3...500).contains(abs(verticalBy)) else {
                 throw invalid("Vertical travel needs an identifier and verticalBy of 3...500 points")
             }
-        case .checkScroll:
-            guard let identifier, !identifier.isEmpty else { throw invalid("checkScroll needs an identifier") }
+        case .checkScroll, .checkScrollBottom:
+            guard let identifier, !identifier.isEmpty else { throw invalid("Scroll check needs an identifier") }
         case .press:
             guard [identifier != nil, anyOf != nil, text != nil].filter({ $0 }).count == 1,
                   identifier?.isEmpty != true, text?.isEmpty != true else {

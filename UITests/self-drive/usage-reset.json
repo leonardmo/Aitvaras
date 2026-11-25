@@ -9,7 +9,7 @@
     { "action": "waitFor", "identifier": "chat.usage.popover" },
     { "action": "waitFor", "identifier": "usage.reset.fiveHour" },
     { "action": "waitFor", "identifier": "usage.reset.week" },
-    { "action": "waitFor", "identifier": "usage.copyReset.fiveHour", "enabled": true },
+    { "action": "waitFor", "identifier": "usage.copyReset.fiveHour", "absent": true },
     { "action": "waitFor", "identifier": "chat.usage.continuation.autoContinue", "enabled": true },
     { "action": "press", "identifier": "chat.usage.continuation.autoContinue" },
     { "action": "waitFor", "identifier": "chat.usage.continuation.autoContinue", "enabled": true },

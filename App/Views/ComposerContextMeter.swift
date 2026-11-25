@@ -3,6 +3,7 @@ import AitvarasAgents
 
 struct ComposerContextMeter: View {
     @Environment(\.colorScheme) private var colorScheme
+    @State private var showsDetails = false
     let usage: AgentUsage?
     let compact: Bool
 
@@ -16,7 +17,7 @@ struct ComposerContextMeter: View {
 
     var body: some View {
         let ramp = ColorRamp.context(fraction ?? 0)
-        Group {
+        Button { showsDetails.toggle() } label: {
             if compact {
                 ComposerMeterTrack(fraction: fraction, ramp: ramp, rounded: false)
                     .frame(height: ComposerMeterTrack.compactRowHeight)
@@ -27,13 +28,24 @@ struct ComposerContextMeter: View {
                         .opacity(fraction == nil ? 0.72 : 1))
                     .frame(width: 44, height: 26)
                     .background { ComposerMeterTrack(fraction: fraction, ramp: ramp, behindText: true) }
+                    .background(.regularMaterial, in: Capsule())
             }
         }
+        .buttonStyle(.plain)
         .contentShape(Rectangle())
         .help(detail)
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(fraction == nil ? detail : "Context window. " + detail)
+        .accessibilityLabel("Context window")
+        .accessibilityValue(detail)
         .accessibilityIdentifier(compact ? "chat.gauge.context.compact" : "chat.gauge.context")
+        .popover(isPresented: $showsDetails, arrowEdge: .top) {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Context window").font(.headline)
+                Text(detail).font(.callout).foregroundStyle(.secondary)
+            }
+            .padding(16)
+            .accessibilityElement(children: .contain)
+            .accessibilityIdentifier("chat.context.popover")
+        }
     }
 }
 
